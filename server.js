@@ -957,6 +957,10 @@ function brandIconFile() {
 function brand() {
   const b = CONFIG.branding || {};
   const title = String(b.title || (b.org ? `${b.org}'s App Store` : 'App Store'));
+  // Header text: the org keeps its own case, dim, before the bright uppercase "App Store";
+  // a full `title` is shown as written.
+  const name = b.title ? `<b>${escHtml(b.title)}</b>`
+    : b.org ? `<span class="org">${escHtml(b.org)}</span> <b>App Store</b>` : '<b>App Store</b>';
   const file = brandIconFile();
   const icon = typeof b.icon === 'string' ? b.icon.trim() : '';
   let mark = '<span class="tri"></span>', head = '';
@@ -971,7 +975,7 @@ function brand() {
   } else {
     head = `<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="mask-icon" href="/mask-icon.svg" color="#4f8cff">`;
   }
-  return { title, mark, head };
+  return { title, name, mark, head };
 }
 const isHttps = req => requestBase(req).startsWith('https://');
 const sessionToken = req => parseCookies(req.headers.cookie)[auth.COOKIE];
@@ -993,8 +997,8 @@ function sendStatic(res, rel) {
     'X-Content-Type-Options': 'nosniff', ...(fp.endsWith('.html') ? { 'Cache-Control': 'no-store' } : {}) });
   if (fp.endsWith('.html')) {
     const b = brand();
-    return res.end(fs.readFileSync(fp, 'utf8').replace(/\{\{BRAND_(TITLE|MARK|HEAD)\}\}/g,
-      (_, k) => k === 'TITLE' ? escHtml(b.title) : k === 'MARK' ? b.mark : b.head)), true;
+    return res.end(fs.readFileSync(fp, 'utf8').replace(/\{\{BRAND_(TITLE|NAME|MARK|HEAD)\}\}/g,
+      (_, k) => k === 'TITLE' ? escHtml(b.title) : k === 'NAME' ? b.name : k === 'MARK' ? b.mark : b.head)), true;
   }
   res.end(fs.readFileSync(fp));
   return true;

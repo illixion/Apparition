@@ -24,6 +24,8 @@
     clip-path: polygon(50% 12%, 92% 88%, 8% 88%); }
   .wordmark .brandicon { font-size: 2rem; line-height: 1; height: 2rem; width: auto; display: inline-block; }
   .wordmark b { color: var(--fg); }
+  .wordmark b { text-transform: uppercase; letter-spacing: .04em; }
+  .wordmark .org { text-transform: none; letter-spacing: 0; }
   label { font-size: .82rem; color: var(--dim); display: flex; flex-direction: column; gap: 6px; }
   input { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 8px;
     padding: 10px 12px; font: inherit; }
@@ -36,7 +38,7 @@
 </head>
 <body>
 <form id="form">
-  <span class="wordmark">{{BRAND_MARK}} <b>{{BRAND_TITLE}}</b></span>
+  <span class="wordmark">{{BRAND_MARK}} {{BRAND_NAME}}</span>
   <label>Password
     <input type="password" id="password" autocomplete="current-password" autofocus required>
   </label>

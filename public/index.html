@@ -42,6 +42,7 @@
     clip-path: polygon(50% 12%, 92% 88%, 8% 88%); }
   header .wordmark .brandicon { font-size: 2rem; line-height: 1; height: 2rem; width: auto; display: inline-block; }
   header .wordmark b { color: var(--fg); }
+  header .wordmark .org { text-transform: none; letter-spacing: 0; }
   header .fleetcount { font-family: var(--mono); font-size: .74rem; color: var(--dim2); }
 
   main { padding: 22px 24px 320px; max-width: 1180px; margin: 0 auto; }
@@ -273,7 +274,7 @@
 </head>
 <body>
 <header>
-  <span class="wordmark">{{BRAND_MARK}} <b>{{BRAND_TITLE}}</b></span>
+  <span class="wordmark">{{BRAND_MARK}} {{BRAND_NAME}}</span>
   <nav class="views" aria-label="Views">
     <a href="#deploy" data-view="deploy">Deploy <span class="count" id="fleetcount"></span></a>
     <a href="#debug" data-view="debug">Debug <span class="count livecount" id="livecount"></span></a>
