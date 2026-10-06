@@ -959,7 +959,7 @@ function brand() {
   const title = String(b.title || (b.org ? `${b.org}'s App Store` : 'App Store'));
   const file = brandIconFile();
   const icon = typeof b.icon === 'string' ? b.icon.trim() : '';
-  let mark = '<span class="tri">▲</span>', head = '';
+  let mark = '<span class="tri"></span>', head = '';
   if (file) {
     const href = `/branding/icon?v=${Math.floor(fs.statSync(file).mtimeMs)}`;
     mark = `<img class="brandicon" src="${href}" alt="">`;
