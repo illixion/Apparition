@@ -1,0 +1,28 @@
+{
+  "port": 8484,
+  "bundlePrefix": [
+    "com.example"
+  ],
+  "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
+  "repos": [
+    {
+      "name": "MyApp",
+      "path": "/Users/you/Projects/MyApp",
+      "branches": [
+        "main"
+      ],
+      "platforms": [
+        {
+          "platform": "iOS",
+          "bundleId": "com.example.myapp",
+          "device": "My iPhone"
+        },
+        {
+          "platform": "visionOS",
+          "bundleId": "com.example.myapp",
+          "device": "Vision Pro"
+        }
+      ]
+    }
+  ]
+}

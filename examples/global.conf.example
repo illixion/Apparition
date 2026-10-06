@@ -1,0 +1,19 @@
+# Copy to ~/.config/build-signing/global.conf. Shared signing material for
+# build-and-sign. A repo's build-signing.conf is sourced after this and wins.
+# Never commit this file or the files it points to.
+
+TEAM_ID="ABCDE12345"
+
+# Development (and optionally distribution) certificates, exported as .p12.
+DEV_P12_PATH="$HOME/.config/build-signing/certs/development.p12"
+P12_PASSWORD="change-me"
+# DIST_P12_PATH="$HOME/.config/build-signing/certs/distribution.p12"
+# DIST_P12_PASSWORD="change-me"
+
+# A WILDCARD development profile (App ID "*") that lists your device UDIDs.
+# One wildcard profile signs every app you build. See the README.
+DEV_PROFILE_PATH="$HOME/.config/build-signing/profiles/wildcard-dev.mobileprovision"
+# DIST_PROFILE_PATH="$HOME/.config/build-signing/profiles/distribution.mobileprovision"
+
+# Optional: where DebugTrace apps upload their traces (this repo's server).
+# DEBUGTRACE_UPLOAD_URL="https://your-host.example.ts.net/api/traces"

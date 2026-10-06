@@ -1,0 +1,980 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App Store</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="mask-icon" href="/mask-icon.svg" color="#4f8cff">
+<meta name="theme-color" content="#0a0c10">
+<style>
+  :root {
+    --bg: #0a0c10; --surface: #12151b; --surface2: #191d25; --line: #232833;
+    --fg: #e6ebf3; --dim: #7d8699; --dim2: #565e6e;
+    --accent: #4f8cff; --accent-fg: #06101f;
+    --ok: #35d399; --warn: #f5b942; --bad: #fa6464; --info: #7aa9ff;
+    --mono: ui-monospace, "SF Mono", "Menlo", monospace;
+    --sans: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; }
+  ::selection { background: var(--accent); color: var(--accent-fg); }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); }
+  button { background: var(--surface2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 14px; font: inherit; font-size: .82rem; font-weight: 500; cursor: pointer; }
+  button:hover { border-color: var(--dim2); }
+  button:disabled { opacity: .4; cursor: default; }
+  button:disabled:hover { border-color: var(--line); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 700; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.ghost { background: transparent; }
+  button.icon { padding: 5px 8px; font-size: .78rem; line-height: 1; }
+  button.danger { color: var(--bad); }
+  select { background: var(--surface2) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237d8699' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>") no-repeat right 7px center/11px;
+    color: var(--fg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 24px 5px 9px;
+    font: inherit; font-size: .8rem; appearance: none; -webkit-appearance: none; -moz-appearance: none; }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 24px;
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(10,12,16,.92);
+    backdrop-filter: blur(8px); z-index: 5; }
+  header .wordmark { font-family: var(--mono); font-size: .92rem; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--dim); display: inline-flex; align-items: center; gap: 8px; }
+  header .wordmark .tri { color: var(--accent); font-size: .8rem; }
+  header .wordmark b { color: var(--fg); }
+  header .fleetcount { font-family: var(--mono); font-size: .74rem; color: var(--dim2); }
+
+  main { padding: 22px 24px 320px; max-width: 1180px; margin: 0 auto; }
+  .fleet { display: flex; flex-direction: column; gap: 10px; }
+
+  /* ---- fleet card ---- */
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .cardhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 11px; flex-wrap: wrap; }
+  .reponame { font-family: var(--mono); font-weight: 700; font-size: .86rem; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--fg); }
+  .refline { font-family: var(--mono); font-size: .76rem; color: var(--dim); }
+  .refline code { color: var(--dim); }
+  .refline .dirty { color: var(--warn); }
+  .subject { font-size: .76rem; color: var(--dim2); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+  .batchflag { margin-left: auto; font-family: var(--mono); font-size: .72rem; color: var(--accent); }
+
+  /* signature element: the chip strip — click a chip to include/exclude it
+     from the next batch deploy for this repo */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+  .chip { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 9px 6px 8px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px;
+    cursor: pointer; user-select: none; transition: border-color 120ms, background 120ms; }
+  .chip:hover { border-color: var(--dim2); }
+  .chip.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); }
+  .chip input { position: absolute; opacity: 0; pointer-events: none; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
+  .chip .dot.ok { background: var(--ok); }
+  .chip .dot.warn { background: var(--warn); }
+  .chip .dot.bad { background: var(--bad); }
+  .chip .dot.info { background: var(--info); }
+  .chip .devname { font-size: .82rem; font-weight: 600; }
+  .chip .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
+  .chip .branchtag { font-size: .68rem; color: var(--accent); font-family: var(--mono); }
+  .chip .otaicon { color: var(--dim); font-size: .76rem; padding: 1px 3px; border-radius: 4px; margin-left: 1px; }
+  .chip .otaicon:hover { color: var(--fg); background: var(--line); }
+  .chip.building { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+  .cardfoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 11px;
+    border-top: 1px solid var(--line); }
+  .runcheck { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+    color: var(--dim); cursor: pointer; user-select: none; }
+  .runcheck input { cursor: pointer; accent-color: var(--accent); }
+  .cardfoot .spacer { flex: 1 1 auto; }
+
+  /* ---- build pane ---- */
+  #buildpane { position: fixed; left: 0; right: 0; bottom: 0; background: #07090c;
+    border-top: 1px solid var(--line); height: 300px; display: none; flex-direction: column;
+    z-index: 10; box-shadow: 0 -8px 30px rgba(0,0,0,.4); }
+  #buildpane.open { display: flex; }
+  #buildpane .bar { display: flex; align-items: center; gap: 12px; padding: 9px 18px;
+    border-bottom: 1px solid var(--line); font-size: .82rem; }
+  #buildpane .bar .paneTitle { font-family: var(--mono); font-size: .78rem; color: var(--dim); }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; padding: 0 14px;
+    font-size: .76rem; margin-bottom: -1px; }
+  .tab { padding: 7px 10px; border-bottom: 2px solid transparent; cursor: pointer; color: var(--dim);
+    white-space: nowrap; font-family: var(--mono); transition: color 150ms; }
+  .tab:hover { color: var(--fg); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; }
+  #buildlog { flex: 1; overflow: auto; margin: 0; padding: 10px 18px;
+    font: .76rem/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; color: #b3c0d4; }
+
+  .status { padding: 2px 8px; border-radius: 20px; font-size: .7rem; font-weight: 700;
+    font-family: var(--mono); text-transform: uppercase; letter-spacing: .03em; }
+  .status.running { background: #103257; color: var(--info); }
+  .status.queued { background: #262b35; color: var(--dim); }
+  .status.success { background: #0e3327; color: var(--ok); }
+  .status.failed { background: #3d1a1a; color: var(--bad); }
+  .status.cancelled { background: #362c14; color: var(--warn); }
+
+  section.history { margin-top: 30px; }
+  section.history h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
+    letter-spacing: .1em; font-family: var(--mono); font-weight: 600; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  td, th { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim2); font-weight: 600; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover { background: var(--surface); }
+  td.mono { font-family: var(--mono); color: var(--dim); font-size: .78rem; }
+  .muted { color: var(--dim2); }
+
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--surface2); border: 1px solid var(--accent); color: var(--fg);
+    padding: 10px 16px; border-radius: 10px; font-size: .84rem; z-index: 20;
+    display: none; max-width: 85%; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+  section.traces { margin-top: 30px; }
+  section.traces .tracehead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  section.traces h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
+    letter-spacing: .1em; font-family: var(--mono); font-weight: 600; margin: 0; }
+  section.traces .hint { font-size: .74rem; color: var(--dim2); }
+  section.traces.dropping { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 8px; }
+  .tracefiles { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 2px; }
+  .tracefiles a { font-family: var(--mono); font-size: .72rem; color: var(--info); text-decoration: none;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px; }
+  .tracefiles a:hover { border-color: var(--dim2); }
+  .tracenote { color: var(--fg); max-width: 340px; white-space: pre-wrap; }
+
+  /* ---- views ---- */
+  nav.views { display: flex; gap: 2px; margin-left: 14px; }
+  nav.views a { color: var(--dim); text-decoration: none; font-size: .84rem; font-weight: 500;
+    padding: 6px 11px; border-radius: 7px; display: inline-flex; align-items: center; gap: 7px; }
+  nav.views a:hover { color: var(--fg); background: var(--surface); }
+  nav.views a[aria-current="page"] { color: var(--fg); background: var(--surface2); }
+  nav.views .count { font-family: var(--mono); font-size: .7rem; color: var(--dim2); }
+  nav.views .livecount { color: var(--ok); }
+  header .tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .view { display: none; }
+  .view.active { display: block; }
+  a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; }
+  section.history, section.traces { margin-top: 0; }
+  .banner { background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+    color: var(--fg); border-radius: 10px; padding: 10px 14px; font-size: .82rem; margin-bottom: 14px; }
+  .banner code { font-family: var(--mono); font-size: .78rem; }
+
+  /* a device chip whose app is running with its debug server */
+  .chip .live { font-family: var(--mono); font-size: .68rem; color: var(--ok); padding: 1px 4px; border-radius: 4px;
+    text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+  .chip .live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); animation: beacon 2s ease-out infinite; }
+  .chip .live:hover { background: var(--line); }
+  @keyframes beacon { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 70%,100% { box-shadow: 0 0 0 6px transparent; } }
+
+  /* ---- debug view: the rail of running apps, and the console ---- */
+  /* The console fills what's left under the header, banner or not. */
+  main.debugging { max-width: none; padding: 0; height: calc(100vh - 57px); display: flex; flex-direction: column; }
+  main.debugging .banner { margin: 10px 16px 0; }
+  main.debugging .view.active { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .debug { display: grid; grid-template-columns: 250px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
+  .rail { border-right: 1px solid var(--line); overflow-y: auto; padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
+  .rail .railnote { font-size: .76rem; color: var(--dim2); padding: 6px 8px; line-height: 1.45; }
+  .rail .railnote code { font-family: var(--mono); font-size: .72rem; color: var(--dim); }
+  .appitem { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 9px 10px; border-radius: 8px;
+    border: 1px solid transparent; background: transparent; width: 100%; }
+  .appitem:hover { background: var(--surface); border-color: transparent; }
+  .appitem[aria-current="true"] { background: var(--surface2); border-color: var(--line); }
+  .appitem .n { font-weight: 600; font-size: .86rem; display: flex; align-items: center; gap: 7px; }
+  .appitem .n .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+  .appitem .m { font-size: .72rem; color: var(--dim); font-family: var(--mono); }
+  .appitem.off { opacity: .55; cursor: default; }
+  .appitem.off .dot { background: var(--dim2); }
+
+  .console { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .conhead { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .conhead h2 { font-size: 1.05rem; margin: 0; font-weight: 650; }
+  .conhead .meta { font-family: var(--mono); font-size: .74rem; color: var(--dim); }
+  .conhead .spacer { flex: 1; }
+  .contabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+  .contabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--dim);
+    padding: 9px 10px; font-size: .8rem; }
+  .contabs button:hover { color: var(--fg); }
+  .contabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .pane { display: none; flex: 1; min-height: 0; }
+  .pane.active { display: flex; flex-direction: column; }
+
+  .logbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  input.field { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 9px; font: inherit; font-size: .8rem; width: 240px; max-width: 100%; }
+  .logbar input[type=search] { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 5px 9px; font: inherit; font-size: .8rem; width: 220px; max-width: 100%; }
+  .streamstate { font-family: var(--mono); font-size: .72rem; color: var(--dim2); display: inline-flex; align-items: center; gap: 6px; }
+  .streamstate::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--dim2); }
+  .streamstate.live { color: var(--ok); }
+  .streamstate.live::before { background: var(--ok); }
+  .streamstate.waiting { color: var(--warn); }
+  .streamstate.waiting::before { background: var(--warn); }
+  .logbar .spacer { flex: 1; }
+  #loglines { flex: 1; overflow: auto; margin: 0; padding: 6px 0 40px; list-style: none; background: #07090c;
+    font: .76rem/1.55 var(--mono); }
+  #loglines li { display: grid; grid-template-columns: 92px 14px 130px minmax(0, 1fr); gap: 10px; padding: 0 14px; }
+  #loglines li:hover { background: #0d1015; }
+  #loglines .t { color: var(--dim2); }
+  #loglines .lv { font-weight: 700; color: var(--dim2); }
+  #loglines .c { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #loglines .msg { color: #b3c0d4; white-space: pre-wrap; word-break: break-word; }
+  #loglines li.I .lv { color: var(--dim); }
+  #loglines li.N .lv { color: var(--info); }
+  #loglines li.N .msg { color: var(--fg); }
+  #loglines li.E .lv, #loglines li.E .msg { color: var(--bad); }
+  #loglines li.F { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  #loglines li.F .lv, #loglines li.F .msg { color: var(--bad); font-weight: 700; }
+  #loglines li.D .msg { color: var(--dim); }
+  #loglines li.sys { grid-template-columns: 1fr; color: var(--dim2); font-style: italic; }
+  .jumpnew { position: absolute; right: 24px; bottom: 18px; display: none; }
+  .logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+  .endpoints { display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
+  .eplist { border-right: 1px solid var(--line); overflow-y: auto; padding: 8px; }
+  .ep { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; padding: 7px 9px; border-radius: 7px; }
+  .ep:hover { background: var(--surface); border-color: transparent; }
+  .ep[aria-current="true"] { background: var(--surface2); border-color: var(--line); }
+  .ep .en { font-family: var(--mono); font-size: .8rem; }
+  .ep .ek { font-size: .68rem; color: var(--dim2); margin-left: 6px; }
+  .ep .ek.cmd { color: var(--warn); }
+  .epdetail { overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .epdetail p.desc { margin: 0; color: var(--dim); font-size: .84rem; line-height: 1.5; max-width: 72ch; }
+  .params { display: grid; grid-template-columns: max-content minmax(0, 340px); gap: 8px 14px; align-items: center; }
+  .params label { font-family: var(--mono); font-size: .78rem; }
+  .params .pd { grid-column: 2; font-size: .72rem; color: var(--dim2); margin-top: -4px; }
+  .params input[type=text], .params input[type=number] { background: var(--surface2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 5px 9px; font: inherit; font-size: .8rem; width: 100%; }
+  pre.result { margin: 0; background: #07090c; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+    font: .76rem/1.5 var(--mono); color: #b3c0d4; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 60vh; }
+  pre.result.err { color: var(--bad); }
+  img.result { max-width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+  .emptystate { margin: auto; text-align: center; color: var(--dim); max-width: 46ch; font-size: .88rem; line-height: 1.55; padding: 24px; }
+  .emptystate h2 { color: var(--fg); font-size: 1rem; margin: 0 0 6px; }
+  .emptystate code { font-family: var(--mono); font-size: .8rem; color: var(--fg); }
+
+  @media (max-width: 760px) {
+    header { flex-wrap: wrap; padding: 10px 16px; }
+    nav.views { margin-left: 0; order: 3; width: 100%; overflow-x: auto; }
+    main { padding: 16px 16px 320px; }
+    main.debugging { height: calc(100vh - 96px); }
+    .debug { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .rail { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; }
+    .appitem { width: auto; min-width: 160px; }
+    #loglines li { grid-template-columns: 70px 12px minmax(0, 1fr); }
+    #loglines .c { display: none; }
+    .endpoints { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .eplist { border-right: 0; border-bottom: 1px solid var(--line); max-height: 30vh; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chip .live::before, .chip.building { animation: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark"><span class="tri">▲</span> <b>App Store</b></span>
+  <nav class="views" aria-label="Views">
+    <a href="#deploy" data-view="deploy">Deploy <span class="count" id="fleetcount"></span></a>
+    <a href="#debug" data-view="debug">Debug <span class="count livecount" id="livecount"></span></a>
+    <a href="#traces" data-view="traces">Traces <span class="count" id="tracecount"></span></a>
+    <a href="#history" data-view="history">History</a>
+  </nav>
+  <span class="tools">
+    <button class="ghost" id="refreshdev" title="Ask devicectl for each device's installed apps again">↻ devices</button>
+    <button class="ghost" id="signout" hidden>Sign out</button>
+  </span>
+</header>
+<main id="main">
+  <div class="banner" id="openbanner" hidden>No password is set, so anyone who can reach this page can build, install and debug.
+    Set one with <code>node server.js set-password</code>.</div>
+  <section class="view" data-view="deploy">
+    <div class="fleet" id="apps"></div>
+  </section>
+  <section class="view" data-view="debug">
+    <div class="debug">
+      <aside class="rail" id="rail" aria-label="Running apps"></aside>
+      <div class="console" id="console"></div>
+    </div>
+  </section>
+  <section class="view traces" data-view="traces" id="traces">
+    <div class="tracehead">
+      <h3>Debug traces</h3>
+      <span class="hint">Uploaded from an app's Debug Trace sheet, or drop a trace .zip here</span>
+      <span style="margin-left:auto"></span>
+      <button class="ghost" id="traceUploadBtn">Upload trace…</button>
+      <input type="file" id="traceFile" accept=".zip,application/zip" style="display:none">
+    </div>
+    <table>
+      <thead><tr><th>Received</th><th>App</th><th>Build</th><th>Device</th><th>Note</th><th></th></tr></thead>
+      <tbody id="tracelist"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </section>
+  <section class="view history" data-view="history">
+    <h3>Build history</h3>
+    <table>
+      <thead><tr><th>#</th><th>App</th><th>Ref</th><th>Device</th><th>Status</th><th>When</th><th>Took</th></tr></thead>
+      <tbody id="history"></tbody>
+    </table>
+  </section>
+</main>
+<div id="toast"></div>
+<div id="buildpane">
+  <div class="bar">
+    <span class="paneTitle" id="paneTitle"></span>
+    <span class="status" id="paneStatus"></span>
+    <span style="margin-left:auto"></span>
+    <button class="danger ghost" id="cancelBtn">Cancel</button>
+    <button class="ghost" id="closePane">Close</button>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <pre id="buildlog"></pre>
+</div>
+<script src="freshness.js"></script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+let S = null;               // last /api/state
+let paneBuild = null;       // build id shown in the log pane
+const logOffsets = {};      // build id -> log offset
+const logTexts = {};        // build id -> text fetched so far
+const sel = {};             // repo -> {branch, run, chosen:Set<device>}
+let pendingOta = null;      // {id, key, name} — auto-launch the itms install when this build succeeds
+
+function ago(t){ if(!t) return '—'; const s=(Date.now()-t)/1000;
+  if(s<60) return Math.round(s)+'s ago'; if(s<3600) return Math.round(s/60)+'m ago';
+  if(s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
+function took(b){ return b.startedAt&&b.finishedAt ? Math.round((b.finishedAt-b.startedAt)/1000)+'s' : '—'; }
+function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// Dev builds keep a static version string ("1.0"), so freshness is judged from
+// the git short SHA stamped into CFBundleVersion; see freshness.js.
+function platformStatus(p, g) { return Freshness.platformStatus(p, g, S); }
+
+function render() {
+  const repos = [...(S.repos || [])].sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+  );
+
+  $('#fleetcount').textContent = repos.reduce((n,r)=>n+r.platforms.length,0) || '';
+  const live = (S.debugApps?.apps || []).filter(a => a.attachable);
+  $('#livecount').textContent = live.length ? `${live.length} live` : '';
+  $('#openbanner').hidden = !!S.authRequired;
+  $('#signout').hidden = !S.authRequired;
+
+  $('#apps').innerHTML = repos.map(r=>{
+    const g = r.git||{};
+    const s = sel[r.name] = sel[r.name] || { branch: 'current', run: false, chosen: new Set() };
+    const branches = ['current', ...r.branches.filter(b=>b!=='current')];
+    const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name);
+    const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name).map(b=>b.device));
+    const busy = !!runningBuild || queuedIds.size > 0;
+
+    const chips = r.platforms.map(p=>{
+      const st = platformStatus(p, g);
+      const branchOverride = r.deviceBranches?.[p.device];
+      const isSelected = s.chosen.has(p.device);
+      const isRunningHere = runningBuild && runningBuild.device === p.device;
+      const isQueuedHere = queuedIds.has(p.device);
+      const https = location.protocol === 'https:';
+      let otaIcon = '';
+      if (https) {
+        const title = st.ota
+          ? `Rebuild ${p.platform} without touching the device, then offer the OTA install link`
+          : `Build ${p.platform} for OTA install (no OTA copy published yet)`;
+        otaIcon = `<span class="otaicon" data-otabuild="${esc(r.name)}" data-device="${esc(p.device)}" title="${esc(title)}">⤓</span>`;
+      }
+      const running = live.find(a => a.bundleId === p.bundleId && String(a.device).toLowerCase() === String(p.device).toLowerCase());
+      const liveMark = running ? `<a class="live" href="#debug/${encodeURIComponent(running.id)}" title="Running now with its debug server: open the live log">live</a>` : '';
+      const title = `${esc(p.device)} · ${esc(p.platform)}\n${esc(st.detail)}`;
+      return `<label class="chip ${isSelected?'sel':''} ${isRunningHere||isQueuedHere?'building':''}" title="${title}">
+        <input type="checkbox" data-chip="${esc(r.name)}" data-device="${esc(p.device)}" ${isSelected?'checked':''}>
+        <span class="dot ${st.dot}"></span>
+        <span class="devname">${esc(p.device)}</span>
+        <span class="platname">${esc(p.platform)}</span>
+        ${branchOverride ? `<span class="branchtag">${esc(branchOverride)}</span>` : ''}
+        ${liveMark}
+        ${otaIcon}
+      </label>`;
+    }).join('');
+
+    const chosenCount = s.chosen.size;
+    return `<div class="card">
+      <div class="cardhead">
+        <span class="reponame">${esc(r.name)}</span>
+        <span class="refline">${esc(g.branch)}@<code>${esc(g.commit)}</code>${g.dirty?' <span class="dirty">●dirty</span>':''}</span>
+        <span class="subject">${esc(g.subject||'')}</span>
+      </div>
+      <div class="chips">${chips}</div>
+      <div class="cardfoot">
+        <select class="branchsel" data-repo="${esc(r.name)}" data-k="branch">
+          ${branches.map(b=>`<option ${s.branch===b?'selected':''}>${esc(b)}</option>`).join('')}
+        </select>
+        <label class="runcheck"><input type="checkbox" data-repo="${esc(r.name)}" data-k="run" ${s.run?'checked':''}> launch after install</label>
+        <span class="spacer"></span>
+        <button class="primary" data-deploy="${esc(r.name)}" ${busy||chosenCount===0?'disabled':''}>
+          ${busy ? 'Deploying…' : chosenCount>1 ? `Deploy → ${chosenCount} devices` : 'Deploy'}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // history
+  $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
+    <td class="muted">${b.id}</td><td>${esc(b.repo)}</td>
+    <td class="mono">${esc(b.builtBranch||b.branch)}${b.commit?'@'+esc(b.commit):''}${b.version?' · v'+esc(b.version):''}</td>
+    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.run?' ▶':''}</td>
+    <td><span class="status ${b.status}">${b.status}</span></td>
+    <td class="muted">${ago(b.startedAt||b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
+    || '<tr><td colspan="7" class="muted">No builds yet</td></tr>';
+
+  // tabs for the active + queued builds
+  const tabIds = [...(S.running||[]), ...(S.queued||[])];
+  $('#tabs').innerHTML = tabIds.map(id=>{
+    const b = S.builds.find(x=>x.id===id);
+    if (!b) return '';
+    const running = (S.running||[]).includes(id);
+    return `<div class="tab ${paneBuild===id?'active':''}" data-tab="${id}">
+      <span class="status-dot" style="background:${running?'var(--info)':'var(--dim2)'}"></span>#${b.id} ${esc(b.repo)} ${esc(b.device)}</div>`;
+  }).join('');
+
+  if (paneBuild != null) {
+    const b = S.builds.find(x=>x.id===paneBuild);
+    if (b) {
+      $('#paneTitle').textContent = `#${b.id} ${b.repo} (${b.builtBranch||b.branch}) ${b.device} · ${b.platform}`;
+      $('#paneStatus').textContent = b.status;
+      $('#paneStatus').className = 'status '+b.status;
+      $('#cancelBtn').style.display = (b.status==='running'||b.status==='queued') ? '' : 'none';
+    } else if (tabIds.length) {
+      paneBuild = tabIds[0];
+    }
+  }
+}
+
+// Every API call: a 401 means the session ended, so go sign in again.
+async function api(p, opts){
+  const r = await fetch(p, opts);
+  if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash); throw new Error('signed out'); }
+  return r.json();
+}
+async function poll(){ try { S = await api('/api/state'); render(); checkPendingOta(); } catch{} }
+
+// "Build for OTA" second half: once the --no-deploy build lands, navigate to
+// the itms-services URL so the OS starts the install without another tap
+function checkPendingOta(){
+  if (!pendingOta) return;
+  const b = S.builds.find(x=>x.id===pendingOta.id);
+  if (!b || b.status==='running' || b.status==='queued') return;
+  const p = pendingOta; pendingOta = null;
+  if (b.status !== 'success') { toast(`OTA build of ${p.name} ${b.status} — nothing to install.`); return; }
+  const ota = S.ota?.[p.key];
+  if (!ota) { toast(`Build of ${p.name} succeeded but no published IPA was found — check the build log.`); return; }
+  toast(`Build of ${p.name} done — install requested. Confirm the OS dialog; the app then updates on the Home Screen silently.`);
+  // A signed link: the installer fetches it without this page's cookie.
+  api(`/api/ota/${encodeURIComponent(ota.slug)}/link`).then(({ manifestUrl }) => {
+    location.href = 'itms-services://?action=download-manifest&url=' + encodeURIComponent(manifestUrl);
+  }).catch(e => toast(`Couldn't get the install link: ${e.message}`));
+}
+
+async function pollLog(){
+  if (paneBuild == null) return;
+  const id = paneBuild;
+  try {
+    const offset = logOffsets[id] || 0;
+    const r = await api(`/api/builds/${id}/log?offset=${offset}`);
+    if (r.chunk) {
+      logTexts[id] = (logTexts[id] || '') + r.chunk;
+      logOffsets[id] = r.nextOffset;
+      if (paneBuild !== id) return;
+      const el = $('#buildlog');
+      const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+      el.textContent = logTexts[id];
+      if (stick) el.scrollTop = el.scrollHeight;
+    }
+  } catch{}
+}
+
+function openPane(id){
+  paneBuild = id;
+  logOffsets[id] = logOffsets[id] || 0;
+  const el = $('#buildlog');
+  el.textContent = logTexts[id] || '';
+  $('#buildpane').classList.add('open');
+  render();
+  el.scrollTop = el.scrollHeight;
+  pollLog();
+}
+
+let toastTimer = null;
+function toast(msg){
+  const el = $('#toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ el.style.display='none'; }, 8000);
+}
+
+document.addEventListener('click', async e=>{
+  const t = e.target;
+
+  const otaIcon = t.closest?.('[data-otabuild]');
+  if (otaIcon) {
+    e.preventDefault();
+    const repoName = otaIcon.dataset.otabuild, device = otaIcon.dataset.device;
+    const repo = S.repos.find(r=>r.name===repoName);
+    const pc = repo.platforms.find(p=>p.device===device);
+    const s = sel[repoName];
+    const branch = (repo.deviceBranches?.[device]) || s.branch;
+    if (!confirm(`Build ${repoName} (${pc.platform}, ${branch}) for OTA install and offer it to ${device}?`)) return;
+    const jobs = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({repo: repoName, targets:[{device, branch}], deploy:false})});
+    const job = jobs.jobs[0];
+    pendingOta = { id: job.id, key: pc.bundleId + '|' + pc.platform, name: repoName };
+    toast(`Building ${repoName} for OTA — install onto ${device} starts automatically when the build finishes. Keep this page open.`);
+    await poll(); openPane(job.id);
+    return;
+  }
+
+  if (t.dataset.deploy) {
+    const repoName = t.dataset.deploy;
+    const repo = S.repos.find(r=>r.name===repoName);
+    const s = sel[repoName];
+    const targets = [...s.chosen].map(device => ({
+      device, branch: repo.deviceBranches?.[device] || s.branch,
+    }));
+    if (!targets.length) return;
+    const res = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({repo: repoName, targets, run: !!s.run})});
+    const jobs = res.jobs || [];
+    if (jobs.length > 1) toast(`Deploying ${repoName} to ${jobs.length} devices — they'll build one after another.`);
+    await poll();
+    if (jobs.length) openPane(jobs[0].id);
+    return;
+  }
+
+  if (t.id === 'signout') {
+    await fetch('/api/logout', { method: 'POST' });
+    location.href = '/login'; return;
+  }
+  if (t.dataset.tab) { openPane(Number(t.dataset.tab)); return; }
+  const row = t.closest('[data-open]');
+  if (row) { openPane(Number(row.dataset.open)); return; }
+  if (t.id==='closePane'){ $('#buildpane').classList.remove('open'); paneBuild=null; return; }
+  if (t.id==='cancelBtn' && paneBuild!=null) { await api(`/api/builds/${paneBuild}/cancel`,{method:'POST'}); poll(); return; }
+  if (t.id==='refreshdev'){ t.textContent='↻ …'; await api('/api/refresh-devices',{method:'POST'});
+    setTimeout(()=>{t.textContent='↻ devices'; poll();}, 4000); return; }
+});
+
+document.addEventListener('change', e=>{
+  const t = e.target;
+  if (t.dataset.chip) {
+    const s = sel[t.dataset.chip];
+    if (t.checked) s.chosen.add(t.dataset.device); else s.chosen.delete(t.dataset.device);
+    render();
+  }
+  if (t.dataset.repo) {
+    sel[t.dataset.repo][t.dataset.k] = t.type==='checkbox' ? t.checked : t.value;
+    render();
+  }
+});
+
+poll();
+setInterval(poll, 4000);
+setInterval(pollLog, 1200);
+// ---- debug traces ----
+let traces = [];
+const openTraces = new Set();
+async function pollTraces(){ try { traces = (await api('/api/traces')).traces || []; renderTraces(); } catch{} }
+function renderTraces(){
+  const tb = $('#tracelist');
+  $('#tracecount').textContent = traces.length || '';
+  if (!traces.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">No traces yet.</td></tr>'; return; }
+  tb.innerHTML = traces.map(t => {
+    const b = t.build || {};
+    const open = openTraces.has(t.id);
+    const files = open ? `<tr><td></td><td colspan="5"><div class="tracefiles">${(t.files||[]).map(f =>
+      `<a href="/api/traces/${t.id}/files/${f.path.split('/').map(encodeURIComponent).join('/')}" target="_blank" rel="noopener">${esc(f.path)} <span class="muted">${(f.bytes/1024).toFixed(1)}K</span></a>`).join('')}
+      </div><div class="muted" style="font-size:.72rem">key ${esc(b.keyId)} · built ${esc(b.builtAt||'?')}${b.configuration?' · '+esc(b.configuration):''}${t.uploader?' · uploaded by '+esc(t.uploader):''} · via ${esc(t.via)} · ${esc(t.id)}</div></td></tr>` : '';
+    return `<tr class="clickable" data-trace="${t.id}">
+      <td class="mono">${ago(t.receivedAt)}</td>
+      <td><b>${esc(t.app?.name)}</b><br><span class="muted">${esc(t.app?.bundleId)}</span></td>
+      <td class="mono">${esc(b.repo||'?')} · ${esc(b.branch||'?')}@${esc(t.app?.build)}<br><span class="muted">${esc(t.app?.platform)}</span></td>
+      <td>${esc(b.installedTo||'')}<br><span class="muted">${esc(t.device?.model)} · ${esc(t.device?.os)}</span></td>
+      <td class="tracenote">${esc(t.note||'')}</td>
+      <td style="white-space:nowrap"><a href="/api/traces/${t.id}.zip"><button class="icon" title="Download zip">⤓</button></a>
+        <button class="icon danger ghost" data-tracedelete="${t.id}" title="Delete">✕</button></td>
+    </tr>${files}`;
+  }).join('');
+}
+async function uploadTrace(file){
+  if (!file) return;
+  toast(`Verifying ${file.name}…`);
+  try {
+    const r = await fetch('/api/traces', { method: 'POST', body: file,
+      headers: { 'Content-Type': 'application/zip', 'X-DebugTrace-Source': 'web' } });
+    const body = await r.json();
+    if (!r.ok) { toast(`Rejected: ${body.error}`); return; }
+    toast(body.trace.duplicate ? 'Already have that trace.' : `Verified trace from ${body.trace.app.name} ${body.trace.app.build}.`);
+    openTraces.add(body.trace.id);
+    pollTraces();
+  } catch (e) { toast(`Upload failed: ${e}`); }
+}
+document.addEventListener('click', async e => {
+  const t = e.target;
+  if (t.id === 'traceUploadBtn') { $('#traceFile').click(); return; }
+  if (t.dataset.tracedelete) {
+    e.stopPropagation();
+    if (!confirm('Delete this trace?')) return;
+    await api(`/api/traces/${t.dataset.tracedelete}/delete`, { method: 'POST' });
+    pollTraces(); return;
+  }
+  if (t.closest('a')) return;
+  const row = t.closest('[data-trace]');
+  if (row) { const id = row.dataset.trace; openTraces.has(id) ? openTraces.delete(id) : openTraces.add(id); renderTraces(); }
+});
+$('#traceFile').addEventListener('change', e => { uploadTrace(e.target.files[0]); e.target.value = ''; });
+{
+  const zone = $('#traces');
+  let depth = 0;
+  document.addEventListener('dragenter', e => { if (e.dataTransfer?.types?.includes('Files')) { depth++; zone.classList.add('dropping'); } });
+  document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; zone.classList.remove('dropping'); } });
+  document.addEventListener('dragover', e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+  document.addEventListener('drop', e => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault(); depth = 0; zone.classList.remove('dropping');
+    uploadTrace(e.dataTransfer.files[0]);
+  });
+}
+pollTraces();
+setInterval(pollTraces, 10000);
+
+// ---- views ----
+const VIEWS = ['deploy', 'debug', 'traces', 'history'];
+function route(){
+  const [view, arg] = (location.hash.slice(1) || 'deploy').split('/');
+  const v = VIEWS.includes(view) ? view : 'deploy';
+  document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.dataset.view === v));
+  document.querySelectorAll('nav.views a').forEach(a => {
+    if (a.dataset.view === v) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
+  // Each view starts at the top; the console's own panes scroll inside it.
+  if (route.view !== v) window.scrollTo(0, 0);
+  route.view = v;
+  $('#main').classList.toggle('debugging', v === 'debug');
+  $('#refreshdev').hidden = v !== 'deploy';
+  if (v === 'debug') {
+    const id = arg ? decodeURIComponent(arg) : null;
+    if (id !== D.id) selectApp(id);
+    refreshDebugApps();
+  } else stopStream();
+}
+window.addEventListener('hashchange', route);
+
+// ---- live debugging ----
+// D.id is the build's key id: the server maps it to the app's address and
+// token, so neither ever reaches this page.
+const D = { apps: [], error: null, id: null, tab: 'log', es: null, level: 'debug', filter: '', paused: false,
+            pending: [], help: null, ep: null, stream: 'idle' };
+const MAX_LINES = 5000;
+const LEVEL_LETTER = { debug: 'D', info: 'I', notice: 'N', default: 'N', error: 'E', fault: 'F' };
+
+async function refreshDebugApps(){
+  try {
+    const r = await api('/api/debug/apps');
+    D.apps = r.apps || []; D.error = r.error || null;
+  } catch { return; }
+  renderRail();
+  if (!D.id) {
+    const first = D.apps.find(a => a.attachable);
+    if (first) { location.replace('#debug/' + encodeURIComponent(first.id)); return; }
+    renderConsole();
+  } else renderConsoleHead();
+}
+
+function renderRail(){
+  const items = D.apps.map(a => {
+    const meta = [a.device, a.build].filter(Boolean).map(esc).join(' ');
+    if (!a.attachable) {
+      return `<div class="appitem off" title="${esc(a.reason || 'not attachable')}"><span class="n"><span class="dot"></span>${esc(a.appName || a.bundleId)}</span><span class="m">${meta}</span></div>`;
+    }
+    return `<button class="appitem" data-app="${esc(a.id)}" aria-current="${a.id === D.id}"><span class="n"><span class="dot"></span>${esc(a.appName || a.bundleId)}</span><span class="m">${meta}</span></button>`;
+  }).join('');
+  const note = D.error
+    ? `<p class="railnote">${esc(D.error)}</p>`
+    : !D.apps.length ? `<p class="railnote">Nothing running. Open a dev build that <code>build-and-sign</code> signed on a device on this network, and it appears here within a few seconds.</p>` : '';
+  $('#rail').innerHTML = items + note;
+}
+
+function currentApp(){ return D.apps.find(a => a.id === D.id); }
+
+function selectApp(id){
+  stopStream();
+  D.id = id; D.help = null; D.ep = null; D.pending = []; D.paused = false;
+  renderRail();
+  renderConsole();
+  if (id) startStream();
+}
+
+function renderConsole(){
+  const el = $('#console');
+  if (!D.id) {
+    el.innerHTML = `<div class="emptystate"><h2>No app selected</h2>
+      Pick a running app on the left to follow its log and call its debug endpoints.
+      Apps appear when a dev build signed by <code>build-and-sign</code> is open on a device on this network.</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="conhead" id="conhead"></div>
+    <div class="contabs" role="tablist">
+      <button role="tab" data-contab="log" aria-selected="${D.tab==='log'}">Log</button>
+      <button role="tab" data-contab="endpoints" aria-selected="${D.tab==='endpoints'}">Endpoints</button>
+      <button role="tab" data-contab="info" aria-selected="${D.tab==='info'}">Info</button>
+    </div>
+    <div class="pane ${D.tab==='log'?'active':''}" data-pane="log">
+      <div class="logbar">
+        <select id="loglevel" aria-label="Lowest level shown">
+          ${['debug','info','notice','error','fault'].map(l => `<option value="${l}" ${D.level===l?'selected':''}>${l} and up</option>`).join('')}
+        </select>
+        <input type="search" id="logfilter" placeholder="Filter text" value="${esc(D.filter)}" aria-label="Show only lines containing">
+        <button class="ghost" id="logpause">${D.paused ? 'Resume' : 'Pause'}</button>
+        <button class="ghost" id="logclear">Clear</button>
+        <span class="spacer"></span>
+        <span class="streamstate" id="streamstate"></span>
+      </div>
+      <div class="logwrap">
+        <ol id="loglines" aria-live="off"></ol>
+        <button class="primary jumpnew" id="jumpnew">New lines below</button>
+      </div>
+    </div>
+    <div class="pane ${D.tab==='endpoints'?'active':''}" data-pane="endpoints"><div class="endpoints">
+      <div class="eplist" id="eplist"><p class="railnote">Loading…</p></div>
+      <div class="epdetail" id="epdetail"><div class="emptystate">Pick an endpoint to see its parameters and run it.</div></div>
+    </div></div>
+    <div class="pane ${D.tab==='info'?'active':''}" data-pane="info"><div class="epdetail" id="infopane"><p class="railnote">Loading…</p></div></div>`;
+  renderConsoleHead();
+  setStreamState(D.stream);
+  if (D.tab === 'endpoints') loadHelp();
+  if (D.tab === 'info') loadInfo();
+}
+
+function renderConsoleHead(){
+  const head = $('#conhead');
+  if (!head) return;
+  const a = currentApp();
+  // Redrawn only when the app changes, so typing a note isn't interrupted.
+  const key = a ? [a.id, a.appName, a.build, a.device].join('|') : 'gone';
+  if (head.dataset.key === key) return;
+  head.dataset.key = key;
+  const name = a ? (a.appName || a.bundleId) : 'Not running';
+  const meta = a ? [a.bundleId, a.build && `build ${a.build}`, a.device && `on ${a.device}`].filter(Boolean).map(esc).join(', ') : 'This build is no longer advertising. It comes back when the app is open again.';
+  const keepNote = head.querySelector('#tracenote')?.value || '';
+  head.innerHTML = `<h2>${esc(name)}</h2><span class="meta">${meta}</span><span class="spacer"></span>
+    <input type="search" id="tracenote" class="field" placeholder="What are you looking into?" value="${esc(keepNote)}" aria-label="Note for the trace">
+    <button id="capturetrace" ${a ? '' : 'disabled'} title="Capture logs, breadcrumbs and a snapshot from the app, and upload them here">Capture trace</button>`;
+}
+
+function stopStream(){ if (D.es) { D.es.close(); D.es = null; } }
+
+function startStream(){
+  stopStream();
+  const q = new URLSearchParams({ level: D.level });
+  if (D.filter) q.set('contains', D.filter);
+  setStreamState('connecting');
+  const es = new EventSource(`/api/debug/${encodeURIComponent(D.id)}/logs?${q}`);
+  D.es = es;
+  es.addEventListener('backlog', e => { const d = JSON.parse(e.data); $('#loglines').innerHTML = ''; addLines(d.entries, true); });
+  es.addEventListener('lines', e => addLines(JSON.parse(e.data).entries));
+  es.addEventListener('status', e => {
+    const d = JSON.parse(e.data);
+    const states = { live: 'live', unreachable: 'waiting', gone: 'waiting', error: 'waiting', relaunched: 'live' };
+    setStreamState(states[d.state] || 'waiting', d.message);
+    if (d.state === 'relaunched') systemLine('The app relaunched; following the new run.');
+    else if (d.state !== 'live') systemLine(d.state === 'unreachable' ? "The app isn't answering. iOS suspends apps in the background, so bring it to the front." : (d.message || d.state));
+  });
+  es.onerror = () => { if (es.readyState === EventSource.CLOSED) setStreamState('stopped'); else setStreamState('connecting'); };
+}
+
+function setStreamState(state, message){
+  D.stream = state;
+  const el = $('#streamstate');
+  if (!el) return;
+  const text = { live: 'Following', waiting: 'Waiting for the app', connecting: 'Connecting', stopped: 'Stopped', idle: '' }[state] || state;
+  el.className = 'streamstate ' + (state === 'live' ? 'live' : state === 'waiting' || state === 'connecting' ? 'waiting' : '');
+  el.textContent = D.paused && state === 'live' ? `Paused, ${D.pending.length} new` : text;
+  el.title = message || '';
+}
+
+function lineHTML(e){
+  const letter = LEVEL_LETTER[e.level] || '?';
+  const d = new Date(e.time);
+  const t = isNaN(d) ? esc(e.time) : d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  return `<li class="${letter}"><span class="t">${t}</span><span class="lv">${letter}</span><span class="c" title="${esc(e.subsystem)}">${esc(e.category)}</span><span class="msg">${esc(e.message)}</span></li>`;
+}
+
+function systemLine(text){
+  const list = $('#loglines');
+  if (!list) return;
+  list.insertAdjacentHTML('beforeend', `<li class="sys">${esc(text)}</li>`);
+  stickToBottom(list, true);
+}
+
+function addLines(entries, fromBacklog){
+  if (!entries?.length) return;
+  if (D.paused && !fromBacklog) { D.pending.push(...entries); setStreamState(D.stream); return; }
+  const list = $('#loglines');
+  if (!list) return;
+  const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
+  list.insertAdjacentHTML('beforeend', entries.map(lineHTML).join(''));
+  while (list.children.length > MAX_LINES) list.firstElementChild.remove();
+  stickToBottom(list, atBottom || fromBacklog);
+}
+
+function stickToBottom(list, stick){
+  if (stick) { list.scrollTop = list.scrollHeight; $('#jumpnew').style.display = 'none'; }
+  else $('#jumpnew').style.display = 'block';
+}
+
+async function loadHelp(){
+  if (!D.help) {
+    try {
+      const r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/help`);
+      if (r.status === 401) return api('/api/state');
+      const body = await r.json();
+      if (!r.ok) { $('#eplist').innerHTML = `<p class="railnote">${esc(body.error?.message || 'The app did not answer.')}</p>`; return; }
+      D.help = body;
+    } catch (e) { $('#eplist').innerHTML = `<p class="railnote">${esc(e.message)}</p>`; return; }
+  }
+  const eps = D.help.endpoints || [];
+  $('#eplist').innerHTML = eps.map(ep => `<button class="ep" data-ep="${esc(ep.name)}" aria-current="${D.ep===ep.name}">
+    <span class="en">${esc(ep.name)}</span><span class="ek ${ep.kind==='command'?'cmd':''}">${ep.kind==='command'?'command':'query'}</span></button>`).join('')
+    || '<p class="railnote">This app registers no endpoints.</p>';
+  if (D.ep) renderEndpoint();
+}
+
+function paramInput(p){
+  const id = 'p_' + p.name;
+  const def = p.default !== undefined ? p.default : '';
+  if (p.choices) return `<select id="${id}" data-param="${esc(p.name)}" data-type="${esc(p.type)}">
+    ${p.required ? '' : '<option value="">(default)</option>'}${p.choices.map(c => `<option ${String(c)===String(def)?'selected':''}>${esc(c)}</option>`).join('')}</select>`;
+  if (p.type === 'boolean') return `<select id="${id}" data-param="${esc(p.name)}" data-type="boolean">
+    ${p.required ? '' : `<option value="">(default${def!==''?': '+esc(def):''})</option>`}<option>true</option><option>false</option></select>`;
+  if (p.type === 'integer' || p.type === 'number') return `<input type="number" id="${id}" data-param="${esc(p.name)}" data-type="${p.type}"
+    ${p.min!==undefined?`min="${p.min}"`:''} ${p.max!==undefined&&p.max<1e15?`max="${p.max}"`:''} ${p.type==='number'?'step="any"':''} placeholder="${esc(def)}">`;
+  return `<input type="text" id="${id}" data-param="${esc(p.name)}" data-type="${esc(p.type)}" placeholder="${esc(def)}">`;
+}
+
+function renderEndpoint(){
+  const ep = (D.help?.endpoints || []).find(e => e.name === D.ep);
+  if (!ep) return;
+  document.querySelectorAll('.ep').forEach(b => b.setAttribute('aria-current', b.dataset.ep === D.ep));
+  const params = ep.parameters || [];
+  $('#epdetail').innerHTML = `<h2 style="margin:0;font-size:1rem;font-family:var(--mono)">${esc(ep.name)}</h2>
+    <p class="desc">${esc(ep.description)}</p>
+    ${params.length ? `<div class="params">${params.map(p => `<label for="p_${esc(p.name)}">${esc(p.name)}${p.required?' *':''}</label>${paramInput(p)}<span class="pd">${esc(p.description||'')}</span>`).join('')}</div>` : ''}
+    <div><button class="primary" id="runep">${ep.kind==='command' ? 'Run command' : 'Run query'}</button></div>
+    <div id="epresult"></div>`;
+}
+
+async function runEndpoint(){
+  const ep = (D.help?.endpoints || []).find(e => e.name === D.ep);
+  if (!ep) return;
+  if (ep.destructive && !confirm(`${ep.name} changes the app's state and is marked destructive. Run it?`)) return;
+  const args = {};
+  for (const el of document.querySelectorAll('[data-param]')) {
+    const v = el.value.trim();
+    if (v === '') continue;
+    const type = el.dataset.type;
+    args[el.dataset.param] = type === 'integer' ? parseInt(v, 10) : type === 'number' ? parseFloat(v) : type === 'boolean' ? v === 'true' : v;
+  }
+  await showCall(ep.name, args, $('#epresult'), $('#runep'));
+}
+
+async function showCall(endpoint, args, out, button){
+  if (button) button.disabled = true;
+  out.innerHTML = '<p class="railnote">Running…</p>';
+  try {
+    const r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/call`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint, arguments: args }) });
+    if (r.status === 401) return api('/api/state');
+    const type = r.headers.get('content-type') || '';
+    if (type.startsWith('image/')) {
+      out.innerHTML = `<img class="result" alt="${esc(endpoint)} result" src="${URL.createObjectURL(await r.blob())}">`;
+    } else if (type.includes('json')) {
+      const body = await r.json();
+      const ok = r.ok && body.ok !== false;
+      const shown = ok ? (body.data !== undefined ? body.data : body) : body.error || body;
+      out.innerHTML = `<pre class="result ${ok?'':'err'}"></pre>`;
+      out.firstElementChild.textContent = (ok ? '' : 'Error: ') + JSON.stringify(shown, null, 2) + (!ok && body.error?.hint ? `\n\nHint: ${body.error.hint}` : '');
+    } else {
+      const blob = await r.blob();
+      out.innerHTML = `<a href="${URL.createObjectURL(blob)}" download="${esc(endpoint)}">Download the result (${(blob.size/1024).toFixed(1)} KB)</a>`;
+    }
+  } catch (e) { out.innerHTML = `<pre class="result err"></pre>`; out.firstElementChild.textContent = e.message; }
+  if (button) button.disabled = false;
+}
+
+function loadInfo(){ showCall('_info', {}, $('#infopane')); }
+
+async function captureTrace(button){
+  const note = $('#tracenote')?.value.trim();
+  button.disabled = true; button.textContent = 'Capturing…';
+  try {
+    const r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/call`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: '_trace', arguments: { upload: true, ...(note ? { note } : {}) } }) });
+    const body = await r.json();
+    const up = body.data?.upload;
+    if (!r.ok || body.ok === false) toast(`Trace failed: ${body.error?.message || r.status}`);
+    else if (up && up.accepted) { toast('Trace captured and uploaded. It is in Traces.'); $('#tracenote').value = ''; pollTraces(); }
+    else toast(`Trace captured, but the upload was refused${up?.response?.error ? ': ' + up.response.error : ''}. The app may not have an upload URL.`);
+  } catch (e) { toast(`Trace failed: ${e.message}`); }
+  button.disabled = false; button.textContent = 'Capture trace';
+}
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  const app = t.closest?.('[data-app]');
+  if (app) { location.hash = '#debug/' + encodeURIComponent(app.dataset.app); return; }
+  if (t.closest?.('.chip .live')) { e.stopPropagation(); return; } // the link navigates; don't toggle the chip
+  const tab = t.closest?.('[data-contab]');
+  if (tab) {
+    D.tab = tab.dataset.contab;
+    document.querySelectorAll('[data-contab]').forEach(b => b.setAttribute('aria-selected', b.dataset.contab === D.tab));
+    document.querySelectorAll('[data-pane]').forEach(p => p.classList.toggle('active', p.dataset.pane === D.tab));
+    if (D.tab === 'endpoints') loadHelp();
+    if (D.tab === 'info') loadInfo();
+    return;
+  }
+  const ep = t.closest?.('[data-ep]');
+  if (ep) { D.ep = ep.dataset.ep; renderEndpoint(); return; }
+  if (t.id === 'runep') { runEndpoint(); return; }
+  if (t.id === 'capturetrace') { captureTrace(t); return; }
+  if (t.id === 'logclear') { $('#loglines').innerHTML = ''; return; }
+  if (t.id === 'jumpnew') { stickToBottom($('#loglines'), true); return; }
+  if (t.id === 'logpause') {
+    D.paused = !D.paused;
+    t.textContent = D.paused ? 'Resume' : 'Pause';
+    if (!D.paused && D.pending.length) { const p = D.pending; D.pending = []; addLines(p); stickToBottom($('#loglines'), true); }
+    setStreamState(D.stream);
+  }
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'loglevel') { D.level = e.target.value; startStream(); }
+});
+let filterTimer = null;
+document.addEventListener('input', e => {
+  if (e.target.id !== 'logfilter') return;
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { D.filter = e.target.value.trim(); startStream(); }, 400);
+});
+document.addEventListener('scroll', e => {
+  if (e.target.id === 'loglines') {
+    const l = e.target;
+    if (l.scrollTop + l.clientHeight >= l.scrollHeight - 30) $('#jumpnew').style.display = 'none';
+  }
+}, true);
+setInterval(() => { if (location.hash.startsWith('#debug')) refreshDebugApps(); }, 5000);
+route();
+</script>
+</body>
+</html>
