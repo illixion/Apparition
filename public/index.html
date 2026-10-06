@@ -365,7 +365,7 @@ function render() {
 
   $('#apps').innerHTML = repos.map(r=>{
     const g = r.git||{};
-    const s = sel[r.name] = sel[r.name] || { branch: 'current', run: false, chosen: new Set() };
+    const s = sel[r.name] = sel[r.name] || { branch: 'current', after: 'install', chosen: new Set() };
     const branches = ['current', ...r.branches.filter(b=>b!=='current')];
     const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name);
     const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name).map(b=>b.device));
@@ -411,7 +411,11 @@ function render() {
         <select class="branchsel" data-repo="${esc(r.name)}" data-k="branch">
           ${branches.map(b=>`<option ${s.branch===b?'selected':''}>${esc(b)}</option>`).join('')}
         </select>
-        <label class="runcheck"><input type="checkbox" data-repo="${esc(r.name)}" data-k="run" ${s.run?'checked':''}> launch after install</label>
+        <select class="branchsel" data-repo="${esc(r.name)}" data-k="after" title="What to do once the app is installed">
+          <option value="install" ${s.after==='install'?'selected':''}>install only</option>
+          <option value="run" ${s.after==='run'?'selected':''}>launch after install</option>
+          <option value="debug" ${s.after==='debug'?'selected':''}>launch as debug session</option>
+        </select>
         <span class="spacer"></span>
         <button class="primary" data-deploy="${esc(r.name)}" ${busy||chosenCount===0?'disabled':''}>
           ${busy ? 'Deploying…' : chosenCount>1 ? `Deploy → ${chosenCount} devices` : 'Deploy'}
@@ -424,7 +428,7 @@ function render() {
   $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
     <td class="muted">${b.id}</td><td>${esc(b.repo)}</td>
     <td class="mono">${esc(b.builtBranch||b.branch)}${b.commit?'@'+esc(b.commit):''}${b.version?' · v'+esc(b.version):''}</td>
-    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.run?' ▶':''}</td>
+    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.debug?' 🐞':b.run?' ▶':''}</td>
     <td><span class="status ${b.status}">${b.status}</span></td>
     <td class="muted">${ago(b.startedAt||b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
     || '<tr><td colspan="7" class="muted">No builds yet</td></tr>';
@@ -545,7 +549,7 @@ document.addEventListener('click', async e=>{
     }));
     if (!targets.length) return;
     const res = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({repo: repoName, targets, run: !!s.run})});
+      body: JSON.stringify({repo: repoName, targets, run: s.after==='run', debug: s.after==='debug'})});
     const jobs = res.jobs || [];
     if (jobs.length > 1) toast(`Deploying ${repoName} to ${jobs.length} devices — they'll build one after another.`);
     await poll();

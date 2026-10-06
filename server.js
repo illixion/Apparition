@@ -293,7 +293,7 @@ function resolveBuildSettings(rc, branch, platform) {
 // e.g. the headset builds from a feature branch but the phone from main — and
 // those can be deployed together in one batch.
 // `device`/`branch` (singular) are kept as an alias for a one-target batch.
-function enqueueBuild({ repo, targets, device, branch, run: launch, deploy }) {
+function enqueueBuild({ repo, targets, device, branch, run: launch, debug, deploy }) {
   const rc = CONFIG.repos.find(r => r.name === repo);
   if (!rc) throw new Error(`unknown repo: ${repo}`);
   const targetList = (targets && targets.length) ? targets : [{ device: device || rc.platforms[0].device, branch }];
@@ -308,7 +308,10 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, deploy }) {
       // unreachable device can't fail the build; the run/launch step and the
       // install ledger are skipped too (nothing landed on the device)
       noDeploy: deploy === false,
-      run: !!launch && deploy !== false,
+      // debug = launch with the app's debug server (build-and-sign --mcp), so
+      // the app shows up on the Debug page; build-and-sign does the launch
+      debug: !!debug && deploy !== false,
+      run: !!launch && !debug && deploy !== false,
       status: 'queued', queuedAt: Date.now(),
     };
   });
@@ -356,6 +359,7 @@ async function executeBuild(job) {
 
     const buildArgs = [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
     if (job.noDeploy) buildArgs.push('--no-deploy');
+    if (job.debug) buildArgs.push('--mcp');
     for (const s of job.buildSettings) buildArgs.push('--set', s);
 
     await new Promise((resolve, reject) => {
