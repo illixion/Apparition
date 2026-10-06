@@ -44,7 +44,7 @@ describe('branding', () => {
     await start({ org: 'Acme <Co>', icon: '🚀' });
     const h = await page('/');
     assert.match(h, /<title>Acme &lt;Co&gt;'s App Store<\/title>|<title>Acme &lt;Co&gt;&#39;s App Store<\/title>/);
-    assert.match(h, /<span class="org">Acme &lt;Co&gt;<\/span> <b>App Store<\/b>/);
+    assert.match(h, /<span class="org">Acme &lt;Co&gt;&#39;s<\/span> <b>App Store<\/b>/);
     assert.match(h, /<span class="brandicon">🚀<\/span>/);
     assert.match(h, /data:image\/svg\+xml/);
     assert.doesNotMatch(await page('/login'), /\{\{BRAND/);

@@ -960,7 +960,7 @@ function brand() {
   // Header text: the org keeps its own case, dim, before the bright uppercase "App Store";
   // a full `title` is shown as written.
   const name = b.title ? `<b>${escHtml(b.title)}</b>`
-    : b.org ? `<span class="org">${escHtml(b.org)}</span> <b>App Store</b>` : '<b>App Store</b>';
+    : b.org ? `<span class="org">${escHtml(b.org)}&#39;s</span> <b>App Store</b>` : '<b>App Store</b>';
   const file = brandIconFile();
   const icon = typeof b.icon === 'string' ? b.icon.trim() : '';
   let mark = '<span class="tri"></span>', head = '';
