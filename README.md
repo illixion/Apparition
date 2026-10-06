@@ -73,6 +73,14 @@ Extensions and watch apps need their own profiles when the profile isn't a wildc
 - Per-repo behaviour (pre-build hooks, extra build settings, platform aliases) belongs in that
   repo's `build-signing.conf`, never in `server.js`. See `CLAUDE.md` for the architecture.
 
+## Branding
+
+Optional `branding` in `config.json` (applied on reload, no restart needed):
+
+- `org`: shows as "&lt;org&gt;'s App Store" in the header, login page and tab title.
+- `title`: the full name instead, e.g. `"Acme Apps"`. Wins over `org`.
+- `icon`: an emoji or any short text, or a path to an image (`.svg .png .jpg .gif .webp .ico`, relative to `config.json`, `~/` allowed). It is shown at 2rem and also becomes the favicon. Unset keeps the triangle.
+
 ## Live debugging
 
 Dev builds of apps that link DebugTrace's `DebugTraceServer` start a debug server on every launch

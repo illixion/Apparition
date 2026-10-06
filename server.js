@@ -939,7 +939,40 @@ function debugAppsCached() {
   return { apps: lastDebug.apps.map(debug.publicApp), error: lastDebug.error };
 }
 
-const PUBLIC_FILES = new Set(['/login.html', '/favicon.svg', '/favicon.ico', '/apple-touch-icon.png', '/mask-icon.svg']);
+const PUBLIC_FILES = new Set(['/login.html', '/favicon.svg', '/favicon.ico', '/apple-touch-icon.png', '/mask-icon.svg', '/branding/icon']);
+
+// ---------- branding (config.json `branding`) ----------
+// { org, title, icon }. `title` is the full name; otherwise "<org>'s App Store";
+// otherwise "App Store". `icon` is an image path (relative to config.json) or
+// any other text, shown as-is (an emoji, a letter); unset keeps the triangle.
+const IMAGE_TYPES = { '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon' };
+const escHtml = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function brandIconFile() {
+  const icon = CONFIG.branding?.icon;
+  if (typeof icon !== 'string' || !IMAGE_TYPES[path.extname(icon).toLowerCase()]) return null;
+  const fp = path.resolve(path.dirname(CONFIG_PATH), icon.replace(/^~(?=\/)/, process.env.HOME || '~'));
+  try { return fs.statSync(fp).isFile() ? fp : null; } catch { return null; }
+}
+function brand() {
+  const b = CONFIG.branding || {};
+  const title = String(b.title || (b.org ? `${b.org}'s App Store` : 'App Store'));
+  const file = brandIconFile();
+  const icon = typeof b.icon === 'string' ? b.icon.trim() : '';
+  let mark = '<span class="tri">▲</span>', head = '';
+  if (file) {
+    const href = `/branding/icon?v=${Math.floor(fs.statSync(file).mtimeMs)}`;
+    mark = `<img class="brandicon" src="${href}" alt="">`;
+    head = `<link rel="icon" href="${href}"><link rel="apple-touch-icon" href="${href}">`;
+  } else if (icon) {
+    mark = `<span class="brandicon">${escHtml(icon)}</span>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text x="50" y="50" font-size="80" text-anchor="middle" dominant-baseline="central">${escHtml(icon)}</text></svg>`;
+    head = `<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(svg)}">`;
+  } else {
+    head = `<link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16"><link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="mask-icon" href="/mask-icon.svg" color="#4f8cff">`;
+  }
+  return { title, mark, head };
+}
 const isHttps = req => requestBase(req).startsWith('https://');
 const sessionToken = req => parseCookies(req.headers.cookie)[auth.COOKIE];
 const signedIn = req => !CONFIG.passwordHash || auth.check(sessionToken(req), CONFIG.passwordHash);
@@ -958,6 +991,11 @@ function sendStatic(res, rel) {
   const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
   res.writeHead(200, { 'Content-Type': types[path.extname(fp)] || 'application/octet-stream',
     'X-Content-Type-Options': 'nosniff', ...(fp.endsWith('.html') ? { 'Cache-Control': 'no-store' } : {}) });
+  if (fp.endsWith('.html')) {
+    const b = brand();
+    return res.end(fs.readFileSync(fp, 'utf8').replace(/\{\{BRAND_(TITLE|MARK|HEAD)\}\}/g,
+      (_, k) => k === 'TITLE' ? escHtml(b.title) : k === 'MARK' ? b.mark : b.head)), true;
+  }
   res.end(fs.readFileSync(fp));
   return true;
 }
@@ -991,6 +1029,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/auth' && req.method === 'GET') {
       return json(res, 200, { required: !!CONFIG.passwordHash, signedIn: signedIn(req) });
+    }
+    if (req.method === 'GET' && url.pathname === '/branding/icon') {
+      const fp = brandIconFile();
+      if (!fp) return json(res, 404, { error: 'no branding icon configured' });
+      res.writeHead(200, { 'Content-Type': IMAGE_TYPES[path.extname(fp).toLowerCase()], 'X-Content-Type-Options': 'nosniff',
+        // an SVG served from here must not run script of its own
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:", 'Cache-Control': 'no-cache' });
+      return res.end(fs.readFileSync(fp));
     }
     if (req.method === 'GET' && (url.pathname === '/login' || PUBLIC_FILES.has(url.pathname))) {
       if (sendStatic(res, url.pathname === '/login' ? 'login.html' : url.pathname.slice(1))) return;

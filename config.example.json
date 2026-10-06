@@ -3,6 +3,10 @@
   "bundlePrefix": [
     "com.example"
   ],
+  "branding": {
+    "org": "Example",
+    "icon": "🚀"
+  },
   "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
   "repos": [
     {

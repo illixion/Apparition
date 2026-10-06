@@ -3,11 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>App Store</title>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16">
-<link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="mask-icon" href="/mask-icon.svg" color="#4f8cff">
+<title>{{BRAND_TITLE}}</title>
+{{BRAND_HEAD}}
 <meta name="theme-color" content="#0a0c10">
 <style>
   :root {
@@ -41,7 +38,8 @@
     backdrop-filter: blur(8px); z-index: 5; }
   header .wordmark { font-family: var(--mono); font-size: .92rem; font-weight: 700; letter-spacing: .04em;
     text-transform: uppercase; color: var(--dim); display: inline-flex; align-items: center; gap: 8px; }
-  header .wordmark .tri { color: var(--accent); font-size: .8rem; }
+  header .wordmark .tri { color: var(--accent); font-size: 2rem; line-height: 1; }
+  header .wordmark .brandicon { font-size: 2rem; line-height: 1; height: 2rem; width: auto; display: inline-block; }
   header .wordmark b { color: var(--fg); }
   header .fleetcount { font-family: var(--mono); font-size: .74rem; color: var(--dim2); }
 
@@ -274,7 +272,7 @@
 </head>
 <body>
 <header>
-  <span class="wordmark"><span class="tri">▲</span> <b>App Store</b></span>
+  <span class="wordmark">{{BRAND_MARK}} <b>{{BRAND_TITLE}}</b></span>
   <nav class="views" aria-label="Views">
     <a href="#deploy" data-view="deploy">Deploy <span class="count" id="fleetcount"></span></a>
     <a href="#debug" data-view="debug">Debug <span class="count livecount" id="livecount"></span></a>
