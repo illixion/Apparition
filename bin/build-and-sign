@@ -30,7 +30,10 @@ set -euo pipefail
 #                                   # `apps` MCP server (DebugTrace/Tools/debugtrace-mcp)
 #   build-and-sign --inject         # Build so running code can be patched live
 #                                   # (testability + dynamic replacement) and keep
-#                                   # what the `inject` tool needs in build/inject/.
+#                                   # what the `inject` tool needs in build/inject/, and
+#                                   # embed the patch runtime (Frameworks/DebugTraceInject.dylib)
+#                                   # that DebugTraceServer loads. DEBUGTRACE_INJECT=off in a
+#                                   # repo's build-signing.conf refuses the flag for that repo.
 #                                   # Development builds only; implies --debug off
 #   build-and-sign --sign-dylib F.. # Sign Mach-O files with the development
 #                                   # identity (last option: it takes the files).
@@ -611,11 +614,17 @@ if [[ "$SIGN_ONLY" == false ]]; then
     # file-private members of the code it replaces. Packages are built with
     # the same flags, since OTHER_SWIFT_FLAGS on the command line reaches them.
     if [[ "$INJECT" == true ]]; then
+        if [[ "${DEBUGTRACE_INJECT:-}" == off ]]; then
+            echo "ERROR: this repo's build-signing.conf sets DEBUGTRACE_INJECT=off, so --inject is refused" >&2
+            exit 1
+        fi
         if [[ "$USE_DIST" == true ]]; then
             echo "ERROR: --inject cannot be combined with --distribution" >&2
             exit 1
         fi
-        XCB_ARGS+=(ENABLE_TESTABILITY=YES
+        # DEAD_CODE_STRIPPING=NO keeps symbols nothing in the build references,
+        # which a patch (or the embedded runtime) may name.
+        XCB_ARGS+=(ENABLE_TESTABILITY=YES DEAD_CODE_STRIPPING=NO
                    'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports')
     fi
 
@@ -703,6 +712,12 @@ if d and n.endswith(".app"):
             --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" >>"$LOG_FILE" 2>&1 \
             || { echo "ERROR: could not record the build for live patching (see $LOG_FILE)" >&2; exit 1; }
         INJECT_DIR="$BUILD_DIR/inject"
+        # Embed the patch runtime, compiled with the app's own flags, so the app
+        # needs no DebugTraceInject dependency: DebugTraceServer loads it when
+        # present. Signed with everything else in Frameworks/ at Step 4.
+        mkdir -p "$APP_PATH/Frameworks"
+        "$INJECT_TOOL" runtime --dir "$INJECT_DIR" --out "$APP_PATH/Frameworks/DebugTraceInject.dylib" >>"$LOG_FILE" 2>&1 \
+            || { echo "ERROR: could not build the live-patching runtime (see $LOG_FILE)" >&2; exit 1; }
     fi
     rm -rf "$BUILD_DIR/Payload"
     mkdir -p "$BUILD_DIR/Payload"
