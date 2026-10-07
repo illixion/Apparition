@@ -844,11 +844,11 @@ async function refreshDebugApps(){
     D.apps = r.apps || []; D.error = r.error || null; D.clientName = r.clientName || D.clientName;
   } catch { return; }
   renderRail();
-  if (!D.id) {
-    const first = D.apps.find(a => a.attachable);
-    if (first) { location.replace('#debug/' + encodeURIComponent(first.id)); return; }
-    renderConsole();
-  } else renderConsoleHead();
+  // Never open an app on its own: the first request to it shows "Allow debug
+  // access?" on the device, so only a click on an app may make one. Listing
+  // apps is discovery only and reaches no app.
+  if (!D.id) renderConsole();
+  else renderConsoleHead();
 }
 
 function renderRail(){
@@ -880,6 +880,7 @@ function renderConsole(){
   if (!D.id) {
     el.innerHTML = `<div class="emptystate"><h2>No app selected</h2>
       Pick a running app on the left to follow its log and call its debug endpoints.
+      The first time this page talks to an app, the device asks to allow it.
       Apps appear when a dev build signed by <code>build-and-sign</code> is open on a device on this network.</div>`;
     return;
   }
