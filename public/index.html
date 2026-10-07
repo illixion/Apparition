@@ -520,7 +520,7 @@ function render() {
 
   $('#apps').innerHTML = repos.map(r=>{
     const g = r.git||{};
-    const s = sel[r.name] = sel[r.name] || { branch: 'current', after: 'install', chosen: new Set() };
+    const s = sel[r.name] = sel[r.name] || { branch: 'current', after: r.afterInstall || 'install', chosen: new Set() };
     const branches = ['current', ...r.branches.filter(b=>b!=='current')];
     const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name);
     const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name).map(b=>b.device));

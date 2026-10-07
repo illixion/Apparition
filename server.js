@@ -359,7 +359,10 @@ async function executeBuild(job) {
 
     const buildArgs = [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
     if (job.noDeploy) buildArgs.push('--no-deploy');
+    // Always say which: build-and-sign may default to --mcp (MCP_DEFAULT=on),
+    // and an "install only" or "launch" deploy must not become a debug session.
     if (job.debug) buildArgs.push('--mcp');
+    else if (!job.noDeploy) buildArgs.push('--no-mcp');
     for (const s of job.buildSettings) buildArgs.push('--set', s);
 
     await new Promise((resolve, reject) => {
@@ -909,10 +912,20 @@ function publicBuild(b) {
   return b;
 }
 
+// What the deploy menu selects at first: "install", "run" or "debug" (launch
+// as a debug session), from the repo's `afterInstall`, else the top-level one,
+// else "install".
+const AFTER_INSTALL = ['install', 'run', 'debug'];
+function afterInstallDefault(repo) {
+  const pick = [repo.afterInstall, CONFIG.afterInstall].find(v => AFTER_INSTALL.includes(v));
+  return pick || 'install';
+}
+
 async function stateBundle() {
   const repos = await Promise.all(CONFIG.repos.map(async r => ({
     name: r.name, branches: r.branches, platforms: r.platforms,
     deviceBranches: r.deviceBranches || {},
+    afterInstall: afterInstallDefault(r),
     git: await gitInfo(r.path).catch(e => ({ error: String(e) })),
   })));
   return {
@@ -1215,4 +1228,5 @@ if (require.main === module) {
 }
 
 // For test/: the pure helpers, with the server left unstarted.
-module.exports = { verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };
+module.exports = {
+  afterInstallDefault, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };

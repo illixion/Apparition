@@ -5,9 +5,10 @@
   ],
   "branding": {
     "org": "Example",
-    "icon": "🚀"
+    "icon": "\ud83d\ude80"
   },
   "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
+  "afterInstall": "debug",
   "repos": [
     {
       "name": "MyApp",

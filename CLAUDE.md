@@ -19,6 +19,8 @@ It orchestrates two external tools: `bin/build-and-sign` (xcodebuild + codesign 
 
 ## Configuration (`config.json`)
 
+- `afterInstall` (top level, or per repo, which wins): what the deploy menu selects first, `install`, `run` or `debug` (launch as a debug session). Default `install`. The store always passes `--mcp` or `--no-mcp` to build-and-sign, so its own `MCP_DEFAULT` never turns an install-only deploy into a debug session.
+
 Defines everything the server operates on. Per repo: `name`, `path` (git checkout on disk), `branches` (offered in UI), and `platforms[]` — each `{ platform, bundleId, device }` where `device` is a `devicectl` device name. Only apps whose bundle id starts with one of `bundlePrefix` (a string, or an array for repos outside the main namespace — e.g. `org.example.*` alongside `com.example.*`) are tracked from device inventory.
 
 `platform` is passed through as the `PLATFORM` environment variable and reaches xcodebuild as `-destination generic/platform=$PLATFORM` — *unless* the repo's `build-signing.conf` intercepts it first. A repo conf may therefore define **aliases that are not real Xcode platforms**, which is how one build reaches several destinations: a conf can map `iPad` and `visionOS` back to `PLATFORM=iOS` with a different `DEVICE_NAME` (visionOS runs the iPadOS binary under "Designed for iPad", so there is no separate platform to build for). When a platform name here is not one `xcodebuild` recognises, look for it in that repo's conf.

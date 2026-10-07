@@ -27,7 +27,11 @@ set -euo pipefail
 #                                   # (Apple frameworks too) instead
 #   build-and-sign --mcp            # --log, plus start the app's debug server for
 #                                   # this launch and register it for the agents'
-#                                   # `apps` MCP server (DebugTrace/Tools/debugtrace-mcp)
+#                                   # `apps` MCP server (DebugTrace/Tools/debugtrace-mcp).
+#                                   # MCP_DEFAULT=on in global.conf (or a repo conf)
+#                                   # makes it the default for every deploy of a
+#                                   # development build; --no-mcp skips it once
+#   build-and-sign --no-mcp         # Just install, even when MCP_DEFAULT=on
 #   build-and-sign --inject         # Build so running code can be patched live
 #                                   # (testability + dynamic replacement) and keep
 #                                   # what the `inject` tool needs in build/inject/, and
@@ -185,6 +189,7 @@ RUN_APP=false
 LOG_APP=false
 LOG_ALL=false
 MCP_SESSION=false
+MCP_REQUEST=""      # "on"/"off" from --mcp/--no-mcp; else MCP_DEFAULT decides
 INJECT=false
 SIGN_DYLIBS=()
 INPUT_IPA=""
@@ -198,7 +203,8 @@ while [[ $# -gt 0 ]]; do
         --run)           RUN_APP=true; shift ;;
         --log)           RUN_APP=true; LOG_APP=true; shift ;;
         --log-all)       RUN_APP=true; LOG_APP=true; LOG_ALL=true; shift ;;
-        --mcp)           RUN_APP=true; LOG_APP=true; MCP_SESSION=true; shift ;;
+        --mcp)           RUN_APP=true; LOG_APP=true; MCP_SESSION=true; MCP_REQUEST=on; shift ;;
+        --no-mcp)        MCP_REQUEST=off; shift ;;
         --inject)        INJECT=true; shift ;;
         --sign-dylib)    shift; SIGN_DYLIBS=("$@"); SIGN_ONLY=true; NO_DEPLOY=true; TARGET_NAME="${TARGET_NAME:-dylib}"; shift $# ;;
         --platform)      PLATFORM="$2"; shift 2 ;;
@@ -212,6 +218,16 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# MCP_DEFAULT=on (global.conf or a repo conf): deploys of development builds
+# launch as a debug session (--mcp) unless --mcp/--no-mcp says otherwise.
+# Never for --distribution, --no-deploy or --sign-dylib, which launch nothing.
+if [[ "$MCP_REQUEST" == off ]]; then
+    MCP_SESSION=false
+elif [[ -z "$MCP_REQUEST" && "${MCP_DEFAULT:-off}" == on && "$USE_DIST" == false \
+      && "$NO_DEPLOY" == false && ${#SIGN_DYLIBS[@]} -eq 0 ]]; then
+    RUN_APP=true; LOG_APP=true; MCP_SESSION=true
+fi
 
 # Static-IPA repos are the ones with no Xcode project configured. When the
 # conf sets PROJECT_PATH we must always build — otherwise the IPA left in
@@ -1255,7 +1271,9 @@ if [[ "$RUN_APP" == true ]]; then
         MCP_TOKEN=""
         if [[ "$MCP_SESSION" == true ]]; then
             if [[ "${HAS_DEBUG_SERVER:-false}" != true ]]; then
-                echo "WARNING: --mcp: $BUILD_BUNDLE_ID doesn't link DebugTraceServer; launching with --log only" >&2
+                # Only worth a warning when asked for: under MCP_DEFAULT=on an app
+                # without the server just launches with its log.
+                [[ "$MCP_REQUEST" == on ]] && echo "WARNING: --mcp: $BUILD_BUNDLE_ID doesn't link DebugTraceServer; launching with --log only" >&2
                 MCP_SESSION=false
             else
                 # The build's own token when it has one, so the session and
