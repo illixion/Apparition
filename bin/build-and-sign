@@ -38,6 +38,9 @@ set -euo pipefail
 #                                   # embed the patch runtime (Frameworks/DebugTraceInject.dylib)
 #                                   # that DebugTraceServer loads. DEBUGTRACE_INJECT=off in a
 #                                   # repo's build-signing.conf refuses the flag for that repo.
+#                                   # INJECT_SCOPE=app (conf or env) makes only the app's own
+#                                   # module patchable and keeps packages fully optimized:
+#                                   # about half the frame cost in Oneiros (+11-15% vs +28-35%).
 #                                   # Development builds only; implies --debug off
 #   build-and-sign --sign-dylib F.. # Sign Mach-O files with the development
 #                                   # identity (last option: it takes the files).
@@ -640,8 +643,21 @@ if [[ "$SIGN_ONLY" == false ]]; then
         fi
         # DEAD_CODE_STRIPPING=NO keeps symbols nothing in the build references,
         # which a patch (or the embedded runtime) may name.
-        XCB_ARGS+=(ENABLE_TESTABILITY=YES DEAD_CODE_STRIPPING=NO
-                   'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports')
+        # INJECT_SCOPE=app (conf) limits this to the app target: settings given
+        # on the command line reach every target, packages included, so the
+        # flags hide behind a macro named after WRAPPER_EXTENSION, which is
+        # "app" only for the app (packages leave it empty). Package code then
+        # keeps full optimization (games' hot loops live there) but cannot be
+        # patched; debugtrace-inject says so and asks for INJECT_SCOPE=all.
+        if [[ "${INJECT_SCOPE:-all}" == app ]]; then
+            XCB_ARGS+=(DEAD_CODE_STRIPPING=NO
+                       'DTINJECT_TESTABILITY_app=YES' 'ENABLE_TESTABILITY=$(DTINJECT_TESTABILITY_$(WRAPPER_EXTENSION))'
+                       'DTINJECT_FLAGS_app=-Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports'
+                       'OTHER_SWIFT_FLAGS=$(inherited) $(DTINJECT_FLAGS_$(WRAPPER_EXTENSION))')
+        else
+            XCB_ARGS+=(ENABLE_TESTABILITY=YES DEAD_CODE_STRIPPING=NO
+                       'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports')
+        fi
     fi
 
     if [[ "$INJECT" == true ]]; then
@@ -725,7 +741,7 @@ if d and n.endswith(".app"):
             exit 1
         fi
         "$INJECT_TOOL" capture --log "$LOG_FILE" --out "$BUILD_DIR/inject" --root "$PROJECT_ROOT" \
-            --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" >>"$LOG_FILE" 2>&1 \
+            --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" --scope "${INJECT_SCOPE:-all}" >>"$LOG_FILE" 2>&1 \
             || { echo "ERROR: could not record the build for live patching (see $LOG_FILE)" >&2; exit 1; }
         INJECT_DIR="$BUILD_DIR/inject"
     fi
