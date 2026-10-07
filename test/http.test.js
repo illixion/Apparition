@@ -154,6 +154,7 @@ describe('live debugging', () => {
     assert.equal(fake.id, 'k1');
     assert.equal(fake.attachable, true);
     assert.equal(noToken.attachable, false);
+    assert.match(r.json.clientName, /^App Store page on /); // what the device's approval prompt shows
     assert.doesNotMatch(r.text, /app-token|127\.0\.0\.1/);
   });
   test('a call reaches the app with the ledger token', async () => {

@@ -1061,7 +1061,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/debug/apps' && req.method === 'GET') {
       const d = await debug.discover();
       lastDebug = d;
-      return json(res, 200, { apps: d.apps.map(debug.publicApp), error: d.error });
+      // clientName is what the device's approval prompt calls this page.
+      return json(res, 200, { apps: d.apps.map(debug.publicApp), error: d.error, clientName: debug.clientName });
     }
     let dm = url.pathname.match(/^\/api\/debug\/([A-Za-z0-9._-]{1,64})\/(help|call|logs)$/);
     if (dm) {
