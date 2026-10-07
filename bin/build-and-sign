@@ -28,6 +28,13 @@ set -euo pipefail
 #   build-and-sign --mcp            # --log, plus start the app's debug server for
 #                                   # this launch and register it for the agents'
 #                                   # `apps` MCP server (DebugTrace/Tools/debugtrace-mcp)
+#   build-and-sign --inject         # Build so running code can be patched live
+#                                   # (testability + dynamic replacement) and keep
+#                                   # what the `inject` tool needs in build/inject/.
+#                                   # Development builds only; implies --debug off
+#   build-and-sign --sign-dylib F.. # Sign Mach-O files with the development
+#                                   # identity (last option: it takes the files).
+#                                   # What `inject` uses to sign a patch
 #
 # It resolves the project root from the CURRENT git repo and reads that
 # repo's build-signing.conf, either <root>/scripts/build-signing.conf or
@@ -175,6 +182,8 @@ RUN_APP=false
 LOG_APP=false
 LOG_ALL=false
 MCP_SESSION=false
+INJECT=false
+SIGN_DYLIBS=()
 INPUT_IPA=""
 
 while [[ $# -gt 0 ]]; do
@@ -187,6 +196,8 @@ while [[ $# -gt 0 ]]; do
         --log)           RUN_APP=true; LOG_APP=true; shift ;;
         --log-all)       RUN_APP=true; LOG_APP=true; LOG_ALL=true; shift ;;
         --mcp)           RUN_APP=true; LOG_APP=true; MCP_SESSION=true; shift ;;
+        --inject)        INJECT=true; shift ;;
+        --sign-dylib)    shift; SIGN_DYLIBS=("$@"); SIGN_ONLY=true; NO_DEPLOY=true; TARGET_NAME="${TARGET_NAME:-dylib}"; shift $# ;;
         --platform)      PLATFORM="$2"; shift 2 ;;
         --device)        DEVICE_NAME="$2"; shift 2 ;;
         --set)           EXTRA_BUILD_SETTINGS+=("$2"); shift 2 ;;
@@ -545,6 +556,21 @@ sign_app() {
 
 cd "$PROJECT_ROOT"
 
+# --sign-dylib: sign loose Mach-O files with the development identity and stop.
+# A live patch (DebugTrace `inject`) is loaded by the running app, and the OS
+# only loads a dylib signed by the team that signed the app. Same temporary
+# keychain and lock as a full signing run; nothing about the identity is printed.
+if (( ${#SIGN_DYLIBS[@]} > 0 )); then
+    acquire_signing_lock
+    setup_signing_keychain "$P12_PATH" "$P12_PW"
+    for f in "${SIGN_DYLIBS[@]}"; do
+        [[ -f "$f" ]] || { echo "ERROR: not a file: $f" >&2; exit 1; }
+        codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN_PATH" --timestamp=none "$f" >>"$LOG_FILE" 2>&1
+        echo "signed $f"
+    done
+    exit 0
+fi
+
 IPA_PATH="$BUILD_DIR/${TARGET_NAME}.ipa"
 
 # Step 1: Build (unless --sign-only)
@@ -579,9 +605,32 @@ if [[ "$SIGN_ONLY" == false ]]; then
         PROVISIONING_PROFILE_SPECIFIER=""
         ${EXTRA_BUILD_SETTINGS[@]+"${EXTRA_BUILD_SETTINGS[@]}"}
     )
+    # --inject: make functions replaceable at runtime (DebugTrace `inject`).
+    # Testability exports every symbol a patch has to name, implicit-dynamic
+    # makes each function replaceable, private-imports lets a patch reach the
+    # file-private members of the code it replaces. Packages are built with
+    # the same flags, since OTHER_SWIFT_FLAGS on the command line reaches them.
+    if [[ "$INJECT" == true ]]; then
+        if [[ "$USE_DIST" == true ]]; then
+            echo "ERROR: --inject cannot be combined with --distribution" >&2
+            exit 1
+        fi
+        XCB_ARGS+=(ENABLE_TESTABILITY=YES
+                   'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports')
+    fi
 
-    echo "==> Building for $PLATFORM ($CONFIG)..."
-    xcodebuild -quiet "${XCB_ARGS[@]}" build >>"$LOG_FILE" 2>&1
+    if [[ "$INJECT" == true ]]; then
+        echo "==> Building for $PLATFORM ($CONFIG) for live patching..."
+    else
+        echo "==> Building for $PLATFORM ($CONFIG)..."
+    fi
+    if [[ "$INJECT" == true ]]; then
+        # Not -quiet: the compiler's command lines in this log are what
+        # `inject` replays to compile a patch exactly as the app was compiled.
+        xcodebuild "${XCB_ARGS[@]}" build >>"$LOG_FILE" 2>&1
+    else
+        xcodebuild -quiet "${XCB_ARGS[@]}" build >>"$LOG_FILE" 2>&1
+    fi
     echo "  Build succeeded."
 
     # --- Locate the product ------------------------------------------------
@@ -640,6 +689,20 @@ if d and n.endswith(".app"):
     if [[ -z "$APP_PATH" ]]; then
         echo "ERROR: No .app bundle found in $PRODUCTS_DIR/${PRODUCT_SUBDIR}" >&2
         exit 1
+    fi
+    # --inject: record how each module was compiled, and the sources as they
+    # were compiled, for the `inject` tool (see DebugTrace/Tools/debugtrace-inject).
+    INJECT_DIR=""
+    if [[ "$INJECT" == true ]]; then
+        INJECT_TOOL="${DEBUGTRACE_INJECT_TOOL:-$HOME/Projects/DebugTrace/Tools/debugtrace-inject/debugtrace-inject}"
+        if [[ ! -x "$INJECT_TOOL" ]]; then
+            echo "ERROR: --inject needs $INJECT_TOOL (DebugTrace); set DEBUGTRACE_INJECT_TOOL if it lives elsewhere" >&2
+            exit 1
+        fi
+        "$INJECT_TOOL" capture --log "$LOG_FILE" --out "$BUILD_DIR/inject" --root "$PROJECT_ROOT" \
+            --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" >>"$LOG_FILE" 2>&1 \
+            || { echo "ERROR: could not record the build for live patching (see $LOG_FILE)" >&2; exit 1; }
+        INJECT_DIR="$BUILD_DIR/inject"
     fi
     rm -rf "$BUILD_DIR/Payload"
     mkdir -p "$BUILD_DIR/Payload"
@@ -1108,7 +1171,7 @@ print("\n".join(seen))
     ( umask 077
       BAS_BUNDLE="$BUILD_BUNDLE_ID" BAS_NAME="$app_name" BAS_DEVICE="$DEVICE_NAME" BAS_DEVICE_ID="$DEVICE_ID" \
       BAS_URL="$DEBUG_SERVER_URL" BAS_PID="$CONSOLE_PID" BAS_LOG="$APP_LOG" BAS_ROOT="$PROJECT_ROOT" \
-      BAS_TOKEN="$MCP_TOKEN" BAS_KEY_ID="${COMMAND_TOKEN:+$TRACE_KEY_ID}" python3 -c '
+      BAS_TOKEN="$MCP_TOKEN" BAS_KEY_ID="${COMMAND_TOKEN:+$TRACE_KEY_ID}" BAS_INJECT="${INJECT_DIR:-}" python3 -c '
 import datetime, json, os, sys
 e = os.environ
 record = {"bundleId": e["BAS_BUNDLE"], "appName": e["BAS_NAME"], "device": e["BAS_DEVICE"],
@@ -1119,6 +1182,9 @@ record = {"bundleId": e["BAS_BUNDLE"], "appName": e["BAS_NAME"], "device": e["BA
 # the ledger; only set when the launch token is that ledger token.
 if e["BAS_KEY_ID"]:
     record["keyId"] = e["BAS_KEY_ID"]
+# Where --inject recorded how this build was compiled; the `inject` tool needs it.
+if e.get("BAS_INJECT"):
+    record["injectDir"] = e["BAS_INJECT"]
 with open(sys.argv[1], "w") as handle:
     json.dump(record, handle, indent=2)
 ' "$session_file" )
