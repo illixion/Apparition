@@ -712,16 +712,24 @@ if d and n.endswith(".app"):
             --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" >>"$LOG_FILE" 2>&1 \
             || { echo "ERROR: could not record the build for live patching (see $LOG_FILE)" >&2; exit 1; }
         INJECT_DIR="$BUILD_DIR/inject"
-        # Embed the patch runtime, compiled with the app's own flags, so the app
-        # needs no DebugTraceInject dependency: DebugTraceServer loads it when
-        # present. Signed with everything else in Frameworks/ at Step 4.
-        mkdir -p "$APP_PATH/Frameworks"
-        "$INJECT_TOOL" runtime --dir "$INJECT_DIR" --out "$APP_PATH/Frameworks/DebugTraceInject.dylib" >>"$LOG_FILE" 2>&1 \
-            || { echo "ERROR: could not build the live-patching runtime (see $LOG_FILE)" >&2; exit 1; }
     fi
+    # An earlier bas embedded the runtime into DerivedData's product itself,
+    # where an incremental build without --inject kept it.
+    rm -f "$APP_PATH/Frameworks/DebugTraceInject.dylib"
     rm -rf "$BUILD_DIR/Payload"
     mkdir -p "$BUILD_DIR/Payload"
     cp -R "$APP_PATH" "$BUILD_DIR/Payload/"
+    if [[ "$INJECT" == true ]]; then
+        # Embed the patch runtime, compiled with the app's own flags, so the app
+        # needs no DebugTraceInject dependency: DebugTraceServer loads it when
+        # present. Into the packaged copy only, never DerivedData's product, so
+        # the next build without --inject cannot carry it. Signed with
+        # everything else in Frameworks/ at Step 4.
+        PAYLOAD_APP="$BUILD_DIR/Payload/$(basename "$APP_PATH")"
+        mkdir -p "$PAYLOAD_APP/Frameworks"
+        "$INJECT_TOOL" runtime --dir "$INJECT_DIR" --out "$PAYLOAD_APP/Frameworks/DebugTraceInject.dylib" >>"$LOG_FILE" 2>&1 \
+            || { echo "ERROR: could not build the live-patching runtime (see $LOG_FILE)" >&2; exit 1; }
+    fi
     ( cd "$BUILD_DIR" && rm -f "${TARGET_NAME}.ipa" && zip -qr "${TARGET_NAME}.ipa" Payload )
 fi
 
