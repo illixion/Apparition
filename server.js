@@ -145,6 +145,43 @@ async function ensureBuildClone(repoPath, branch) {
   if (clean.code !== 0) throw new Error(`git clean in clone failed: ${clean.stderr.trim()}`);
   return dst;
 }
+// A clone is disposable, but it is a whole copy of the repo (a clonefile copy is
+// free until it diverges, and a build diverges a lot): left alone they added up
+// to tens of GB. Two things keep that bounded:
+//  - after a build the clone's DerivedData goes, since the next build of that
+//    branch wipes the clone anyway. An --inject build keeps its DerivedData-inject,
+//    which `inject` compiles patches against while the app runs;
+//  - a clone untouched for CLONE_MAX_AGE_DAYS (config `cloneMaxAgeDays`, default 7)
+//    is deleted, never one a build is using right now.
+const activeClones = new Set();
+function dropCloneDerivedData(dir, keepInject) {
+  for (const name of keepInject ? ['DerivedData'] : ['DerivedData', 'DerivedData-inject']) {
+    fs.rmSync(path.join(dir, 'build', name), { recursive: true, force: true });
+  }
+}
+// Which clone directories (<root>/<repo>/<branch>) are old enough to delete. Pure, for test/.
+function staleClones(entries, now, maxAgeMs, active) {
+  return entries.filter(e => !active.has(e.dir) && now - e.mtimeMs > maxAgeMs).map(e => e.dir);
+}
+function reapBuildClones() {
+  try {
+    const maxAge = (Number(CONFIG.cloneMaxAgeDays) > 0 ? Number(CONFIG.cloneMaxAgeDays) : 7) * 86400000;
+    const entries = [];
+    for (const repo of fs.readdirSync(CLONE_DIR)) {
+      const repoDir = path.join(CLONE_DIR, repo);
+      if (!fs.statSync(repoDir).isDirectory()) continue;
+      for (const branch of fs.readdirSync(repoDir)) {
+        const dir = path.join(repoDir, branch);
+        entries.push({ dir, mtimeMs: fs.statSync(dir).mtimeMs });
+      }
+    }
+    for (const dir of staleClones(entries, Date.now(), maxAge, activeClones)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      console.log(`reaped stale build clone ${dir}`);
+    }
+  } catch { /* no clone dir yet, or a race with a build: try again next time */ }
+}
+
 async function gitInfo(repoPath) {
   const hit = gitCache.get(repoPath);
   if (hit && Date.now() - hit.at < 10000) return hit.info;
@@ -344,11 +381,14 @@ async function executeBuild(job) {
 
   saveState();
 
+  let cloneDir = null;
   try {
     const orig = (await run('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
     let buildCwd = repoPath;
     if (job.branch !== 'current' && job.branch !== orig) {
       log(`==> Using dedicated build clone for ${job.branch} (main checkout stays on ${orig})\n`);
+      cloneDir = clonePath(repoPath, job.branch);
+      activeClones.add(cloneDir);
       buildCwd = await ensureBuildClone(repoPath, job.branch);
     }
     const head = (await run('git', ['-C', buildCwd, 'log', '-1', '--format=%h %s'])).stdout.trim();
@@ -474,6 +514,11 @@ async function executeBuild(job) {
     job.error = String(e.message || e);
     log(`\n==> Store: build ${job.status}: ${job.error}\n`);
   } finally {
+    if (cloneDir) {
+      activeClones.delete(cloneDir);
+      try { dropCloneDerivedData(cloneDir, job.inject && job.status === 'success'); } catch { /* best effort */ }
+      reapBuildClones();
+    }
     job.finishedAt = Date.now();
     saveState();
     stream.end();
@@ -1232,10 +1277,11 @@ if (require.main === module) {
   server.listen(CONFIG.port, '127.0.0.1', () => {
     console.log(`appstore listening on http://127.0.0.1:${CONFIG.port}`);
     refreshAllDevices(); // warm the inventory on startup
+    reapBuildClones();
     backfillOta().catch(e => console.error('OTA backfill failed:', e)); // adopt pre-ledger IPAs
   });
 }
 
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
-  deployDefaults, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };
+  deployDefaults, staleClones, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };

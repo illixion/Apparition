@@ -99,25 +99,7 @@ find_static_ipa() {
 # it survives the EXIT cleanup trap for post-mortem.
 BUILD_DIR="$PROJECT_ROOT/build"
 mkdir -p "$BUILD_DIR"
-LOG_FILE="$BUILD_DIR/last-build.log"
-: > "$LOG_FILE"
-
-# Xcode's own incremental build cache. Anchored to the git *common* dir —
-# shared by the main checkout and every `git worktree add` linked worktree
-# of the same repo, unlike --show-toplevel (used for PROJECT_ROOT above),
-# which returns the worktree's own path — so a build done from a throwaway
-# worktree (e.g. an agent verifying compilation with --no-deploy in an
-# isolated worktree) shares DerivedData with a later build from the main
-# checkout instead of starting a full rebuild from scratch. BUILD_DIR
-# itself (Payload/IPA/logs) stays per-PROJECT_ROOT — only the Xcode cache
-# is shared. Falls back to the old BUILD_DIR-relative path with no git (or
-# on the PROJECT_ROOT fallback above already having failed).
-GIT_COMMON_DIR="$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [[ -n "$GIT_COMMON_DIR" ]]; then
-    DERIVED_DATA_PATH="$(dirname "$GIT_COMMON_DIR")/build/DerivedData"
-else
-    DERIVED_DATA_PATH="$BUILD_DIR/DerivedData"
-fi
+LOG_FILE="$BUILD_DIR/last-build.log"   # truncated once the build lock is held (see "Main")
 
 # Patterns that are always noise, never signal — filtered out of whatever we
 # show the user, whether that's a success summary or an error excerpt.
@@ -230,6 +212,24 @@ if [[ "$MCP_REQUEST" == off ]]; then
 elif [[ -z "$MCP_REQUEST" && "${MCP_DEFAULT:-off}" == on && "$USE_DIST" == false \
       && "$NO_DEPLOY" == false && ${#SIGN_DYLIBS[@]} -eq 0 ]]; then
     RUN_APP=true; LOG_APP=true; MCP_SESSION=true
+fi
+
+# Xcode's incremental build cache. One per checkout, never shared between a
+# main checkout and its worktrees or clones: those build different source
+# trees (an apple-worktree's packages are APFS clones at other paths, a store
+# build clone is another directory), so a shared cache is rebuilt by every
+# build and corrupted by two at once, while a per-checkout one dies with its
+# checkout (`apple-worktree remove`, a reboot's /private/tmp, the store's
+# clone reaper). It used to hang off the git common dir, which did exactly
+# that sharing.
+# --inject gets its own: its modules carry the patching flags and are what
+# `inject` compiles patches against, so a plain build (or a deploy without
+# --inject) into the same directory silently replaced them, and the next
+# `inject` failed with "module was not compiled for private import".
+if [[ "$INJECT" == true ]]; then
+    DERIVED_DATA_PATH="$BUILD_DIR/DerivedData-inject"
+else
+    DERIVED_DATA_PATH="$BUILD_DIR/DerivedData"
 fi
 
 # Static-IPA repos are the ones with no Xcode project configured. When the
@@ -393,6 +393,57 @@ release_signing_lock() {
     SIGNING_LOCK_HELD=false
 }
 
+# --- Per-checkout build lock ---
+# Two build-and-sign runs in one checkout (an agent and the store, two agents)
+# share build/: DerivedData, the repacked Payload, the IPA, the logs, the
+# inject record. Run together they corrupt each other's build, so the second
+# waits. Other checkouts (worktrees, clones) have their own build/ and run
+# freely. Held until exit; the app's console stream is a detached process, so
+# `--log`/`--mcp` runs still release it as soon as the launch is done.
+BUILD_LOCK_DIR="$BUILD_DIR/.build-and-sign.lock"
+BUILD_LOCK_HELD=false
+
+build_lock_holder_alive() {
+    local pid="$1"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q build-and-sign
+}
+
+acquire_build_lock() {
+    local waited=0 holder=""
+    while ! mkdir "$BUILD_LOCK_DIR" 2>/dev/null; do
+        holder=$(cat "$BUILD_LOCK_DIR/pid" 2>/dev/null || true)
+        # A holder that died without its EXIT trap (kill -9, power loss) or whose pid
+        # is now some other process, or a lock that never got its pid: steal it. The
+        # rename is atomic, so of several waiters exactly one clears it.
+        if { [[ -n "$holder" ]] && ! build_lock_holder_alive "$holder"; } \
+           || { [[ -z "$holder" ]] && [[ -n "$(find "$BUILD_LOCK_DIR" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; }; then
+            if mv "$BUILD_LOCK_DIR" "$BUILD_LOCK_DIR.stale.$$" 2>/dev/null; then
+                rm -rf "$BUILD_LOCK_DIR.stale.$$"
+            fi
+            continue
+        fi
+        if (( waited == 0 )); then
+            echo "==> Another build-and-sign (pid ${holder:-?}) is building in $PROJECT_ROOT; waiting for it (they share build/)" >&2
+        fi
+        waited=$((waited + 1))
+        if (( waited > 2400 )); then   # ~40 minutes at 1 s
+            echo "ERROR: gave up waiting for build-and-sign pid ${holder:-?} in $PROJECT_ROOT ($BUILD_LOCK_DIR)." >&2
+            echo "       If it is stuck, stop that pid; a dead holder's lock is cleared automatically." >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    echo $$ > "$BUILD_LOCK_DIR/pid"
+    BUILD_LOCK_HELD=true
+    (( waited == 0 )) || echo "==> Lock acquired after ${waited}s" >&2
+}
+
+release_build_lock() {
+    [[ "$BUILD_LOCK_HELD" == true ]] || return 0
+    rm -rf "$BUILD_LOCK_DIR" 2>/dev/null || true
+    BUILD_LOCK_HELD=false
+}
+
 cleanup() {
     if [[ -n "$KEYCHAIN_PATH" && -f "$KEYCHAIN_PATH" ]]; then
         if [[ -n "$ORIGINAL_KEYCHAINS" ]]; then
@@ -404,6 +455,7 @@ cleanup() {
     # Release the lock only after the search list is fully restored, so a
     # process that was waiting on it never observes a half-restored state.
     release_signing_lock
+    release_build_lock
     [[ -n "${WORK_DIR:-}" ]] && rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT
@@ -580,6 +632,13 @@ sign_app() {
 # --- Main ---
 
 cd "$PROJECT_ROOT"
+
+# Everything below writes build/, so one run per checkout at a time. --sign-dylib
+# (what `inject` calls, possibly while a build runs) only appends to the log.
+if (( ${#SIGN_DYLIBS[@]} == 0 )); then
+    acquire_build_lock
+    : > "$LOG_FILE"
+fi
 
 # --sign-dylib: sign loose Mach-O files with the development identity and stop.
 # A live patch (DebugTrace `inject`) is loaded by the running app, and the OS
