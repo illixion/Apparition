@@ -119,12 +119,40 @@ function safeSlug(s) {
 function clonePath(repoPath, branch) {
   return path.join(CLONE_DIR, safeSlug(path.basename(repoPath)), safeSlug(branch));
 }
-async function ensureBuildClone(repoPath, branch) {
+// `cp -c` shares the data blocks but still creates an inode per file, so cost
+// scales with file count: RegentChat's checkout is 357k files (a 27 GB Rust
+// `target/`, an Android client, a 15 GB iOS tree) and took 78 s to clone, nearly
+// all of it for directories no iOS build reads. A repo's `cloneExclude` (paths
+// relative to the repo root) lists what to leave out; the directories that hold
+// them are copied entry by entry so nothing else is skipped. Leave out only what
+// the build regenerates or never reads: the PRE_BUILD_HOOK's caches stay.
+function normalizeExcludes(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter(x => typeof x === 'string')
+    .map(x => path.posix.normalize(x.trim()).replace(/^\.?\/+|\/+$/g, ''))
+    .filter(x => x && x !== '.' && !x.startsWith('..') && x !== '.git');
+}
+// Clone `src` to `dst`, whole where nothing beneath it is excluded. Pure given the
+// copy function, for test/.
+async function cloneTree(src, dst, excludes, copy, rel = '') {
+  if (!excludes.some(x => x.startsWith(rel ? rel + '/' : ''))) return copy(src, dst);
+  fs.mkdirSync(dst, { recursive: true });
+  const names = fs.readdirSync(src);
+  await Promise.all(names.map(async name => {
+    const child = rel ? `${rel}/${name}` : name;
+    if (excludes.includes(child)) return;
+    await cloneTree(path.join(src, name), path.join(dst, name), excludes, copy, child);
+  }));
+  try { fs.chmodSync(dst, fs.statSync(src).mode); } catch { /* keep the default */ }
+}
+async function ensureBuildClone(repoPath, branch, excludes = []) {
   const dst = clonePath(repoPath, branch);
   fs.rmSync(dst, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(dst), { recursive: true });
-  const clone = await run('cp', ['-cR', repoPath, dst], { timeout: 300000 });
-  if (clone.code !== 0) throw new Error(`cp -cR clone of ${repoPath} failed: ${clone.stderr.trim()}`);
+  await cloneTree(repoPath, dst, excludes, async (from, to) => {
+    const clone = await run('cp', ['-cR', from, to], { timeout: 300000 });
+    if (clone.code !== 0) throw new Error(`cp -cR clone of ${from} failed: ${clone.stderr.trim()}`);
+  });
   // bring the clone's target branch up to the main repo's latest local
   // commit — fetch from the main repo (a plain local-path remote) since
   // cp -cR only copied whatever ref state existed at clone time
@@ -389,7 +417,7 @@ async function executeBuild(job) {
       log(`==> Using dedicated build clone for ${job.branch} (main checkout stays on ${orig})\n`);
       cloneDir = clonePath(repoPath, job.branch);
       activeClones.add(cloneDir);
-      buildCwd = await ensureBuildClone(repoPath, job.branch);
+      buildCwd = await ensureBuildClone(repoPath, job.branch, normalizeExcludes(rc.cloneExclude));
     }
     const head = (await run('git', ['-C', buildCwd, 'log', '-1', '--format=%h %s'])).stdout.trim();
     job.commit = head.split(' ')[0];
@@ -1284,4 +1312,4 @@ if (require.main === module) {
 
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
-  deployDefaults, staleClones, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };
+  deployDefaults, staleClones, normalizeExcludes, cloneTree, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };
