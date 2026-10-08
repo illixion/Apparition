@@ -89,7 +89,6 @@
   .runcheck { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--dim); cursor: pointer; user-select: none; }
   .runcheck input { cursor: pointer; accent-color: var(--accent); }
-  .runcheck:has(input:disabled) { opacity: .45; cursor: default; }
   .opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; }
   .cardfoot .spacer { flex: 1 1 auto; }
 
@@ -522,7 +521,7 @@ function render() {
 
   $('#apps').innerHTML = repos.map(r=>{
     const g = r.git||{};
-    const s = sel[r.name] = sel[r.name] || { branch: 'current', launch: false, session: false, buildDebug: false, inject: false, chosen: new Set() };
+    const s = sel[r.name] = sel[r.name] || { branch: 'current', launch: false, buildDebug: false, inject: false, chosen: new Set() };
     const branches = ['current', ...r.branches.filter(b=>b!=='current')];
     const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name);
     const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name).map(b=>b.device));
@@ -570,9 +569,7 @@ function render() {
         </select>
         <div class="opts" role="group" aria-label="Deploy options">
           <label class="runcheck" title="--run: launch the app on the device once it is installed">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''} ${s.session?'disabled':''}>Launch app</label>
-          <label class="runcheck" title="--mcp: launch with its debug server, so it appears on the Debug page and agents can reach it (includes launch)">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="session" ${s.session?'checked':''}>Debug session</label>
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''}>Launch app</label>
           <label class="runcheck" title="--debug: build the Debug configuration instead of Release">
             <input type="checkbox" data-repo="${esc(r.name)}" data-k="buildDebug" ${s.buildDebug?'checked':''}>Debug build</label>
           <label class="runcheck" title="--inject: build so running code can be patched live (development builds only)">
@@ -590,7 +587,7 @@ function render() {
   $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
     <td class="muted">${b.id}</td><td>${esc(b.repo)}</td>
     <td class="mono">${esc(b.builtBranch||b.branch)}${b.commit?'@'+esc(b.commit):''}${b.version?' · v'+esc(b.version):''}</td>
-    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.debug?' 🐞':b.run?' ▶':''}</td>
+    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':b.run?' ▶':''}</td>
     <td><span class="status ${b.status}">${b.status}</span></td>
     <td class="muted">${ago(b.startedAt||b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
     || '<tr><td colspan="7" class="muted">No builds yet</td></tr>';
@@ -712,7 +709,7 @@ document.addEventListener('click', async e=>{
     if (!targets.length) return;
     const res = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({repo: repoName, targets,
-        run: s.launch && !s.session, debug: s.session, buildDebug: s.buildDebug, inject: s.inject})});
+        run: s.launch, buildDebug: s.buildDebug, inject: s.inject})});
     const jobs = res.jobs || [];
     if (jobs.length > 1) toast(`Deploying ${repoName} to ${jobs.length} devices — they'll build one after another.`);
     await poll();

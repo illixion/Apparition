@@ -293,9 +293,9 @@ function resolveBuildSettings(rc, branch, platform) {
 // e.g. the headset builds from a feature branch but the phone from main — and
 // those can be deployed together in one batch.
 // `device`/`branch` (singular) are kept as an alias for a one-target batch.
-// launch = --run; debug = --mcp (debug session); buildDebug = --debug (Debug
-// configuration); inject = --inject (patchable build for live code injection)
-function enqueueBuild({ repo, targets, device, branch, run: launch, debug, buildDebug, inject, deploy }) {
+// launch = --run; buildDebug = --debug (Debug configuration); inject = --inject
+// (patchable build for live code injection)
+function enqueueBuild({ repo, targets, device, branch, run: launch, buildDebug, inject, deploy }) {
   const rc = CONFIG.repos.find(r => r.name === repo);
   if (!rc) throw new Error(`unknown repo: ${repo}`);
   const targetList = (targets && targets.length) ? targets : [{ device: device || rc.platforms[0].device, branch }];
@@ -310,10 +310,7 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, debug, build
       // unreachable device can't fail the build; the run/launch step and the
       // install ledger are skipped too (nothing landed on the device)
       noDeploy: deploy === false,
-      // debug = launch with the app's debug server (build-and-sign --mcp), so
-      // the app shows up on the Debug page; build-and-sign does the launch
-      debug: !!debug && deploy !== false,
-      run: !!launch && !debug && deploy !== false,
+      run: !!launch && deploy !== false,
       buildDebug: !!buildDebug,
       inject: !!inject,
       status: 'queued', queuedAt: Date.now(),
@@ -363,10 +360,10 @@ async function executeBuild(job) {
 
     const buildArgs = [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
     if (job.noDeploy) buildArgs.push('--no-deploy');
-    // Always say which: build-and-sign may default to --mcp (MCP_DEFAULT=on),
-    // and an "install only" or "launch" deploy must not become a debug session.
-    if (job.debug) buildArgs.push('--mcp');
-    else if (!job.noDeploy) buildArgs.push('--no-mcp');
+    // Always say it: build-and-sign may default to --mcp (MCP_DEFAULT=on), which
+    // would turn a plain install or launch into a debug session. The Debug tab
+    // connects to the app's debug server on any launch, so the store never asks.
+    if (!job.noDeploy) buildArgs.push('--no-mcp');
     if (job.buildDebug) buildArgs.push('--debug');
     if (job.inject) buildArgs.push('--inject');
     for (const s of job.buildSettings) buildArgs.push('--set', s);
