@@ -529,15 +529,18 @@ sign_app() {
     # appex profile is configured) overrides that for an extension with an App
     # ID of its own. Guard the directory: apps that ship no extensions have no
     # PlugIns/, and `find` on a missing path exits 1, which `set -euo pipefail`
-    # turns into a silent mid-sign abort.
-    if [[ -d "$app_path/PlugIns" ]]; then
+    # turns into a silent mid-sign abort. ExtensionKit extensions sit in
+    # Extensions/ rather than PlugIns/ and are signed the same way.
+    local appex_dir
+    for appex_dir in "$app_path/PlugIns" "$app_path/Extensions"; do
+        [[ -d "$appex_dir" ]] || continue
         local appex_entitlements="${APPEX_ENTITLEMENTS_PLIST:-$entitlements}"
         while read -r appex; do
             codesign --force --sign "$identity" --keychain "$keychain" \
                 --entitlements "$appex_entitlements" --timestamp=none "$appex" >>"$log" 2>&1
             count=$((count + 1))
-        done < <(find "$app_path/PlugIns" -maxdepth 1 -name '*.appex' -type d)
-    fi
+        done < <(find "$appex_dir" -maxdepth 1 -name '*.appex' -type d)
+    done
 
     # Sign an embedded watchOS companion app (app_path/Watch/*.app) inside-out
     # before the outer bundle. Guard the directory: apps without a paired watch
@@ -876,10 +879,14 @@ fi
 plutil -replace CFBundleIdentifier -string "$BUILD_BUNDLE_ID" "$APP_BUNDLE/Info.plist"
 # No PlugIns/ (app ships no extensions) must not abort the script: `find`
 # exits 1 on a missing path and this assignment runs under `set -e`.
+# ExtensionKit extensions (app-defined extension points) live in Extensions/
+# instead of PlugIns/; either holds the one extension this handles.
 APPEX_BUNDLE=""
-if [[ -d "$APP_BUNDLE/PlugIns" ]]; then
-    APPEX_BUNDLE=$(find "$APP_BUNDLE/PlugIns" -maxdepth 1 -name '*.appex' -type d | head -1)
-fi
+for appex_dir in "$APP_BUNDLE/PlugIns" "$APP_BUNDLE/Extensions"; do
+    if [[ -z "$APPEX_BUNDLE" && -d "$appex_dir" ]]; then
+        APPEX_BUNDLE=$(find "$appex_dir" -maxdepth 1 -name '*.appex' -type d | head -1)
+    fi
+done
 EXTENSION_ID=""
 if [[ -n "$APPEX_BUNDLE" ]]; then
     EXTENSION_ID="${APPEX_BUNDLE_ID:-${BUILD_BUNDLE_ID}.broadcast}"
