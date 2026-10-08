@@ -89,6 +89,8 @@
   .runcheck { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
     color: var(--dim); cursor: pointer; user-select: none; }
   .runcheck input { cursor: pointer; accent-color: var(--accent); }
+  .runcheck:has(input:disabled) { opacity: .45; cursor: default; }
+  .opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; }
   .cardfoot .spacer { flex: 1 1 auto; }
 
   /* ---- build pane ---- */
@@ -520,7 +522,7 @@ function render() {
 
   $('#apps').innerHTML = repos.map(r=>{
     const g = r.git||{};
-    const s = sel[r.name] = sel[r.name] || { branch: 'current', after: r.afterInstall || 'install', chosen: new Set() };
+    const s = sel[r.name] = sel[r.name] || { branch: 'current', launch: false, session: false, buildDebug: false, inject: false, chosen: new Set() };
     const branches = ['current', ...r.branches.filter(b=>b!=='current')];
     const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name);
     const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name).map(b=>b.device));
@@ -566,11 +568,16 @@ function render() {
         <select class="branchsel" data-repo="${esc(r.name)}" data-k="branch">
           ${branches.map(b=>`<option ${s.branch===b?'selected':''}>${esc(b)}</option>`).join('')}
         </select>
-        <select class="branchsel" data-repo="${esc(r.name)}" data-k="after" title="What to do once the app is installed">
-          <option value="install" ${s.after==='install'?'selected':''}>install only</option>
-          <option value="run" ${s.after==='run'?'selected':''}>launch after install</option>
-          <option value="debug" ${s.after==='debug'?'selected':''}>launch as debug session</option>
-        </select>
+        <div class="opts" role="group" aria-label="Deploy options">
+          <label class="runcheck" title="--run: launch the app on the device once it is installed">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''} ${s.session?'disabled':''}>Launch app</label>
+          <label class="runcheck" title="--mcp: launch with its debug server, so it appears on the Debug page and agents can reach it (includes launch)">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="session" ${s.session?'checked':''}>Debug session</label>
+          <label class="runcheck" title="--debug: build the Debug configuration instead of Release">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="buildDebug" ${s.buildDebug?'checked':''}>Debug build</label>
+          <label class="runcheck" title="--inject: build so running code can be patched live (development builds only)">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="inject" ${s.inject?'checked':''}>Inject</label>
+        </div>
         <span class="spacer"></span>
         <button class="primary" data-deploy="${esc(r.name)}" ${busy||chosenCount===0?'disabled':''}>
           ${busy ? 'Deploying…' : chosenCount>1 ? `Deploy → ${chosenCount} devices` : 'Deploy'}
@@ -704,7 +711,8 @@ document.addEventListener('click', async e=>{
     }));
     if (!targets.length) return;
     const res = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({repo: repoName, targets, run: s.after==='run', debug: s.after==='debug'})});
+      body: JSON.stringify({repo: repoName, targets,
+        run: s.launch && !s.session, debug: s.session, buildDebug: s.buildDebug, inject: s.inject})});
     const jobs = res.jobs || [];
     if (jobs.length > 1) toast(`Deploying ${repoName} to ${jobs.length} devices — they'll build one after another.`);
     await poll();

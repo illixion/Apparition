@@ -293,7 +293,9 @@ function resolveBuildSettings(rc, branch, platform) {
 // e.g. the headset builds from a feature branch but the phone from main — and
 // those can be deployed together in one batch.
 // `device`/`branch` (singular) are kept as an alias for a one-target batch.
-function enqueueBuild({ repo, targets, device, branch, run: launch, debug, deploy }) {
+// launch = --run; debug = --mcp (debug session); buildDebug = --debug (Debug
+// configuration); inject = --inject (patchable build for live code injection)
+function enqueueBuild({ repo, targets, device, branch, run: launch, debug, buildDebug, inject, deploy }) {
   const rc = CONFIG.repos.find(r => r.name === repo);
   if (!rc) throw new Error(`unknown repo: ${repo}`);
   const targetList = (targets && targets.length) ? targets : [{ device: device || rc.platforms[0].device, branch }];
@@ -312,6 +314,8 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, debug, deplo
       // the app shows up on the Debug page; build-and-sign does the launch
       debug: !!debug && deploy !== false,
       run: !!launch && !debug && deploy !== false,
+      buildDebug: !!buildDebug,
+      inject: !!inject,
       status: 'queued', queuedAt: Date.now(),
     };
   });
@@ -363,6 +367,8 @@ async function executeBuild(job) {
     // and an "install only" or "launch" deploy must not become a debug session.
     if (job.debug) buildArgs.push('--mcp');
     else if (!job.noDeploy) buildArgs.push('--no-mcp');
+    if (job.buildDebug) buildArgs.push('--debug');
+    if (job.inject) buildArgs.push('--inject');
     for (const s of job.buildSettings) buildArgs.push('--set', s);
 
     await new Promise((resolve, reject) => {
