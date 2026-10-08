@@ -2,11 +2,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 require('./helpers'); // sets the env first
-const { afterInstallDefault } = require('../server');
+const { deployDefaults } = require('../server');
 
-test('the deploy menu starts from the repo\'s afterInstall, else install', () => {
-  assert.equal(afterInstallDefault({ name: 'A' }), 'install');
-  assert.equal(afterInstallDefault({ name: 'A', afterInstall: 'debug' }), 'debug');
-  assert.equal(afterInstallDefault({ name: 'A', afterInstall: 'run' }), 'run');
-  assert.equal(afterInstallDefault({ name: 'A', afterInstall: 'bogus' }), 'install');
+test('deploy checkboxes start from the built-in defaults: MCP on, the rest off', () => {
+  assert.deepEqual(deployDefaults({ name: 'A' }),
+    { launch: false, mcp: true, buildDebug: false, inject: false });
+});
+
+test('a repo\'s deployDefaults overrides individual keys, and ignores non-booleans', () => {
+  assert.deepEqual(deployDefaults({ name: 'A', deployDefaults: { mcp: false, inject: true, launch: 'yes' } }),
+    { launch: false, mcp: false, buildDebug: false, inject: true });
 });

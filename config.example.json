@@ -8,7 +8,7 @@
     "icon": "\ud83d\ude80"
   },
   "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
-  "afterInstall": "debug",
+  "deployDefaults": { "mcp": true, "launch": false, "buildDebug": false, "inject": false },
   "repos": [
     {
       "name": "MyApp",

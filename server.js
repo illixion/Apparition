@@ -293,9 +293,10 @@ function resolveBuildSettings(rc, branch, platform) {
 // e.g. the headset builds from a feature branch but the phone from main — and
 // those can be deployed together in one batch.
 // `device`/`branch` (singular) are kept as an alias for a one-target batch.
-// launch = --run; buildDebug = --debug (Debug configuration); inject = --inject
-// (patchable build for live code injection)
-function enqueueBuild({ repo, targets, device, branch, run: launch, buildDebug, inject, deploy }) {
+// launch = --run (the store launches after install); mcp = --mcp (build-and-sign
+// launches with the debug server, which implies launch); buildDebug = --debug
+// (Debug configuration); inject = --inject (patchable build)
+function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, deploy }) {
   const rc = CONFIG.repos.find(r => r.name === repo);
   if (!rc) throw new Error(`unknown repo: ${repo}`);
   const targetList = (targets && targets.length) ? targets : [{ device: device || rc.platforms[0].device, branch }];
@@ -310,7 +311,8 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, buildDebug, 
       // unreachable device can't fail the build; the run/launch step and the
       // install ledger are skipped too (nothing landed on the device)
       noDeploy: deploy === false,
-      run: !!launch && deploy !== false,
+      mcp: !!mcp && deploy !== false,
+      run: !!launch && !mcp && deploy !== false,
       buildDebug: !!buildDebug,
       inject: !!inject,
       status: 'queued', queuedAt: Date.now(),
@@ -360,10 +362,10 @@ async function executeBuild(job) {
 
     const buildArgs = [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
     if (job.noDeploy) buildArgs.push('--no-deploy');
-    // Always say it: build-and-sign may default to --mcp (MCP_DEFAULT=on), which
-    // would turn a plain install or launch into a debug session. The Debug tab
-    // connects to the app's debug server on any launch, so the store never asks.
-    if (!job.noDeploy) buildArgs.push('--no-mcp');
+    // Always say which: build-and-sign may default to --mcp (MCP_DEFAULT=on), and
+    // an install-only or store-launched deploy must not become an MCP session.
+    if (job.mcp) buildArgs.push('--mcp');
+    else if (!job.noDeploy) buildArgs.push('--no-mcp');
     if (job.buildDebug) buildArgs.push('--debug');
     if (job.inject) buildArgs.push('--inject');
     for (const s of job.buildSettings) buildArgs.push('--set', s);
@@ -915,20 +917,24 @@ function publicBuild(b) {
   return b;
 }
 
-// What the deploy menu selects at first: "install", "run" or "debug" (launch
-// as a debug session), from the repo's `afterInstall`, else the top-level one,
-// else "install".
-const AFTER_INSTALL = ['install', 'run', 'debug'];
-function afterInstallDefault(repo) {
-  const pick = [repo.afterInstall, CONFIG.afterInstall].find(v => AFTER_INSTALL.includes(v));
-  return pick || 'install';
+// Which deploy-menu checkboxes start ticked. config.json's top-level
+// `deployDefaults` sets them for every repo; a repo's own `deployDefaults`
+// overrides individual keys. Anything not a boolean is ignored.
+const DEPLOY_OPTIONS = ['launch', 'mcp', 'buildDebug', 'inject'];
+const BUILT_IN_DEPLOY_DEFAULTS = { launch: false, mcp: true, buildDebug: false, inject: false };
+function deployDefaults(repo) {
+  const out = { ...BUILT_IN_DEPLOY_DEFAULTS };
+  for (const src of [CONFIG.deployDefaults, repo.deployDefaults]) {
+    for (const k of DEPLOY_OPTIONS) if (typeof src?.[k] === 'boolean') out[k] = src[k];
+  }
+  return out;
 }
 
 async function stateBundle() {
   const repos = await Promise.all(CONFIG.repos.map(async r => ({
     name: r.name, branches: r.branches, platforms: r.platforms,
     deviceBranches: r.deviceBranches || {},
-    afterInstall: afterInstallDefault(r),
+    deployDefaults: deployDefaults(r),
     git: await gitInfo(r.path).catch(e => ({ error: String(e) })),
   })));
   return {
@@ -1232,4 +1238,4 @@ if (require.main === module) {
 
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
-  afterInstallDefault, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };
+  deployDefaults, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };

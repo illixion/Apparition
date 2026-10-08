@@ -19,7 +19,7 @@ It orchestrates two external tools: `bin/build-and-sign` (xcodebuild + codesign 
 
 ## Configuration (`config.json`)
 
-- `afterInstall` (top level, or per repo, which wins): what the deploy menu selects first, `install`, `run` or `debug` (launch as a debug session). Default `install`. The store always passes `--mcp` or `--no-mcp` to build-and-sign, so its own `MCP_DEFAULT` never turns an install-only deploy into a debug session.
+- `deployDefaults` (top level, and per repo; a repo's keys override the top level): which deploy-menu checkboxes start ticked. Keys are `mcp` (default `true`: `--mcp`, debug server attached, implies launch), `launch` (`--run`), `buildDebug` (`--debug`, Debug configuration) and `inject` (`--inject`). Built-in defaults are MCP on, the rest off. Non-boolean values are ignored. The store always passes `--mcp` or `--no-mcp` to build-and-sign, so its own `MCP_DEFAULT` never turns an install-only deploy into an MCP session.
 
 Defines everything the server operates on. Per repo: `name`, `path` (git checkout on disk), `branches` (offered in UI), and `platforms[]` — each `{ platform, bundleId, device }` where `device` is a `devicectl` device name. Only apps whose bundle id starts with one of `bundlePrefix` (a string, or an array for repos outside the main namespace — e.g. `org.example.*` alongside `com.example.*`) are tracked from device inventory.
 
