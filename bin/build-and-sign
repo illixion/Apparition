@@ -211,7 +211,10 @@ if [[ "$MCP_REQUEST" == off ]]; then
     MCP_SESSION=false
 elif [[ -z "$MCP_REQUEST" && "${MCP_DEFAULT:-off}" == on && "$USE_DIST" == false \
       && "$NO_DEPLOY" == false && ${#SIGN_DYLIBS[@]} -eq 0 ]]; then
-    RUN_APP=true; LOG_APP=true; MCP_SESSION=true
+    case "$PLATFORM" in
+        [mM][aA][cC][oO][sS]|[oO][sS][xX]) ;;
+        *) RUN_APP=true; LOG_APP=true; MCP_SESSION=true ;;
+    esac
 fi
 
 # Xcode's incremental build cache. One per checkout, never shared between a
@@ -262,6 +265,24 @@ else
     PRODUCT_SUBDIR="${CONFIG}-*"
 fi
 
+MACOS_BUILD=false
+if [[ "$EXPECTED_SDK" == "macosx" ]]; then
+    MACOS_BUILD=true
+    if [[ "$RUN_APP" == true || "$LOG_APP" == true || "$MCP_SESSION" == true ]]; then
+        echo "ERROR: macOS builds produce a .app for manual copying; --run/--log/--mcp are device-only options." >&2
+        exit 1
+    fi
+    if [[ "$USE_DIST" == true ]]; then
+        echo "ERROR: --distribution is not supported for macOS builds; use a Developer ID signing workflow." >&2
+        exit 1
+    fi
+    if [[ "$SIGN_ONLY" == true || -n "$INPUT_IPA" ]]; then
+        echo "ERROR: macOS mode builds a fresh .app; --sign-only/--ipa are for mobile IPA files." >&2
+        exit 1
+    fi
+    NO_DEPLOY=true
+fi
+
 CONF_LABEL="${CONF_FILE:-$GLOBAL_CONF}"
 if [[ "$SIGN_ONLY" == true && -z "$TARGET_NAME" && -n "$INPUT_IPA" ]]; then
     TARGET_NAME="$(basename "${INPUT_IPA%.*}")"
@@ -270,7 +291,8 @@ if [[ "$SIGN_ONLY" == true && "$NO_DEPLOY" == false && -z "${DEVICE_NAME:-}" ]];
     NO_DEPLOY=true
 fi
 
-required_vars=(TEAM_ID DEV_P12_PATH DEV_PROFILE_PATH)
+required_vars=(TEAM_ID DEV_P12_PATH)
+[[ "$MACOS_BUILD" == true ]] || required_vars+=(DEV_PROFILE_PATH)
 if [[ "$USE_DIST" == true ]]; then
     required_vars+=(DIST_P12_PATH DIST_PROFILE_PATH)
 fi
@@ -300,7 +322,7 @@ if [[ "$USE_DIST" == true ]]; then
 else
     P12_PATH="$DEV_P12_PATH"
     P12_PW="$DEV_P12_PASSWORD"
-    PROFILE_PATH="$DEV_PROFILE_PATH"
+    PROFILE_PATH="${DEV_PROFILE_PATH:-}"
 fi
 
 # An embedded watchOS companion app is installed by the WATCH's installd, which
@@ -330,7 +352,7 @@ else
     APPEX_PROFILE_PATH="${DEV_APPEX_PROFILE_PATH:-}"
 fi
 
-for f in "$P12_PATH" "$PROFILE_PATH" ${WATCH_PROFILE_PATH:+"$WATCH_PROFILE_PATH"} \
+for f in "$P12_PATH" ${PROFILE_PATH:+"$PROFILE_PATH"} ${WATCH_PROFILE_PATH:+"$WATCH_PROFILE_PATH"} \
          ${APPEX_PROFILE_PATH:+"$APPEX_PROFILE_PATH"}; do
     [[ -f "$f" ]] || { echo "ERROR: File not found: $f" >&2; exit 1; }
 done
@@ -750,8 +772,10 @@ if [[ "$SIGN_ONLY" == false ]]; then
     # the product. BUILT_PRODUCTS_DIR/FULL_PRODUCT_NAME already account for
     # configuration, SDK, platform, product name and any --set override.
     APP_PATH=""
+    CODE_SIGN_ENTITLEMENTS_PATH=""
+    XCODE_PROJECT_DIR=""
     if SETTINGS_JSON=$(xcodebuild -showBuildSettings -json "${XCB_ARGS[@]}" 2>/dev/null); then
-        APP_PATH=$(BAS_TARGET="$TARGET_NAME" python3 -c '
+        SETTINGS_RESULT=$(BAS_TARGET="$TARGET_NAME" python3 -c '
 import json, os, sys
 raw = sys.stdin.read()
 start = raw.find("[")
@@ -772,7 +796,12 @@ d = bs.get("BUILT_PRODUCTS_DIR", "")
 n = bs.get("FULL_PRODUCT_NAME") or bs.get("WRAPPER_NAME") or ""
 if d and n.endswith(".app"):
     print(os.path.join(d, n))
+print(bs.get("CODE_SIGN_ENTITLEMENTS", ""))
+print(bs.get("PROJECT_DIR", ""))
 ' <<<"$SETTINGS_JSON")
+        APP_PATH="$(printf '%s\n' "$SETTINGS_RESULT" | sed -n '1p')"
+        CODE_SIGN_ENTITLEMENTS_PATH="$(printf '%s\n' "$SETTINGS_RESULT" | sed -n '2p')"
+        XCODE_PROJECT_DIR="$(printf '%s\n' "$SETTINGS_RESULT" | sed -n '3p')"
     fi
     if [[ -n "$APP_PATH" && ! -d "$APP_PATH" ]]; then
         echo "WARNING: xcodebuild reported a product that is not on disk: $APP_PATH" >&2
@@ -810,21 +839,34 @@ if d and n.endswith(".app"):
     # An earlier bas embedded the runtime into DerivedData's product itself,
     # where an incremental build without --inject kept it.
     rm -f "$APP_PATH/Frameworks/DebugTraceInject.dylib"
-    rm -rf "$BUILD_DIR/Payload"
-    mkdir -p "$BUILD_DIR/Payload"
-    cp -R "$APP_PATH" "$BUILD_DIR/Payload/"
+    if [[ "$MACOS_BUILD" == true ]]; then
+        MACOS_APP_PATH="$BUILD_DIR/${TARGET_NAME}-macOS.app"
+        rm -rf "$MACOS_APP_PATH"
+        cp -R "$APP_PATH" "$MACOS_APP_PATH"
+        APP_PATH="$MACOS_APP_PATH"
+    else
+        rm -rf "$BUILD_DIR/Payload"
+        mkdir -p "$BUILD_DIR/Payload"
+        cp -R "$APP_PATH" "$BUILD_DIR/Payload/"
+    fi
     if [[ "$INJECT" == true ]]; then
         # Embed the patch runtime, compiled with the app's own flags, so the app
         # needs no DebugTraceInject dependency: DebugTraceServer loads it when
         # present. Into the packaged copy only, never DerivedData's product, so
         # the next build without --inject cannot carry it. Signed with
         # everything else in Frameworks/ at Step 4.
-        PAYLOAD_APP="$BUILD_DIR/Payload/$(basename "$APP_PATH")"
+        if [[ "$MACOS_BUILD" == true ]]; then
+            PAYLOAD_APP="$APP_PATH"
+        else
+            PAYLOAD_APP="$BUILD_DIR/Payload/$(basename "$APP_PATH")"
+        fi
         mkdir -p "$PAYLOAD_APP/Frameworks"
         "$INJECT_TOOL" runtime --dir "$INJECT_DIR" --out "$PAYLOAD_APP/Frameworks/DebugTraceInject.dylib" >>"$LOG_FILE" 2>&1 \
             || { echo "ERROR: could not build the live-patching runtime (see $LOG_FILE)" >&2; exit 1; }
     fi
-    ( cd "$BUILD_DIR" && rm -f "${TARGET_NAME}.ipa" && zip -qr "${TARGET_NAME}.ipa" Payload )
+    if [[ "$MACOS_BUILD" == false ]]; then
+        ( cd "$BUILD_DIR" && rm -f "${TARGET_NAME}.ipa" && zip -qr "${TARGET_NAME}.ipa" Payload )
+    fi
 fi
 
 # Use custom IPA path if specified
@@ -832,7 +874,7 @@ if [[ -n "$INPUT_IPA" ]]; then
     IPA_PATH="$INPUT_IPA"
 fi
 
-if [[ ! -f "$IPA_PATH" ]]; then
+if [[ "$MACOS_BUILD" == false && ! -f "$IPA_PATH" ]]; then
     echo "ERROR: IPA not found at $IPA_PATH" >&2
     exit 1
 fi
@@ -841,11 +883,25 @@ fi
 acquire_signing_lock
 setup_signing_keychain "$P12_PATH" "$P12_PW" >>"$LOG_FILE" 2>&1
 
-# Step 3: Extract entitlements from the provisioning profile
+# Step 3: Extract entitlements from the provisioning profile (mobile) or
+# Xcode's target entitlements file (macOS does not use UDID-bound profiles).
 ENTITLEMENTS_PLIST="$WORK_DIR/entitlements.plist"
-extract_entitlements "$PROFILE_PATH" "$ENTITLEMENTS_PLIST"
-merge_extra_entitlements "$ENTITLEMENTS_PLIST" "${EXTRA_ENTITLEMENTS_PLIST:-}" >>"$LOG_FILE" 2>&1
-substitute_associated_domains "$ENTITLEMENTS_PLIST" "${ASSOCIATED_DOMAINS:-}" >>"$LOG_FILE" 2>&1
+if [[ "$MACOS_BUILD" == true ]]; then
+    if [[ -z "$CODE_SIGN_ENTITLEMENTS_PATH" ]]; then
+        printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict/></plist>\n' >"$ENTITLEMENTS_PLIST"
+    else
+        [[ "$CODE_SIGN_ENTITLEMENTS_PATH" = /* ]] || CODE_SIGN_ENTITLEMENTS_PATH="${XCODE_PROJECT_DIR:-$PROJECT_ROOT}/$CODE_SIGN_ENTITLEMENTS_PATH"
+        [[ -f "$CODE_SIGN_ENTITLEMENTS_PATH" ]] || {
+            echo "ERROR: Xcode entitlements file not found: $CODE_SIGN_ENTITLEMENTS_PATH" >&2
+            exit 1
+        }
+        cp "$CODE_SIGN_ENTITLEMENTS_PATH" "$ENTITLEMENTS_PLIST"
+    fi
+else
+    extract_entitlements "$PROFILE_PATH" "$ENTITLEMENTS_PLIST"
+    merge_extra_entitlements "$ENTITLEMENTS_PLIST" "${EXTRA_ENTITLEMENTS_PLIST:-}" >>"$LOG_FILE" 2>&1
+    substitute_associated_domains "$ENTITLEMENTS_PLIST" "${ASSOCIATED_DOMAINS:-}" >>"$LOG_FILE" 2>&1
+fi
 WATCH_ENTITLEMENTS_PLIST=""
 if [[ -n "$WATCH_PROFILE_PATH" ]]; then
     WATCH_ENTITLEMENTS_PLIST="$WORK_DIR/entitlements-watch.plist"
@@ -865,13 +921,18 @@ fi
 # Step 4: Unpack IPA
 UNPACK_DIR="$WORK_DIR/unpack"
 mkdir -p "$UNPACK_DIR"
-unzip -qo "$IPA_PATH" -d "$UNPACK_DIR"
-
-APP_BUNDLE=$(find "$UNPACK_DIR/Payload" -name '*.app' -type d -maxdepth 1 | head -1)
+if [[ "$MACOS_BUILD" == true ]]; then
+    APP_BUNDLE="$MACOS_APP_PATH"
+else
+    unzip -qo "$IPA_PATH" -d "$UNPACK_DIR"
+    APP_BUNDLE=$(find "$UNPACK_DIR/Payload" -name '*.app' -type d -maxdepth 1 | head -1)
+fi
 if [[ -z "$APP_BUNDLE" ]]; then
     echo "ERROR: No .app found in IPA" >&2
     exit 1
 fi
+APP_INFO_PLIST="$APP_BUNDLE/Info.plist"
+[[ -f "$APP_BUNDLE/Contents/Info.plist" ]] && APP_INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
 
 # Step 4.1: refuse to sign a bundle that was built for a different platform.
 # This is the backstop for the entire "wrong .app shipped to the device"
@@ -887,10 +948,10 @@ fi
 # so an explicit --ipa of an iPad build (UIDeviceFamily includes 2) may go to
 # a visionOS device. Verified installing iPhone/iPad IPAs on a Vision Pro. Fresh builds stay strict: there
 # an iphoneos product for a visionOS run still means a stale DerivedData.
-if [[ -n "$EXPECTED_SDK" && -f "$APP_BUNDLE/Info.plist" ]]; then
-    BUILT_SDK=$(plutil -extract DTPlatformName raw -o - "$APP_BUNDLE/Info.plist" 2>/dev/null || true)
+if [[ -n "$EXPECTED_SDK" && -f "$APP_INFO_PLIST" ]]; then
+    BUILT_SDK=$(plutil -extract DTPlatformName raw -o - "$APP_INFO_PLIST" 2>/dev/null || true)
     if [[ -n "$INPUT_IPA" && "$BUILT_SDK" == "iphoneos" && "$EXPECTED_SDK" == "xros" ]] \
-        && plutil -extract UIDeviceFamily json -o - "$APP_BUNDLE/Info.plist" 2>/dev/null | grep -q '\b2\b'; then
+        && plutil -extract UIDeviceFamily json -o - "$APP_INFO_PLIST" 2>/dev/null | grep -q '\b2\b'; then
         echo "==> iPad build on a visionOS device: it will run in iPad compatibility mode."
         BUILT_SDK="$EXPECTED_SDK"
     fi
@@ -913,7 +974,7 @@ fi
 # extension would clone the app's ID → installd DuplicateIdentifier), so the
 # IDs are patched per-bundle here instead.
 if [[ -z "${BUILD_BUNDLE_ID:-}" ]]; then
-    BUILD_BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw -o - "$APP_BUNDLE/Info.plist")
+    BUILD_BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw -o - "$APP_INFO_PLIST")
 fi
 if [[ -z "${HAS_DEBUGTRACE:-}" ]]; then
     # Checked whether or not the conf names the bundle id: inside the branch
@@ -924,18 +985,18 @@ if [[ -z "${HAS_DEBUGTRACE:-}" ]]; then
     # <name>.debug.dylib, which holds the code while the main binary is a
     # stub). --log then asks it for its own compact log and its debug server
     # instead of the whole unified log.
-    APP_EXECUTABLE=$(plutil -extract CFBundleExecutable raw -o - "$APP_BUNDLE/Info.plist" 2>/dev/null || true)
+    APP_EXECUTABLE=$(plutil -extract CFBundleExecutable raw -o - "$APP_INFO_PLIST" 2>/dev/null || true)
     # DEBUGTRACE_SERVER marks the server product, which only apps with a
     # debug server link.
     HAS_DEBUGTRACE=false
     HAS_DEBUG_SERVER=false
-    for candidate in "$APP_BUNDLE/$APP_EXECUTABLE" "$APP_BUNDLE"/*.debug.dylib "$APP_BUNDLE"/Frameworks/*.framework/*; do
+    for candidate in "$APP_BUNDLE/$APP_EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/$APP_EXECUTABLE" "$APP_BUNDLE"/*.debug.dylib "$APP_BUNDLE"/Frameworks/*.framework/* "$APP_BUNDLE"/Contents/Frameworks/*.framework/*; do
         [[ -f "$candidate" ]] || continue
         /usr/bin/grep -qaF DEBUGTRACE_STDERR "$candidate" 2>/dev/null && HAS_DEBUGTRACE=true
         /usr/bin/grep -qaF DEBUGTRACE_SERVER "$candidate" 2>/dev/null && HAS_DEBUG_SERVER=true
     done
 fi
-plutil -replace CFBundleIdentifier -string "$BUILD_BUNDLE_ID" "$APP_BUNDLE/Info.plist"
+plutil -replace CFBundleIdentifier -string "$BUILD_BUNDLE_ID" "$APP_INFO_PLIST"
 # No PlugIns/ (app ships no extensions) must not abort the script: `find`
 # exits 1 on a missing path and this assignment runs under `set -e`.
 # ExtensionKit extensions (app-defined extension points) live in Extensions/
@@ -976,7 +1037,7 @@ if [[ "$SIGN_ONLY" == false ]]; then
         if ! git -C "$PROJECT_ROOT" diff --quiet HEAD -- 2>/dev/null; then
             GIT_STAMP="${GIT_STAMP}-dirty"
         fi
-        plutil -replace CFBundleVersion -string "$GIT_STAMP" "$APP_BUNDLE/Info.plist"
+        plutil -replace CFBundleVersion -string "$GIT_STAMP" "$APP_INFO_PLIST"
         if [[ -n "$APPEX_BUNDLE" ]]; then
             plutil -replace CFBundleVersion -string "$GIT_STAMP" "$APPEX_BUNDLE/Info.plist"
         fi
@@ -1100,7 +1161,9 @@ fi
 
 # Step 5: Embed provisioning profile (app + extension; both bundles resolve
 # their shared App Group from it at runtime)
-cp "$PROFILE_PATH" "$APP_BUNDLE/embedded.mobileprovision"
+if [[ "$MACOS_BUILD" == false ]]; then
+    cp "$PROFILE_PATH" "$APP_BUNDLE/embedded.mobileprovision"
+fi
 if [[ -n "$APPEX_BUNDLE" ]]; then
     cp "${APPEX_PROFILE_PATH:-$PROFILE_PATH}" "$APPEX_BUNDLE/embedded.mobileprovision"
 fi
@@ -1130,7 +1193,9 @@ if [[ -n "$WATCH_ID" && -z "$WATCH_ENTITLEMENTS_PLIST" ]]; then
         cp "$ENTITLEMENTS_PLIST" "$WATCH_ENTITLEMENTS_PLIST"
     fi
 fi
-_concretize_wildcard_app_id "$ENTITLEMENTS_PLIST" "$BUILD_BUNDLE_ID"
+if [[ "$MACOS_BUILD" == false ]]; then
+    _concretize_wildcard_app_id "$ENTITLEMENTS_PLIST" "$BUILD_BUNDLE_ID"
+fi
 if [[ -n "$WATCH_ENTITLEMENTS_PLIST" && -n "$WATCH_ID" ]]; then
     _concretize_wildcard_app_id "$WATCH_ENTITLEMENTS_PLIST" "$WATCH_ID"
 fi
@@ -1144,7 +1209,7 @@ fi
 echo "==> Signing..."
 sign_app "$APP_BUNDLE" "$SIGN_IDENTITY" "$ENTITLEMENTS_PLIST" "$KEYCHAIN_PATH" "$LOG_FILE"
 
-# Step 7: Repack as signed IPA
+# Step 7: Repack as signed IPA (macOS artifact remains the signed .app).
 # Always into $BUILD_DIR under a name derived from TARGET_NAME (never next
 # to whatever IPA_PATH happened to be) — one stable, overwritten-in-place
 # location per repo, regardless of where the source IPA came from. This is
@@ -1153,8 +1218,12 @@ sign_app "$APP_BUNDLE" "$SIGN_IDENTITY" "$ENTITLEMENTS_PLIST" "$KEYCHAIN_PATH" "
 # anywhere else (e.g. next to a --ipa input) orphans that read and, worse,
 # leaves a signed artifact sitting where a later find_static_ipa() scan
 # could mistake it for fresh input.
-SIGNED_IPA="$BUILD_DIR/${TARGET_NAME}-signed.ipa"
-( cd "$UNPACK_DIR" && rm -f "$SIGNED_IPA" && zip -qr "$SIGNED_IPA" Payload ) >>"$LOG_FILE" 2>&1
+if [[ "$MACOS_BUILD" == true ]]; then
+    SIGNED_APP="$MACOS_APP_PATH"
+else
+    SIGNED_IPA="$BUILD_DIR/${TARGET_NAME}-signed.ipa"
+    ( cd "$UNPACK_DIR" && rm -f "$SIGNED_IPA" && zip -qr "$SIGNED_IPA" Payload ) >>"$LOG_FILE" 2>&1
+fi
 
 # Step 8: Verify (logged only — codesign succeeding is implied by reaching
 # here under set -e; the identity/team aren't worth a report line every run)
@@ -1221,7 +1290,11 @@ for d in exact + loose:
 }
 
 # Step 9: Deploy to device
-INSTALL_STATUS="skipped"
+if [[ "$MACOS_BUILD" == true ]]; then
+    INSTALL_STATUS=""
+else
+    INSTALL_STATUS="skipped"
+fi
 if [[ "$NO_DEPLOY" == false ]]; then
     echo "==> Installing to $DEVICE_NAME..."
     resolve_device_id
@@ -1431,7 +1504,12 @@ printf '  %-12s %s\n' "App:" "$BUILD_BUNDLE_ID"
 [[ -n "$GIT_STAMP" ]] && printf '  %-12s %s\n' "Build:" "$GIT_STAMP"
 printf '  %-12s %s\n' "Config:" "$CONFIG"
 printf '  %-12s %s items\n' "Signed:" "$SIGNED_COUNT"
-printf '  %-12s %s\n' "IPA:" "$SIGNED_IPA"
+if [[ "$MACOS_BUILD" == true ]]; then
+    printf '  %-12s %s\n' "App path:" "$SIGNED_APP"
+    printf '  %-12s copy this .app wherever you want\n' "Next step:"
+else
+    printf '  %-12s %s\n' "IPA:" "$SIGNED_IPA"
+fi
 case "$INSTALL_STATUS" in
     installed) printf '  %-12s ✓ installed on %s\n' "Status:" "$DEVICE_NAME" ;;
     skipped)   printf '  %-12s not deployed (install with: xcrun devicectl device install app --device <UDID> '"'"'%s'"'"')\n' "Status:" "$SIGNED_IPA" ;;
