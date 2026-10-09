@@ -131,6 +131,22 @@ describe('crash log pull', () => {
     assert.deepEqual(await store.pull('AVP', { force: true }), { copied: 1, kept: 1 });
   });
 
+  test('trashing the files is forgetting the crash', async () => {
+    const device = fakeDevice({
+      'a.ips': { modified: T0, text: ips() },
+      'b.ips': { modified: T0 + 1000, text: ips({ incident_id: 'BBBB0000' }) },
+    });
+    const { store, dir } = make(device);
+    await store.pull('AVP');
+    const [first] = store.list();
+    fs.rmSync(path.join(dir, first.file));   // what `trash` does to it
+    assert.equal(store.list().length, 1);
+    assert.equal(store.get(first.id), null);
+    assert.equal(fs.existsSync(path.join(dir, first.symbolicated)), false);
+    await store.pull('AVP', { force: true });  // and it does not come back
+    assert.equal(store.list().length, 1);
+  });
+
   test('the index survives a restart', async () => {
     const device = fakeDevice({ 'a.ips': { modified: T0, text: ips() } });
     const { store, dir } = make(device);
