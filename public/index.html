@@ -467,6 +467,17 @@
       <thead><tr><th>Received</th><th>App</th><th>Build</th><th>Device</th><th>Note</th><th></th></tr></thead>
       <tbody id="tracelist"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
     </table>
+    <div class="tracehead" style="margin-top:28px">
+      <h3>Crash logs from devices</h3>
+      <span class="hint">Pulled from each device's crash logs every few minutes, even while it is locked</span>
+      <span style="margin-left:auto"></span>
+      <button class="ghost" id="crashRefreshBtn">Pull now</button>
+    </div>
+    <div class="muted" id="crashstatus" style="font-size:.74rem;margin-bottom:6px"></div>
+    <table>
+      <thead><tr><th>Crashed</th><th>App</th><th>Crash</th><th>Device</th><th></th></tr></thead>
+      <tbody id="crashlist"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
   </section>
   <section class="view history" data-view="history">
     <h3>Build history</h3>
@@ -815,6 +826,37 @@ $('#traceFile').addEventListener('change', e => { uploadTrace(e.target.files[0])
 }
 pollTraces();
 setInterval(pollTraces, 10000);
+
+// ---- crash logs pulled from devices ----
+async function pollCrashLogs(){
+  try {
+    const r = await api('/api/crashlogs');
+    const tb = $('#crashlist');
+    const pull = Object.entries(r.pull || {});
+    $('#crashstatus').innerHTML = pull.map(([d, p]) => p.error
+      ? `<b>${esc(d)}</b>: ${esc(p.error)} <span class="muted">(${ago(p.polledAt)})</span>`
+      : `<b>${esc(d)}</b>: ok <span class="muted">(${ago(p.polledAt)})</span>`).join(' &nbsp;·&nbsp; ');
+    const list = r.crashLogs || [];
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">No crash logs yet.</td></tr>'; return; }
+    tb.innerHTML = list.map(c => `<tr>
+      <td class="mono">${ago(c.capturedAt)}</td>
+      <td><b>${esc(c.appName||'')}</b><br><span class="muted">${esc(c.bundleId)}</span></td>
+      <td class="mono">${esc(c.exception||c.termination||'')}<br><span class="muted">${esc(c.build||'')} · ${esc(c.os||'')}</span></td>
+      <td>${esc(c.device)}</td>
+      <td style="white-space:nowrap">${c.symbolicated?`<a href="/api/crashlogs/${c.id}/symbolicated" target="_blank" rel="noopener">symbolicated</a> · `:''}<a href="/api/crashlogs/${c.id}/ips" target="_blank" rel="noopener">.ips</a>${c.traceId?` · <a href="#traces" data-opentrace="${c.traceId}">trace</a>`:''}</td>
+    </tr>`).join('');
+  } catch {}
+}
+document.addEventListener('click', async e => {
+  const t = e.target;
+  if (t.id === 'crashRefreshBtn') {
+    await api('/api/crashlogs/refresh', { method: 'POST' });
+    toast('Pulling crash logs…'); setTimeout(pollCrashLogs, 4000); return;
+  }
+  if (t.dataset?.opentrace) { openTraces.add(t.dataset.opentrace); renderTraces(); }
+});
+pollCrashLogs();
+setInterval(pollCrashLogs, 10000);
 
 // ---- views ----
 const VIEWS = ['deploy', 'debug', 'traces', 'history'];

@@ -973,11 +973,61 @@ async function receiveTrace(req) {
   fs.writeFileSync(path.join(tmp, 'meta.json'), JSON.stringify(meta, null, 1));
   fs.renameSync(tmp, dir);
   pruneTraces();
+  setImmediate(linkCrashLogs); // a crash log pulled before this trace arrived
   console.log(`[${new Date().toISOString()}] trace ${id} from ${manifest.app.bundleId} ${manifest.app.build} (${files.length} files, ${buf.length} bytes)`);
   return { status: 201, meta };
 }
 
 const TRACE_TEXT = new Set(['.txt', '.json', '.jsonl', '.md', '.log', '.csv']);
+
+// ---------- crash logs from the devices ----------
+// The .ips files the devices keep (systemCrashLogs), pulled by a poller; see lib/crashlogs.js.
+// config.json `crashLogs`: {enabled (default true), intervalSeconds (300), maxAgeDays (14), backfillDays (3)}.
+const { createCrashLogs, crashRefs } = require('./lib/crashlogs');
+const crashDevices = {
+  async list(device) {
+    const j = await devicectlJson(['device', 'info', 'files', '--device', device, '--domain-type', 'systemCrashLogs'], 90000);
+    return (j.result?.files || []).map(f => ({
+      name: f.relativePath || f.name,
+      modified: Date.parse(f.metadata?.lastModDate || '') || 0,
+      isDirectory: Boolean(f.resources?.isDirectory),
+    }));
+  },
+  async copy(device, name, dest) {
+    const r = await run('xcrun', ['devicectl', 'device', 'copy', 'from', '--device', device,
+      '--domain-type', 'systemCrashLogs', '--source', name, '--destination', dest], { timeout: 60000 });
+    if (r.code !== 0) throw new Error((r.stderr || r.stdout || 'copy failed').trim().split('\n').pop());
+  },
+};
+// DebugTrace's debugtrace-symbolicate, next to the debugtrace-mcp that `debugtraceTool` names.
+function symbolicateTool() {
+  if (CONFIG.symbolicateTool) return CONFIG.symbolicateTool;
+  return CONFIG.debugtraceTool ? path.join(path.dirname(CONFIG.debugtraceTool), 'debugtrace-symbolicate') : null;
+}
+const crashLogs = createCrashLogs({
+  dir: path.join(DATA_DIR, 'crashlogs'),
+  devices: crashDevices,
+  prefixes: () => BUNDLE_PREFIXES,
+  maxAgeDays: CONFIG.crashLogs?.maxAgeDays || 14,
+  backfillDays: CONFIG.crashLogs?.backfillDays || 3,
+  log: m => console.log(`[${new Date().toISOString()}] ${m}`),
+  async symbolicate(ipsPath) {
+    const tool = symbolicateTool();
+    if (!tool || !fs.existsSync(tool)) return null;
+    const r = await run('/usr/bin/python3', ['-I', tool, ipsPath], { timeout: 60000 });
+    return r.code === 0 ? r.stdout : null;
+  },
+});
+function linkCrashLogs() {
+  try { crashLogs.link(crashRefs(TRACE_DIR, listTraces().slice(0, 100))); } catch (e) { console.error('crash log link failed:', e.message); }
+}
+async function pullCrashLogs(force = false) {
+  if (CONFIG.crashLogs?.enabled === false) return;
+  const names = new Set();
+  for (const r of CONFIG.repos) for (const p of r.platforms) names.add(p.device);
+  await Promise.allSettled([...names].map(d => crashLogs.pull(d, { force })));
+  linkCrashLogs();
+}
 
 // ---------- HTTP ----------
 function json(res, code, obj) {
@@ -1221,6 +1271,24 @@ const server = http.createServer(async (req, res) => {
       refreshAllDevices(); // async
       return json(res, 200, { ok: true });
     }
+    if (url.pathname === '/api/crashlogs' && req.method === 'GET') {
+      return json(res, 200, { crashLogs: crashLogs.list(), pull: crashLogs.status() });
+    }
+    if (url.pathname === '/api/crashlogs/refresh' && req.method === 'POST') {
+      pullCrashLogs(true); // async
+      return json(res, 200, { ok: true });
+    }
+    m = url.pathname.match(/^\/api\/crashlogs\/([0-9a-f-]{8,64})\/(ips|symbolicated)$/);
+    if (m && req.method === 'GET') {
+      const entry = crashLogs.get(m[1]);
+      const rel = entry && (m[2] === 'ips' ? entry.file : entry.symbolicated);
+      if (!rel || !fs.existsSync(crashLogs.resolve(rel))) return json(res, 404, { error: 'unknown crash log' });
+      // As text, never HTML: the content came from a device.
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'" });
+      fs.createReadStream(crashLogs.resolve(rel)).pipe(res);
+      return;
+    }
     if (url.pathname === '/api/traces' && req.method === 'POST') {
       try {
         const { status, meta } = await receiveTrace(req);
@@ -1305,6 +1373,9 @@ if (require.main === module) {
   server.listen(CONFIG.port, '127.0.0.1', () => {
     console.log(`appstore listening on http://127.0.0.1:${CONFIG.port}`);
     refreshAllDevices(); // warm the inventory on startup
+    // Crash logs: first look shortly after start, then on a timer.
+    setTimeout(() => pullCrashLogs(), 15000);
+    setInterval(() => pullCrashLogs(), (CONFIG.crashLogs?.intervalSeconds || 300) * 1000).unref();
     reapBuildClones();
     backfillOta().catch(e => console.error('OTA backfill failed:', e)); // adopt pre-ledger IPAs
   });

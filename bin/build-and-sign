@@ -1294,7 +1294,8 @@ for d in exact + loose:
 # old build while others move on, and the build folder's dSYM is replaced by the
 # next build, so a crash report from the old build could no longer be symbolicated.
 # One slot per bundle id and device, replaced by the next successful install to
-# that device: it never grows, and it always matches what the device runs.
+# that device (the replaced one is kept once, as <slot>.previous): it never grows
+# past two builds, and it always matches what the device runs.
 # `cp -c` clones on APFS, so there is no copy time and no extra disk until the
 # build folder's dSYM is overwritten. uuids.json maps each binary UUID to its DWARF
 # file, which is how DebugTrace/Tools/debugtrace-symbolicate finds the dSYM for a
@@ -1332,7 +1333,10 @@ record = {"bundleId": e["DSYM_BUNDLE"], "device": e["DSYM_DEVICE"], "build": e["
           "keyId": e["DSYM_KEY_ID"], "archivedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uuids": uuids}
 json.dump(record, open(os.path.join(e["DSYM_SLOT"], "uuids.json"), "w"), indent=1)
 '
-    rm -rf "$slot"
+    # The build before this one stays as <slot>.previous: a crash is only reported on the next
+    # launch, and if the app was updated in between, that report is about the build just replaced.
+    rm -rf "$slot.previous"
+    [[ -d "$slot" ]] && mv "$slot" "$slot.previous"
     mv "$tmp" "$slot"
     echo "==> Kept dSYMs for $BUILD_BUNDLE_ID on ${DEVICE_NAME:-local} ($(du -sh "$slot" | cut -f1))"
 }
