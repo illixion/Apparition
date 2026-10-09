@@ -1289,6 +1289,54 @@ for d in exact + loose:
     fi
 }
 
+# Step 8.5 (runs after Step 9's install): keep the dSYMs of what is now on the
+# device, one set per app and device. A device that is not updated stays on its
+# old build while others move on, and the build folder's dSYM is replaced by the
+# next build, so a crash report from the old build could no longer be symbolicated.
+# One slot per bundle id and device, replaced by the next successful install to
+# that device: it never grows, and it always matches what the device runs.
+# `cp -c` clones on APFS, so there is no copy time and no extra disk until the
+# build folder's dSYM is overwritten. uuids.json maps each binary UUID to its DWARF
+# file, which is how DebugTrace/Tools/debugtrace-symbolicate finds the dSYM for a
+# MetricKit report. DEBUGTRACE_DSYM_DIR overrides the location.
+DEBUGTRACE_DSYM_DIR="${DEBUGTRACE_DSYM_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/debugtrace/dsyms}"
+archive_dsyms() {
+    local products slot tmp dsym build_no
+    products="$(dirname "$APP_PATH")"
+    slot="$DEBUGTRACE_DSYM_DIR/$BUILD_BUNDLE_ID@${DEVICE_NAME:-local}"
+    if ! compgen -G "$products/*.dSYM" >/dev/null; then
+        echo "WARNING: no dSYM next to $(basename "$APP_PATH"); crash reports from this build can't be symbolicated" >&2
+        return 0
+    fi
+    mkdir -p "$DEBUGTRACE_DSYM_DIR"
+    tmp="$slot.incoming"
+    rm -rf "$tmp"
+    mkdir -p "$tmp"
+    for dsym in "$products"/*.dSYM; do
+        cp -cR "$dsym" "$tmp/" 2>/dev/null || cp -R "$dsym" "$tmp/"
+    done
+    build_no=$(plutil -extract CFBundleVersion raw -o - "$APP_BUNDLE/Info.plist" 2>/dev/null \
+        || plutil -extract CFBundleVersion raw -o - "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)
+    DSYM_SLOT="$tmp" DSYM_BUILD="$build_no" DSYM_KEY_ID="$TRACE_KEY_ID" DSYM_BUNDLE="$BUILD_BUNDLE_ID" \
+    DSYM_DEVICE="${DEVICE_NAME:-local}" /usr/bin/python3 -c '
+import glob, json, os, re, subprocess, time
+e = os.environ
+uuids = {}
+for dsym in sorted(glob.glob(os.path.join(e["DSYM_SLOT"], "*.dSYM"))):
+    out = subprocess.run(["dwarfdump", "--uuid", dsym], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        m = re.match(r"UUID: ([0-9A-F-]{36}) \((\S+)\) (.+)$", line)
+        if m:
+            uuids.setdefault(m.group(1), {"arch": m.group(2), "dwarf": os.path.relpath(m.group(3), e["DSYM_SLOT"])})
+record = {"bundleId": e["DSYM_BUNDLE"], "device": e["DSYM_DEVICE"], "build": e["DSYM_BUILD"],
+          "keyId": e["DSYM_KEY_ID"], "archivedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uuids": uuids}
+json.dump(record, open(os.path.join(e["DSYM_SLOT"], "uuids.json"), "w"), indent=1)
+'
+    rm -rf "$slot"
+    mv "$tmp" "$slot"
+    echo "==> Kept dSYMs for $BUILD_BUNDLE_ID on ${DEVICE_NAME:-local} ($(du -sh "$slot" | cut -f1))"
+}
+
 # Step 9: Deploy to device
 if [[ "$MACOS_BUILD" == true ]]; then
     INSTALL_STATUS=""
@@ -1303,6 +1351,10 @@ if [[ "$NO_DEPLOY" == false ]]; then
     # so its own output is clean already; still logged in case of failure.
     xcrun devicectl device install app --device "$DEVICE_ID" "$SIGNED_IPA" >>"$LOG_FILE" 2>&1
     INSTALL_STATUS="installed"
+fi
+if [[ "$INSTALL_STATUS" == installed && "${HAS_DEBUGTRACE:-false}" == true && "$USE_DIST" == false \
+      && "$SIGN_ONLY" == false && -n "${APP_PATH:-}" ]]; then
+    archive_dsyms || echo "WARNING: could not keep the dSYMs of this build" >&2
 fi
 
 # Finds the app's DebugTrace debug server after a --log launch and writes how
