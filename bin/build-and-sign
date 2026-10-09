@@ -466,6 +466,28 @@ release_build_lock() {
     BUILD_LOCK_HELD=false
 }
 
+# build-and-sign has two stable caches per checkout. Older versions and
+# ad-hoc xcodebuild invocations left additional DerivedData trees alongside
+# them (often with a different scheme/platform in the name), and those grew
+# without limit. Once this checkout's build lock is held, discard only
+# direct-child Xcode DerivedData trees that are not either stable cache.
+# Archives, IPAs, app bundles, logs, screenshots, and Xcode's global
+# ~/Library/Developer/Xcode/DerivedData are outside this match.
+prune_legacy_derived_data() {
+    local candidate
+    for candidate in "$BUILD_DIR"/*; do
+        [[ -d "$candidate" && ! -L "$candidate" ]] || continue
+        [[ "$candidate" == "$BUILD_DIR/DerivedData" || \
+           "$candidate" == "$BUILD_DIR/DerivedData-inject" ]] && continue
+        if [[ -f "$candidate/Info.plist" && \
+              -d "$candidate/Build/Products" && \
+              -d "$candidate/Build/Intermediates.noindex" ]]; then
+            echo "==> Removing legacy DerivedData cache: $candidate"
+            rm -rf -- "$candidate"
+        fi
+    done
+}
+
 cleanup() {
     if [[ -n "$KEYCHAIN_PATH" && -f "$KEYCHAIN_PATH" ]]; then
         if [[ -n "$ORIGINAL_KEYCHAINS" ]]; then
@@ -681,6 +703,8 @@ IPA_PATH="$BUILD_DIR/${TARGET_NAME}.ipa"
 
 # Step 1: Build (unless --sign-only)
 if [[ "$SIGN_ONLY" == false ]]; then
+    prune_legacy_derived_data
+
     # Figure out whether PROJECT_PATH is a project or a workspace
     case "$PROJECT_PATH" in
         *.xcworkspace) PROJECT_FLAG="-workspace" ;;
