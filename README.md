@@ -105,10 +105,18 @@ that ledger. Set `DEBUGTRACE_UPLOAD_URL` in `global.conf` to the server's URL.
 ## AltStore source (auto-update)
 
 With `"altSource": { "enabled": true }` in `config.json` (restart after changing it), the server
-publishes an [AltStore-format source](https://faq.altstore.io/developers/make-a-source) of every
-configured app, which AltStore, SideStore, or any client that reads the format can subscribe to.
-The `/ota` page shows the source URL and "Add to AltStore / SideStore" links; `GET /api/altsource`
+publishes [AltStore-format sources](https://faq.altstore.io/developers/make-a-source) of the
+configured apps, which AltStore, SideStore, or any client that reads the format can subscribe to.
+The `/ota` page shows each source URL with "Add to AltStore / SideStore" links; `GET /api/altsource`
 returns the same.
+
+- **One source per platform**, generated on request: `/altsource/<platform>.json` for every platform
+  name in `config.json` (`iOS`, `iPad`, `visionOS`, …; case doesn't matter), because AltStore
+  can't filter a source by device. Each lists the apps that have a row for that platform, built
+  with that row's settings, so an `iPad` or `visionOS` alias gets its own build. Add the one that
+  matches the device.
+- `/altsource/source.json` combines them, one entry per bundle id (the first row wins), for
+  clients that filter on the per-app `platform` key themselves.
 
 - Each app is listed at the head of its source branch (a repo's `altSource.branch`, else `main` or
   `master` when offered, else its first branch). `buildVersion` is that commit's short SHA, the
@@ -132,8 +140,8 @@ returns the same.
 Settings, all optional: `name`, `identifier`, `subtitle`, `iconURL`, `website`, `developerName`,
 `branch`, `token`, `holdSeconds`, `linkTtlDays` (7). Per repo, `"altSource": false` leaves it out,
 or `{ branch, platforms: ["iOS"], description, subtitle, iconURL, developerName, category }`.
-A source lists a bundle id once: the repo's first platform row with it wins unless `platforms`
-picks one.
+`platforms` limits which of the repo's rows reach the sources. Within one source a bundle id is
+listed once, so of two rows with the same platform and bundle id (two iPhones), the first wins.
 
 ## Tests
 

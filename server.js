@@ -422,7 +422,7 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDe
 function enqueueAltSourceBuild(app, commit) {
   const job = {
     id: state.nextBuildId++, batchId: null,
-    repo: app.repo, branch: app.branch, rev: commit, altSource: true,
+    repo: app.repo, branch: app.branch, rev: commit, altSource: app.slug,
     platform: app.platform, device: app.device, bundleId: app.bundleId,
     noDeploy: true, mcp: false, run: false, buildDebug: false, inject: false,
     status: 'queued', queuedAt: Date.now(),
@@ -532,7 +532,7 @@ async function executeBuild(job) {
     // nothing for the waiting download to serve, so the build has failed
     if (job.altSource) {
       if (!ipaPath) throw new Error('no signed IPA found after the build');
-      await altSource.record(safeSlug(job.bundleId), job.rev, ipaPath);
+      await altSource.record(job.altSource, job.rev, ipaPath);
       log(`==> Store: AltSource has ${job.bundleId} @ ${job.rev} (${buildNo || '?'})\n`);
     }
 
@@ -771,7 +771,7 @@ function signedOtaUrl(req, pathname) {
 // developerName, branch, token, holdSeconds (50), linkTtlDays (7)}; per repo
 // `altSource: false` leaves it out, or {branch, platforms, description, subtitle,
 // iconURL, developerName, category}. See lib/altsource.js for the flow.
-const { createAltSource, sourceApps } = require('./lib/altsource');
+const { createAltSource, sourceApps, sourcePlatforms, allSourceApps } = require('./lib/altsource');
 const altSourceOn = () => CONFIG.altSource?.enabled === true;
 const headCache = new Map(); // `${path}|${branch}` -> {at, head}
 async function branchHead(app) {
@@ -787,7 +787,8 @@ async function branchHead(app) {
 }
 const altSource = createAltSource({
   dir: path.join(DATA_DIR, 'altsource'),
-  apps: () => sourceApps(CONFIG),
+  apps: platform => sourceApps(CONFIG, platform),
+  allApps: () => allSourceApps(CONFIG),
   head: branchHead,
   enqueue: enqueueAltSourceBuild,
   job: id => state.builds.find(b => b.id === id),
@@ -807,8 +808,20 @@ function altSourceToken() {
   const t = CONFIG.altSource?.token;
   return typeof t === 'string' && t.length >= 16 ? t : auth.derive('altsource-feed');
 }
-function altSourceUrl(req) {
-  return `${requestBase(req)}/altsource/source.json?k=${encodeURIComponent(altSourceToken())}`;
+// One source per configured platform name (`/altsource/<platform>.json`), so
+// AltStore on an iPhone lists only what the iPhone rows build; `source.json`
+// combines them (one row per bundle id) for clients that filter by the
+// per-app `platform` key themselves.
+function altSourceUrl(req, platform = null) {
+  return `${requestBase(req)}/altsource/${platform ? encodeURIComponent(platform) : 'source'}.json?k=${encodeURIComponent(altSourceToken())}`;
+}
+function altSourceLinks(req) {
+  const one = (platform, url) => ({ platform, url,
+    altstore: `altstore://source?url=${encodeURIComponent(url)}`, sidestore: `sidestore://source?url=${encodeURIComponent(url)}` });
+  return {
+    sources: sourcePlatforms(CONFIG).map(p => one(p, altSourceUrl(req, p))),
+    combined: one(null, altSourceUrl(req)),
+  };
 }
 // Links inside the feed are signed per path, valid for linkTtlDays (the feed is
 // refetched on every refresh, so they never get old in practice).
@@ -893,12 +906,14 @@ ${rows.join('\n')}
 </table>
 <p><small>Latest published build per app/platform. Install requires this device's UDID in the app's provisioning profile.</small></p>
 ${altSourceOn() ? (() => {
-  const src = altSourceUrl(req);
-  return `<h3>AltStore source</h3>
-<p><small>Every app at the head of its source branch. A download builds that commit if it isn't built yet and answers when the build is done.</small></p>
-<p><input readonly style="width:100%;background:#222;color:#eee;border:1px solid #444;padding:.4em;border-radius:6px" value="${xmlEsc(src)}" onclick="this.select()"></p>
-<p><a class="btn" href="${xmlEsc('altstore://source?url=' + encodeURIComponent(src))}">Add to AltStore</a>
-<a class="btn" href="${xmlEsc('sidestore://source?url=' + encodeURIComponent(src))}">Add to SideStore</a></p>`;
+  const { sources, combined } = altSourceLinks(req);
+  const block = (label, s) => `<h4>${xmlEsc(label)}</h4>
+<p><input readonly style="width:100%;background:#222;color:#eee;border:1px solid #444;padding:.4em;border-radius:6px" value="${xmlEsc(s.url)}" onclick="this.select()"></p>
+<p><a class="btn" href="${xmlEsc(s.altstore)}">Add to AltStore</a> <a class="btn" href="${xmlEsc(s.sidestore)}">Add to SideStore</a></p>`;
+  return `<h3>AltStore sources</h3>
+<p><small>One per platform: add the one for this device. Every app is at the head of its source branch; a download builds that commit if it isn't built yet and answers when the build is done.</small></p>
+${sources.map(s => block(s.platform, s)).join('\n')}
+${block('All platforms (for clients that filter by the app\'s platform key)', combined)}`;
 })() : ''}
 </body></html>`;
 }
@@ -1351,13 +1366,19 @@ const server = http.createServer(async (req, res) => {
     // links their own signatures; all of it is gone while the mode is off.
     if (url.pathname.startsWith('/altsource/') && req.method === 'GET') {
       if (!altSourceOn()) return json(res, 404, { error: 'not found' });
-      if (url.pathname === '/altsource/source.json') {
+      const fm = url.pathname.match(/^\/altsource\/([A-Za-z0-9._-]+)\.json$/);
+      if (fm) {
         const k = String(url.searchParams.get('k') || '');
         const want = altSourceToken();
         if (k.length !== want.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(want))) {
           return json(res, 403, { error: 'wrong or missing feed token' });
         }
-        const doc = await altSource.source({ title: brand().title, cfg: CONFIG.altSource, url: p => altSourceLink(req, p) });
+        let platform = null;
+        if (fm[1] !== 'source') {
+          platform = sourcePlatforms(CONFIG).find(p => p.toLowerCase() === fm[1].toLowerCase());
+          if (!platform) return json(res, 404, { error: `no apps for platform ${fm[1]}`, platforms: sourcePlatforms(CONFIG) });
+        }
+        const doc = await altSource.source({ title: brand().title, cfg: CONFIG.altSource, platform, url: p => altSourceLink(req, p) });
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
         return res.end(JSON.stringify(doc, null, 1));
       }
@@ -1427,9 +1448,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/altsource' && req.method === 'GET') {
       if (!altSourceOn()) return json(res, 200, { enabled: false });
-      const src = altSourceUrl(req);
-      return json(res, 200, { enabled: true, url: src, building: altSource.building(),
-        altstore: `altstore://source?url=${encodeURIComponent(src)}`, sidestore: `sidestore://source?url=${encodeURIComponent(src)}` });
+      return json(res, 200, { enabled: true, ...altSourceLinks(req), building: altSource.building() });
     }
     if (url.pathname === '/api/state' && req.method === 'GET') {
       return json(res, 200, await stateBundle());

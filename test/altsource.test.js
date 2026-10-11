@@ -10,7 +10,7 @@ const http = require('node:http');
 const path = require('node:path');
 const { spawn, execFileSync } = require('node:child_process');
 const { hashPassword } = require('../lib/auth');
-const { createAltSource, sourceApps, sourceBranch, buildSource, sameCommit } = require('../lib/altsource');
+const { createAltSource, sourceApps, sourcePlatforms, allSourceApps, sourceBranch, buildSource, sameCommit } = require('../lib/altsource');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-altsource-'));
 
@@ -38,6 +38,32 @@ describe('listing', () => {
       ['com.example.c.tv', 'tvOS', 'y'],
     ]);
     assert.equal(apps[0].developerName, 'Ixion');
+    assert.equal(apps[0].slug, 'com.example.a-iOS');
+  });
+
+  test('one source per offered platform name, aliases included', () => {
+    assert.deepEqual(sourcePlatforms(config), ['iOS', 'iPad', 'visionOS', 'tvOS']);
+  });
+
+  test('a platform source lists that platform\'s rows, keyed per platform', () => {
+    assert.deepEqual(sourceApps(config, 'iPad').map(a => [a.bundleId, a.device, a.slug]), [['com.example.a', 'Pad', 'com.example.a-iPad']]);
+    assert.deepEqual(sourceApps(config, 'visionOS').map(a => a.bundleId), ['com.example.a.vision']);
+    assert.deepEqual(sourceApps(config, 'tvOS').map(a => a.bundleId), ['com.example.c.tv']);
+    // C's iOS row is filtered out by its altSource.platforms, B is opted out
+    assert.deepEqual(sourceApps(config, 'iOS').map(a => a.bundleId), ['com.example.a']);
+    assert.deepEqual(sourceApps(config, 'watchOS'), []);
+  });
+
+  test('every slug any source lists can be downloaded', () => {
+    assert.deepEqual(allSourceApps(config).map(a => a.slug).sort(),
+      ['com.example.a-iOS', 'com.example.a-iPad', 'com.example.a.vision-visionOS', 'com.example.c.tv-tvOS']);
+  });
+
+  test('platform sources get their own name and identifier', () => {
+    const doc = buildSource({ cfg: { name: 'N', identifier: 'x.y' }, title: 'T', apps: [], url: p => p, platform: 'visionOS' });
+    assert.equal(doc.name, 'N (visionOS)');
+    assert.equal(doc.identifier, 'x.y.visionos');
+    assert.equal(buildSource({ cfg: { identifier: 'x.y' }, title: 'T', apps: [], url: p => p }).identifier, 'x.y');
   });
 
   test('branch: own, then source-wide if offered, then main/master, then first', () => {
@@ -99,6 +125,7 @@ describe('requests', () => {
     const s = createAltSource({
       dir,
       apps: () => [{ slug: 'com.example.a', repo: 'A', bundleId: 'com.example.a', platform: 'iOS', branch: 'main' }],
+      allApps: () => [{ slug: 'com.example.a', repo: 'A', bundleId: 'com.example.a', platform: 'iOS', branch: 'main' }],
       head: async () => ({ commit: 'abc1234', date: 'd', subject: 's' }),
       enqueue: (app, commit) => { const j = { id: nextId++, status: 'queued' }; jobs.set(j.id, j); enqueued.push(commit); return j; },
       job: id => jobs.get(id),
@@ -221,7 +248,8 @@ echo "PLATFORM=$PLATFORM"
     port, bundlePrefix: 'com.example', buildAndSign: fake, passwordHash: hashPassword(PASSWORD),
     altSource: { enabled: true, name: 'Test Source', holdSeconds: 1 },
     repos: [{ name: 'Fake', path: repo, branches: ['main'],
-      platforms: [{ platform: 'iOS', bundleId: 'com.example.fake', device: 'Phone' }] }],
+      platforms: [{ platform: 'iOS', bundleId: 'com.example.fake', device: 'Phone' },
+        { platform: 'visionOS', bundleId: 'com.example.fake', device: 'AVP' }] }],
   }));
   server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'config.json'), APPSTORE_DATA: path.join(TMP, 'data'),
@@ -250,20 +278,36 @@ describe('end to end', () => {
     assert.equal((await get('/api/altsource')).status, 401);
     const info = await get('/api/altsource', { Cookie: cookie });
     assert.equal(info.json.enabled, true);
-    assert.match(info.json.altstore, /^altstore:\/\/source\?url=/);
-    const feed = await get(new URL(info.json.url).pathname + new URL(info.json.url).search);
+    assert.deepEqual(info.json.sources.map(s => s.platform), ['iOS', 'visionOS']);
+    assert.match(info.json.sources[1].altstore, /^altstore:\/\/source\?url=.*visionOS\.json/);
+    const feed = await get(new URL(info.json.combined.url).pathname + new URL(info.json.combined.url).search);
     assert.equal(feed.status, 200);
     assert.equal(feed.json.name, 'Test Source');
+    assert.equal(feed.json.apps.length, 1);
+  });
+
+  test('platform sources list their own row; unknown platforms are 404', async () => {
+    const info = await get('/api/altsource', { Cookie: cookie });
+    const u = new URL(info.json.sources[1].url);
+    const feed = await get(u.pathname + u.search);
+    assert.equal(feed.json.name, 'Test Source (visionOS)');
+    assert.equal(feed.json.apps[0].platform, 'visionOS');
+    assert.match(feed.json.apps[0].downloadURL, /\/altsource\/com\.example\.fake-visionOS\//);
+    const lower = await get(u.pathname.toLowerCase() + u.search);
+    assert.equal(lower.json.name, 'Test Source (visionOS)');
+    const none = await get('/altsource/watchOS.json' + u.search);
+    assert.equal(none.status, 404);
+    assert.deepEqual(none.json.platforms, ['iOS', 'visionOS']);
   });
 
   test('downloads need a signed link', async () => {
-    assert.equal((await get('/altsource/com.example.fake/abc1234.ipa')).status, 403);
-    assert.equal((await get('/altsource/com.example.fake/abc1234.ipa?t=1.x')).status, 403);
+    assert.equal((await get('/altsource/com.example.fake-iOS/abc1234.ipa')).status, 403);
+    assert.equal((await get('/altsource/com.example.fake-iOS/abc1234.ipa?t=1.x')).status, 403);
   });
 
   test('a download builds the listed commit, redirecting while it builds, then serves the IPA', async () => {
     const info = await get('/api/altsource', { Cookie: cookie });
-    const u = new URL(info.json.url);
+    const u = new URL(info.json.sources[0].url);
     const feed = (await get(u.pathname + u.search)).json;
     const head = git('rev-parse', '--short', 'HEAD');
     const v = feed.apps[0].versions[0];
@@ -300,7 +344,7 @@ describe('end to end', () => {
     git('commit', '-qam', 'Second');
     fs.writeFileSync(path.join(repo, 'README'), 'uncommitted\n');
     const info = await get('/api/altsource', { Cookie: cookie });
-    const u = new URL(info.json.url);
+    const u = new URL(info.json.sources[0].url);
     // the head cache holds a branch head for 10 s
     await new Promise(r => setTimeout(r, 10500));
     const v = (await get(u.pathname + u.search)).json.apps[0].versions[0];
