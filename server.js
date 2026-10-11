@@ -145,7 +145,9 @@ async function cloneTree(src, dst, excludes, copy, rel = '') {
   }));
   try { fs.chmodSync(dst, fs.statSync(src).mode); } catch { /* keep the default */ }
 }
-async function ensureBuildClone(repoPath, branch, excludes = []) {
+// `rev` pins the clone to one commit of `branch` instead of its tip (AltSource
+// builds build exactly the commit a client was offered).
+async function ensureBuildClone(repoPath, branch, excludes = [], rev = null) {
   const dst = clonePath(repoPath, branch);
   fs.rmSync(dst, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(dst), { recursive: true });
@@ -156,7 +158,9 @@ async function ensureBuildClone(repoPath, branch, excludes = []) {
   // bring the clone's target branch up to the main repo's latest local
   // commit — fetch from the main repo (a plain local-path remote) since
   // cp -cR only copied whatever ref state existed at clone time
-  const fetch = await run('git', ['-C', dst, 'fetch', repoPath, `+refs/heads/${branch}:refs/heads/${branch}`]);
+  // --update-head-ok: the copy may have `branch` checked out already (a clone
+  // of the branch the main checkout is on); the reset below fixes the tree.
+  const fetch = await run('git', ['-C', dst, 'fetch', '--update-head-ok', repoPath, `+refs/heads/${branch}:refs/heads/${branch}`]);
   if (fetch.code !== 0) throw new Error(`git fetch ${branch} into clone failed: ${fetch.stderr.trim()}`);
   // -f: the clone inherits whatever uncommitted state the main tree had at
   // clone time (cp -cR copies working-tree edits too, not just .git) — that
@@ -167,8 +171,8 @@ async function ensureBuildClone(repoPath, branch, excludes = []) {
   // -fd (not -x) leaves gitignored paths alone — repos/, build-signing.conf —
   // while sweeping out untracked leftovers copied from main's dirty state
   // (e.g. new not-yet-`git add`ed source files) that don't belong on this branch
-  const reset = await run('git', ['-C', dst, 'reset', '--hard', branch]);
-  if (reset.code !== 0) throw new Error(`git reset ${branch} in clone failed: ${reset.stderr.trim()}`);
+  const reset = await run('git', ['-C', dst, 'reset', '--hard', rev || branch]);
+  if (reset.code !== 0) throw new Error(`git reset ${rev || branch} in clone failed: ${reset.stderr.trim()}`);
   const clean = await run('git', ['-C', dst, 'clean', '-fd']);
   if (clean.code !== 0) throw new Error(`git clean in clone failed: ${clean.stderr.trim()}`);
   return dst;
@@ -310,6 +314,21 @@ function getRepoQueue(repo) {
   return q;
 }
 const liveLogs = new Map(); // buildId -> string (in-memory for this process)
+const buildWaiters = new Map(); // buildId -> [resolve] — settled when the build ends, however it ends
+function waitForBuild(id) {
+  const job = state.builds.find(b => b.id === id);
+  if (!job || !['queued', 'running'].includes(job.status)) return Promise.resolve(job);
+  return new Promise(resolve => {
+    if (!buildWaiters.has(id)) buildWaiters.set(id, []);
+    buildWaiters.get(id).push(resolve);
+  });
+}
+function settleWaiters(id) {
+  const list = buildWaiters.get(id);
+  buildWaiters.delete(id);
+  const job = state.builds.find(b => b.id === id);
+  for (const fn of list || []) fn(job);
+}
 const procs = new Map();    // buildId -> ChildProcess (NEVER stored on the job: jobs are JSON-serialized)
 
 function pump(repo) {
@@ -318,12 +337,12 @@ function pump(repo) {
   const id = q.queue.shift();
   if (id == null) return;
   const job = state.builds.find(b => b.id === id);
-  if (!job || job.status === 'cancelled') { pump(repo); return; }
+  if (!job || job.status === 'cancelled') { settleWaiters(id); pump(repo); return; }
   q.activeId = id;
   job.status = 'running';
   job.startedAt = Date.now();
   saveState();
-  executeBuild(job).finally(() => { q.activeId = null; pump(repo); });
+  executeBuild(job).finally(() => { q.activeId = null; settleWaiters(id); pump(repo); });
 }
 
 function logPath(id) { return path.join(LOG_DIR, `build-${id}.log`); }
@@ -396,6 +415,26 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDe
   return jobs;
 }
 
+// A build for the AltSource feed: exactly `commit` of the app's source branch,
+// from a clean build clone even when that branch is checked out (a dirty tree
+// would stamp `-dirty` and never match the listing), signed but not deployed,
+// and kept out of the install ledger — whoever downloads it installs it.
+function enqueueAltSourceBuild(app, commit) {
+  const job = {
+    id: state.nextBuildId++, batchId: null,
+    repo: app.repo, branch: app.branch, rev: commit, altSource: true,
+    platform: app.platform, device: app.device, bundleId: app.bundleId,
+    noDeploy: true, mcp: false, run: false, buildDebug: false, inject: false,
+    status: 'queued', queuedAt: Date.now(),
+  };
+  state.builds.push(job);
+  if (state.builds.length > 200) state.builds = state.builds.slice(-200);
+  getRepoQueue(app.repo).queue.push(job.id);
+  saveState();
+  pump(app.repo);
+  return job;
+}
+
 async function executeBuild(job) {
   if (job.status === 'cancelled') return;
   const rc = CONFIG.repos.find(r => r.name === job.repo);
@@ -413,11 +452,13 @@ async function executeBuild(job) {
   try {
     const orig = (await run('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
     let buildCwd = repoPath;
-    if (job.branch !== 'current' && job.branch !== orig) {
-      log(`==> Using dedicated build clone for ${job.branch} (main checkout stays on ${orig})\n`);
+    if (job.altSource || (job.branch !== 'current' && job.branch !== orig)) {
+      log(job.altSource
+        ? `==> AltSource build of ${job.branch}@${job.rev} in a clean build clone\n`
+        : `==> Using dedicated build clone for ${job.branch} (main checkout stays on ${orig})\n`);
       cloneDir = clonePath(repoPath, job.branch);
       activeClones.add(cloneDir);
-      buildCwd = await ensureBuildClone(repoPath, job.branch, normalizeExcludes(rc.cloneExclude));
+      buildCwd = await ensureBuildClone(repoPath, job.branch, normalizeExcludes(rc.cloneExclude), job.rev || null);
     }
     const head = (await run('git', ['-C', buildCwd, 'log', '-1', '--format=%h %s'])).stdout.trim();
     job.commit = head.split(' ')[0];
@@ -487,6 +528,14 @@ async function executeBuild(job) {
     job.version = version;
     job.buildNo = buildNo;
 
+    // the feed's copy, read for the listing's permissions; without it there's
+    // nothing for the waiting download to serve, so the build has failed
+    if (job.altSource) {
+      if (!ipaPath) throw new Error('no signed IPA found after the build');
+      await altSource.record(safeSlug(job.bundleId), job.rev, ipaPath);
+      log(`==> Store: AltSource has ${job.bundleId} @ ${job.rev} (${buildNo || '?'})\n`);
+    }
+
     // publish a durable OTA copy — the source IPA won't survive: clone build
     // dirs are wiped on that branch's next build, and the main build dir's
     // IPA is overwritten by whichever platform builds next
@@ -515,14 +564,17 @@ async function executeBuild(job) {
     // for the remote-dev case (branch/commit tracking while away from the
     // LAN beats nothing), so it's kept but flagged `confirmed: false` for
     // the UI to display distinctly rather than asserting it as installed.
-    state.installs[job.device] = state.installs[job.device] || {};
-    state.installs[job.device][job.bundleId] = {
-      repo: job.repo, branch: job.builtBranch, commit: job.commit,
-      platform: job.platform, version, buildNo, at: Date.now(),
-      confirmed: !job.noDeploy,
-    };
+    if (!job.altSource) {
+      state.installs[job.device] = state.installs[job.device] || {};
+      state.installs[job.device][job.bundleId] = {
+        repo: job.repo, branch: job.builtBranch, commit: job.commit,
+        platform: job.platform, version, buildNo, at: Date.now(),
+        confirmed: !job.noDeploy,
+      };
+    }
     job.status = 'success';
-    log(job.noDeploy
+    if (job.altSource) log(`\n==> Store: AltSource build of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) ready for download\n`);
+    else log(job.noDeploy
       ? `\n==> Store: OTA-only build of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) — recorded as an unconfirmed guess, not deployed to ${job.device}\n`
       : `\n==> Store: recorded install of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) on ${job.device}\n`);
 
@@ -565,6 +617,7 @@ function cancelBuild(id) {
     if (i !== -1) q.queue.splice(i, 1);
     job.status = 'cancelled';
     saveState();
+    settleWaiters(id);
     return true;
   }
   if (job.status === 'running' && procs.has(id)) {
@@ -713,6 +766,96 @@ function signedOtaUrl(req, pathname) {
   return `${requestBase(req)}${pathname}?t=${auth.signPath(pathname)}`;
 }
 
+// ---------- AltSource (an AltStore-format feed that builds on download) ----------
+// config.json `altSource`: {enabled, name, identifier, subtitle, iconURL, website,
+// developerName, branch, token, holdSeconds (50), linkTtlDays (7)}; per repo
+// `altSource: false` leaves it out, or {branch, platforms, description, subtitle,
+// iconURL, developerName, category}. See lib/altsource.js for the flow.
+const { createAltSource, sourceApps } = require('./lib/altsource');
+const altSourceOn = () => CONFIG.altSource?.enabled === true;
+const headCache = new Map(); // `${path}|${branch}` -> {at, head}
+async function branchHead(app) {
+  const key = `${app.path}|${app.branch}`;
+  const hit = headCache.get(key);
+  if (hit && Date.now() - hit.at < 10000) return hit.head;
+  const r = await run('git', ['-C', app.path, 'log', '-1', '--format=%h%x09%cI%x09%s', `refs/heads/${app.branch}`]);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || `no branch ${app.branch}`);
+  const [commit, date, subject] = r.stdout.trim().split('\t');
+  const head = { commit, date, subject };
+  headCache.set(key, { at: Date.now(), head });
+  return head;
+}
+const altSource = createAltSource({
+  dir: path.join(DATA_DIR, 'altsource'),
+  apps: () => sourceApps(CONFIG),
+  head: branchHead,
+  enqueue: enqueueAltSourceBuild,
+  job: id => state.builds.find(b => b.id === id),
+  waitFor: waitForBuild,
+  log: m => console.log(m),
+});
+// A clean LAN or OTA build already stamped with exactly this commit is the same app.
+function adoptOtaIpa(app, commit) {
+  const e = state.ota[`${app.bundleId}|${app.platform}`];
+  if (!e || e.backfilled || !e.buildNo || e.buildNo !== commit) return null;
+  const fp = path.join(OTA_DIR, `${e.slug}.ipa`);
+  return fs.existsSync(fp) ? fp : null;
+}
+// The source URL is added to a client once, so it carries a lasting token:
+// `altSource.token` when set, else one derived from data/secret.
+function altSourceToken() {
+  const t = CONFIG.altSource?.token;
+  return typeof t === 'string' && t.length >= 16 ? t : auth.derive('altsource-feed');
+}
+function altSourceUrl(req) {
+  return `${requestBase(req)}/altsource/source.json?k=${encodeURIComponent(altSourceToken())}`;
+}
+// Links inside the feed are signed per path, valid for linkTtlDays (the feed is
+// refetched on every refresh, so they never get old in practice).
+function altSourceLink(req, pathname) {
+  const days = Number(CONFIG.altSource?.linkTtlDays) > 0 ? Number(CONFIG.altSource.linkTtlDays) : 7;
+  return `${requestBase(req)}${pathname}?t=${auth.signPath(pathname, days * 86400)}`;
+}
+function sendText(res, status, text, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...headers });
+  res.end(text + '\n');
+}
+function sendIpa(res, fp, name) {
+  res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': fs.statSync(fp).size,
+    'Content-Disposition': `attachment; filename="${safeSlug(name)}.ipa"`, 'Cache-Control': 'no-store' });
+  fs.createReadStream(fp).pipe(res);
+}
+// The long poll. Built: the IPA. Building: hold the request up to `hold` s
+// (`?hold=` or altSource.holdSeconds, default 50: under URLSession's 60 s idle
+// timeout), then 307 back to the same URL so the client asks again. Nothing is
+// sent while holding, since any byte would commit the response to the IPA.
+async function serveAltSourceIpa(req, res, url, slug, commit) {
+  const hold = Math.min(Math.max(Number(url.searchParams.get('hold')) || Number(CONFIG.altSource?.holdSeconds) || 50, 1), 3600);
+  let r = await altSource.request(slug, commit, { adopt: adoptOtaIpa });
+  if (r.jobId != null) {
+    let timer;
+    await Promise.race([
+      waitForBuild(r.jobId),
+      new Promise(resolve => { timer = setTimeout(resolve, hold * 1000); }),
+      new Promise(resolve => res.once('close', resolve)),
+    ]);
+    clearTimeout(timer);
+    if (res.destroyed || res.writableEnded) return; // client left; the build carries on
+    r = altSource.outcome(slug, commit, r.jobId);
+    if (r.jobId != null) {
+      const next = new URLSearchParams(url.searchParams);
+      next.set('w', String((Number(url.searchParams.get('w')) || 0) + 1));
+      return sendText(res, 307, `still building (build ${r.jobId}); follow the redirect to keep waiting`,
+        { Location: `${url.pathname}?${next}`, 'Retry-After': '1' });
+    }
+  }
+  if (r.entry) return sendIpa(res, altSource.file(r.entry), `${r.entry.name || slug}-${r.entry.buildNo || commit}`);
+  sendText(res, r.status || 500, r.error || 'no IPA');
+}
+function storeIconFile() {
+  return brandIconFile() || path.join(ROOT, 'public', 'apple-touch-icon.png');
+}
+
 function otaPage(req) {
   const base = requestBase(req);
   const https = base.startsWith('https://');
@@ -749,6 +892,14 @@ ${https ? '' : `<div class="warn">Opened over plain HTTP — itms-services needs
 ${rows.join('\n')}
 </table>
 <p><small>Latest published build per app/platform. Install requires this device's UDID in the app's provisioning profile.</small></p>
+${altSourceOn() ? (() => {
+  const src = altSourceUrl(req);
+  return `<h3>AltStore source</h3>
+<p><small>Every app at the head of its source branch. A download builds that commit if it isn't built yet and answers when the build is done.</small></p>
+<p><input readonly style="width:100%;background:#222;color:#eee;border:1px solid #444;padding:.4em;border-radius:6px" value="${xmlEsc(src)}" onclick="this.select()"></p>
+<p><a class="btn" href="${xmlEsc('altstore://source?url=' + encodeURIComponent(src))}">Add to AltStore</a>
+<a class="btn" href="${xmlEsc('sidestore://source?url=' + encodeURIComponent(src))}">Add to SideStore</a></p>`;
+})() : ''}
 </body></html>`;
 }
 
@@ -1196,6 +1347,39 @@ const server = http.createServer(async (req, res) => {
     const otaFile = req.method === 'GET' && /^\/ota\/[A-Za-z0-9._-]+(\/manifest\.plist|\.ipa)$/.test(url.pathname)
       && auth.verifyPath(url.pathname, url.searchParams.get('t'));
 
+    // AltSource: clients have no cookie. The feed takes its lasting token, its
+    // links their own signatures; all of it is gone while the mode is off.
+    if (url.pathname.startsWith('/altsource/') && req.method === 'GET') {
+      if (!altSourceOn()) return json(res, 404, { error: 'not found' });
+      if (url.pathname === '/altsource/source.json') {
+        const k = String(url.searchParams.get('k') || '');
+        const want = altSourceToken();
+        if (k.length !== want.length || !crypto.timingSafeEqual(Buffer.from(k), Buffer.from(want))) {
+          return json(res, 403, { error: 'wrong or missing feed token' });
+        }
+        const doc = await altSource.source({ title: brand().title, cfg: CONFIG.altSource, url: p => altSourceLink(req, p) });
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(doc, null, 1));
+      }
+      if (!auth.verifyPath(url.pathname, url.searchParams.get('t'))) return json(res, 403, { error: 'link expired or not signed' });
+      if (url.pathname === '/altsource/icon.png') {
+        const fp = storeIconFile();
+        res.writeHead(200, { 'Content-Type': IMAGE_TYPES[path.extname(fp).toLowerCase()] || 'image/png', 'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'" });
+        return res.end(fs.readFileSync(fp));
+      }
+      let am = url.pathname.match(/^\/altsource\/([A-Za-z0-9._-]+)\/icon\.png$/);
+      if (am) {
+        const fp = altSource.iconFile(am[1]) || storeIconFile();
+        res.writeHead(200, { 'Content-Type': IMAGE_TYPES[path.extname(fp).toLowerCase()] || 'image/png', 'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'" });
+        return res.end(fs.readFileSync(fp));
+      }
+      am = url.pathname.match(/^\/altsource\/([A-Za-z0-9._-]+)\/([0-9a-f]{4,40})\.ipa$/);
+      if (am) return serveAltSourceIpa(req, res, url, am[1], am[2]);
+      return json(res, 404, { error: 'not found' });
+    }
+
     if (!traceUpload && !otaFile && !signedIn(req)) {
       if (url.pathname.startsWith('/api/')) return json(res, 401, { error: 'sign in first', login: '/login' });
       res.writeHead(302, { Location: `/login?next=${encodeURIComponent(url.pathname + url.search)}` });
@@ -1241,6 +1425,12 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { manifestUrl: signedOtaUrl(req, `/ota/${entry.slug}/manifest.plist`) });
     }
 
+    if (url.pathname === '/api/altsource' && req.method === 'GET') {
+      if (!altSourceOn()) return json(res, 200, { enabled: false });
+      const src = altSourceUrl(req);
+      return json(res, 200, { enabled: true, url: src, building: altSource.building(),
+        altstore: `altstore://source?url=${encodeURIComponent(src)}`, sidestore: `sidestore://source?url=${encodeURIComponent(src)}` });
+    }
     if (url.pathname === '/api/state' && req.method === 'GET') {
       return json(res, 200, await stateBundle());
     }

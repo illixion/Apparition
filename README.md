@@ -102,6 +102,39 @@ a fresh Ed25519 key for each build and records its public half in
 `~/.local/state/debugtrace/keys/`. The server only keeps traces whose signature verifies against
 that ledger. Set `DEBUGTRACE_UPLOAD_URL` in `global.conf` to the server's URL.
 
+## AltStore source (auto-update)
+
+With `"altSource": { "enabled": true }` in `config.json` (restart after changing it), the server
+publishes an [AltStore-format source](https://faq.altstore.io/developers/make-a-source) of every
+configured app, which AltStore, SideStore, or any client that reads the format can subscribe to.
+The `/ota` page shows the source URL and "Add to AltStore / SideStore" links; `GET /api/altsource`
+returns the same.
+
+- Each app is listed at the head of its source branch (a repo's `altSource.branch`, else `main` or
+  `master` when offered, else its first branch). `buildVersion` is that commit's short SHA, the
+  same stamp build-and-sign writes into `CFBundleVersion`, so a client sees an update whenever the
+  branch moves.
+- Nothing is built ahead of time. Downloading a version builds exactly that commit, from a clean
+  build clone (uncommitted edits in the checkout never ship), signs it without deploying, and
+  answers with the IPA once the build finishes. Builds go through the same per-repo queue as the
+  web UI's, and simultaneous downloads of one commit share one build.
+- The wait is a long poll. A request is held for `holdSeconds` (default 50, under URLSession's
+  60-second idle timeout), then redirected (307) back to itself to wait again; the build carries
+  on whether or not anyone is waiting. A client that controls its own timeout can pass
+  `?hold=<seconds>` (up to 3600) to wait in a single request. URLSession follows a limited number
+  of redirects, so a very long build can outlast a stock client's patience; trying again picks up
+  the running build or its finished IPA.
+- AltStore refuses an IPA whose entitlements or privacy strings differ from the source's
+  `appPermissions`, so those are read from the built IPA. Before a commit is built, the listing
+  carries the previous build's values (and `1.0` for an app never built here).
+- Each app also gets a non-standard `platform` key, so a client can pick the apps for its device.
+
+Settings, all optional: `name`, `identifier`, `subtitle`, `iconURL`, `website`, `developerName`,
+`branch`, `token`, `holdSeconds`, `linkTtlDays` (7). Per repo, `"altSource": false` leaves it out,
+or `{ branch, platforms: ["iOS"], description, subtitle, iconURL, developerName, category }`.
+A source lists a bundle id once: the repo's first platform row with it wins unless `platforms`
+picks one.
+
 ## Tests
 
 ```sh
@@ -130,6 +163,10 @@ Two things work without a session, each with its own check:
   Mac's ledger are kept.
 - OTA manifests and IPAs, which the iOS installer fetches without the page's cookie. Their links
   carry an HMAC signature that expires after an hour, and only the signed-in page hands them out.
+- The AltStore source, when enabled. Its URL carries a lasting token (`altSource.token`, else one
+  derived from `data/secret`; delete that file to rotate it, which also signs every OTA link out),
+  and the download and icon links inside it carry their own signatures. Anyone holding the source
+  URL can start builds of the listed commits.
 
 Without a password, everything is open to whoever can reach the port, and the page says so.
 The server listens on `127.0.0.1`; the intended way to reach it from devices is `tailscale serve`
