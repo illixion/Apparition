@@ -92,7 +92,7 @@ enum ProbeEndpoints {
             },
 .command("listApps", "List every user app on the headset through the default tunnel (relay or LocalDevVPN), whoever installed it, and keep the list for the Library",
                      timeout: .seconds(90)) { _ in
-                let outcome = await model.listApps(host: model.defaultTunnelHost, port: 49152)
+                let outcome = await model.listApps(host: model.defaultTunnelHost, port: model.defaultTunnelPort)
                 return DeviceAppsReply(outcome: outcome, fetchedAt: model.deviceAppsFetchedAt, apps: model.deviceApps)
             },
                         .command("setRelay", "Set the Apparition Companion relay (ip:port), or clear it with an empty string",

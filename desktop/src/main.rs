@@ -32,6 +32,8 @@ fn main() {
             flow::discover,
             flow::forget_device,
             flow::pair_device,
+            flow::usb_devices,
+            flow::pair_usb_device,
             flow::answer_prompt,
             flow::cancel_prompt,
             flow::saved_settings,

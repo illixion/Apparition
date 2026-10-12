@@ -105,6 +105,60 @@ impl Identity {
     }
 }
 
+/// The OS family an app is signed for, which decides the profiles that may sign it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    VisionOS,
+    IOS,
+    TvOS,
+}
+
+impl Platform {
+    /// The platform this library was built for: what Apparition signs for on the device itself.
+    #[cfg(target_os = "visionos")]
+    pub const THIS: Platform = Platform::VisionOS;
+    #[cfg(target_os = "tvos")]
+    pub const THIS: Platform = Platform::TvOS;
+    #[cfg(not(any(target_os = "visionos", target_os = "tvos")))]
+    pub const THIS: Platform = Platform::IOS;
+
+    /// From lockdown's ProductType: RealityDevice14,1, AppleTV14,1, iPhone17,3, iPad16,6...
+    pub fn of_product(product_type: &str) -> Platform {
+        if product_type.starts_with("RealityDevice") {
+            Platform::VisionOS
+        } else if product_type.starts_with("AppleTV") {
+            Platform::TvOS
+        } else {
+            Platform::IOS
+        }
+    }
+
+    /// How profiles' `Platform` arrays name it.
+    fn profile_names(self) -> &'static [&'static str] {
+        match self {
+            Platform::VisionOS => &["xrOS", "visionOS"],
+            Platform::IOS => &["iOS"],
+            Platform::TvOS => &["tvOS"],
+        }
+    }
+
+    pub fn os_name(self) -> &'static str {
+        match self {
+            Platform::VisionOS => "visionOS",
+            Platform::IOS => "iOS",
+            Platform::TvOS => "tvOS",
+        }
+    }
+
+    fn device_noun(self) -> &'static str {
+        match self {
+            Platform::VisionOS => "headset",
+            Platform::IOS => "device",
+            Platform::TvOS => "Apple TV",
+        }
+    }
+}
+
 /// A provisioning profile, parsed.
 struct Profile {
     data: Vec<u8>,
@@ -207,10 +261,11 @@ impl Profile {
             .unwrap_or_default()
     }
 
-    /// Whether apps signed with it may run on visionOS (a tvOS- or iOS-only profile can't).
-    fn for_vision(&self) -> bool {
+    /// Whether apps signed with it may run on `platform` (a tvOS-only profile can't sign for
+    /// an iPhone). A profile that names no platform is taken to allow any.
+    fn for_platform(&self, platform: Platform) -> bool {
         let platforms = self.platforms();
-        platforms.is_empty() || platforms.iter().any(|p| matches!(*p, "xrOS" | "visionOS"))
+        platforms.is_empty() || platforms.iter().any(|p| platform.profile_names().contains(p))
     }
 
     fn platforms(&self) -> Vec<&str> {
@@ -242,7 +297,7 @@ impl Profile {
             "kind": self.kind(),
             "debuggable": self.get_task_allow(),
             "platforms": self.platforms(),
-            "forVision": self.for_vision(),
+            "forPlatform": self.for_platform(Platform::THIS),
             "deviceCount": self.devices().len(),
             "includesDevice": self.includes(udid),
             "expires": self.expires().map(iso),
@@ -644,6 +699,7 @@ pub unsafe extern "C" fn apparition_sign_offline(
             &unsafe { text(udid) }?,
             strip_extensions,
             previous.as_deref(),
+            Platform::THIS,
         )
     })())
 }
@@ -657,6 +713,7 @@ pub fn sign_offline(
     udid: &str,
     strip_extensions: bool,
     previous_app: Option<&Path>,
+    platform: Platform,
 ) -> Result<Value, Report> {
         let identity = Identity::load(data_dir, identity_id)?;
         if not_after(&identity.certificate) < SystemTime::now() {
@@ -667,11 +724,13 @@ pub fn sign_offline(
         let usable: Vec<Profile> = Profile::all(&data_dir)
             .into_iter()
             .filter(|p| p.certificate_ids().contains(&identity.id))
-            .filter(|p| !p.expired() && p.kind() != "appStore" && p.for_vision() && p.includes(Some(&udid)) == Some(true))
+            .filter(|p| !p.expired() && p.kind() != "appStore" && p.for_platform(platform) && p.includes(Some(&udid)) == Some(true))
             .collect();
         if usable.is_empty() {
             bail!(
-                "No imported profile can sign with this certificate on this headset. Import a development, ad hoc or enterprise profile that includes the certificate and this headset (UDID {udid})."
+                "No imported profile can sign with this certificate for this {}. Import a development, ad hoc or enterprise profile for {} that includes the certificate and this device (UDID {udid}).",
+                platform.device_noun(),
+                platform.os_name()
             );
         }
 

@@ -95,8 +95,8 @@ certificate: an Apple ID with no free certificate slot fails with Apple's error 
 ### The desktop app
 
 `desktop/` is the same installer as a guided app (Tauri v2) for macOS, Windows and Linux, so
-nobody needs a terminal: it finds the headset over mDNS (or takes its address), pairs with the
-PIN the headset shows, signs in to an Apple ID (asking for the 2FA code) or opens a .p12 and
+nobody needs a terminal: it finds the headset over mDNS (or takes its address) and pairs with
+the PIN it shows, or pairs an iPhone or iPad over its cable (like `pair --usb`), signs in to an Apple ID (asking for the 2FA code) or opens a .p12 and
 profiles, installs the latest signed release (or an IPA you pick) with progress, and hands
 Apparition its signing at the end. When a free account's certificate or App ID slots are full
 it lists them and frees one only after you type `revoke` or `delete`. It drives the same
@@ -112,7 +112,7 @@ it; it never replaces itself.
 
 The page is plain HTML, CSS and JavaScript in `desktop/ui/` (no npm), under a strict CSP. A
 debug build opens on any step with `APPARITION_DESKTOP_PREVIEW=signing` (or `pair`, `pin`,
-`twofactor`, `install`, `progress`, `slots`, `done`), and can read a scratch release site with
+`usbpair`, `twofactor`, `install`, `progress`, `slots`, `done`), and can read a scratch release site with
 `APPARITION_RELEASE_SITE` and `APPARITION_RELEASE_SIGNERS`; release builds ignore all three.
 `scripts/package-release.sh` puts the app in the macOS and Windows installer zips next to the
 command line. Linux needs WebKitGTK in the build image and an AppImage or .deb, not built yet.

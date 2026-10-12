@@ -49,7 +49,7 @@ enum ExperimentEndpoints {
                     return ReuseReply(signed: "error: \(reply["error"] as? String ?? "unknown")", install: "-")
                 }
                 defer { try? FileManager.default.removeItem(atPath: signedPath) }
-                let install = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath)
+                let install = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath)
                 let detail = probe.latestAttempt("install").flatMap { $0.outcome == "ok" ? nil : $0.outcome } ?? install
                 return ReuseReply(signed: "ok: \(reply["bundleId"] as? String ?? "?") with \(reply["profileAppId"] as? String ?? "?")'s profile",
                                   install: detail,

@@ -35,8 +35,8 @@ final class SigningStore {
         /// get-task-allow: apps signed with it can be launched with JIT.
         let debuggable: Bool
         let platforms: [String]
-        /// Lists visionOS (xrOS) among its platforms; a tvOS-only profile can't sign for the headset.
-        let forVision: Bool?
+        /// Lists this device's OS among its platforms (or none); a tvOS-only profile can't sign here.
+        let forPlatform: Bool?
         let deviceCount: Int
         let includesDevice: Bool?
         let expires: String?
@@ -93,7 +93,7 @@ final class SigningStore {
     func usableProfiles(for identity: Identity) -> [Profile] {
         profiles.filter {
             $0.identityIds.contains(identity.id) && !$0.expired && $0.kind != "appStore"
-                && $0.forVision != false && $0.includesDevice == true
+                && $0.forPlatform != false && $0.includesDevice == true
         }
     }
 
@@ -206,8 +206,8 @@ final class SigningStore {
                 let profile = try await importProfile(from: url)
                 removeIfOurs(url)
                 var text = "Imported \(profile.name) (\(profile.appIdPattern))"
-                if profile.forVision == false { text += ", but it isn't for visionOS" }
-                else if profile.includesDevice == false { text += ", but it doesn't list this headset" }
+                if profile.forPlatform == false { text += ", but it isn't for \(ThisDevice.os)" }
+                else if profile.includesDevice == false { text += ", but it doesn't list this \(ThisDevice.noun)" }
                 report(url, text, ok: true, profileUUID: profile.uuid)
             } catch {
                 report(url, "\(error)", ok: false)
@@ -224,7 +224,7 @@ final class SigningStore {
                 onAppleIDKeyImported?()
                 var text = "Apps signed with \(imported.appleId) now use the same certificate as \(imported.from)"
                 if imported.replaced {
-                    text += ". This headset's own certificate for it stays on the account until you revoke it in Certificates & App IDs"
+                    text += ". This \(ThisDevice.noun)'s own certificate for it stays on the account until you revoke it in Certificates & App IDs"
                 }
                 report(url, text, ok: true)
             } catch {
@@ -246,7 +246,7 @@ final class SigningStore {
         pendingCertificates.removeAll { $0.id == incoming.id }
         removeIfOurs(incoming.url)
         let usable = usableProfiles(for: identity).count
-        report(incoming.url, "Imported \(identity.name)" + (usable == 0 ? "" : ", with \(usable) profile\(usable == 1 ? "" : "s") for this headset"),
+        report(incoming.url, "Imported \(identity.name)" + (usable == 0 ? "" : ", with \(usable) profile\(usable == 1 ? "" : "s") for this \(ThisDevice.noun)"),
                ok: true, identityId: identity.id)
     }
 
@@ -290,11 +290,11 @@ final class SigningStore {
     func missingHalf(of result: IncomingResult) -> String? {
         if let id = result.identityId, let identity = identity(id) {
             return usableProfiles(for: identity).isEmpty
-                ? "Waiting for a provisioning profile for this certificate that lists this headset. Share or open the .mobileprovision next."
+                ? "Waiting for a provisioning profile for this certificate that lists this \(ThisDevice.noun). Share or open the .mobileprovision next."
                 : nil
         }
         if let uuid = result.profileUUID, let profile = profiles.first(where: { $0.uuid == uuid }) {
-            if profile.forVision == false || profile.includesDevice == false || profile.expired { return nil }  // already reported
+            if profile.forPlatform == false || profile.includesDevice == false || profile.expired { return nil }  // already reported
             return profile.identityIds.contains(where: { identity($0) != nil })
                 ? nil
                 : "Waiting for the certificate this profile was made for. Share or open its .p12 next."

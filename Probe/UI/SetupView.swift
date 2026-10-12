@@ -54,7 +54,7 @@ struct SetupView: View {
                     StepPanel(number: 1, title: "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
                         CompanionStep(model: model, account: account, companions: companions)
                     }
-                    StepPanel(number: 2, title: "Pair This Headset", systemImage: "link", done: status.paired,
+                    StepPanel(number: 2, title: "Pair This \(ThisDevice.title)", systemImage: "link", done: status.paired,
                               blocked: status.companion ? nil : "Set up the companion first: pairing goes through it.") {
                         PairStep(model: model)
                     }
@@ -77,7 +77,7 @@ struct SetupView: View {
 
     private func intro(_ status: SetupStatus) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Apparition installs apps on this headset, signed with your own Apple ID, and keeps them refreshed. Four things make that work.")
+            Text("Apparition installs apps on this \(ThisDevice.noun), signed with your own Apple ID, and keeps them refreshed. Four things make that work.")
                 .font(.title3)
                 .foregroundStyle(.secondary)
             ProgressView(value: Double(status.doneCount), total: 4) {
@@ -90,7 +90,7 @@ struct SetupView: View {
     private func finish(_ status: SetupStatus) -> some View {
         HStack {
             if status.complete {
-                Note(text: "All set. Apps you install are signed for this headset and can be refreshed from the Library.", kind: .success)
+                Note(text: "All set. Apps you install are signed for this \(ThisDevice.noun) and can be refreshed from the Library.", kind: .success)
             } else {
                 Note(text: "You can come back to Setup at any time.")
             }
@@ -162,7 +162,7 @@ struct CompanionStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("This headset can't reach its own developer services directly, so Apparition goes through Apparition Companion: a small relay running on your Mac (the menu-bar app) or on Windows or Linux (the command-line companion). It only carries encrypted traffic and never sees keys.")
+            Text("This \(ThisDevice.noun) can't reach its own developer services directly, so Apparition goes through Apparition Companion: a small relay running on your Mac (the menu-bar app) or on Windows or Linux (the command-line companion). It only carries encrypted traffic and never sees keys.")
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
@@ -274,18 +274,33 @@ struct PairStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if model.hasPairingFile, pairedUDID != nil {
-                Note(text: "Paired with \(pairedName ?? "this headset").", kind: .success)
+                Note(text: "Paired with \(pairedName ?? "this \(ThisDevice.noun)").", kind: .success)
             }
+            #if os(visionOS)
             VStack(alignment: .leading, spacing: 8) {
                 Text("1. Open Settings > General > Remote Devices in a window beside this one, and leave it open.")
                 Text("2. Start pairing here. Settings shows a 6-digit code; type it below.")
-                Text("3. Apparition then reads this headset's identity through the tunnel to confirm.")
+                Text("3. Apparition then reads this \(ThisDevice.noun)'s identity through the tunnel to confirm.")
             }
             .foregroundStyle(.secondary)
 
             serviceStatus
+            #else
+            // iPhone and iPad have no Remote Devices screen to pair from: a computer pairs over
+            // the cable and hands Apparition its record when it installs it.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("1. Connect this \(ThisDevice.noun) to a computer with a cable and tap Trust if it asks.")
+                Text("2. On the computer, run Apparition Installer: apparition-installer pair --usb, then install. Installing Apparition gives it the pairing.")
+                Text("3. Confirm the identity here; after that the cable isn't needed.")
+            }
+            .foregroundStyle(.secondary)
+            if !model.hasPairingFile {
+                Note(text: "Not paired yet. Install Apparition from a computer with Apparition Installer to pair it.", kind: .info)
+            }
+            #endif
 
             HStack(spacing: 12) {
+                #if os(visionOS)
                 Button {
                     guard let port = model.selfManualPairingPort else { return }
                     submitted = false
@@ -294,7 +309,7 @@ struct PairStep: View {
                     Task {
                         await model.pair(host: ProbeModel.relayHost, port: port)
                         if model.latestAttempt("pair")?.outcome == "ok" {
-                            await model.identify(host: ProbeModel.relayHost, port: 49152)
+                            await model.identify(host: ProbeModel.relayHost, port: model.defaultTunnelPort)
                         }
                     }
                 } label: {
@@ -302,13 +317,14 @@ struct PairStep: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.busy || model.relay == nil || model.selfManualPairingPort == nil)
+                #endif
 
                 Button("Confirm Identity") {
-                    Task { await model.identify(host: ProbeModel.relayHost, port: 49152) }
+                    Task { await model.identify(host: ProbeModel.relayHost, port: model.defaultTunnelPort) }
                 }
                 .buttonStyle(.bordered)
                 .disabled(model.busy || model.relay == nil || !model.hasPairingFile)
-                .help("Open a tunnel and read this headset's name and UDID, which signing needs")
+                .help("Open a tunnel and read this \(ThisDevice.noun)'s name and UDID, which signing needs")
 
                 if model.busy { ProgressView() }
             }
@@ -331,7 +347,7 @@ struct PairStep: View {
     @ViewBuilder
     private var serviceStatus: some View {
         if let port = model.selfManualPairingPort {
-            Note(text: "Found this headset's pairing service (port \(port)).", kind: .success)
+            Note(text: "Found this \(ThisDevice.noun)'s pairing service (port \(port)).", kind: .success)
         } else {
             HStack(spacing: 12) {
                 Note(text: "Looking for the pairing service. It appears while Remote Devices is open in Settings.", kind: .info)
@@ -391,7 +407,7 @@ struct AnisetteStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Signing in to Apple needs an anisette server (v3). Apparition doesn't pick one for you: use the one your companion runs, any v3 server you trust, or your own. The server sees this headset's anisette identity and IP address, never your Apple ID or password.")
+            Text("Signing in to Apple needs an anisette server (v3). Apparition doesn't pick one for you: use the one your companion runs, any v3 server you trust, or your own. The server sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password.")
                 .foregroundStyle(.secondary)
 
             ForEach(companions.found.filter { $0.anisetteURL != nil }) { companion in
@@ -454,7 +470,7 @@ struct AppleIDStep: View {
                 Note(text: "Signed in\(account.email.map { " as \($0)" } ?? ""), team \(team.name ?? team.id).", kind: .success)
             } else {
                 if account.rememberPassword && Keychain.hasPassword {
-                    Note(text: "Your password is remembered on this headset, so refreshes sign in on their own. Sign in now to check it.", kind: .success)
+                    Note(text: "Your password is remembered on this \(ThisDevice.noun), so refreshes sign in on their own. Sign in now to check it.", kind: .success)
                 }
                 form
             }
@@ -470,7 +486,7 @@ struct AppleIDStep: View {
             if let error = account.lastError {
                 Note(text: error, kind: .error)
             }
-            Note(text: "Apple IDs protected with security keys can't sign in here: Apple then asks for the key, which Apparition can't answer on the headset. Use an Apple ID without security keys (a free one works).")
+            Note(text: "Apple IDs protected with security keys can't sign in here: Apple then asks for the key, which Apparition can't answer on the \(ThisDevice.noun). Use an Apple ID without security keys (a free one works).")
         }
         .onAppear { if email.isEmpty { email = account.lastAppleID ?? "" } }
     }
@@ -494,7 +510,7 @@ struct AppleIDStep: View {
             Toggle(isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 })) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Remember password")
-                    Text("Kept only in this headset's Keychain (never synced), so refreshes can sign in with nobody present. Turning this off deletes it.")
+                    Text("Kept only in this \(ThisDevice.noun)'s Keychain (never synced), so refreshes can sign in with nobody present. Turning this off deletes it.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

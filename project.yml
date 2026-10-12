@@ -22,7 +22,9 @@ packages:
 targets:
   Apparition:
     type: application
-    platform: visionOS
+    platform: auto
+    # Native on each: visionOS, and iOS for iPhone and iPad.
+    supportedDestinations: [visionOS, iOS]
     sources:
       - path: Probe
         excludes:
@@ -89,7 +91,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition
-        TARGETED_DEVICE_FAMILY: "7"
+        TARGETED_DEVICE_FAMILY: "1,2,7"
+        # RAVESDK (RAVEUI's tab bar) declares iOS 26 and visionOS 26.
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        XROS_DEPLOYMENT_TARGET: "26.0"
         # Probe/Assets.xcassets: the website's ghost logo as a layered (parallax) icon.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: Probe/Apparition-Bridging-Header.h

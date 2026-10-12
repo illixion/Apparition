@@ -22,7 +22,7 @@ use serde_json::Value;
 pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
-    identity::{import_identity, import_profile, sign_offline},
+    identity::{Platform, import_identity, import_profile, sign_offline},
     share::{export_apple_id_key, import_signing_file},
     sign_in, sign_with_apple_id,
 };
@@ -52,6 +52,78 @@ pub async fn pair(
     let mut rpc = RemotePairingClient::new(RpPairingSocket::new(control), hostname);
     rpc.connect(pairing, async || pin()).await.context("Pairing failed")?;
     Ok(())
+}
+
+/// A device usbmuxd knows: plugged in over USB, or on the network once this computer is
+/// trusted. iPhone and iPad have no PIN pairing screen, so they pair this way.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsbDevice {
+    pub udid: String,
+    /// False for a device usbmuxd reaches over the network.
+    pub usb: bool,
+}
+
+/// The devices usbmuxd lists (Apple's on macOS and Windows, usbmuxd on Linux).
+pub async fn usb_devices() -> Result<Vec<UsbDevice>, Report> {
+    let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default()
+        .await
+        .context("Can't reach usbmuxd. On Windows install Apple Devices (or iTunes); on Linux install and start usbmuxd.")?;
+    let mut devices: Vec<UsbDevice> = Vec::new();
+    for device in usbmuxd.get_devices().await? {
+        let usb = matches!(device.connection_type, idevice::usbmuxd::Connection::Usb);
+        match devices.iter_mut().find(|d| d.udid == device.udid) {
+            Some(known) => known.usb |= usb,
+            None => devices.push(UsbDevice { udid: device.udid, usb }),
+        }
+    }
+    Ok(devices)
+}
+
+/// Pairs with `udid` through usbmuxd and lockdown: remotepairingdeviced's lockdown service
+/// creates the RemotePairing record (no PIN; the computer has to be trusted already, which
+/// the device asks for when it's first plugged in). Fills in `pairing`, the same record the
+/// PIN flow makes, so every later connection is over the network. Returns the device's
+/// identity, read over the same lockdown connection.
+pub async fn pair_usb(udid: &str, hostname: &str, pairing: &mut RpPairingFile) -> Result<DeviceInfo, Report> {
+    use idevice::{IdeviceService, remote_pairing::RemotePairingLockdownService};
+    let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.context("Can't reach usbmuxd")?;
+    let devices = usbmuxd.get_devices().await?;
+    // Prefer the cable: lockdown services that set up pairing may refuse the network.
+    let device = devices
+        .iter()
+        .filter(|d| d.udid == udid)
+        .min_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb))
+        .ok_or_else(|| report!("{udid} isn't connected. Plug it in with a cable and unlock it."))?;
+    let provider = device.to_provider(idevice::usbmuxd::UsbmuxdAddr::default(), "apparition");
+    let info = {
+        let mut lockdown = LockdownClient::connect(&provider)
+            .await
+            .context("Can't reach lockdown. Unlock the device and tap Trust if it asks.")?;
+        let pairing_file = provider_pairing_file(&provider).await?;
+        lockdown.start_session(&pairing_file).await.context("This computer isn't trusted by the device yet. Unlock it, tap Trust, then try again.")?;
+        let mut value = async |key: &str| -> Result<String, Report> {
+            let value = lockdown.get_value(Some(key), None).await?;
+            Ok(value.as_string().unwrap_or_default().to_string())
+        };
+        DeviceInfo {
+            udid: value("UniqueDeviceID").await?,
+            name: value("DeviceName").await?,
+            product_type: value("ProductType").await?,
+            os_version: value("ProductVersion").await?,
+        }
+    };
+    let service = RemotePairingLockdownService::connect(&provider)
+        .await
+        .context("The device didn't start its pairing service (remotepairingdeviced)")?;
+    let mut client = service.into_client(hostname)?;
+    client.connect(pairing, async || "000000".to_string()).await.context("Pairing failed")?;
+    Ok(info)
+}
+
+async fn provider_pairing_file(
+    provider: &impl idevice::provider::IdeviceProvider,
+) -> Result<idevice::pairing_file::PairingFile, Report> {
+    Ok(provider.get_pairing_file().await.context("usbmuxd has no pair record for this device: trust this computer on it first")?)
 }
 
 /// Opens a tunnel to a paired device's RemotePairing service at `device` (port 49152 on
@@ -112,7 +184,7 @@ impl Tunnel {
     }
 
     /// Writes files into an installed app's Documents folder through house_arrest, under
-    /// `folder` (created if missing). Works for apps that share files with Files
+    /// `folder` (created if missing; "" for Documents itself). Works for apps that share files with Files
     /// (UIFileSharingEnabled), Apparition among them.
     pub async fn put_documents(&mut self, bundle_id: &str, folder: &str, files: &[(String, Vec<u8>)]) -> Result<(), Report> {
         let house_arrest = HouseArrestClient::connect_rsd(&mut self.adapter, &mut self.handshake)
@@ -122,8 +194,13 @@ impl Tunnel {
             .vend_documents(bundle_id)
             .await
             .context(format!("{bundle_id} doesn't share its Documents (is it installed?)"))?;
-        let folder = format!("/Documents/{}", folder.trim_matches('/'));
-        let _ = afc.mk_dir(folder.clone()).await;
+        let folder = match folder.trim_matches('/') {
+            "" => "/Documents".to_string(),
+            name => format!("/Documents/{name}"),
+        };
+        if folder != "/Documents" {
+            let _ = afc.mk_dir(folder.clone()).await;
+        }
         for (name, data) in files {
             if name.contains('/') || name.starts_with('.') {
                 bail!("bad file name {name}");
@@ -200,9 +277,28 @@ pub async fn download_apparition(
     dir: &Path,
     progress: impl Fn(u64, u64),
 ) -> Result<std::path::PathBuf, Report> {
+    download_apparition_for(verified, Platform::VisionOS, dir, progress).await
+}
+
+/// How release.json names the app built for `platform` ("visionos", "ios", "tvos").
+pub fn release_platform(platform: Platform) -> &'static str {
+    match platform {
+        Platform::VisionOS => "visionos",
+        Platform::IOS => "ios",
+        Platform::TvOS => "tvos",
+    }
+}
+
+/// [`download_apparition`] for the app built for `platform`.
+pub async fn download_apparition_for(
+    verified: &crate::release::Verified,
+    platform: Platform,
+    dir: &Path,
+    progress: impl Fn(u64, u64),
+) -> Result<std::path::PathBuf, Report> {
     let asset = verified
-        .asset("app", "visionos")
-        .ok_or_else(|| report!("Apparition {} has no visionOS build", verified.release.version))?
+        .asset("app", release_platform(platform))
+        .ok_or_else(|| report!("Apparition {} has no {} build", verified.release.version, platform.os_name()))?
         .clone();
     crate::release::download(verified, &asset, dir, progress).await
 }
@@ -256,6 +352,10 @@ mod desktop {
 
     use super::{RpPairingFile, TUNNEL_PORT, Tunnel, hostname};
 
+    /// What Apparition calls itself when it pairs (ProbeModel.hostname). An iPhone or iPad
+    /// paired over USB gets a second record under this name, for Apparition on it.
+    pub const APP_PAIRING_HOST: &str = "Apparition";
+
     pub const MANUAL_PAIRING_SERVICE: &str = "_remotepairing-manual-pairing._tcp.local.";
     pub const PAIRED_SERVICE: &str = "_remotepairing._tcp.local.";
 
@@ -268,6 +368,17 @@ mod desktop {
         pub port: u16,
         /// File name under pairings/.
         pub pairing: String,
+        /// Lockdown's ProductType (RealityDevice14,1, iPad16,6...); missing from records made
+        /// before iPhone and iPad could pair, which were all headsets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub product_type: Option<String>,
+    }
+
+    impl PairedDevice {
+        /// The platform to sign and download for.
+        pub fn platform(&self) -> super::Platform {
+            self.product_type.as_deref().map(super::Platform::of_product).unwrap_or(super::Platform::VisionOS)
+        }
     }
 
     /// Where pairings and the Apple ID's storage live: `devices.json`, `pairings/<udid>.plist`
@@ -313,6 +424,7 @@ mod desktop {
             if let Some(device) = devices.iter().find(|d| d.udid == udid) {
                 let _ = std::fs::remove_file(self.dir.join("pairings").join(&device.pairing));
             }
+            let _ = std::fs::remove_file(self.dir.join("pairings").join(format!("{udid}.app.plist")));
             devices.retain(|d| d.udid != udid);
             self.save(&devices)
         }
@@ -334,7 +446,14 @@ mod desktop {
             let file = format!("{}.plist", info.udid);
             std::fs::create_dir_all(self.dir.join("pairings"))?;
             std::fs::write(self.dir.join("pairings").join(&file), pairing.to_bytes())?;
-            let device = PairedDevice { udid: info.udid.clone(), name: info.name.clone(), address, port: TUNNEL_PORT, pairing: file };
+            let device = PairedDevice {
+                udid: info.udid.clone(),
+                name: info.name.clone(),
+                address,
+                port: TUNNEL_PORT,
+                pairing: file,
+                product_type: Some(info.product_type.clone()),
+            };
             let mut devices = self.devices();
             devices.retain(|d| d.udid != info.udid);
             devices.push(device.clone());
@@ -348,6 +467,69 @@ mod desktop {
                 .context(format!("The pairing with {} is missing; pair again", device.name))?;
             let mut pairing = RpPairingFile::from_bytes(&data)?;
             super::connect(SocketAddr::new(device.address, device.port), &hostname(), &mut pairing, pin).await
+        }
+
+        /// Pairs with an iPhone or iPad over usbmuxd (it has no PIN screen, and must trust this
+        /// computer already), then finds its own `_remotepairing._tcp` service over mDNS (its
+        /// port isn't fixed as on visionOS) by trying each until one answers to the new record.
+        /// Also makes and keeps a record for Apparition on the device, which
+        /// [`DeviceStore::hand_over_pairing`] gives it at install.
+        pub async fn pair_usb(&self, udid: &str) -> Result<(PairedDevice, super::DeviceInfo), Report> {
+            let hostname = hostname();
+            let mut pairing = RpPairingFile::generate(&hostname);
+            let info = super::pair_usb(udid, &hostname, &mut pairing).await?;
+            // Apparition on the device can't pair with its own device either, so it gets a
+            // record of its own (under its name, so the device lists it separately).
+            let mut app_pairing = RpPairingFile::generate(APP_PAIRING_HOST);
+            super::pair_usb(udid, APP_PAIRING_HOST, &mut app_pairing).await?;
+            let pairings = self.dir.join("pairings");
+            std::fs::create_dir_all(&pairings)?;
+            std::fs::write(pairings.join(format!("{}.app.plist", info.udid)), app_pairing.to_bytes())?;
+
+            let no_pin = || String::new();
+            let mut reached = None;
+            for found in browse(4).await?.into_iter().filter(|f| !f.ready_to_pair) {
+                let Some(address) = found.address() else { continue };
+                let attempt = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    super::connect(SocketAddr::new(address, found.port), &hostname, &mut pairing, no_pin),
+                );
+                if let Ok(Ok(mut tunnel)) = attempt.await {
+                    if tunnel.device_info().await.is_ok_and(|i| i.udid == info.udid) {
+                        reached = Some((address, found.port));
+                        break;
+                    }
+                }
+            }
+            let file = format!("{}.plist", info.udid);
+            std::fs::write(pairings.join(&file), pairing.to_bytes())?;
+            let (address, port) = reached.ok_or_else(|| {
+                report!("Paired, but {} didn't answer on the network. Keep it unlocked on the same Wi-Fi as this computer and pair again.", info.name)
+            })?;
+            let device = PairedDevice {
+                udid: info.udid.clone(),
+                name: info.name.clone(),
+                address,
+                port,
+                pairing: file,
+                product_type: Some(info.product_type.clone()),
+            };
+            let mut devices = self.devices();
+            devices.retain(|d| d.udid != info.udid);
+            devices.push(device.clone());
+            self.save(&devices)?;
+            Ok((device, info))
+        }
+
+        /// For a device paired with [`DeviceStore::pair_usb`]: puts the record made for
+        /// Apparition where it keeps its own (Documents/apparition_rp_pairing.plist), so it
+        /// can reach its device. False when there's none (a headset).
+        pub async fn hand_over_pairing(&self, tunnel: &mut Tunnel, bundle_id: &str, udid: &str) -> Result<bool, Report> {
+            let Ok(record) = std::fs::read(self.dir.join("pairings").join(format!("{udid}.app.plist"))) else {
+                return Ok(false);
+            };
+            tunnel.put_documents(bundle_id, "", &[("apparition_rp_pairing.plist".to_string(), record)]).await?;
+            Ok(true)
         }
 
         /// Updates a paired device's address, when mDNS finds it somewhere else.
@@ -372,9 +554,12 @@ mod desktop {
     }
 
     impl Found {
-        /// Prefers an IPv4 address: link-local IPv6 ones need a scope this doesn't track.
+        /// Prefers an IPv4 address: link-local IPv6 ones need a scope this doesn't track. A
+        /// link-local IPv4 one (169.254.*, a cable's or AWDL's) is a last resort: it's gone
+        /// when the device is unplugged or moves.
         pub fn address(&self) -> Option<IpAddr> {
-            self.addresses.iter().find(|a| a.is_ipv4()).or_else(|| self.addresses.first()).copied()
+            let lan = |a: &&IpAddr| matches!(a, IpAddr::V4(v4) if !v4.is_link_local());
+            self.addresses.iter().find(lan).or_else(|| self.addresses.iter().find(|a| a.is_ipv4())).or_else(|| self.addresses.first()).copied()
         }
     }
 

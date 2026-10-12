@@ -14,6 +14,7 @@ const state = {
   /** @type {any} */ info: {},
   /** @type {any[]} */ paired: [],
   /** @type {any[]} */ found: [],
+  /** iPhones and iPads usbmuxd sees. @type {any[]} */ usb: [],
   /** @type {any} */ selected: null,
   /** The headset installed to: {udid, name, address, osVersion?}. @type {any} */ device: null,
   pairSkipped: false,
@@ -150,7 +151,12 @@ function headset() {
           return { kind: "pair", name: f.name, address, port: f.port, key: `pair:${f.name}:${f.port}` };
         }),
     ];
-    for (const row of rows) {
+    const usbRows = state.usb
+      .filter((d) => !d.paired)
+      .map((d) => ({ kind: "usb", name: "iPhone or iPad", udid: d.udid, usb: d.usb, key: `usb:${d.udid}` }));
+    const usbList = $(panel, "usb-list");
+    usbList.replaceChildren();
+    for (const row of [...rows, ...usbRows]) {
       const item = template("t-device");
       const li = /** @type {HTMLElement} */ (item.querySelector("li"));
       const input = /** @type {HTMLInputElement} */ (item.querySelector("input"));
@@ -168,6 +174,11 @@ function headset() {
         const forget = /** @type {HTMLButtonElement} */ (item.querySelector(".forget"));
         forget.hidden = false;
         forget.addEventListener("click", () => confirmForget(li, row.device, refreshPaired));
+      } else if (row.kind === "usb") {
+        title.textContent = row.name;
+        meta.textContent = `${row.usb ? "On a cable" : "Trusted, on the network"}, ${row.udid}`;
+        badge.textContent = "Ready to pair";
+        badge.classList.add("ready");
       } else {
         title.textContent = row.name;
         meta.textContent = `${row.address}, pairing port ${row.port}`;
@@ -175,8 +186,9 @@ function headset() {
         badge.classList.add("ready");
       }
       input.addEventListener("change", () => choose(row));
-      list.append(item);
+      (row.kind === "usb" ? usbList : list).append(item);
     }
+    rows.push(...usbRows);
     $(panel, "empty").hidden = rows.length > 0 || !searching.hidden;
     const hint = $(panel, "mdns-hint");
     const nothing = state.found.length === 0 && searching.hidden;
@@ -210,6 +222,26 @@ function headset() {
     draw();
   };
 
+  const usbButton = $(panel, "usb-search");
+  const searchUsb = async () => {
+    usbButton.disabled = true;
+    const note = $(panel, "usb-note");
+    try {
+      state.usb = await invoke("usb_devices");
+      note.hidden = state.usb.some((d) => !d.paired);
+      note.textContent = state.usb.length
+        ? "Every connected iPhone or iPad is already paired: it's listed above."
+        : "None connected. Plug one in and unlock it, then look again.";
+    } catch (error) {
+      state.usb = [];
+      note.hidden = false;
+      note.textContent = messageOf(error);
+    }
+    if (state.step !== "headset") return;
+    usbButton.disabled = false;
+    draw();
+  };
+  usbButton.addEventListener("click", searchUsb);
   searchButton.addEventListener("click", search);
   $(panel, "manual").addEventListener("submit", (/** @type {SubmitEvent} */ event) => {
     event.preventDefault();
@@ -239,7 +271,7 @@ function headset() {
     }
   });
 
-  refreshPaired().then(search);
+  refreshPaired().then(() => Promise.all([search(), searchUsb()]));
 }
 
 /** Replaces a row's Forget link with an inline confirmation. */
@@ -271,7 +303,7 @@ function confirmForget(/** @type {HTMLElement} */ li, /** @type {any} */ device,
     done();
     const hint = $(panel, "mdns-hint");
     hint.hidden = false;
-    hint.textContent = `Forgot ${device.name}. On the headset, remove this computer from Remote Devices too.`;
+    hint.textContent = `Forgot ${device.name}. On a headset, also remove this computer from Remote Devices.`;
   });
 }
 
@@ -286,22 +318,42 @@ function pair() {
   const status = $(panel, "status");
   back.addEventListener("click", () => go("headset"));
 
-  if (state.device && !state.pairSkipped && state.device.address === target?.address) {
+  if (state.device && !state.pairSkipped && (target?.kind === "usb" ? state.device.udid === target.udid : state.device.address === target?.address)) {
     setStatus(status, `Paired with ${state.device.name}.`, "good");
     start.textContent = "Continue";
     start.onclick = () => go("signing");
     return;
   }
 
+  if (target?.kind === "usb") {
+    $(panel, "name").textContent = "your iPhone or iPad";
+    panel.querySelector(".lede").textContent =
+      "Pairing lets this computer install apps on it. It happens once over the cable; after that it's reached over Wi-Fi.";
+    const howto = /** @type {HTMLElement} */ (panel.querySelector(".howto"));
+    howto.replaceChildren();
+    for (const text of [
+      "Keep it plugged into this computer, and unlocked.",
+      "If it asks whether to trust this computer, tap Trust and enter its passcode.",
+      "Keep it on the same Wi-Fi as this computer, then select Start pairing. No code is needed.",
+    ]) {
+      const li = document.createElement("li");
+      li.textContent = text;
+      howto.append(li);
+    }
+  }
+
   start.onclick = async () => {
     setBusy(start, true);
     back.disabled = true;
-    setStatus(status, "Waiting for the headset to show its code…");
+    const usb = target?.kind === "usb";
+    setStatus(status, usb ? "Pairing over the cable, then looking for it on Wi-Fi…" : "Waiting for the headset to show its code…");
     try {
-      const device = await invoke("pair_device", { address: target.address, port: target.port });
+      const device = usb
+        ? await invoke("pair_usb_device", { udid: target.udid })
+        : await invoke("pair_device", { address: target.address, port: target.port });
       state.device = device;
       state.pairSkipped = false;
-      const os = device.osVersion ? ` (visionOS ${device.osVersion})` : "";
+      const os = device.osVersion ? ` (${device.platform} ${device.osVersion})` : "";
       setStatus(status, `Paired with ${device.name}${os}. This computer stays paired for next time.`, "good");
       start.textContent = "Continue";
       start.onclick = () => go("signing");
@@ -319,6 +371,7 @@ function pairingError(/** @type {any} */ error) {
   const message = messageOf(error);
   if (error?.cancelled) return message;
   if (/srp|proof/i.test(message)) return `The code didn't match. Check the code the headset shows, and try again.\n\n${message}`;
+  if (/trust|usbmuxd|lockdown|isn't connected/i.test(message)) return message;
   if (/refused|reset|unreachable|timed out|reach/i.test(message))
     return `Couldn't reach the headset. Keep Remote Devices open on it (the pairing port changes when it reopens), and check both are on the same network.\n\n${message}`;
   return message;
@@ -373,12 +426,13 @@ function signing() {
       add(`Expires ${day(identity.expires)}`);
       let usable = 0;
       for (const profile of state.signing.profiles) {
-        const fits = profile.includesDevice === true && profile.forVision && !profile.expired;
+        const forDevice = platformMatches(profile.platforms);
+        const fits = profile.includesDevice === true && forDevice && !profile.expired;
         if (fits) usable++;
         const why = profile.expired
           ? "has expired"
-          : !profile.forVision
-            ? "isn't for visionOS"
+          : !forDevice
+            ? `isn't for ${state.device?.platform ?? "visionOS"}`
             : profile.includesDevice === false
               ? `doesn't list ${state.device?.name ?? "this headset"}`
               : `lists ${state.device?.name ?? "this headset"}`;
@@ -470,6 +524,12 @@ function signing() {
   });
 
   draw();
+}
+
+/** Whether a profile's Platform list covers the device's platform. */
+function platformMatches(/** @type {string[]|undefined} */ platforms) {
+  const names = { visionOS: ["xrOS", "visionOS"], iOS: ["iOS"], tvOS: ["tvOS"] }[state.device?.platform ?? "visionOS"] ?? [];
+  return (platforms ?? []).some((p) => names.includes(p));
 }
 
 function signInError(/** @type {any} */ error) {
@@ -583,7 +643,7 @@ function install() {
         state.prepared = null;
         if (key === "latest") {
           reach("release", "apparition.illixion.com");
-          await invoke("prepare_latest");
+          await invoke("prepare_latest", { udid: state.device.udid });
           meter.hidden = true;
           mark("download", "done", `${megabytes(state.release?.size ?? 0)}, hash checked`);
         } else {
@@ -631,7 +691,7 @@ function installError(/** @type {any} */ error) {
   if (error?.slot === "certificates") return `The Apple ID has no room for another development certificate.\n\n${message}`;
   if (error?.slot === "appIds") return `The Apple ID can't make another App ID right now.\n\n${message}`;
   if (/reach|refused|reset|timed out|unreachable/i.test(message))
-    return `Couldn't reach ${state.device?.name ?? "the headset"}. Check that it's awake and on the same network as this computer.\n\n${message}`;
+    return `Couldn't reach ${state.device?.name ?? "the device"}. Check that it's awake and on the same network as this computer.\n\n${message}`;
   return message;
 }
 
@@ -734,7 +794,7 @@ function done() {
   const result = state.result ?? {};
   const isApparition = (result.bundleId ?? "").startsWith("com.illixion.apparition");
   const name = isApparition ? "Apparition" : result.label ?? result.bundleId;
-  $(panel, "title").textContent = `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your headset"}.`;
+  $(panel, "title").textContent = `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your device"}.`;
   $(panel, "lede").textContent = result.queued
     ? `Sent in ${result.seconds?.toFixed(1)} s. It's an update of an app that's open on the headset: close it there to finish.`
     : `Installed in ${result.seconds?.toFixed(1)} s.`;
@@ -746,11 +806,13 @@ function done() {
     next.append(li);
   };
   add(`Open ${name} from the headset's apps.`);
-  add("If visionOS says the developer isn't trusted, trust it in Settings > General > VPN & Device Management.");
+  add(`If ${result.platform ?? "visionOS"} says the developer isn't trusted, trust it in Settings > General > VPN & Device Management.`);
   if (isApparition && result.handoff === "appleId")
     add(`Sign in to Apparition with ${result.appleId}. It finds the certificate this computer shared, so the two use one of the account's certificate slots.`);
   if (isApparition && result.handoff === "certificate")
     add("In Apparition, enter the .p12's password once: the certificate and profiles are waiting in its inbox.");
+  if (isApparition && result.pairingHandedOver)
+    add(`Apparition got its own pairing with this ${result.platform === "iOS" ? "device" : "headset"}, so it can sign and install there.`);
   if (isApparition && state.signing?.mode === "appleId")
     add("Apps signed with a free Apple ID last 7 days. A daily Shortcuts automation with Apparition's Refresh Apps action keeps them signed.");
 
@@ -859,8 +921,9 @@ async function start() {
 
 /** Debug builds only (the backend passes `preview` only there): open on a step with sample data. */
 function preview(/** @type {string} */ step) {
-  state.device = step === "pair" || step === "pin" ? null : { udid: "PREVIEW", name: "Vision Pro", address: "192.0.2.10", osVersion: "27.2" };
+  state.device = step === "pair" || step === "pin" || step === "usbpair" ? null : { udid: "PREVIEW", name: "Vision Pro", address: "192.0.2.10", osVersion: "27.2", platform: "visionOS" };
   state.pairSkipped = step !== "pair";
+  if (step === "usbpair") state.selected = { kind: "usb", name: "iPhone or iPad", udid: "00008120-000A1B2C3D4E5F60", usb: true, key: "u" };
   if (step === "pair" || step === "pin") state.selected = { kind: "pair", name: "Vision Pro", address: "192.0.2.10", port: 51967, key: "x" };
   if (["signed", "install", "progress", "slots", "done"].includes(step)) {
     state.signing = { mode: "appleId", email: "you@example.com", teamId: "ABCDE12345", team: { name: "Your Name" } };
@@ -868,7 +931,7 @@ function preview(/** @type {string} */ step) {
   if (step === "done") {
     state.result = { bundleId: "com.illixion.apparition", deviceName: "Vision Pro", seconds: 18.4, queued: false, handoff: "appleId", appleId: "you@example.com", label: "Apparition" };
   }
-  state.step = { signed: "signing", pin: "pair", twofactor: "signing", progress: "install", slots: "install" }[step] ?? step;
+  state.step = { signed: "signing", pin: "pair", usbpair: "pair", twofactor: "signing", progress: "install", slots: "install" }[step] ?? step;
   render();
   if (step === "progress" || step === "slots") {
     $(panel, "stages").hidden = false;

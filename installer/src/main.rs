@@ -31,6 +31,9 @@ Apparition Installer
   apparition-installer pair [<address>[:<port>]]
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
+  apparition-installer pair --usb [<UDID>]
+      Pair with an iPhone or iPad over its cable (it has no PIN pairing screen). It must
+      trust this computer already; afterwards it's reached over the network like a headset.
   apparition-installer install [<app.ipa>] [--device <name or UDID>]
           (--apple-id <email> --anisette <url> | --p12 <file> --profile <file>...)
           [--keep-extensions] [--no-handoff] [--release-site <url>]
@@ -74,6 +77,7 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("devices") => devices().await,
+        Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
@@ -158,6 +162,29 @@ async fn pair(target: Option<&str>) -> Result<(), Error> {
     let pin = || ask("PIN: ").chars().filter(char::is_ascii_digit).collect::<String>();
     let (_, info) = store().pair(address, pairing_port, pin).await?;
     println!("Paired with {} ({}, {} {}).", info.name, info.udid, info.product_type, info.os_version);
+    Ok(())
+}
+
+/// iPhone and iPad: the RemotePairing record is made over usbmuxd (USB, or the network once
+/// trusted), then the device's own `_remotepairing._tcp` service is found over mDNS by trying
+/// each until one answers to the new record. Its port isn't fixed as on visionOS.
+async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
+    let devices = api::usb_devices().await?;
+    let udid = match (wanted, devices.as_slice()) {
+        (Some(udid), _) => udid.to_string(),
+        (None, []) => return Err(fail("usbmuxd sees no device. Plug it in, unlock it and tap Trust")),
+        (None, [one]) => one.udid.clone(),
+        (None, many) => {
+            for (index, device) in many.iter().enumerate() {
+                println!("  {}. {}{}", index + 1, device.udid, if device.usb { " (USB)" } else { " (network)" });
+            }
+            let choice: usize = ask("Which one? ").parse().unwrap_or(0);
+            many.get(choice.wrapping_sub(1)).ok_or_else(|| fail("no such device"))?.udid.clone()
+        }
+    };
+    println!("Pairing with {udid} as \"{}\"…", api::hostname());
+    let (device, info) = store().pair_usb(&udid).await?;
+    println!("Paired with {} ({} {}), reached at {}:{}.", info.name, info.product_type, info.os_version, device.address, device.port);
     Ok(())
 }
 
@@ -264,14 +291,14 @@ async fn install(args: &[String]) -> Result<(), Error> {
     result
 }
 
-/// The latest official Apparition for visionOS, downloaded into `dir` once its release
+/// The latest official Apparition for the device's platform, downloaded into `dir` once its release
 /// signature and hash check out.
-async fn latest_apparition(site: &str, dir: &Path) -> Result<PathBuf, Error> {
+async fn latest_apparition(site: &str, dir: &Path, platform: api::Platform) -> Result<PathBuf, Error> {
     println!("Checking {site} for the latest Apparition…");
     let verified = release::latest(site).await?;
     println!("Downloading Apparition {} (signed by {})…", verified.release.version, verified.signer);
     let shown = std::sync::atomic::AtomicU64::new(0);
-    let path = api::download_apparition(&verified, dir, |received, total| {
+    let path = api::download_apparition_for(&verified, platform, dir, |received, total| {
         let step = received * 10 / total.max(1);
         if step > shown.swap(step, std::sync::atomic::Ordering::Relaxed) {
             print!("\r  {}%", step * 10);
@@ -285,7 +312,7 @@ async fn latest_apparition(site: &str, dir: &Path) -> Result<PathBuf, Error> {
 
 async fn download_and_install(options: &mut Options, device: &Device, scratch: &Path) -> Result<(), Error> {
     if options.ipa.as_os_str().is_empty() {
-        options.ipa = latest_apparition(&options.release_site, &scratch.join("download")).await?;
+        options.ipa = latest_apparition(&options.release_site, &scratch.join("download"), device.platform()).await?;
     }
     println!("Connecting to {}…", device.name);
     let pin = || ask("The headset wants to pair again. PIN: ");
@@ -312,7 +339,7 @@ async fn sign_and_install(
             api::import_profile(scratch, std::fs::read(profile)?, Some(&info.udid))?;
         }
         println!("Signing with {}…", identity["identity"]["name"].as_str().unwrap_or("your certificate"));
-        api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None)?
+        api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None, api::Platform::of_product(&info.product_type))?
     } else {
         let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap()).await?;
         println!("Signing for team {}…", session.team_id());
@@ -355,6 +382,9 @@ async fn sign_and_install(
     }
 
     if options.handoff && installed_id.starts_with(APPARITION_ID) {
+        if store().hand_over_pairing(tunnel, &installed_id, &info.udid).await? {
+            println!("Gave Apparition its pairing with this device.");
+        }
         handoff(options, tunnel, &installed_id, apple_id.as_ref()).await?;
     }
     Ok(())

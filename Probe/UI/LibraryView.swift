@@ -43,7 +43,7 @@ struct LibraryView: View {
                 // Once per launch: who else installed debuggable apps here. Refresh by hand after.
                 guard !Self.listedThisLaunch, model.hasPairingFile, !model.busy, !library.busy else { return }
                 Self.listedThisLaunch = true
-                await model.listApps(host: model.defaultTunnelHost, port: 49152)
+                await model.listApps(host: model.defaultTunnelHost, port: model.defaultTunnelPort)
             }
             .navigationTitle("Library")
             .toolbar {
@@ -63,17 +63,17 @@ struct LibraryView: View {
                                 titleVisibility: .visible, presenting: pendingRemoval) { app in
                 Button("Remove", role: .destructive) { library.removeInstalled(app.id) }
             } message: { _ in
-                Text("Apparition stops refreshing it and deletes its kept copy. The app stays on this headset until its profile expires; delete it from the Home View to remove it now.")
+                Text("Apparition stops refreshing it and deletes its kept copy. The app stays on this \(ThisDevice.noun) until its profile expires; delete it from the \(ThisDevice.home) to remove it now.")
             }
             .confirmationDialog("Update Apparition to \(library.availableUpdate?.version ?? "")?", isPresented: $confirmingUpdate, titleVisibility: .visible) {
                 Button("Download and Install") { Task { await library.updateSelf() } }
             } message: {
-                Text("Apparition downloads the official release, checks its signature, signs it with \(library.signing.signerName(library.selfSigner)) and hands it to visionOS, keeping its data. It installs when you close Apparition, like an App Store update.")
+                Text("Apparition downloads the official release, checks its signature, signs it with \(library.signing.signerName(library.selfSigner)) and hands it to \(ThisDevice.os), keeping its data. It installs when you close Apparition, like an App Store update.")
             }
             .confirmationDialog("Refresh Apparition now?", isPresented: $confirmingSelfRefresh, titleVisibility: .visible) {
                 Button("Refresh and Reinstall") { Task { await library.refreshSelf() } }
             } message: {
-                Text("Apparition signs itself again with \(library.signing.signerName(library.selfSigner)) and hands the update to visionOS, keeping its data. The update applies when you close Apparition, like an App Store update.")
+                Text("Apparition signs itself again with \(library.signing.signerName(library.selfSigner)) and hands the update to \(ThisDevice.os), keeping its data. The update applies when you close Apparition, like an App Store update.")
             }
         }
     }
@@ -132,7 +132,7 @@ struct LibraryView: View {
                 ProgressView()
             } else {
                 Button {
-                    Task { await model.listApps(host: model.defaultTunnelHost, port: 49152) }
+                    Task { await model.listApps(host: model.defaultTunnelHost, port: model.defaultTunnelPort) }
                 } label: {
                     Label("Check Again", systemImage: "arrow.clockwise")
                 }
@@ -141,10 +141,10 @@ struct LibraryView: View {
             }
         }
         if let attempt = model.latestAttempt("apps"), let outcome = attempt.outcome, outcome.hasPrefix("error") {
-            Note(text: "Couldn't list this headset's apps: \(outcome.dropFirst(7))", kind: .warning)
+            Note(text: "Couldn't list this \(ThisDevice.noun)'s apps: \(outcome.dropFirst(7))", kind: .warning)
         }
         if otherApps.isEmpty {
-            Text(model.deviceAppsFetchedAt == nil ? "Not checked yet." : "No other debuggable apps on this headset.")
+            Text(model.deviceAppsFetchedAt == nil ? "Not checked yet." : "No other debuggable apps on this \(ThisDevice.noun).")
                 .foregroundStyle(.secondary)
         } else {
             LazyVGrid(columns: Self.columns, spacing: 20) {
@@ -189,7 +189,7 @@ struct LibraryView: View {
                 Button {
                     jitAppId = jitId
                     log.info("JIT launch of another app from the library")
-                    Task { await model.launchJIT(host: model.defaultTunnelHost, port: 49152, bundleId: app.bundleId, waitSeconds: 600) }
+                    Task { await model.launchJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort, bundleId: app.bundleId, waitSeconds: 600) }
                 } label: {
                     Label("Launch with JIT", systemImage: "bolt.fill")
                 }
@@ -420,7 +420,7 @@ struct LibraryView: View {
                 Button {
                     jitAppId = app.id
                     log.info("JIT launch from the library")
-                    Task { await model.launchJIT(host: model.defaultTunnelHost, port: 49152, bundleId: bundleId, waitSeconds: 600) }
+                    Task { await model.launchJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort, bundleId: bundleId, waitSeconds: 600) }
                 } label: {
                     Label("Launch with JIT", systemImage: "bolt.fill")
                 }

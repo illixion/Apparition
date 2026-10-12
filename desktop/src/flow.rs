@@ -233,6 +233,8 @@ pub struct DeviceView {
     name: String,
     address: IpAddr,
     product_type: Option<String>,
+    /// "visionOS", "iOS" (iPhone and iPad) or "tvOS".
+    platform: &'static str,
     os_version: Option<String>,
 }
 
@@ -242,7 +244,8 @@ impl DeviceView {
             udid: device.udid.clone(),
             name: device.name.clone(),
             address: device.address,
-            product_type: info.map(|i| i.product_type.clone()),
+            product_type: device.product_type.clone(),
+            platform: device.platform().os_name(),
             os_version: info.map(|i| i.os_version.clone()),
         }
     }
@@ -284,6 +287,37 @@ pub async fn pair_device(app: AppHandle, state: Shared<'_>, address: String, por
             Err(_) if cancelled.load(Ordering::Relaxed) => Err(Failure::cancelled("Pairing was cancelled.")),
             Err(error) => Err(error.into()),
         }
+    })
+    .await
+}
+
+/// iPhones and iPads usbmuxd sees (plugged in, or on the network once trusted). They have
+/// no PIN screen, so they pair this way. `paired` marks ones this computer already has.
+#[tauri::command]
+pub async fn usb_devices(state: Shared<'_>) -> Result<Vec<Value>, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let paired = state.store.devices();
+        let devices = block_on(api::usb_devices())?;
+        Ok(devices
+            .into_iter()
+            .map(|d| {
+                let known = paired.iter().find(|p| p.udid == d.udid);
+                json!({ "udid": d.udid, "usb": d.usb, "paired": known.is_some(), "name": known.map(|p| p.name.clone()) })
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Pairs with an iPhone or iPad over usbmuxd: no PIN, but it must trust this computer, and
+/// then be found on the network.
+#[tauri::command]
+pub async fn pair_usb_device(state: Shared<'_>, udid: String) -> Result<DeviceView, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let (device, info) = block_on(state.store.pair_usb(&udid))?;
+        Ok(DeviceView::of(&device, Some(&info)))
     })
     .await
 }
@@ -437,26 +471,28 @@ pub async fn import_certificate(
 // MARK: The app to install
 
 /// Finds the latest official release, checks its signature against the compiled-in keys,
-/// and downloads its visionOS app (events `release` and `download`). Returns `{version,
+/// and downloads its app for the device `udid` (events `release` and `download`). Returns `{version,
 /// signer, date, notes, size}`.
 #[tauri::command]
-pub async fn prepare_latest(app: AppHandle, state: Shared<'_>) -> Result<Value, Failure> {
+pub async fn prepare_latest(app: AppHandle, state: Shared<'_>, udid: String) -> Result<Value, Failure> {
     let state = state.inner().clone();
     blocking(move || {
+        // The build for the device's platform (records from before iPhone and iPad are headsets).
+        let platform = state.store.device(&udid).map(|d| d.platform()).unwrap_or(api::Platform::VisionOS);
         block_on(async {
             *state.app.lock().unwrap() = None;
             let verified = latest_release().await?;
             let release = &verified.release;
-            let size = verified.asset("app", "visionos").map(|a| a.size);
+            let size = verified.asset("app", api::release_platform(platform)).map(|a| a.size);
             let summary = json!({
                 "version": release.version, "signer": verified.signer, "date": release.date,
-                "notes": release.notes, "size": size,
+                "notes": release.notes, "size": size, "platform": platform.os_name(),
             });
             let _ = app.emit("release", &summary);
             let dir = state.scratch.join("download");
             let _ = std::fs::remove_dir_all(&dir);
             let shown = AtomicU64::new(u64::MAX);
-            let path = api::download_apparition(&verified, &dir, |received, total| {
+            let path = api::download_apparition_for(&verified, platform, &dir, |received, total| {
                 let percent = received * 100 / total.max(1);
                 if shown.swap(percent, Ordering::Relaxed) != percent {
                     let _ = app.emit("download", json!({ "received": received, "total": total }));
@@ -533,7 +569,16 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             stage(&app, "signing", json!(info.name));
             let mut apple_id: Option<(String, String)> = None;
             let signed = match &certificate {
-                Some(cert) => api::sign_offline(&cert.dir, prepared.path.clone(), &cert.id, None, &info.udid, strip, None)?,
+                Some(cert) => api::sign_offline(
+                    &cert.dir,
+                    prepared.path.clone(),
+                    &cert.id,
+                    None,
+                    &info.udid,
+                    strip,
+                    None,
+                    api::Platform::of_product(&info.product_type),
+                )?,
                 None => {
                     let mut guard = state.session.lock().unwrap();
                     let session = guard.as_mut().ok_or_else(|| rootcause::report!("Sign in with your Apple ID first"))?;
@@ -552,8 +597,14 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
 
             let mut handoff = Value::Null;
             let mut handoff_error = Value::Null;
+            let mut pairing_handed_over = false;
             if options.hand_off && bundle_id.starts_with(APPARITION_ID) {
                 stage(&app, "handoff", Value::Null);
+                // An iPhone or iPad paired over USB: Apparition gets its own pairing record.
+                match state.store.hand_over_pairing(&mut tunnel, &bundle_id, &info.udid).await {
+                    Ok(handed) => pairing_handed_over = handed,
+                    Err(error) => handoff_error = json!(error.to_string()),
+                }
                 let apple_id_dir = state.store.apple_id_dir();
                 let (kind, what) = match (&certificate, &apple_id) {
                     (Some(cert), _) => ("certificate", Handoff::Certificate { p12: &cert.p12, profiles: &cert.profiles }),
@@ -563,7 +614,8 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 // The app is installed either way; a failed handoff is reported, not fatal.
                 match tunnel.hand_off_signing(&bundle_id, what).await {
                     Ok(()) => handoff = json!(kind),
-                    Err(error) => handoff_error = json!(error.to_string()),
+                    Err(error) if handoff_error.is_null() => handoff_error = json!(error.to_string()),
+                    Err(_) => {}
                 }
             }
             Ok::<_, Report>(json!({
@@ -575,6 +627,8 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 "strippedExtensions": signed["strippedExtensions"],
                 "handoff": handoff,
                 "handoffError": handoff_error,
+                "pairingHandedOver": pairing_handed_over,
+                "platform": api::Platform::of_product(&info.product_type).os_name(),
                 "appleId": apple_id.map(|(email, _)| email),
             }))
         });

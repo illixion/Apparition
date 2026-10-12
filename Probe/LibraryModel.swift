@@ -275,7 +275,7 @@ final class LibraryModel {
 
     private func deviceUDID() async -> String? {
         if UserDefaults.standard.string(forKey: "pairedUDID") == nil {
-            await probe.identify(host: probe.defaultTunnelHost, port: 49152)
+            await probe.identify(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
         }
         return UserDefaults.standard.string(forKey: "pairedUDID")
     }
@@ -284,7 +284,7 @@ final class LibraryModel {
         guard let udid = await deviceUDID() else {
             return fail(&record, Self.noUDID)
         }
-        let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
+        let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
         let path = AccountModel.appsDir.appendingPathComponent(record.ipaFile).path
         let signer = signing.signer(for: record)
         let signed: [String: Any]
@@ -301,7 +301,7 @@ final class LibraryModel {
             return fail(&record, "sign failed: \(signed["error"] as? String ?? "unknown")")
         }
         let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
-        let outcome = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath,
+        let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           sourceIPA: path)
         try? FileManager.default.removeItem(atPath: signedPath)
         guard outcome == "ok" else {
@@ -404,7 +404,7 @@ final class LibraryModel {
             return selfFail("this copy of Apparition has no provisioning profile to renew")
         }
         guard let udid = await deviceUDID() else { return selfFail(Self.noUDID) }
-        let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
+        let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
         let signer = selfSigner
         var signingId: String?
         if signer == SigningStore.appleID {
@@ -456,7 +456,7 @@ final class LibraryModel {
         save()
         log.info("installing over itself")
         // installd waits for Apparition to close before applying the update, so don't wait for that.
-        let outcome = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath,
+        let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           detachAfterMs: 20_000)
         if outcome == "queued" {
             let what = update.map { "install \($0.version)" } ?? "apply the update"

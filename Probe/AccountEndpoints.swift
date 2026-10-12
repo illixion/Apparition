@@ -65,7 +65,7 @@ enum AccountEndpoints {
                 guard let udid = args.string("udid") ?? UserDefaults.standard.string(forKey: "pairedUDID") else {
                     throw DebugError.failedPrecondition("No UDID known", hint: "Pair first, or pass udid")
                 }
-                let name = args.string("deviceName") ?? UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
+                let name = args.string("deviceName") ?? UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
                 let strip = args.bool("stripExtensions") ?? false
                 Task { await model.sign(file: file, udid: udid, deviceName: name, stripExtensions: strip) }
                 try await Task.sleep(for: .seconds(1))
