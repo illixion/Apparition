@@ -4,8 +4,10 @@
 //! The device resets connections it makes to its own RemotePairing service, so Apparition asks
 //! a companion to connect back to it:
 //!
-//!     Apparition -> companion:49160   "APPARITION-RELAY 1 <port>\n"
-//!     companion -> <Apparition's own address>:<port>, then "OK\n" and bytes both ways
+//! ```text
+//! Apparition -> companion:49160   "APPARITION-RELAY 1 <port>\n"
+//! companion -> <Apparition's own address>:<port>, then "OK\n" and bytes both ways
+//! ```
 //!
 //! It only ever connects back to the address a request came from, so it can't be used to reach
 //! anything else, and what it carries is end-to-end encrypted between Apparition and the device.
