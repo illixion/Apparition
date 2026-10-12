@@ -6,7 +6,7 @@
 #   Apparition-<version>-visionOS.ipa                       unsigned; signed on install
 #   Apparition-Installer-<version>-macos-universal.zip      arm64 + x86_64
 #   Apparition-Installer-<version>-windows-x86_64.zip
-#   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, built in Docker
+#   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, static, built in Docker
 #
 #   scripts/package-release.sh 0.2.0
 #   scripts/package-release.sh 0.2.0 --linux        # also Linux x86_64 and arm64
@@ -16,6 +16,9 @@
 # in project.yml and `version` in installer/Cargo.toml. The build number is the commit
 # count, so every release's is higher than the last. A dirty tree is refused, so a release
 # is always a commit you can name.
+#
+# Don't edit this script while it runs: bash reads it as it goes, so the rest of a running
+# copy shifts under it.
 #
 # Signing a release happens on the site: publish.py hashes these files into SHA256SUMS and
 # signs that with a release key. Nothing here holds a key.
@@ -131,15 +134,21 @@ EOF
 
   if [[ "$LINUX" == 1 ]]; then
     # In Docker, from a copy of the repo (just core/, installer/ and release-signers), so the
-    # container never writes into this checkout's target directories.
+    # container never writes into this checkout's target directories. Built on Alpine, so
+    # it's linked statically against musl and runs on any distribution: a glibc build needs
+    # the builder's glibc or newer (Debian trixie's 2.39 ruled out Ubuntu 22.04). The cargo
+    # registry is kept in a volume per architecture between runs.
     for arch in x86_64 arm64; do
-      echo "==> installer for Linux ($arch, in Docker)"
+      echo "==> installer for Linux ($arch, static, in Docker)"
       platform=linux/amd64; [[ "$arch" == arm64 ]] && platform=linux/arm64
       src="$WORK/linux-src-$arch"
       mkdir -p "$src" "$WORK/linux-$arch"
       rsync -a --exclude target "$ROOT/core" "$ROOT/installer" "$ROOT/release-signers" "$src/"
-      docker run --rm --platform "$platform" -v "$src:/src" -w /src/installer rust:1.97-slim \
-        cargo build -q --release
+      docker run --rm --platform "$platform" -v "apparition-cargo-$arch:/usr/local/cargo/registry" \
+        -v "$src:/src" -w /src/installer -e CARGO_PROFILE_RELEASE_STRIP=true rust:1.97-alpine \
+        sh -c 'apk add -q musl-dev && cargo build -q --release'
+      file "$src/installer/target/release/$bin" | grep -qE "statically linked|static-pie linked" \
+        || { echo "error: the Linux $arch installer isn't statically linked" >&2; exit 1; }
       cp "$src/installer/target/release/$bin" "$WORK/linux-$arch/"
       readme "$WORK/linux-$arch" "./$bin"
       tar -C "$WORK/linux-$arch" -czf "$OUT/Apparition-Installer-$VERSION-linux-$arch.tar.gz" "$bin" README.txt
