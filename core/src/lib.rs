@@ -29,6 +29,10 @@ mod ipa;
 mod tunnel;
 #[cfg(all(feature = "anisette", unix))]
 pub mod anisette;
+#[cfg(feature = "desktop")]
+pub mod companion;
+#[cfg(feature = "desktop")]
+pub mod relay;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -831,7 +835,8 @@ mod builtin_anisette_tests {
         let root = std::env::temp_dir().join(format!("apparition-builtin-{}", std::process::id()));
         let url = super::anisette_address(super::BUILTIN_ANISETTE, &root.join("apple-id")).await.unwrap();
         assert!(url.starts_with("http://127.0.0.1:"), "{url}");
-        assert!(root.join("anisette/libraries/libCoreADI.so").exists());
+        // (The libraries are loaded once per process, so another test may have fetched them
+        // into its own folder first.)
         let info = reqwest::get(format!("{url}/v3/client_info")).await.unwrap().text().await.unwrap();
         assert!(info.contains("client_info"), "{info}");
         // Anything else is passed through untouched.

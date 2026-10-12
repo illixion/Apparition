@@ -46,7 +46,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 
 [features]
 # For the desktop installer and app; the headset's static library leaves it out.
-desktop = ["dep:dirs", "dep:mdns-sd", "tokio/time"]
+desktop = ["dep:dirs", "dep:mdns-sd", "tokio/time", "tokio/net", "tokio/io-util", "tokio/process"]
 # Anisette without Docker, on macOS and Linux (see anisette/mod.rs).
 anisette = ["dep:libc", "dep:flate2", "dep:axum", "tokio/net", "tokio/time", "tokio/sync"]
 

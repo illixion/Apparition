@@ -1,5 +1,7 @@
-//! Apparition Installer: puts Apparition (or any IPA) on an Apple Vision Pro from a computer
-//! running Windows, Linux or macOS, with no Xcode. The same core the app uses does the work:
+//! `apparition`, the command line: puts Apparition (or any IPA) on an Apple Vision Pro, iPhone,
+//! iPad or Apple TV from a computer running Windows, Linux or macOS, with no Xcode, and is the
+//! companion those devices' Apparition uses (`relay`, `anisette`). The same core the app uses
+//! does the work:
 //!
 //! 1. `pair`: with Settings > General > Remote Devices open on the headset, pair-setup with
 //!    the PIN it shows. The pairing is kept, so this happens once per computer.
@@ -18,23 +20,25 @@ use std::{
 };
 
 use apparition_core::{
+    companion::{self, Companion},
+    relay,
     api::{self, APPARITION_ID, DeviceStore, Found, Handoff, PairedDevice as Device, Slot, TwoFactorCallbackParams, TwoFactorCallbackResponse},
     release,
 };
 use rootcause::prelude::*;
 
 const USAGE: &str = "\
-Apparition Installer
+Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
 
-  apparition-installer devices
+  apparition devices
       Devices on this network that are paired or waiting to pair.
-  apparition-installer pair [<address>[:<port>]]
+  apparition pair [<address>[:<port>]]
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
-  apparition-installer pair --usb [<UDID>]
+  apparition pair --usb [<UDID>]
       Pair with an iPhone or iPad over its cable (it has no PIN pairing screen). It must
       trust this computer already; afterwards it's reached over the network like a headset.
-  apparition-installer install [<app.ipa>] [--device <name or UDID>]
+  apparition install [<app.ipa>] [--device <name or UDID>]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
           [--keep-extensions] [--no-handoff] [--release-site <url>]
       Sign and install. Without an IPA, installs the latest Apparition from
@@ -45,13 +49,24 @@ Apparition Installer
       Signing in to Apple needs anisette data. Where this build has it (macOS), it makes
       its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
       and is required elsewhere.
-  apparition-installer certificates --apple-id <email> [--anisette <url>]
-  apparition-installer app-ids --apple-id <email> [--anisette <url>]
+  apparition certificates --apple-id <email> [--anisette <url>]
+  apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
       one you choose (after you confirm). Revoking a certificate stops the apps signed with
       it until they are signed again.
-  apparition-installer forget <name or UDID>
+  apparition forget <name or UDID>
       Forget a paired device (remove the computer from its Remote Devices list too).
+  apparition relay [--port <port>] [--no-mdns] [--anisette builtin|local|none]
+      Be the companion for Apparition on your devices: relay its connection back to the
+      device (port 49160) and offer it an anisette server. builtin (the default where this
+      build has it) serves this computer's own on port 6969; local offers a server already
+      answering on port 6969 here (the Docker one); none offers nothing. Runs until Ctrl-C.
+  apparition anisette serve [--port <port>]
+      Serve the built-in anisette (v3) to this computer's network (port 6969 by default).
+  apparition anisette up | down | compose
+      Start or stop the self-hosted anisette server with your Docker; compose prints its file.
+  apparition browse
+      List the companions mDNS finds from here, for 10 seconds: a check that multicast works.
 ";
 
 fn store() -> DeviceStore {
@@ -86,6 +101,11 @@ async fn main() -> ExitCode {
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("certificates") => account_command(&args[1..], Slot::Certificates).await,
         Some("app-ids") => account_command(&args[1..], Slot::AppIds).await,
+        Some("relay") => relay(&args[1..]).await,
+        Some("anisette") => anisette(&args[1..]).await,
+        Some("browse") => {
+            relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
+        }
         _ => {
             print!("{USAGE}");
             return ExitCode::from(2);
@@ -195,7 +215,7 @@ fn find_device(wanted: Option<&str>) -> Result<Device, Error> {
     let devices = load_devices();
     match (wanted, devices.as_slice()) {
         (None, [one]) => Ok(one.clone()),
-        (None, []) => Err(fail("no paired device; run `apparition-installer pair` first")),
+        (None, []) => Err(fail("no paired device; run `apparition pair` first")),
         (None, _) => Err(fail("several paired devices; choose one with --device")),
         (Some(wanted), _) => devices
             .iter()
@@ -542,4 +562,85 @@ fn choose<'a>(items: &'a [serde_json::Value], prompt: &str) -> Option<&'a serde_
     let answer = ask(prompt);
     let index: usize = answer.parse().ok()?;
     items.get(index.checked_sub(1)?)
+}
+
+// MARK: Companion
+
+fn anisette_dir() -> PathBuf {
+    store().dir.join("anisette")
+}
+
+async fn relay(args: &[String]) -> Result<(), Error> {
+    let (mut port, mut advertise) = (relay::RELAY_PORT, true);
+    let mut anisette = if api::builtin_anisette_available() { "builtin" } else { "local" }.to_string();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let mut value = || args.next().cloned().ok_or_else(|| fail(format!("{arg} needs a value")));
+        match arg.as_str() {
+            "--port" => port = value()?.parse().map_err(|_| fail("--port needs a number"))?,
+            "--no-mdns" => advertise = false,
+            "--anisette" => anisette = value()?,
+            other => return Err(fail(format!("unexpected {other}"))),
+        }
+    }
+    let log: relay::Log = std::sync::Arc::new(|line: &str| println!("{line}"));
+    let companion = Companion::start(port, advertise, &anisette_dir(), log).await?;
+    println!("Apparition companion relay listening on port {}.", companion.relay.port());
+    println!("In Apparition, use \"Find companion\" on this network, or set the relay to this computer's address, port {}.", companion.relay.port());
+    match anisette.as_str() {
+        "builtin" => {
+            println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
+            companion.share_builtin_anisette().await?;
+            println!("Offering anisette on port {}.", relay::ANISETTE_PORT);
+        }
+        "local" => println!("Offering an anisette server on port {} whenever one answers here.", relay::ANISETTE_PORT),
+        "none" => {}
+        other => return Err(fail(format!("--anisette is builtin, local or none, not {other}"))),
+    }
+    loop {
+        if anisette == "local" {
+            companion.refresh().await;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+            _ = tokio::signal::ctrl_c() => break,
+        }
+    }
+    Ok(())
+}
+
+async fn anisette(args: &[String]) -> Result<(), Error> {
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["serve"] | ["serve", "--port", _] => {
+            let port = match args.get(2) {
+                Some(port) => port.parse().map_err(|_| fail("--port needs a number"))?,
+                None => relay::ANISETTE_PORT,
+            };
+            if !api::builtin_anisette_available() {
+                return Err(fail("this build has no built-in anisette; use `apparition anisette up` (Docker)"));
+            }
+            #[cfg(target_os = "macos")]
+            {
+                println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
+                let server = apparition_core::anisette::start(&anisette_dir(), SocketAddr::from(([0, 0, 0, 0], port))).await?;
+                println!("Serving anisette (v3) on port {}. Ctrl-C stops it.", server.address.port());
+                let _ = tokio::signal::ctrl_c().await;
+            }
+            let _ = port;
+            Ok(())
+        }
+        ["up"] | ["down"] => {
+            let up = args[0] == "up";
+            companion::docker_anisette(up).await?;
+            if up {
+                println!("Anisette starting on port {}. `apparition relay --anisette local` offers it once it answers.", relay::ANISETTE_PORT);
+            }
+            Ok(())
+        }
+        ["compose"] => {
+            print!("{}", companion::COMPOSE);
+            Ok(())
+        }
+        _ => Err(fail("usage: apparition anisette serve [--port <port>] | up | down | compose")),
+    }
 }

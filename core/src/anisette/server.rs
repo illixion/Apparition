@@ -45,8 +45,22 @@ const USER_AGENT: &str = "akd/1.0 CFNetwork/808.1.4";
 const STEP: Duration = Duration::from_secs(60);
 
 struct Shared {
-    adi: Adi,
+    adi: Arc<Adi>,
     work: PathBuf,
+}
+
+/// The libraries are loaded once per process, whatever number of servers use them: they keep
+/// state of their own, and every call goes through one thread anyway.
+async fn shared_adi(data_dir: &Path) -> Result<Arc<Adi>, Report> {
+    static ADI: tokio::sync::OnceCell<Arc<Adi>> = tokio::sync::OnceCell::const_new();
+    ADI.get_or_try_init(|| async {
+        let (services, core) = apk::libraries(&data_dir.join("libraries")).await?;
+        let work = data_dir.join("work");
+        std::fs::create_dir_all(&work)?;
+        Ok(Arc::new(Adi::start(services, core, &work)?))
+    })
+    .await
+    .cloned()
 }
 
 /// A running server. Dropping it stops serving.
@@ -68,13 +82,13 @@ impl Drop for Server {
     }
 }
 
-/// Fetches the libraries if they aren't in `data_dir` yet, loads them, and serves on `bind`
-/// (use port 0 to take any free one).
+/// Fetches the libraries if they aren't in `data_dir` yet, loads them (once per process), and
+/// serves on `bind` (use port 0 to take any free one). Several servers can run at once, say one
+/// on loopback for this computer's own sign-in and one on the LAN for a headset.
 pub async fn start(data_dir: &Path, bind: SocketAddr) -> Result<Server, Report> {
-    let (services, core) = apk::libraries(&data_dir.join("libraries")).await?;
+    let adi = shared_adi(data_dir).await?;
     let work = data_dir.join("work");
     std::fs::create_dir_all(&work)?;
-    let adi = Adi::start(services, core, &work)?;
     let shared = Arc::new(Shared { adi, work });
     let app = Router::new()
         .route("/v3/client_info", get(client_info))

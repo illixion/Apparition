@@ -114,9 +114,10 @@ pub(crate) async fn libraries(cache: &Path) -> Result<(Vec<u8>, Vec<u8>), Report
     let core = extract(&client, &entries[1]).await?;
     std::fs::create_dir_all(cache)?;
     // Written to a name of its own first, so a download that stops halfway can't be mistaken
-    // for a complete one.
+    // for a complete one; a rename replaces the file whole.
     for (name, bytes) in [(SERVICES, &services), (CORE, &core)] {
-        let partial = cache.join(format!("{name}.part"));
+        // Named for this process too, as two processes may fetch at the same time.
+        let partial = cache.join(format!("{name}.{}.part", std::process::id()));
         std::fs::write(&partial, bytes)?;
         std::fs::rename(&partial, cache.join(name))?;
     }
