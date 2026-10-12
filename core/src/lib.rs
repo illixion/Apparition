@@ -21,6 +21,7 @@ use isideload::{
 use rootcause::prelude::*;
 
 pub mod api;
+pub mod release;
 pub(crate) mod account;
 mod share;
 mod identity;

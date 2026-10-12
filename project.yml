@@ -10,6 +10,10 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     CODE_SIGN_STYLE: Automatic
+    # The release version (scripts/package-release.sh checks it matches the one asked for);
+    # the build number is the commit count, passed in at packaging.
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
 packages:
   DebugTrace:
     path: ../DebugTrace
@@ -36,8 +40,8 @@ targets:
       path: Probe/Info.plist
       properties:
         CFBundleDisplayName: Apparition
-        CFBundleShortVersionString: "0.1"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         # Opening or sharing a certificate (.p12) or provisioning profile hands it to

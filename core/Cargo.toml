@@ -33,9 +33,13 @@ ring = "0.17"
 # Sharing the Apple ID's certificate key (share.rs).
 base64 = "0.22"
 sha2 = "0.10"
+# Official releases (release.rs): fetching them, and their SSHSIG signature.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "system-proxy"] }
+ed25519-dalek = "2"
 
 [dev-dependencies]
 rand = "0.8"
+tokio = { version = "1.49", features = ["macros"] }
 
 # isideload depends on idevice from crates.io; use the same revision the FFI is built from,
 # so the binary carries one copy of it.

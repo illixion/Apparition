@@ -1,0 +1,22 @@
+# Apparition release signers, in ssh-keygen allowed_signers format.
+#
+# Every Apparition release is one SHA256SUMS file listing its assets, signed with
+# `ssh-keygen -Y sign -n apparition-release` (SSHSIG). The installer and the app verify a
+# download against these keys before using it, and refuse anything the signature doesn't
+# cover. Download URLs are not trusted at all: an asset can come from any host as long as
+# its hash is in a signed manifest.
+#
+# TWO KEYS, both pinned from the first release that ships this file: the everyday YubiKey
+# (needs a PIN and a touch, never on disk or in CI) and an offline backup, for when the
+# YubiKey is lost or broken. A backup added later would be worthless: nothing already
+# installed would trust it, and the release introducing it couldn't be verified.
+#
+# They are the same two keys that sign Longwave releases and the illixion.github.io
+# ssh-keys-updater manifests, so there is one pair to protect. The namespace differs
+# ("apparition-release", not "file"), so a signature made for those can't pass as an
+# Apparition release.
+#
+# The release site (apparition.illixion.com, scripts/publish.py) keeps a copy and checks it
+# matches this one.
+releases@apparition.illixion.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPDFLEggFzedj9nvz0wl9AoPGXFFbT9XfgEWrAY0l7pa ixion@YubiKey5-gpg
+releases@apparition.illixion.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDhKX9Ler/OtQbUlo3ZggDcozle12CS9EFiKHadbXLJ0 ixion@SecureBackup

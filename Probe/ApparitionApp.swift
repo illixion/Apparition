@@ -28,7 +28,9 @@ struct ApparitionApp: App {
         library.registerBackgroundTasks()
         CompanionEndpoints.register(_companions.wrappedValue, probe: model)
         DeveloperSlotsEndpoints.register()
+        #if DEBUG
         ExperimentEndpoints.register(probe: model, account: account)
+        #endif
         ShortcutActions.register(probe: model, account: account, library: library)
         IntentEndpoints.register(probe: model, account: account, library: library)
     }

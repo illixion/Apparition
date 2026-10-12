@@ -59,14 +59,26 @@ profile keeps each app's own bundle ID, and development profiles keep Launch wit
 The .p12 password is only used to open the file; the decrypted key is kept in Apparition's
 container, like the free account's key.
 
+## Releases
+
+Releases are listed on [apparition.illixion.com](https://apparition.illixion.com) (repo
+`apparition.illixion.com`, whose README has the steps). `scripts/package-release.sh <version>`
+builds the unsigned IPA and the installers; the site signs their SHA256SUMS with a key in
+`release-signers`. `core/src/release.rs` checks that signature against the keys compiled in,
+then every download's hash, so the files can be hosted anywhere. `apparition-installer install`
+with no IPA installs the latest release this way.
+
 ## Installing Apparition from a computer
 
 `installer/` is Apparition Installer, a command-line program for Windows, Linux and macOS
 that puts Apparition (or any IPA) on the headset without Xcode, using the same Rust core:
 
     apparition-installer pair       # with Settings > General > Remote Devices open; type the PIN
-    apparition-installer install Apparition.ipa --p12 development.p12 --profile wildcard.mobileprovision
-    apparition-installer install Apparition.ipa --apple-id you@example.com --anisette http://host:6969
+    apparition-installer install --apple-id you@example.com --anisette http://host:6969
+    apparition-installer install --p12 development.p12 --profile wildcard.mobileprovision
+    apparition-installer install Other.ipa --apple-id you@example.com --anisette http://host:6969
+
+Without an IPA it installs the latest signed release of Apparition (see Releases).
 
 It pairs over the network once (the pairing is kept), signs with your own certificate or an
 Apple ID, and installs. Installing Apparition also hands it what signed it, through its Files

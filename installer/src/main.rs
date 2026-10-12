@@ -18,7 +18,10 @@ use std::{
     time::Duration,
 };
 
-use apparition_core::api::{self, RpPairingFile, TwoFactorCallbackParams, TwoFactorCallbackResponse};
+use apparition_core::{
+    api::{self, RpPairingFile, TwoFactorCallbackParams, TwoFactorCallbackResponse},
+    release,
+};
 use rootcause::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -36,12 +39,14 @@ Apparition Installer
   apparition-installer pair [<address>[:<port>]]
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
-  apparition-installer install <app.ipa> [--device <name or UDID>]
+  apparition-installer install [<app.ipa>] [--device <name or UDID>]
           (--apple-id <email> --anisette <url> | --p12 <file> --profile <file>...)
-          [--keep-extensions] [--no-handoff]
-      Sign and install. With an Apple ID, a free account's apps last 7 days; with your own
-      certificate, as long as its profile. Installing Apparition also puts the certificate in
-      its Files inbox (--no-handoff skips that).
+          [--keep-extensions] [--no-handoff] [--release-site <url>]
+      Sign and install. Without an IPA, installs the latest Apparition from
+      apparition.illixion.com, checked against its release signature first. With an Apple
+      ID, a free account's apps last 7 days; with your own certificate, as long as its
+      profile. Installing Apparition also puts the certificate in its Files inbox
+      (--no-handoff skips that).
   apparition-installer certificates --apple-id <email> --anisette <url>
   apparition-installer app-ids --apple-id <email> --anisette <url>
       What uses up a free account's two certificates and ten App IDs a week, and freeing
@@ -277,7 +282,9 @@ fn forget(wanted: Option<&str>) -> Result<(), Error> {
 // MARK: Install
 
 struct Options {
+    /// Empty: the latest official Apparition.
     ipa: PathBuf,
+    release_site: String,
     device: Option<String>,
     apple_id: Option<String>,
     anisette: Option<String>,
@@ -290,6 +297,7 @@ struct Options {
 fn parse_install(args: &[String]) -> Result<Options, Error> {
     let mut options = Options {
         ipa: PathBuf::new(),
+        release_site: release::SITE.to_string(),
         device: None,
         apple_id: None,
         anisette: None,
@@ -309,13 +317,11 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
             "--profile" => options.profiles.push(value()?.into()),
             "--keep-extensions" => options.keep_extensions = true,
             "--no-handoff" => options.handoff = false,
+            "--release-site" => options.release_site = value()?,
             other if other.starts_with("--") => return Err(fail(format!("unknown option {other}"))),
             path if options.ipa.as_os_str().is_empty() => options.ipa = path.into(),
             extra => return Err(fail(format!("unexpected {extra}"))),
         }
-    }
-    if options.ipa.as_os_str().is_empty() {
-        return Err(fail(format!("which app?\n\n{USAGE}")));
     }
     match (&options.apple_id, &options.p12) {
         (Some(_), None) if options.anisette.is_none() => Err(fail("--apple-id needs --anisette <url> (an anisette v3 server)")),
@@ -350,8 +356,43 @@ fn bundle_id(app: &Path) -> Option<String> {
 }
 
 async fn install(args: &[String]) -> Result<(), Error> {
-    let options = parse_install(args)?;
+    let mut options = parse_install(args)?;
     let device = find_device(options.device.as_deref())?;
+    // Signed into a scratch folder, removed afterwards with what it holds (a .p12's key).
+    let scratch = std::env::temp_dir().join(format!("apparition-installer-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch)?;
+    let result = download_and_install(&mut options, &device, &scratch).await;
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+/// The latest official Apparition for visionOS, downloaded into `dir` once its release
+/// signature and hash check out.
+async fn latest_apparition(site: &str, dir: &Path) -> Result<PathBuf, Error> {
+    println!("Checking {site} for the latest Apparition…");
+    let verified = release::latest(site).await?;
+    let asset = verified
+        .asset("app", "visionos")
+        .ok_or_else(|| fail(format!("Apparition {} has no visionOS build", verified.release.version)))?
+        .clone();
+    println!("Downloading Apparition {} (signed by {})…", verified.release.version, verified.signer);
+    let shown = std::sync::atomic::AtomicU64::new(0);
+    let path = release::download(&verified, &asset, dir, |received, total| {
+        let step = received * 10 / total.max(1);
+        if step > shown.swap(step, std::sync::atomic::Ordering::Relaxed) {
+            print!("\r  {}%", step * 10);
+            let _ = std::io::stdout().flush();
+        }
+    })
+    .await?;
+    println!("\r  verified against the release signature.");
+    Ok(path)
+}
+
+async fn download_and_install(options: &mut Options, device: &Device, scratch: &Path) -> Result<(), Error> {
+    if options.ipa.as_os_str().is_empty() {
+        options.ipa = latest_apparition(&options.release_site, &scratch.join("download")).await?;
+    }
     let hostname = hostname();
     let mut pairing = RpPairingFile::from_bytes(&std::fs::read(data_dir().join("pairings").join(&device.pairing))?)?;
 
@@ -360,13 +401,7 @@ async fn install(args: &[String]) -> Result<(), Error> {
     let mut tunnel = api::connect(SocketAddr::new(device.address, device.port), &hostname, &mut pairing, pin).await?;
     let info = tunnel.device_info().await?;
     let strip = !options.keep_extensions;
-
-    // Signed into a scratch folder, removed afterwards with what it holds (a .p12's key).
-    let scratch = std::env::temp_dir().join(format!("apparition-installer-{}", std::process::id()));
-    std::fs::create_dir_all(&scratch)?;
-    let result = sign_and_install(&options, &info, &mut tunnel, &scratch, strip).await;
-    let _ = std::fs::remove_dir_all(&scratch);
-    result
+    sign_and_install(options, &info, &mut tunnel, scratch, strip).await
 }
 
 async fn sign_and_install(
