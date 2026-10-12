@@ -42,6 +42,11 @@ Apparition Installer
       Sign and install. With an Apple ID, a free account's apps last 7 days; with your own
       certificate, as long as its profile. Installing Apparition also puts the certificate in
       its Files inbox (--no-handoff skips that).
+  apparition-installer certificates --apple-id <email> --anisette <url>
+  apparition-installer app-ids --apple-id <email> --anisette <url>
+      What uses up a free account's two certificates and ten App IDs a week, and freeing
+      one you choose (after you confirm). Revoking a certificate stops the apps signed with
+      it until they are signed again.
   apparition-installer forget <name or UDID>
       Forget a paired device (remove the computer from its Remote Devices list too).
 ";
@@ -111,6 +116,8 @@ async fn main() -> ExitCode {
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
+        Some("certificates") => account_command(&args[1..], Slot::Certificates).await,
+        Some("app-ids") => account_command(&args[1..], Slot::AppIds).await,
         _ => {
             print!("{USAGE}");
             return ExitCode::from(2);
@@ -381,15 +388,24 @@ async fn sign_and_install(
         println!("Signing with {}…", identity["identity"]["name"].as_str().unwrap_or("your certificate"));
         api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip)?
     } else {
-        let email = options.apple_id.as_deref().unwrap();
-        let password = ask_secret(&format!("Apple ID password for {email}: "));
-        println!("Signing in…");
-        let apple_dir = data_dir().join("apple-id");
-        let (mut session, _) =
-            api::sign_in(email, password, options.anisette.as_deref().unwrap(), &apple_dir, two_factor).await?;
+        let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap()).await?;
         println!("Signing for team {}…", session.team_id());
         apple_id = Some((session.email().to_string(), session.team_id().to_string()));
-        api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await?
+        match api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await {
+            Ok(signed) => signed,
+            // A full slot: offer to free one, then try once more.
+            Err(error) => match slot_error(&error.to_string()) {
+                Some(slot) => {
+                    println!("{}", slot.full_message());
+                    if !manage(&mut session, slot).await? {
+                        return Err(error);
+                    }
+                    println!("Signing again…");
+                    api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await?
+                }
+                None => return Err(error),
+            },
+        }
     };
     let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| fail("signing returned no app"))?);
     if let Some(stripped) = signed["strippedExtensions"].as_array().filter(|s| !s.is_empty()) {
@@ -445,4 +461,152 @@ async fn handoff(
 
 fn file_name(path: &Path) -> Result<String, Error> {
     Ok(path.file_name().ok_or_else(|| fail("bad file name"))?.to_string_lossy().to_string())
+}
+
+// MARK: Apple ID and its slots
+
+async fn sign_in(email: &str, anisette: &str) -> Result<api::Session, Error> {
+    let password = ask_secret(&format!("Apple ID password for {email}: "));
+    println!("Signing in…");
+    let (session, _) = api::sign_in(email, password, anisette, &data_dir().join("apple-id"), two_factor).await?;
+    Ok(session)
+}
+
+#[derive(Clone, Copy)]
+enum Slot {
+    Certificates,
+    AppIds,
+}
+
+impl Slot {
+    fn full_message(self) -> &'static str {
+        match self {
+            Slot::Certificates => "The account has no room for another development certificate (a free account has two).",
+            Slot::AppIds => "The account can't make another App ID right now (a free account gets ten a week).",
+        }
+    }
+}
+
+/// Which of Apple's limits an error is about (the same test as the app's DeveloperSlots).
+fn slot_error(text: &str) -> Option<Slot> {
+    let lower = text.to_lowercase();
+    if lower.contains("7460") || lower.contains("maximum number of certificates") {
+        return Some(Slot::Certificates);
+    }
+    (lower.contains("app id") && ["limit", "maximum", "more than", "9401"].iter().any(|w| lower.contains(w)))
+        .then_some(Slot::AppIds)
+}
+
+async fn account_command(args: &[String], slot: Slot) -> Result<(), Error> {
+    let (mut email, mut anisette) = (None, None);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--apple-id" => email = args.next().cloned(),
+            "--anisette" => anisette = args.next().cloned(),
+            other => return Err(fail(format!("unexpected {other}"))),
+        }
+    }
+    let (Some(email), Some(anisette)) = (email, anisette) else {
+        return Err(fail("needs --apple-id <email> and --anisette <url>"));
+    };
+    let mut session = sign_in(&email, &anisette).await?;
+    manage(&mut session, slot).await?;
+    Ok(())
+}
+
+/// Lists the slot's items and frees one the user picks and confirms. True when one was freed.
+async fn manage(session: &mut api::Session, slot: Slot) -> Result<bool, Error> {
+    match slot {
+        Slot::Certificates => revoke_one(session).await,
+        Slot::AppIds => delete_one(session).await,
+    }
+}
+
+async fn revoke_one(session: &mut api::Session) -> Result<bool, Error> {
+    let list = api::list_certificates(session).await?;
+    let certificates = list["certificates"].as_array().cloned().unwrap_or_default();
+    if certificates.is_empty() {
+        println!("The account has no development certificates.");
+        return Ok(false);
+    }
+    println!("Development certificates on team {}:", session.team_id());
+    for (index, cert) in certificates.iter().enumerate() {
+        let text = |key: &str| cert[key].as_str().unwrap_or("?").to_string();
+        let mut notes = Vec::new();
+        if cert["inUseHere"].as_bool() == Some(true) {
+            notes.push("this computer signs with it");
+        } else if cert["madeByApparition"].as_bool() == Some(true) {
+            notes.push("Apparition on another device, probably a headset");
+        }
+        println!(
+            "  {}. {} ({}), made on \"{}\", expires {}{}",
+            index + 1,
+            text("name"),
+            cert["platform"].as_str().unwrap_or("any platform"),
+            text("machineName"),
+            text("expires").split('T').next().unwrap_or("?"),
+            if notes.is_empty() { String::new() } else { format!(" [{}]", notes.join(", ")) },
+        );
+    }
+    let Some(cert) = choose(&certificates, "Revoke which one (number, or Return to keep them all)? ") else {
+        return Ok(false);
+    };
+    let warning = if cert["inUseHere"].as_bool() == Some(true) {
+        "This computer signs with it: apps it installed stop opening until installed again."
+    } else if cert["madeByApparition"].as_bool() == Some(true) {
+        "Apps that device signed with it stop opening until it signs them again (it makes a new certificate then, which needs a free slot)."
+    } else {
+        "Apps signed with it (by Xcode or another tool) stop opening until signed again; that tool makes a new one when it next signs."
+    };
+    println!("{warning}");
+    if ask("Type `revoke` to revoke it: ") != "revoke" {
+        println!("Kept it.");
+        return Ok(false);
+    }
+    let serial = cert["serialNumber"].as_str().ok_or_else(|| fail("that certificate has no serial number"))?;
+    api::revoke_certificate(session, serial).await?;
+    println!("Revoked.");
+    Ok(true)
+}
+
+async fn delete_one(session: &mut api::Session) -> Result<bool, Error> {
+    let list = api::list_app_ids(session).await?;
+    let ids = list["appIds"].as_array().cloned().unwrap_or_default();
+    println!(
+        "App IDs on team {} ({} more allowed now):",
+        session.team_id(),
+        list["availableQuantity"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| "?".into())
+    );
+    if ids.is_empty() {
+        println!("  none");
+        return Ok(false);
+    }
+    for (index, id) in ids.iter().enumerate() {
+        println!(
+            "  {}. {} ({}), expires {}",
+            index + 1,
+            id["identifier"].as_str().unwrap_or("?"),
+            id["name"].as_str().unwrap_or("?"),
+            id["expires"].as_str().and_then(|e| e.split('T').next()).unwrap_or("?"),
+        );
+    }
+    let Some(id) = choose(&ids, "Delete which one (number, or Return to keep them all)? ") else {
+        return Ok(false);
+    };
+    println!("Apps using it keep working until their profile expires. A free account may refuse until the ID expires, and a deleted ID can still count against this week's ten.");
+    if ask("Type `delete` to delete it: ") != "delete" {
+        println!("Kept it.");
+        return Ok(false);
+    }
+    let app_id_id = id["appIdId"].as_str().ok_or_else(|| fail("that App ID has no id"))?;
+    api::delete_app_id(session, app_id_id).await?;
+    println!("Deleted.");
+    Ok(true)
+}
+
+fn choose<'a>(items: &'a [serde_json::Value], prompt: &str) -> Option<&'a serde_json::Value> {
+    let answer = ask(prompt);
+    let index: usize = answer.parse().ok()?;
+    items.get(index.checked_sub(1)?)
 }

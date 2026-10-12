@@ -20,6 +20,14 @@ use serde_json::{Value, json};
 
 use crate::{FileStorage, SESSION, account::MACHINE_NAME, reply, text};
 
+/// The public half (PKCS#1 DER) of the certificate key this install keeps for `email`.
+pub(crate) fn stored_public_key(data_dir: &Path, email: &str) -> Option<Vec<u8>> {
+    use rsa::pkcs1::EncodeRsaPublicKey;
+    let encoded = FileStorage::open(data_dir.join("storage.json")).get(&key_name(email))?;
+    let key = RsaPrivateKey::from_pkcs8_der(&BASE64_STANDARD.decode(encoded).ok()?).ok()?;
+    Some(key.to_public_key().to_pkcs1_der().ok()?.as_bytes().to_vec())
+}
+
 const FORMAT: &str = "apparition-signing";
 
 #[derive(Serialize, Deserialize)]
@@ -37,7 +45,7 @@ struct SigningFile {
     from: String,
 }
 
-fn key_name(email: &str) -> String {
+pub(crate) fn key_name(email: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("{}/key", hex(&Sha256::digest(email.as_bytes())))
 }

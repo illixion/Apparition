@@ -22,6 +22,9 @@ enum DeveloperSlots {
         /// Made under Apparition's machine name, so it's the one this app signs with (if its
         /// key is on this device) or one an earlier install of Apparition left behind.
         let madeByApparition: Bool
+        /// Its key is the one this headset keeps: Apparition signs with this one (perhaps
+        /// shared with the desktop installer).
+        let inUseHere: Bool?
     }
 
     struct AppID: Codable, Sendable, Identifiable {

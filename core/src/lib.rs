@@ -21,7 +21,7 @@ use isideload::{
 use rootcause::prelude::*;
 
 pub mod api;
-mod account;
+pub(crate) mod account;
 mod share;
 mod identity;
 mod ipa;
@@ -37,6 +37,8 @@ pub use idevice_ffi;
 pub struct Session {
     email: String,
     team: DeveloperTeam,
+    /// Where its storage.json (anisette state, the certificate key) lives.
+    data_dir: PathBuf,
     sideloader: Sideloader<MaxCertsCallbackBox>,
 }
 
@@ -93,7 +95,7 @@ pub async fn sign_in(
         "team": team_info(&team),
         "teams": teams.iter().map(team_info).collect::<Vec<_>>(),
     });
-    Ok((Session { email: email.to_string(), team, sideloader }, result))
+    Ok((Session { email: email.to_string(), team, data_dir: data_dir.to_path_buf(), sideloader }, result))
 }
 
 /// Registers the device on the session's team (tolerating "already registered"), then signs
