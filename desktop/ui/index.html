@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Apparition Installer</title>
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="top" data-tauri-drag-region>
+  <div class="brand" data-tauri-drag-region>
+    <img src="logo.svg" alt="" width="30" height="30">
+    <span>Apparition Installer</span>
+  </div>
+  <div id="update" class="update" hidden>
+    <span id="update-text">A newer installer is available.</span>
+    <button type="button" class="link" id="update-open">Download it</button>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="trail" aria-label="Steps">
+    <ol id="trail">
+      <li data-step="welcome"><span class="mark"></span><span class="text"><span class="label">Welcome</span></span></li>
+      <li data-step="headset"><span class="mark"></span><span class="text"><span class="label">Find the headset</span></span></li>
+      <li data-step="pair"><span class="mark"></span><span class="text"><span class="label">Pair</span><span class="note"></span></span></li>
+      <li data-step="signing"><span class="mark"></span><span class="text"><span class="label">Signing</span><span class="note"></span></span></li>
+      <li data-step="install"><span class="mark"></span><span class="text"><span class="label">Install</span></span></li>
+      <li data-step="done"><span class="mark"></span><span class="text"><span class="label">Done</span></span></li>
+    </ol>
+  </nav>
+
+  <div class="stage">
+    <main id="panel" class="panel" tabindex="-1" aria-live="polite"></main>
+    <footer id="actions" class="actions"></footer>
+  </div>
+</div>
+
+<!-- ============================================================ steps -->
+
+<template id="t-welcome">
+  <section class="step welcome">
+    <div class="welcome-copy">
+      <h1>Put Apparition on your Vision Pro.</h1>
+      <p class="lede">Apparition installs apps on your headset and signs them right there, with your own Apple ID. This computer is needed once, to put Apparition itself on the headset.</p>
+      <h2 class="small">What you need</h2>
+      <ul class="needs">
+        <li><strong>The headset and this computer on the same Wi-Fi.</strong></li>
+        <li><strong>The headset showing Settings &gt; General &gt; Remote Devices,</strong> the first time, so this computer can pair with it.</li>
+        <li><strong>An Apple ID,</strong> free or paid, <strong>or your own developer certificate</strong> (.p12 and provisioning profiles).</li>
+      </ul>
+    </div>
+    <figure class="apparition" aria-hidden="true">
+      <div class="aura"></div>
+      <svg class="specter" viewBox="0 0 128 140" width="128" height="140" focusable="false">
+        <ellipse class="floor" cx="64" cy="130" rx="30" ry="5"/>
+        <g class="echo echo-2"><use href="#ghost" transform="rotate(-6 64 64)"/></g>
+        <g class="echo echo-1"><use href="#ghost" transform="rotate(-6 64 64)"/></g>
+        <g class="ghost"><use href="#ghost" transform="rotate(-6 64 64)"/></g>
+      </svg>
+    </figure>
+    <div class="actions"><button type="button" class="button primary" data-go="headset">Get started</button></div>
+  </section>
+</template>
+
+<template id="t-headset">
+  <section class="step">
+    <h1>Find your headset</h1>
+    <p class="lede">Put on the headset and open <strong>Settings &gt; General &gt; Remote Devices</strong>. It shows up here as ready to pair. A headset this computer has paired with before needs nothing open.</p>
+
+    <div class="group">
+      <div class="group-head">
+        <h2 class="small">On this network</h2>
+        <span class="searching" data-role="searching"><span class="dot"></span>Looking…</span>
+        <button type="button" class="button quiet small" data-role="search">Look again</button>
+      </div>
+      <ul class="choices" data-role="list" aria-label="Headsets"></ul>
+      <p class="empty" data-role="empty" hidden>No headset found yet. Check that it's awake, on the same Wi-Fi as this computer, and showing Remote Devices.</p>
+      <p class="hint" data-role="mdns-hint" hidden></p>
+    </div>
+
+    <details class="manual">
+      <summary>Enter its address instead</summary>
+      <p class="hint">On the headset, Settings &gt; Wi-Fi &gt; your network shows its IP address. The pairing port changes each time Remote Devices opens; another computer's <code>apparition-installer devices</code> shows it.</p>
+      <form class="row" data-role="manual">
+        <label class="field">IP address<input name="address" required inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.20"></label>
+        <label class="field narrow">Pairing port<input name="port" required inputmode="numeric" autocomplete="off" placeholder="51967"></label>
+        <button type="submit" class="button quiet">Pair with it</button>
+      </form>
+    </details>
+
+    <div class="actions">
+      <button type="button" class="button quiet" data-go="welcome">Back</button>
+      <button type="button" class="button primary" data-role="continue" disabled>Continue</button>
+    </div>
+  </section>
+</template>
+
+<template id="t-device">
+  <li>
+    <label class="choice">
+      <input type="radio" name="device">
+      <span class="choice-body">
+        <span class="choice-title"></span>
+        <span class="choice-meta"></span>
+      </span>
+      <span class="badge"></span>
+    </label>
+    <button type="button" class="link forget" hidden>Forget</button>
+  </li>
+</template>
+
+<template id="t-pair">
+  <section class="step">
+    <h1>Pair with <span data-role="name">the headset</span></h1>
+    <p class="lede">Pairing lets this computer install apps on the headset. It happens once: the pairing is kept for next time.</p>
+    <ol class="howto">
+      <li>Keep <strong>Settings &gt; General &gt; Remote Devices</strong> open on the headset.</li>
+      <li>Select <strong>Start pairing</strong> below. The headset shows a code.</li>
+      <li>Type that code here.</li>
+    </ol>
+    <p class="status" data-role="status" hidden></p>
+    <div class="actions">
+      <button type="button" class="button quiet" data-go="headset">Back</button>
+      <button type="button" class="button primary" data-role="start">Start pairing</button>
+    </div>
+  </section>
+</template>
+
+<template id="t-signing">
+  <section class="step">
+    <h1>How should apps be signed?</h1>
+    <p class="lede">The headset only runs apps signed for it. Choose what signs Apparition; Apparition can then keep using it to sign the apps you install.</p>
+
+    <div class="modes" role="radiogroup" aria-label="Signing">
+      <label class="mode">
+        <input type="radio" name="mode" value="appleId">
+        <span class="mode-title">Apple ID</span>
+        <span class="mode-text">Free or paid. With a free Apple ID, apps last 7 days and Apparition refreshes them.</span>
+      </label>
+      <label class="mode">
+        <input type="radio" name="mode" value="certificate">
+        <span class="mode-title">Your own certificate</span>
+        <span class="mode-text">A .p12 and provisioning profiles from a paid developer account. Apps last as long as the profile, usually a year.</span>
+      </label>
+    </div>
+
+    <form class="form" data-role="apple-id" hidden autocomplete="off">
+      <label class="field">Apple ID<input name="email" type="email" required autocomplete="off" spellcheck="false" placeholder="you@example.com"></label>
+      <label class="field">Password<input name="password" type="password" required autocomplete="off" spellcheck="false"></label>
+      <label class="field">Anisette server<input name="anisette" required autocomplete="off" spellcheck="false" inputmode="url"></label>
+      <p class="hint">Signing in to Apple needs an anisette (v3) server. Apparition doesn't pick one for you: run your own with the Docker Compose file in Apparition's repository (it listens on port 6969), let Apparition Companion start it, or use any v3 server you trust. It sees this computer's anisette identity and IP address, never your Apple ID or password. <button type="button" class="link" data-role="help">More in the FAQ</button></p>
+      <p class="hint">Your password goes to Apple and nowhere else. It isn't saved.</p>
+      <div class="row"><button type="submit" class="button primary">Sign in</button></div>
+    </form>
+
+    <form class="form" data-role="certificate" hidden autocomplete="off">
+      <div class="file-row">
+        <button type="button" class="button quiet" data-role="pick-p12">Choose .p12…</button>
+        <span class="file-name" data-role="p12-name">No certificate chosen</span>
+      </div>
+      <label class="field">Password for the .p12<input name="password" type="password" autocomplete="off" spellcheck="false"></label>
+      <div class="file-row">
+        <button type="button" class="button quiet" data-role="pick-profiles">Add profiles…</button>
+        <span class="file-name" data-role="profile-names">No profiles yet</span>
+      </div>
+      <p class="hint">Development, ad hoc or enterprise profiles that list the headset. A wildcard profile keeps each app's own bundle ID.</p>
+      <div class="row"><button type="submit" class="button primary">Use this certificate</button></div>
+    </form>
+
+    <div class="signed" data-role="signed" hidden>
+      <p class="signed-title" data-role="signed-title"></p>
+      <ul class="signed-list" data-role="signed-list"></ul>
+      <button type="button" class="link" data-role="change">Use something else</button>
+    </div>
+
+    <p class="status" data-role="status" hidden></p>
+
+    <div class="actions">
+      <button type="button" class="button quiet" data-role="back">Back</button>
+      <button type="button" class="button primary" data-role="continue" disabled>Continue</button>
+    </div>
+  </section>
+</template>
+
+<template id="t-install">
+  <section class="step">
+    <h1>Install Apparition</h1>
+    <p class="lede" data-role="lede">The latest official release, checked against Apparition's release signature before it's used.</p>
+
+    <details class="advanced" data-role="advanced">
+      <summary>Advanced</summary>
+      <div class="modes compact" role="radiogroup" aria-label="What to install">
+        <label class="mode">
+          <input type="radio" name="what" value="latest" checked>
+          <span class="mode-title">Latest Apparition</span>
+          <span class="mode-text">From apparition.illixion.com, signature checked.</span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="what" value="local">
+          <span class="mode-title">An app file</span>
+          <span class="mode-text" data-role="local-name">Any .ipa on this computer.</span>
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" data-role="handoff" checked> Share the signing with Apparition, so it can refresh itself and your apps</label>
+      <label class="check"><input type="checkbox" data-role="extensions"> Keep app extensions (each costs a free Apple ID an App ID)</label>
+    </details>
+
+    <ol class="stages" data-role="stages" hidden>
+      <li data-stage="release"><span class="stage-mark"></span><span class="stage-text">Check the release</span><span class="stage-detail"></span></li>
+      <li data-stage="download"><span class="stage-mark"></span><span class="stage-text">Download</span><span class="stage-detail"></span>
+        <span class="meter" hidden><span class="meter-fill"></span></span></li>
+      <li data-stage="connecting"><span class="stage-mark"></span><span class="stage-text">Connect to the headset</span><span class="stage-detail"></span></li>
+      <li data-stage="signing"><span class="stage-mark"></span><span class="stage-text">Sign</span><span class="stage-detail"></span></li>
+      <li data-stage="installing"><span class="stage-mark"></span><span class="stage-text">Install</span><span class="stage-detail"></span></li>
+      <li data-stage="handoff"><span class="stage-mark"></span><span class="stage-text">Share the signing with Apparition</span><span class="stage-detail"></span></li>
+    </ol>
+
+    <p class="status" data-role="status" hidden></p>
+    <div class="slots" data-role="slots" hidden></div>
+
+    <div class="actions">
+      <button type="button" class="button quiet" data-role="back">Back</button>
+      <button type="button" class="button primary" data-role="start">Install</button>
+    </div>
+  </section>
+</template>
+
+<template id="t-slots">
+  <div class="slots-inner">
+    <h2 class="small" data-role="title"></h2>
+    <p class="hint" data-role="explain"></p>
+    <ul class="choices" data-role="list"></ul>
+    <div class="confirm" data-role="confirm" hidden>
+      <p class="warning" data-role="warning"></p>
+      <label class="field"><span>Type <strong data-role="word"></strong> to confirm</span><input data-role="typed" autocomplete="off" spellcheck="false"></label>
+      <div class="row">
+        <button type="button" class="button danger" data-role="do" disabled></button>
+        <button type="button" class="button quiet" data-role="keep">Keep them all</button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template id="t-done">
+  <section class="step welcome done">
+    <div class="welcome-copy">
+      <h1 data-role="title">It's on your headset.</h1>
+      <p class="lede" data-role="lede"></p>
+      <h2 class="small">Next, on the headset</h2>
+      <ol class="howto" data-role="next"></ol>
+      <p class="hint" data-role="extra" hidden></p>
+    </div>
+    <figure class="apparition" aria-hidden="true">
+      <div class="aura"></div>
+      <svg class="specter" viewBox="0 0 128 140" width="128" height="140" focusable="false">
+        <ellipse class="floor" cx="64" cy="130" rx="30" ry="5"/>
+        <g class="echo echo-2"><use href="#ghost" transform="rotate(-6 64 64)"/></g>
+        <g class="echo echo-1"><use href="#ghost" transform="rotate(-6 64 64)"/></g>
+        <g class="ghost"><use href="#ghost" transform="rotate(-6 64 64)"/></g>
+      </svg>
+    </figure>
+    <div class="actions">
+      <button type="button" class="button quiet" data-role="again">Install something else</button>
+    </div>
+  </section>
+</template>
+
+<!-- ============================================================ prompts -->
+
+<dialog id="prompt" class="prompt" aria-labelledby="prompt-title">
+  <form method="dialog" id="prompt-form" autocomplete="off">
+    <h2 id="prompt-title"></h2>
+    <p class="hint" id="prompt-text"></p>
+    <p class="error" id="prompt-error" hidden></p>
+    <input id="prompt-code" class="code" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="8" aria-labelledby="prompt-title">
+    <div id="prompt-sms" class="sms" hidden></div>
+    <div class="row end">
+      <button type="button" class="button quiet" id="prompt-cancel">Cancel</button>
+      <button type="submit" class="button primary" id="prompt-submit">Continue</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- The website's ghost (Website/logo.svg), shared by the welcome and done screens. -->
+<svg width="0" height="0" class="defs" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="g-body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCD4FF"/>
+    </linearGradient>
+    <linearGradient id="g-icon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7FE9C8"/>
+      <stop offset="1" stop-color="#8A74F2"/>
+    </linearGradient>
+    <g id="ghost" stroke="#2A2350" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+      <path fill="url(#g-body)" d="M30 100V56C30 33 45 18 64 18S98 33 98 56V100Q89.5 112 81 100Q72.5 112 64 100Q55.5 112 47 100Q38.5 112 30 100Z"/>
+      <ellipse cx="54" cy="49" rx="4.5" ry="6" fill="#2A2350" stroke="none"/>
+      <ellipse cx="74" cy="49" rx="4.5" ry="6" fill="#2A2350" stroke="none"/>
+      <path d="M59.5 60Q64 63.5 68.5 60" fill="none" stroke-width="3"/>
+      <g transform="rotate(10 64 86)">
+        <rect x="44" y="66" width="40" height="40" rx="12" fill="url(#g-icon)"/>
+        <path d="M64 74Q66 84 76 86Q66 88 64 98Q62 88 52 86Q62 84 64 74Z" fill="#FFFFFF" stroke="none"/>
+        <ellipse cx="43" cy="82" rx="6.5" ry="6" fill="#F1EDFF"/>
+        <ellipse cx="85" cy="82" rx="6.5" ry="6" fill="#F1EDFF"/>
+      </g>
+    </g>
+  </defs>
+</svg>
+</body>
+</html>
