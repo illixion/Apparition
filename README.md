@@ -32,7 +32,9 @@ the menu bar or tray, or `apparition relay` on the command line (see below); bot
 Windows asks to allow the companion through its firewall the first time it starts from a
 desktop session; elsewhere allow inbound TCP 49160 (and 6969 to offer anisette), e.g. from an
 elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction Inbound
--Protocol TCP -LocalPort 49160,6969 -Action Allow -Profile Private`. On macOS, Local Network
+-Protocol TCP -LocalPort 49160,6969 -Action Allow -Profile Private`. On Linux, open the same
+ports if a firewall runs (`sudo ufw allow 49160,6969/tcp`, or firewalld's `--add-port`), and
+UDP 5353 for mDNS. On macOS, Local Network
 privacy blocks an unbundled binary's multicast, so `apparition relay` there can't advertise
 itself: use the desktop app, or type the address in Apparition. `apparition browse` lists the
 companions mDNS sees from a machine. (The relay protocol was tested 2026-10-11 from macOS over
@@ -125,6 +127,11 @@ it; it never replaces itself.
     cd desktop && cargo tauri build --bundles app                           # this Mac
     cargo tauri build --target universal-apple-darwin --bundles app         # arm64 + x86_64
     cargo build --release --features custom-protocol --target x86_64-pc-windows-gnu   # Windows exe
+    docker build -t apparition-desktop-linux -f ../scripts/desktop-linux.Dockerfile ../scripts
+    docker run --rm -v "$PWD/..:/src" -w /src/desktop -v apparition-desktop-target:/target \
+        -e CARGO_TARGET_DIR=/target apparition-desktop-linux sh -c 'mkdir -p /src/build &&
+        cargo tauri build --bundles deb,appimage && cd /target/release/bundle &&
+        cp appimage/*.AppImage deb/*.deb /src/build/'                       # Linux, into build/
 
 The page is plain HTML, CSS and JavaScript in `desktop/ui/` (no npm), under a strict CSP. A
 debug build opens on any step with `APPARITION_DESKTOP_PREVIEW=signing` (or `pair`, `pin`,
@@ -132,7 +139,9 @@ debug build opens on any step with `APPARITION_DESKTOP_PREVIEW=signing` (or `pai
 `APPARITION_RELEASE_SITE` and `APPARITION_RELEASE_SIGNERS`, and can move the companion's ports with
 `APPARITION_COMPANION_PORTS=<relay>,<anisette>`; release builds ignore all four.
 `scripts/package-release.sh` puts the app in the macOS and Windows installer zips next to the
-command line. Linux needs WebKitGTK in the build image and an AppImage or .deb, not built yet.
+command line, and with `--linux` builds a .deb and an AppImage per architecture (Ubuntu 22.04,
+so glibc 2.35 or newer). Opening the app again shows the running one, which is also the way
+back to its window on a Linux desktop with no tray (niri or plain GNOME, say).
 
 ## Anisette
 

@@ -962,6 +962,8 @@ function buildCompanion() {
       setBusy(button, false);
     });
   }
+  // Also the only way to quit where there's no tray to show the menu (niri, plain GNOME).
+  $(companionPanel, "quit").addEventListener("click", () => invoke("quit_app"));
   const login = /** @type {HTMLInputElement} */ ($(companionPanel, "login"));
   invoke("launch_at_login").then((/** @type {boolean} */ on) => (login.checked = on));
   login.addEventListener("change", async () => {

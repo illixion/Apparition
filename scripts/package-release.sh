@@ -7,8 +7,9 @@
 #   Apparition-Installer-<version>-macos-universal.zip      arm64 + x86_64: the desktop app
 #                                                           and the command line
 #   Apparition-Installer-<version>-windows-x86_64.zip       the same two for Windows
-#   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, static, built in
-#                                                           Docker; the command line only
+#   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, built in Docker: the
+#                                                           static command line, and the
+#                                                           desktop app as an AppImage and a .deb
 #
 #   scripts/package-release.sh 0.2.0
 #   scripts/package-release.sh 0.2.0 --linux        # also Linux x86_64 and arm64
@@ -31,9 +32,8 @@
 # Homebrew), the Tauri CLI for the desktop app (cargo install tauri-cli --version '^2'
 # --locked), and Docker for --linux.
 #
-# The Linux tarballs carry only the command line: the desktop app needs WebKitGTK
-# (libwebkit2gtk-4.1-dev and friends) in the build image, and an AppImage or .deb to carry
-# it, which this doesn't build yet.
+# The Linux desktop app is built in an image made from scripts/desktop-linux.Dockerfile
+# (Ubuntu 22.04 with WebKitGTK and the Tauri CLI), tagged per architecture and reused.
 
 set -euo pipefail
 
@@ -157,7 +157,7 @@ EOF
   (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin.exe" "$app_name.exe" README.txt)
 
   if [[ "$LINUX" == 1 ]]; then
-    # In Docker, from a copy of the repo (just core/, installer/ and release-signers), so the
+    # In Docker, from a copy of the repo (core/, installer/, desktop/ and release-signers), so the
     # container never writes into this checkout's target directories. Built on Alpine, so
     # it's linked statically against musl and runs on any distribution: a glibc build needs
     # the builder's glibc or newer (Debian trixie's 2.39 ruled out Ubuntu 22.04). The cargo
@@ -176,8 +176,23 @@ EOF
       file "$src/installer/target/release/$bin" | grep -qE "statically linked|static-pie linked" \
         || { echo "error: the Linux $arch installer isn't statically linked" >&2; exit 1; }
       cp "$src/installer/target/release/$bin" "$WORK/linux-$arch/"
-      readme "$WORK/linux-$arch" "./$bin" "The guided desktop app isn't built for Linux yet; use the command line below."
-      tar -C "$WORK/linux-$arch" -czf "$OUT/Apparition-Installer-$VERSION-linux-$arch.tar.gz" "$bin" README.txt
+
+      echo "==> desktop app for Linux ($arch, in Docker)"
+      rsync -a --exclude target "$ROOT/desktop" "$src/"
+      image="apparition-desktop-linux:$arch"
+      docker build -q --platform "$platform" -t "$image" -f "$ROOT/scripts/desktop-linux.Dockerfile" "$ROOT/scripts" >/dev/null
+      # The target directory is a volume, not the mount: linuxdeploy copies files with their
+      # permissions, which the host mount refuses. Only the two bundles come out.
+      mkdir -p "$src/bundles"
+      docker run --rm --platform "$platform" -v "apparition-cargo-desktop-$arch:/usr/local/cargo/registry" \
+        -v "apparition-desktop-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
+        -v "$src:/src" -w /src/desktop "$image" sh -c 'rm -rf /target/release/bundle &&
+          cargo tauri build --bundles deb,appimage >/tmp/log 2>&1 || { tail -30 /tmp/log; exit 1; }
+          cp /target/release/bundle/appimage/*.AppImage /target/release/bundle/deb/*.deb /src/bundles/'
+      cp "$src"/bundles/*.AppImage "$WORK/linux-$arch/$app_name.AppImage"
+      cp "$src"/bundles/*.deb "$WORK/linux-$arch/$app_name.deb"
+      readme "$WORK/linux-$arch" "./$bin" "Run $app_name.AppImage (chmod +x it first) for a guided install, or install $app_name.deb on Debian or Ubuntu; it then stays in the tray as the companion. Both need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later)."
+      tar -C "$WORK/linux-$arch" -czf "$OUT/Apparition-Installer-$VERSION-linux-$arch.tar.gz" "$bin" "$app_name.AppImage" "$app_name.deb" README.txt
     done
   fi
 fi

@@ -23,6 +23,9 @@ fn main() {
     let companion_state = Arc::new(companion::CompanionState::new(&apparition_core::api::DeviceStore::default()));
     let cleanup = state.clone();
     tauri::Builder::default()
+        // Opening the app again shows the running one's window, which is also the way back to
+        // it on a Linux desktop with no tray.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| companion::show_window(app)))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec![companion::HIDDEN])))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -58,6 +61,7 @@ fn main() {
             companion::companion_set_relay,
             companion::companion_set_anisette,
             companion::companion_docker,
+            companion::quit_app,
             companion::launch_at_login,
             companion::set_launch_at_login,
         ])

@@ -215,9 +215,15 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit Apparition", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&relay, &anisette, &PredefinedMenuItem::separator(app)?, &open, &quit])?;
     *state.tray.lock().unwrap() = Some(TrayItems { relay, anisette });
+    // A template image on macOS, which draws it in the menu bar's colour; the colour icon
+    // elsewhere, where a black ghost would vanish on a dark panel or taskbar.
+    #[cfg(target_os = "macos")]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    #[cfg(not(target_os = "macos"))]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
     TrayIconBuilder::with_id("main")
-        .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?)
-        .icon_as_template(true)
+        .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Apparition")
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -302,6 +308,11 @@ pub async fn companion_docker(state: Shared<'_>, up: bool) -> Result<Value, Fail
         companion.refresh().await;
     }
     Ok(state.status().await)
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
