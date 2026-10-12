@@ -87,10 +87,10 @@ Apparition (or any IPA) on the headset without Xcode, using the same Rust core, 
 companion (`apparition relay`, `apparition anisette serve|up|down`):
 
     apparition pair       # with Settings > General > Remote Devices open; type the PIN
-    apparition install --apple-id you@example.com   # macOS; elsewhere add --anisette <url>
+    apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969
-    apparition relay      # the companion, with this computer's anisette on macOS; until Ctrl-C
+    apparition relay      # the companion, with this computer's anisette (not on Windows); until Ctrl-C
 
 Without an IPA it installs the latest signed release of Apparition (see Releases).
 
@@ -136,11 +136,11 @@ command line. Linux needs WebKitGTK in the build image and an AppImage or .deb, 
 
 ## Anisette
 
-Signing in to Apple needs "anisette" data that identifies the computer. On macOS the installer
-makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
+Signing in to Apple needs "anisette" data that identifies the computer. On macOS and Linux
+(arm64 and x86_64) the installer makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
 Android uses; nothing of Apple's is stored in this repository), loads them in its own process
-(`core/src/anisette/`) and talks to Apple through them. Nothing to run or install. Elsewhere, and
-on a Mac that prefers it, use a server: Apparition ships none, so enter the URL of
+(`core/src/anisette/`) and talks to Apple through them. Nothing to run or install. On Windows, and
+wherever you prefer it, use a server: Apparition ships none, so enter the URL of
 any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
 up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
 digest), and enter `http://<host>:6969`. The server sees this device's anisette identity

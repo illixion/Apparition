@@ -36,7 +36,7 @@ lto = "thin"
 # `cargo build` for a release (scripts/package-release.sh, Windows) passes it.
 custom-protocol = ["tauri/custom-protocol"]
 
-# Anisette from Apple's own libraries, in this process (core/src/anisette). macOS only for now: the
-# Linux build is untested.
-[target.'cfg(target_os = "macos")'.dependencies]
+# Anisette from Apple's own libraries, in this process (core/src/anisette): macOS and Linux, not
+# Windows (the loader maps ELF libraries with POSIX calls).
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 apparition-core = { path = "../core", features = ["anisette"] }

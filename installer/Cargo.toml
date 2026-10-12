@@ -24,7 +24,7 @@ idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a
 [profile.release]
 lto = "thin"
 
-# Anisette from Apple's own libraries, in this process (core/src/anisette). macOS only for now: the
-# Linux build is untested.
-[target.'cfg(target_os = "macos")'.dependencies]
+# Anisette from Apple's own libraries, in this process (core/src/anisette): macOS and Linux, not
+# Windows (the loader maps ELF libraries with POSIX calls).
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 apparition-core = { path = "../core", features = ["anisette"] }

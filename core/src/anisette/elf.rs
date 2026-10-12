@@ -403,12 +403,41 @@ fn invalidate_instruction_cache(start: *mut c_void, length: usize) {
     unsafe { sys_icache_invalidate(start, length) }
 }
 
+/// The Arm ARM's sequence for making written instructions visible to instruction fetch: clean
+/// each data cache line to the point of unification, then invalidate each instruction cache
+/// line, with barriers between. Written out rather than calling the compiler runtime's
+/// `__clear_cache`, which a static musl build doesn't link. Linux lets user space read CTR_EL0
+/// and run both maintenance instructions.
 #[cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))]
 fn invalidate_instruction_cache(start: *mut c_void, length: usize) {
-    unsafe extern "C" {
-        fn __clear_cache(start: *mut c_void, end: *mut c_void);
+    use std::arch::asm;
+    let ctr: u64;
+    unsafe { asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack)) };
+    // DminLine (bits 19:16) and IminLine (bits 3:0) are log2 of the smallest line, in words.
+    let data_line = 4usize << ((ctr >> 16) & 0xf);
+    let instruction_line = 4usize << (ctr & 0xf);
+    // IDC (bit 28) and DIC (bit 29) say a step isn't needed.
+    let (idc, dic) = (ctr & (1 << 28) != 0, ctr & (1 << 29) != 0);
+    let (begin, end) = (start as usize, start as usize + length);
+    unsafe {
+        if !idc {
+            let mut line = begin & !(data_line - 1);
+            while line < end {
+                asm!("dc cvau, {}", in(reg) line, options(nostack));
+                line += data_line;
+            }
+        }
+        asm!("dsb ish", options(nostack));
+        if !dic {
+            let mut line = begin & !(instruction_line - 1);
+            while line < end {
+                asm!("ic ivau, {}", in(reg) line, options(nostack));
+                line += instruction_line;
+            }
+            asm!("dsb ish", options(nostack));
+        }
+        asm!("isb", options(nostack));
     }
-    unsafe { __clear_cache(start, start.cast::<u8>().add(length).cast()) }
 }
 
 // x86-64 keeps the instruction cache coherent.

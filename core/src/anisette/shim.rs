@@ -177,7 +177,15 @@ unsafe extern "C" fn shim_errno() -> *mut c_int {
 
 unsafe extern "C" fn shim_arc4random() -> u32 {
     let mut bytes = [0u8; 4];
-    unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) };
+    // (The libc crate has no getentropy for musl.)
+    #[cfg(target_vendor = "apple")]
+    unsafe {
+        libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len())
+    };
+    #[cfg(not(target_vendor = "apple"))]
+    unsafe {
+        libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0)
+    };
     u32::from_ne_bytes(bytes)
 }
 

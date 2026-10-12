@@ -46,7 +46,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       ID, a free account's apps last 7 days; with your own certificate, as long as its
       profile. Installing Apparition also puts the certificate in its Files inbox
       (--no-handoff skips that).
-      Signing in to Apple needs anisette data. Where this build has it (macOS), it makes
+      Signing in to Apple needs anisette data. Where this build has it (macOS, Linux), it makes
       its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
       and is required elsewhere.
   apparition certificates --apple-id <email> [--anisette <url>]
@@ -619,7 +619,7 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             if !api::builtin_anisette_available() {
                 return Err(fail("this build has no built-in anisette; use `apparition anisette up` (Docker)"));
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             {
                 println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
                 let server = apparition_core::anisette::start(&anisette_dir(), SocketAddr::from(([0, 0, 0, 0], port))).await?;
