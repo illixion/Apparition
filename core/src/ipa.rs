@@ -83,7 +83,6 @@ fn add_dir(
     mut source: Option<&mut ZipArchive<BufReader<File>>>,
     packed: &mut Packed,
 ) -> Result<(), Report> {
-    use std::os::unix::fs::PermissionsExt;
     writer.add_directory(format!("{prefix}/{relative}"), SimpleFileOptions::default())?;
     let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(Result::ok).collect();
     entries.sort_by_key(|entry| entry.file_name());
@@ -108,16 +107,35 @@ fn add_dir(
                     continue;
                 }
             }
+            let mode = file_mode(&meta, &data, index.get(&child).and_then(|&(i, _, _)| {
+                source.as_deref_mut()?.by_index_raw(i).ok()?.unix_mode()
+            }));
             let options = SimpleFileOptions::default()
                 .compression_method(CompressionMethod::Deflated)
                 .compression_level(Some(1))
-                .unix_permissions(meta.permissions().mode())
+                .unix_permissions(mode)
                 .large_file(data.len() as u64 >= u32::MAX as u64);
             writer.start_file(target, options)?;
             writer.write_all(&data)?;
         }
     }
     Ok(())
+}
+
+/// The file's Unix mode for the IPA: its own on Unix. Elsewhere (Windows) the source IPA's
+/// entry's, else executable for a Mach-O and read-only otherwise.
+fn file_mode(meta: &std::fs::Metadata, data: &[u8], source_mode: Option<u32>) -> u32 {
+    #[cfg(unix)]
+    {
+        let _ = (data, source_mode);
+        std::os::unix::fs::PermissionsExt::mode(&meta.permissions())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        let mach_o = matches!(data.get(..4), Some([0xcf, 0xfa, 0xed, 0xfe] | [0xca, 0xfe, 0xba, 0xbe]));
+        source_mode.unwrap_or(if mach_o { 0o755 } else { 0o644 })
+    }
 }
 
 /// Packs the signed app at `app_path` (reusing `source_ipa`'s unchanged entries when given),
@@ -143,62 +161,70 @@ pub unsafe extern "C" fn apparition_install_ipa(
         let source = if source_ipa.is_null() { None } else { Some(PathBuf::from(unsafe { text(source_ipa) }?)) };
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        let started = Instant::now();
-
-        let out = std::env::temp_dir().join(format!(
-            "{}.ipa",
-            app_path.file_stem().ok_or_else(|| report!("bad app path"))?.to_string_lossy()
-        ));
-        let packed = pack(&app_path, source.as_deref(), &out).context("Packing the IPA failed")?;
-        let pack_ms = started.elapsed().as_millis() as u64;
-        tracing::info!(
-            "packed {} files ({} reused) into {} bytes in {pack_ms} ms",
-            packed.files, packed.reused, packed.bytes
-        );
-
-        let result = runtime().block_on(async {
-            let staged = format!("PublicStaging/{}", out.file_name().unwrap().to_string_lossy());
-            let mut afc = AfcClient::connect_rsd(adapter, handshake).await?;
-            let _ = afc.mk_dir("PublicStaging").await;
-            let mut file = afc.open(staged.clone(), AfcFopenMode::WrOnly).await?;
-            let mut input = BufReader::new(File::open(&out)?);
-            let mut buffer = vec![0u8; UPLOAD_CHUNK];
-            loop {
-                let read = input.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                file.write_entire(&buffer[..read]).await?;
-            }
-            file.close().await?;
-            let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
-
-            let mut installer = InstallationProxyClient::connect_rsd(adapter, handshake).await?;
-            if detach_after_ms == 0 {
-                installer.install(staged, None).await.context("Install failed")?;
-                return Ok::<_, Report>((upload_ms, false));
-            }
-            match tokio::time::timeout(std::time::Duration::from_millis(detach_after_ms), installer.install(staged, None)).await {
-                Ok(done) => {
-                    done.context("Install failed")?;
-                    Ok((upload_ms, false))
-                }
-                Err(_) => {
-                    tracing::info!("install still waiting after {detach_after_ms} ms; leaving it queued");
-                    Ok((upload_ms, true))
-                }
-            }
-        });
-        let _ = std::fs::remove_file(&out);
-        let (upload_ms, queued) = result?;
-        Ok(json!({
-            "elapsedMs": started.elapsed().as_millis() as u64,
-            "packMs": pack_ms,
-            "uploadMs": upload_ms,
-            "bytes": packed.bytes,
-            "files": packed.files,
-            "reused": packed.reused,
-            "queued": queued,
-        }))
+        runtime().block_on(install(adapter, handshake, &app_path, source.as_deref(), detach_after_ms))
     })())
+}
+
+/// See `apparition_install_ipa`.
+pub async fn install(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    app_path: &Path,
+    source: Option<&Path>,
+    detach_after_ms: u64,
+) -> Result<serde_json::Value, Report> {
+    let started = Instant::now();
+    let out = std::env::temp_dir().join(format!(
+        "{}.ipa",
+        app_path.file_stem().ok_or_else(|| report!("bad app path"))?.to_string_lossy()
+    ));
+    let packed = pack(app_path, source, &out).context("Packing the IPA failed")?;
+    let pack_ms = started.elapsed().as_millis() as u64;
+    tracing::info!("packed {} files ({} reused) into {} bytes in {pack_ms} ms", packed.files, packed.reused, packed.bytes);
+
+    let result = async {
+        let staged = format!("PublicStaging/{}", out.file_name().unwrap().to_string_lossy());
+        let mut afc = AfcClient::connect_rsd(adapter, handshake).await?;
+        let _ = afc.mk_dir("PublicStaging").await;
+        let mut file = afc.open(staged.clone(), AfcFopenMode::WrOnly).await?;
+        let mut input = BufReader::new(File::open(&out)?);
+        let mut buffer = vec![0u8; UPLOAD_CHUNK];
+        loop {
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            file.write_entire(&buffer[..read]).await?;
+        }
+        file.close().await?;
+        let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
+
+        let mut installer = InstallationProxyClient::connect_rsd(adapter, handshake).await?;
+        if detach_after_ms == 0 {
+            installer.install(staged, None).await.context("Install failed")?;
+            return Ok::<_, Report>((upload_ms, false));
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(detach_after_ms), installer.install(staged, None)).await {
+            Ok(done) => {
+                done.context("Install failed")?;
+                Ok((upload_ms, false))
+            }
+            Err(_) => {
+                tracing::info!("install still waiting after {detach_after_ms} ms; leaving it queued");
+                Ok((upload_ms, true))
+            }
+        }
+    }
+    .await;
+    let _ = std::fs::remove_file(&out);
+    let (upload_ms, queued) = result?;
+    Ok(json!({
+        "elapsedMs": started.elapsed().as_millis() as u64,
+        "packMs": pack_ms,
+        "uploadMs": upload_ms,
+        "bytes": packed.bytes,
+        "files": packed.files,
+        "reused": packed.reused,
+        "queued": queued,
+    }))
 }

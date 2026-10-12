@@ -59,6 +59,24 @@ profile keeps each app's own bundle ID, and development profiles keep Launch wit
 The .p12 password is only used to open the file; the decrypted key is kept in Apparition's
 container, like the free account's key.
 
+## Installing Apparition from a computer
+
+`installer/` is Apparition Installer, a command-line program for Windows, Linux and macOS
+that puts Apparition (or any IPA) on the headset without Xcode, using the same Rust core:
+
+    apparition-installer pair       # with Settings > General > Remote Devices open; type the PIN
+    apparition-installer install Apparition.ipa --p12 development.p12 --profile wildcard.mobileprovision
+    apparition-installer install Apparition.ipa --apple-id you@example.com --anisette http://host:6969
+
+It pairs over the network once (the pairing is kept), signs with your own certificate or an
+Apple ID, and installs. Installing Apparition also copies the .p12 and profiles into its Files
+inbox, so it asks for the .p12's password once and can then refresh itself and its apps. An
+update of an app that is open on the headset finishes when it's closed. It never revokes a
+certificate: an Apple ID with no free certificate slot fails with Apple's error instead.
+
+    cd installer && cargo build --release                                   # this machine
+    cargo build --release --target x86_64-pc-windows-gnu                    # Windows, from macOS with mingw-w64
+
 ## Anisette
 
 Signing in to Apple needs an anisette-v3 server. Apparition ships none: enter the URL of

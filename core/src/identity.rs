@@ -508,10 +508,14 @@ pub unsafe extern "C" fn apparition_identity_import(
     password: *const c_char,
 ) -> *mut c_char {
     reply((|| {
-        let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
-        let p12 = std::fs::read(unsafe { text(p12_path) }?)?;
-        let password = unsafe { text(password) }?;
-        let store = KeyStore::from_pkcs12(&p12, &password, Pkcs12ImportPolicy::Relaxed).map_err(|error| {
+        import_identity(&PathBuf::from(unsafe { text(data_dir) }?), &std::fs::read(unsafe { text(p12_path) }?)?, unsafe { text(password) }?)
+    })())
+}
+
+/// Imports a .p12's certificate and key into `data_dir`; the password is dropped once it has
+/// opened the file. Returns `{identity}`.
+pub fn import_identity(data_dir: &Path, p12: &[u8], password: String) -> Result<Value, Report> {
+        let store = KeyStore::from_pkcs12(p12, &password, Pkcs12ImportPolicy::Relaxed).map_err(|error| {
             report!("Can't open the .p12: {error:?}. Check the password; it is the one chosen when the certificate was exported.")
         })?;
         drop(password);
@@ -549,13 +553,12 @@ pub unsafe extern "C" fn apparition_identity_import(
         }
 
         let id = fingerprint(&leaf);
-        let dir = identities_dir(&data_dir).join(&id);
+        let dir = identities_dir(data_dir).join(&id);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("certificate.der"), &leaf)?;
         std::fs::write(dir.join("key.der"), keys.key().as_der())?;
         tracing::info!("imported a signing certificate");
-        Ok(json!({ "identity": Identity::load(&data_dir, &id)?.json() }))
-    })())
+        Ok(json!({ "identity": Identity::load(data_dir, &id)?.json() }))
 }
 
 /// Deletes an imported certificate and its key. Returns `{ok}`.
@@ -580,18 +583,22 @@ pub unsafe extern "C" fn apparition_profile_import(
     udid: *const c_char,
 ) -> *mut c_char {
     reply((|| {
-        let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
         let udid = unsafe { optional(udid) }?;
-        let profile = Profile::parse(std::fs::read(unsafe { text(path) }?)?)?;
+        import_profile(&PathBuf::from(unsafe { text(data_dir) }?), std::fs::read(unsafe { text(path) }?)?, udid.as_deref())
+    })())
+}
+
+/// Imports a .mobileprovision's bytes (replacing one with the same UUID). Returns `{profile}`.
+pub fn import_profile(data_dir: &Path, data: Vec<u8>, udid: Option<&str>) -> Result<Value, Report> {
+        let profile = Profile::parse(data)?;
         let uuid = profile.uuid();
         if uuid.is_empty() || !uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
             bail!("The profile has no valid UUID");
         }
-        let dir = profiles_dir(&data_dir);
+        let dir = profiles_dir(data_dir);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join(format!("{uuid}.mobileprovision")), &profile.data)?;
-        Ok(json!({ "profile": profile.json(&Identity::all(&data_dir), udid.as_deref()) }))
-    })())
+        Ok(json!({ "profile": profile.json(&Identity::all(data_dir), udid) }))
 }
 
 /// Deletes an imported profile. Returns `{ok}`.
@@ -623,11 +630,28 @@ pub unsafe extern "C" fn apparition_sign_offline(
     strip_extensions: bool,
 ) -> *mut c_char {
     reply((|| {
-        let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
-        let app_path = PathBuf::from(unsafe { text(app_path) }?);
-        let identity = Identity::load(&data_dir, &unsafe { text(identity_id) }?)?;
         let chosen = unsafe { optional(profile_uuid) }?;
-        let udid = unsafe { text(udid) }?;
+        sign_offline(
+            &PathBuf::from(unsafe { text(data_dir) }?),
+            PathBuf::from(unsafe { text(app_path) }?),
+            &unsafe { text(identity_id) }?,
+            chosen.as_deref(),
+            &unsafe { text(udid) }?,
+            strip_extensions,
+        )
+    })())
+}
+
+/// See `apparition_sign_offline`.
+pub fn sign_offline(
+    data_dir: &Path,
+    app_path: PathBuf,
+    identity_id: &str,
+    chosen: Option<&str>,
+    udid: &str,
+    strip_extensions: bool,
+) -> Result<Value, Report> {
+        let identity = Identity::load(data_dir, identity_id)?;
         if not_after(&identity.certificate) < SystemTime::now() {
             bail!("The certificate expired on {}; import a new one", iso(not_after(&identity.certificate)));
         }
@@ -711,7 +735,6 @@ pub unsafe extern "C" fn apparition_sign_offline(
             "debuggable": main.get_task_allow(),
             "strippedExtensions": stripped,
         }))
-    })())
 }
 
 /// ExtensionKit extensions (`Extensions/*.appex`) and the extension points the app declares

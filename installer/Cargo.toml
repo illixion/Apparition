@@ -1,0 +1,25 @@
+[package]
+name = "apparition-installer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Installs Apparition (or any IPA) onto an Apple Vision Pro from Windows, Linux or macOS: pairs over the network, signs with an Apple ID or your own certificate, installs"
+
+[dependencies]
+apparition-core = { path = "../core" }
+dirs = "6"
+mdns-sd = "0.21.5"
+plist = "1"
+rootcause = "0.12.0"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time"] }
+
+# The core's patches apply only where it is the root, so they're repeated here.
+[patch.crates-io]
+apple-codesign-quick = { path = "../core/vendor/apple-codesign-quick" }
+idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
+
+[profile.release]
+lto = "thin"

@@ -36,7 +36,7 @@ pub type PinFn = Option<extern "C" fn(context: *mut c_void) -> *const c_char>;
 
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-async fn dial(device: SocketAddr, relay: Option<SocketAddr>) -> Result<TcpStream, Report> {
+pub(crate) async fn dial(device: SocketAddr, relay: Option<SocketAddr>) -> Result<TcpStream, Report> {
     let Some(relay) = relay else {
         return Ok(tokio::time::timeout(TIMEOUT, TcpStream::connect(device)).await??);
     };
@@ -63,7 +63,7 @@ async fn dial(device: SocketAddr, relay: Option<SocketAddr>) -> Result<TcpStream
     Ok(stream)
 }
 
-async fn open(
+pub(crate) async fn open(
     device: SocketAddr,
     relay: Option<SocketAddr>,
     hostname: &str,

@@ -20,6 +20,7 @@ use isideload::{
 };
 use rootcause::prelude::*;
 
+pub mod api;
 mod account;
 mod identity;
 mod ipa;
@@ -30,10 +31,101 @@ use serde_json::{Value, json};
 // Keep the idevice FFI symbols in the static library.
 pub use idevice_ffi;
 
-struct Session {
+/// A signed-in Apple ID with its developer session: the app keeps one in `SESSION`, the
+/// desktop installer holds its own.
+pub struct Session {
     email: String,
     team: DeveloperTeam,
     sideloader: Sideloader<MaxCertsCallbackBox>,
+}
+
+impl Session {
+    pub fn email(&self) -> &str {
+        &self.email
+    }
+
+    pub fn team_id(&self) -> &str {
+        &self.team.team_id
+    }
+}
+
+/// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, state kept in
+/// `<data_dir>/storage.json`) and opens a developer session. `two_factor` answers 2FA.
+/// Returns the session and `{email, team, teams}`.
+pub async fn sign_in(
+    email: &str,
+    password: String,
+    anisette_url: &str,
+    data_dir: &std::path::Path,
+    two_factor: impl Fn(&TwoFactorCallbackParams) -> TwoFactorCallbackResponse + Send + Sync,
+) -> Result<(Session, Value), Report> {
+    std::fs::create_dir_all(data_dir)?;
+    let storage_path = data_dir.join("storage.json");
+    let anisette =
+        RemoteV3AnisetteProvider::new(anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?;
+    let two_factor = &two_factor;
+    let mut account = AppleAccount::builder(email)
+        .anisette_provider(anisette)
+        .login(&password, |params: TwoFactorCallbackParams| {
+            let response = two_factor(&params);
+            async move { Ok(response) }
+        })
+        .await
+        .context("Apple ID sign-in failed")?;
+    drop(password);
+
+    let session = DeveloperSession::from_account(&mut account)
+        .await
+        .context("Failed to open a developer session")?;
+    let mut sideloader: Sideloader<MaxCertsCallbackBox> = SideloaderBuilder::new(session, email.to_string())
+        .team_selection(TeamSelection::First)
+        // Never revoke someone's existing certificates on our own: report instead.
+        .max_certs_behavior(MaxCertsBehavior::Error)
+        .storage(Box::new(FileStorage::open(storage_path)))
+        .machine_name(account::MACHINE_NAME.to_string())
+        .delete_app_after_install(false)
+        .build();
+    let teams = isideload::dev::teams::TeamsApi::list_teams(sideloader.get_dev_session()).await?;
+    let team = sideloader.get_team().await?;
+    let result = json!({
+        "email": email,
+        "team": team_info(&team),
+        "teams": teams.iter().map(team_info).collect::<Vec<_>>(),
+    });
+    Ok((Session { email: email.to_string(), team, sideloader }, result))
+}
+
+/// Registers the device on the session's team (tolerating "already registered"), then signs
+/// the app or IPA at `app_path` for it. Returns `{signedPath, devices, strippedExtensions}`.
+pub async fn sign_with_apple_id(
+    session: &mut Session,
+    app_path: PathBuf,
+    udid: &str,
+    device_name: &str,
+    strip_extensions: bool,
+) -> Result<Value, Report> {
+    let mut app_path = app_path;
+    let mut stripped = Vec::new();
+    if strip_extensions {
+        (app_path, stripped) = extract_without_extensions(&app_path)?;
+    }
+    let team = session.team.clone();
+    let dev = session.sideloader.get_dev_session();
+    dev.ensure_device_registered(&team, device_name, udid, None)
+        .await
+        .context("Device registration failed")?;
+    let devices = dev.list_devices(&team, None).await?;
+    let registered: Vec<Value> = devices
+        .iter()
+        .map(|d| json!({"name": d.name, "udid": d.device_number, "status": d.status}))
+        .collect();
+
+    let (signed, _) = session
+        .sideloader
+        .sign_app(app_path, Some(team), false, None::<fn(f32) -> std::future::Ready<()>>, None, Some(udid))
+        .await
+        .context("Signing failed")?;
+    Ok(json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped}))
 }
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -206,45 +298,9 @@ pub unsafe extern "C" fn apparition_login(
         let password = unsafe { text(password) }?;
         let anisette_url = unsafe { text(anisette_url) }?;
         let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
-        std::fs::create_dir_all(&data_dir)?;
-        let storage_path = data_dir.join("storage.json");
-
         runtime().block_on(async move {
-            let anisette = RemoteV3AnisetteProvider::new(
-                &anisette_url,
-                Box::new(FileStorage::open(storage_path.clone())),
-                "0".to_string(),
-            )?;
-            let callback = &callback;
-            let mut account = AppleAccount::builder(&email)
-                .anisette_provider(anisette)
-                .login(&password, |params: TwoFactorCallbackParams| {
-                    let response = callback.ask(&params);
-                    async move { Ok(response) }
-                })
-                .await
-                .context("Apple ID sign-in failed")?;
-            drop(password);
-
-            let session = DeveloperSession::from_account(&mut account)
-                .await
-                .context("Failed to open a developer session")?;
-            let mut sideloader: Sideloader<MaxCertsCallbackBox> = SideloaderBuilder::new(session, email.clone())
-                .team_selection(TeamSelection::First)
-                // Never revoke someone's existing certificates on our own: report instead.
-                .max_certs_behavior(MaxCertsBehavior::Error)
-                .storage(Box::new(FileStorage::open(storage_path)))
-                .machine_name(account::MACHINE_NAME.to_string())
-                .delete_app_after_install(false)
-                .build();
-            let teams = isideload::dev::teams::TeamsApi::list_teams(sideloader.get_dev_session()).await?;
-            let team = sideloader.get_team().await?;
-            let result = json!({
-                "email": email,
-                "team": team_info(&team),
-                "teams": teams.iter().map(team_info).collect::<Vec<_>>(),
-            });
-            *SESSION.lock().unwrap() = Some(Session { email, team, sideloader });
+            let (session, result) = sign_in(&email, password, &anisette_url, &data_dir, |params| callback.ask(params)).await?;
+            *SESSION.lock().unwrap() = Some(session);
             Ok(result)
         })
     })())
@@ -277,35 +333,12 @@ pub unsafe extern "C" fn apparition_sign(
     strip_extensions: bool,
 ) -> *mut c_char {
     reply((|| {
-        let mut app_path = PathBuf::from(unsafe { text(app_path) }?);
-        let mut stripped = Vec::new();
-        if strip_extensions {
-            (app_path, stripped) = extract_without_extensions(&app_path)?;
-        }
+        let app_path = PathBuf::from(unsafe { text(app_path) }?);
         let udid = unsafe { text(udid) }?;
         let device_name = unsafe { text(device_name) }?;
         let mut guard = SESSION.lock().unwrap();
         let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
-        let team = session.team.clone();
-
-        runtime().block_on(async {
-            let dev = session.sideloader.get_dev_session();
-            dev.ensure_device_registered(&team, &device_name, &udid, None)
-                .await
-                .context("Device registration failed")?;
-            let devices = dev.list_devices(&team, None).await?;
-            let registered: Vec<Value> = devices
-                .iter()
-                .map(|d| json!({"name": d.name, "udid": d.device_number, "status": d.status}))
-                .collect();
-
-            let (signed, _) = session
-                .sideloader
-                .sign_app(app_path, Some(team), false, None::<fn(f32) -> std::future::Ready<()>>, None, Some(&udid))
-                .await
-                .context("Signing failed")?;
-            Ok(json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped}))
-        })
+        runtime().block_on(sign_with_apple_id(session, app_path, &udid, &device_name, strip_extensions))
     })())
 }
 
