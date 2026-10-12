@@ -145,11 +145,13 @@ dependencies = [
  "apple-codesign-quick",
  "base64 0.22.1",
  "crc32fast",
+ "dirs",
  "ed25519-dalek",
  "idevice",
  "idevice-ffi",
  "isideload",
  "isideload-p12-keystore",
+ "mdns-sd 0.21.5",
  "plist",
  "reqwest",
  "ring",
@@ -171,12 +173,8 @@ name = "apparition-installer"
 version = "0.1.0"
 dependencies = [
  "apparition-core",
- "dirs",
- "mdns-sd 0.21.5",
- "plist",
  "rootcause",
  "rpassword",
- "serde",
  "serde_json",
  "tokio",
 ]

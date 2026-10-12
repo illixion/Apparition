@@ -1,0 +1,35 @@
+[package]
+name = "apparition-desktop"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Apparition Installer as a desktop app: a guided way to put Apparition on an Apple Vision Pro from Windows, Linux or macOS"
+
+[[bin]]
+name = "apparition-installer-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+apparition-core = { path = "../core", features = ["desktop"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+rootcause = "0.12.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The core's patches apply only where it is the root, so they're repeated here.
+[patch.crates-io]
+apple-codesign-quick = { path = "../core/vendor/apple-codesign-quick" }
+idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
+
+[profile.release]
+lto = "thin"
+
+[features]
+# Serves the bundled ui/ instead of a dev server. `cargo tauri build` turns it on; a plain
+# `cargo build` for a release (scripts/package-release.sh, Windows) passes it.
+custom-protocol = ["tauri/custom-protocol"]

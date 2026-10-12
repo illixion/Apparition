@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Apparition Installer's icon: the website's ghost (Website/logo.svg) on the séance-room violet,
+       inset on the macOS icon grid (824 px body). `cargo tauri icon icons/app-icon.png` makes the set. -->
+  <defs>
+    <radialGradient id="room" cx="50%" cy="46%" r="62%">
+      <stop offset="0" stop-color="#3E2F86"/>
+      <stop offset=".55" stop-color="#241C52"/>
+      <stop offset="1" stop-color="#15122B"/>
+    </radialGradient>
+    <radialGradient id="aura" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#7FE9C8" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#7FE9C8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCD4FF"/>
+    </linearGradient>
+    <linearGradient id="icon" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7FE9C8"/>
+      <stop offset="1" stop-color="#8A74F2"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#room)"/>
+  <circle cx="512" cy="500" r="330" fill="url(#aura)"/>
+  <g transform="translate(512 506) scale(4.7) translate(-64 -64)">
+    <g transform="rotate(-6 64 64)" stroke="#2A2350" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+      <path fill="url(#body)" d="M30 100V56C30 33 45 18 64 18S98 33 98 56V100Q89.5 112 81 100Q72.5 112 64 100Q55.5 112 47 100Q38.5 112 30 100Z"/>
+      <ellipse cx="54" cy="49" rx="4.5" ry="6" fill="#2A2350" stroke="none"/>
+      <ellipse cx="74" cy="49" rx="4.5" ry="6" fill="#2A2350" stroke="none"/>
+      <path d="M59.5 60Q64 63.5 68.5 60" fill="none" stroke-width="3"/>
+      <g transform="rotate(10 64 86)">
+        <rect x="44" y="66" width="40" height="40" rx="12" fill="url(#icon)"/>
+        <path d="M64 74Q66 84 76 86Q66 88 64 98Q62 88 52 86Q62 84 64 74Z" fill="#FFFFFF" stroke="none"/>
+        <ellipse cx="43" cy="82" rx="6.5" ry="6" fill="#F1EDFF"/>
+        <ellipse cx="85" cy="82" rx="6.5" ry="6" fill="#F1EDFF"/>
+      </g>
+    </g>
+  </g>
+</svg>

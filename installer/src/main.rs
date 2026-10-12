@@ -15,23 +15,13 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Duration,
 };
 
 use apparition_core::{
-    api::{self, RpPairingFile, TwoFactorCallbackParams, TwoFactorCallbackResponse},
+    api::{self, APPARITION_ID, DeviceStore, Found, Handoff, PairedDevice as Device, Slot, TwoFactorCallbackParams, TwoFactorCallbackResponse},
     release,
 };
 use rootcause::prelude::*;
-use serde::{Deserialize, Serialize};
-
-const MANUAL_PAIRING: &str = "_remotepairing-manual-pairing._tcp.local.";
-const PAIRED: &str = "_remotepairing._tcp.local.";
-/// The RemotePairing port on visionOS; mDNS says when it differs.
-const TUNNEL_PORT: u16 = 49152;
-const APPARITION_ID: &str = "com.illixion.apparition";
-/// What Apparition calls itself when it pairs (ProbeModel.hostname).
-const APP_PAIRING_HOST: &str = "Apparition";
 
 const USAGE: &str = "\
 Apparition Installer
@@ -61,48 +51,12 @@ Apparition Installer
       Forget a paired device (remove the computer from its Remote Devices list too).
 ";
 
-#[derive(Serialize, Deserialize, Clone)]
-struct Device {
-    udid: String,
-    name: String,
-    address: IpAddr,
-    port: u16,
-    /// File name under pairings/.
-    pairing: String,
-}
-
-fn data_dir() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("Apparition Installer")
-}
-
-fn devices_path() -> PathBuf {
-    data_dir().join("devices.json")
+fn store() -> DeviceStore {
+    DeviceStore::default()
 }
 
 fn load_devices() -> Vec<Device> {
-    std::fs::read(devices_path()).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default()
-}
-
-fn save_devices(devices: &[Device]) -> std::io::Result<()> {
-    std::fs::create_dir_all(data_dir())?;
-    std::fs::write(devices_path(), serde_json::to_vec_pretty(devices)?)
-}
-
-/// The name this computer pairs under, shown in the headset's Remote Devices list.
-fn hostname() -> String {
-    let machine = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
-        .or_else(|| {
-            std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        })
-        .filter(|s| !s.is_empty());
-    match machine {
-        Some(machine) => format!("Apparition Installer on {machine}"),
-        None => "Apparition Installer".to_string(),
-    }
+    store().devices()
 }
 
 fn ask(prompt: &str) -> String {
@@ -151,42 +105,10 @@ fn fail(message: impl Into<String>) -> Error {
 
 // MARK: Discovery
 
-struct Found {
-    name: String,
-    service: &'static str,
-    addresses: Vec<IpAddr>,
-    port: u16,
-}
-
-/// Browses both RemotePairing services for `seconds`. On macOS a command-line program can't
-/// use multicast (Local Network privacy), so pass an address there instead.
+/// On macOS a command-line program can't use multicast (Local Network privacy), so pass an
+/// address there instead.
 async fn browse(seconds: u64) -> Result<Vec<Found>, Error> {
-    let daemon = mdns_sd::ServiceDaemon::new()?;
-    let mut found = Vec::new();
-    for service in [MANUAL_PAIRING, PAIRED] {
-        let events = daemon.browse(service)?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
-        while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, events.recv_async()).await {
-            if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
-                let name = info.get_property_val_str("name").unwrap_or(info.get_hostname()).trim_end_matches(".local.").to_string();
-                let addresses: Vec<IpAddr> = info.get_addresses().iter().map(|a| a.to_ip_addr()).collect();
-                // One device resolves once per interface: merge them.
-                match found.iter_mut().find(|f: &&mut Found| f.service == service && f.name == name && f.port == info.get_port()) {
-                    Some(existing) => {
-                        for address in addresses {
-                            if !existing.addresses.contains(&address) {
-                                existing.addresses.push(address);
-                            }
-                        }
-                    }
-                    None => found.push(Found { name, service, addresses, port: info.get_port() }),
-                }
-            }
-        }
-        let _ = daemon.stop_browse(service);
-    }
-    let _ = daemon.shutdown();
-    Ok(found)
+    api::browse(seconds).await
 }
 
 async fn devices() -> Result<(), Error> {
@@ -199,21 +121,13 @@ async fn devices() -> Result<(), Error> {
     }
     println!("Looking on this network for 3 seconds…");
     for found in browse(3).await? {
-        let state = if found.service == MANUAL_PAIRING { "ready to pair" } else { "RemotePairing" };
+        let state = if found.ready_to_pair { "ready to pair" } else { "RemotePairing" };
         println!("  {} [{state}] {:?} port {}", found.name, found.addresses, found.port);
     }
     Ok(())
 }
 
 // MARK: Pairing
-
-/// Prefers an IPv4 address: link-local IPv6 ones need a scope this program doesn't track.
-/// A link-local IPv4 one (169.254.*, a cable's or AWDL's) is a last resort: it's gone when
-/// the device is unplugged or moves.
-fn pick(addresses: &[IpAddr]) -> Option<IpAddr> {
-    let lan = |a: &&IpAddr| matches!(a, IpAddr::V4(v4) if !v4.is_link_local());
-    addresses.iter().find(lan).or_else(|| addresses.iter().find(|a| a.is_ipv4())).or_else(|| addresses.first()).copied()
-}
 
 async fn pair(target: Option<&str>) -> Result<(), Error> {
     let (address, pairing_port) = match target {
@@ -223,7 +137,7 @@ async fn pair(target: Option<&str>) -> Result<(), Error> {
         },
         None => {
             println!("Open Settings > General > Remote Devices on the headset. Looking for it…");
-            let found: Vec<Found> = browse(5).await?.into_iter().filter(|f| f.service == MANUAL_PAIRING).collect();
+            let found: Vec<Found> = browse(5).await?.into_iter().filter(|f| f.ready_to_pair).collect();
             let found = match found.as_slice() {
                 [] => return Err(fail("no headset is waiting to pair. Keep Remote Devices open, or pass its address")),
                 [one] => one,
@@ -235,7 +149,7 @@ async fn pair(target: Option<&str>) -> Result<(), Error> {
                     many.get(choice.wrapping_sub(1)).ok_or_else(|| fail("no such device"))?
                 }
             };
-            (pick(&found.addresses).ok_or_else(|| fail("the device sent no address"))?, Some(found.port))
+            (found.address().ok_or_else(|| fail("the device sent no address"))?, Some(found.port))
         }
     };
     let pairing_port = match pairing_port {
@@ -244,22 +158,9 @@ async fn pair(target: Option<&str>) -> Result<(), Error> {
             .map_err(|_| fail("not a port number"))?,
     };
 
-    let hostname = hostname();
-    let mut pairing = RpPairingFile::generate(&hostname);
-    println!("Pairing as \"{hostname}\". The headset shows a PIN.");
+    println!("Pairing as \"{}\". The headset shows a PIN.", api::hostname());
     let pin = || ask("PIN: ").chars().filter(char::is_ascii_digit).collect::<String>();
-    api::pair(SocketAddr::new(address, pairing_port), &hostname, &mut pairing, pin).await?;
-
-    // The paired service says who the device is.
-    let mut tunnel = api::connect(SocketAddr::new(address, TUNNEL_PORT), &hostname, &mut pairing, pin).await?;
-    let info = tunnel.device_info().await?;
-    let file = format!("{}.plist", info.udid);
-    std::fs::create_dir_all(data_dir().join("pairings"))?;
-    std::fs::write(data_dir().join("pairings").join(&file), pairing.to_bytes())?;
-    let mut devices = load_devices();
-    devices.retain(|d| d.udid != info.udid);
-    devices.push(Device { udid: info.udid.clone(), name: info.name.clone(), address, port: TUNNEL_PORT, pairing: file });
-    save_devices(&devices)?;
+    let (_, info) = store().pair(address, pairing_port, pin).await?;
     println!("Paired with {} ({}, {} {}).", info.name, info.udid, info.product_type, info.os_version);
     Ok(())
 }
@@ -281,44 +182,9 @@ async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
             many.get(choice.wrapping_sub(1)).ok_or_else(|| fail("no such device"))?.udid.clone()
         }
     };
-    let hostname = hostname();
-    let mut pairing = RpPairingFile::generate(&hostname);
-    println!("Pairing with {udid} as \"{hostname}\"…");
-    let info = api::pair_usb(&udid, &hostname, &mut pairing).await?;
-    // Apparition on the device can't pair with its own device either, so it gets a record of
-    // its own (under its name, so the device lists it separately), handed over at install.
-    let mut app_pairing = RpPairingFile::generate(APP_PAIRING_HOST);
-    api::pair_usb(&udid, APP_PAIRING_HOST, &mut app_pairing).await?;
-    std::fs::create_dir_all(data_dir().join("pairings"))?;
-    std::fs::write(data_dir().join("pairings").join(format!("{}.app.plist", info.udid)), app_pairing.to_bytes())?;
-    println!("Paired with {} ({} {}). Looking for it on the network…", info.name, info.product_type, info.os_version);
-
-    let no_pin = || String::new();
-    let mut reached = None;
-    for found in browse(4).await?.into_iter().filter(|f| f.service == PAIRED) {
-        let Some(address) = pick(&found.addresses) else { continue };
-        let attempt = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            api::connect(SocketAddr::new(address, found.port), &hostname, &mut pairing, no_pin),
-        );
-        if let Ok(Ok(mut tunnel)) = attempt.await {
-            if tunnel.device_info().await.is_ok_and(|i| i.udid == info.udid) {
-                reached = Some((address, found.port));
-                break;
-            }
-        }
-    }
-    let file = format!("{}.plist", info.udid);
-    std::fs::create_dir_all(data_dir().join("pairings"))?;
-    std::fs::write(data_dir().join("pairings").join(&file), pairing.to_bytes())?;
-    let (address, port) = reached.ok_or_else(|| {
-        fail("paired, but the device didn't answer on the network. Keep it unlocked on the same Wi-Fi and run `pair --usb` again")
-    })?;
-    let mut devices = load_devices();
-    devices.retain(|d| d.udid != info.udid);
-    devices.push(Device { udid: info.udid.clone(), name: info.name.clone(), address, port, pairing: file });
-    save_devices(&devices)?;
-    println!("Reached {} at {address}:{port}.", info.name);
+    println!("Pairing with {udid} as \"{}\"…", api::hostname());
+    let (device, info) = store().pair_usb(&udid).await?;
+    println!("Paired with {} ({} {}), reached at {}:{}.", info.name, info.product_type, info.os_version, device.address, device.port);
     Ok(())
 }
 
@@ -338,10 +204,7 @@ fn find_device(wanted: Option<&str>) -> Result<Device, Error> {
 
 fn forget(wanted: Option<&str>) -> Result<(), Error> {
     let device = find_device(wanted)?;
-    let _ = std::fs::remove_file(data_dir().join("pairings").join(&device.pairing));
-    let mut devices = load_devices();
-    devices.retain(|d| d.udid != device.udid);
-    save_devices(&devices)?;
+    store().forget(&device.udid)?;
     println!("Forgot {}. Remove this computer from the headset's Remote Devices list too.", device.name);
     Ok(())
 }
@@ -417,11 +280,6 @@ fn two_factor(params: &TwoFactorCallbackParams) -> TwoFactorCallbackResponse {
     }
 }
 
-fn bundle_id(app: &Path) -> Option<String> {
-    let info: plist::Dictionary = plist::from_file(app.join("Info.plist")).ok()?;
-    info.get("CFBundleIdentifier")?.as_string().map(str::to_string)
-}
-
 async fn install(args: &[String]) -> Result<(), Error> {
     let mut options = parse_install(args)?;
     let device = find_device(options.device.as_deref())?;
@@ -433,18 +291,14 @@ async fn install(args: &[String]) -> Result<(), Error> {
     result
 }
 
-/// The latest official Apparition for visionOS, downloaded into `dir` once its release
+/// The latest official Apparition for the device's platform, downloaded into `dir` once its release
 /// signature and hash check out.
-async fn latest_apparition(site: &str, dir: &Path) -> Result<PathBuf, Error> {
+async fn latest_apparition(site: &str, dir: &Path, platform: api::Platform) -> Result<PathBuf, Error> {
     println!("Checking {site} for the latest Apparition…");
     let verified = release::latest(site).await?;
-    let asset = verified
-        .asset("app", "visionos")
-        .ok_or_else(|| fail(format!("Apparition {} has no visionOS build", verified.release.version)))?
-        .clone();
     println!("Downloading Apparition {} (signed by {})…", verified.release.version, verified.signer);
     let shown = std::sync::atomic::AtomicU64::new(0);
-    let path = release::download(&verified, &asset, dir, |received, total| {
+    let path = api::download_apparition_for(&verified, platform, dir, |received, total| {
         let step = received * 10 / total.max(1);
         if step > shown.swap(step, std::sync::atomic::Ordering::Relaxed) {
             print!("\r  {}%", step * 10);
@@ -458,14 +312,11 @@ async fn latest_apparition(site: &str, dir: &Path) -> Result<PathBuf, Error> {
 
 async fn download_and_install(options: &mut Options, device: &Device, scratch: &Path) -> Result<(), Error> {
     if options.ipa.as_os_str().is_empty() {
-        options.ipa = latest_apparition(&options.release_site, &scratch.join("download")).await?;
+        options.ipa = latest_apparition(&options.release_site, &scratch.join("download"), device.platform()).await?;
     }
-    let hostname = hostname();
-    let mut pairing = RpPairingFile::from_bytes(&std::fs::read(data_dir().join("pairings").join(&device.pairing))?)?;
-
     println!("Connecting to {}…", device.name);
     let pin = || ask("The headset wants to pair again. PIN: ");
-    let mut tunnel = api::connect(SocketAddr::new(device.address, device.port), &hostname, &mut pairing, pin).await?;
+    let mut tunnel = store().connect(device, pin).await?;
     let info = tunnel.device_info().await?;
     let strip = !options.keep_extensions;
     sign_and_install(options, &info, &mut tunnel, scratch, strip).await
@@ -496,7 +347,7 @@ async fn sign_and_install(
         match api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await {
             Ok(signed) => signed,
             // A full slot: offer to free one, then try once more.
-            Err(error) => match slot_error(&error.to_string()) {
+            Err(error) => match Slot::of_error(&error.to_string()) {
                 Some(slot) => {
                     println!("{}", slot.full_message());
                     if !manage(&mut session, slot).await? {
@@ -513,7 +364,7 @@ async fn sign_and_install(
     if let Some(stripped) = signed["strippedExtensions"].as_array().filter(|s| !s.is_empty()) {
         println!("Removed extensions no profile covers: {stripped:?}");
     }
-    let installed_id = bundle_id(&signed_path).ok_or_else(|| fail("the signed app has no bundle ID"))?;
+    let installed_id = api::bundle_id(&signed_path).ok_or_else(|| fail("the signed app has no bundle ID"))?;
 
     // visionOS holds an update of an open app until it closes.
     if let Some(name) = tunnel.installed_app(&installed_id).await? {
@@ -531,19 +382,11 @@ async fn sign_and_install(
     }
 
     if options.handoff && installed_id.starts_with(APPARITION_ID) {
-        hand_over_pairing(tunnel, &installed_id, &info.udid).await?;
+        if store().hand_over_pairing(tunnel, &installed_id, &info.udid).await? {
+            println!("Gave Apparition its pairing with this device.");
+        }
         handoff(options, tunnel, &installed_id, apple_id.as_ref()).await?;
     }
-    Ok(())
-}
-
-/// An iPhone or iPad paired with `pair --usb`: puts the record made for Apparition where it
-/// keeps its own (Documents/apparition_rp_pairing.plist), so it can reach its device.
-async fn hand_over_pairing(tunnel: &mut api::Tunnel, installed_id: &str, udid: &str) -> Result<(), Error> {
-    let path = data_dir().join("pairings").join(format!("{udid}.app.plist"));
-    let Ok(record) = std::fs::read(&path) else { return Ok(()) };
-    tunnel.put_documents(installed_id, "", &[("apparition_rp_pairing.plist".to_string(), record)]).await?;
-    println!("Gave Apparition its pairing with this device.");
     Ok(())
 }
 
@@ -558,22 +401,14 @@ async fn handoff(
 ) -> Result<(), Error> {
     let Some(p12) = &options.p12 else {
         let Some((email, team)) = apple_id else { return Ok(()) };
-        let file = api::export_apple_id_key(&data_dir().join("apple-id"), email, Some(team), &hostname())?;
-        tunnel.put_documents(installed_id, "Signing", &[("apple-id.apparitionsigning".to_string(), file)]).await?;
+        let data_dir = store().apple_id_dir();
+        tunnel.hand_off_signing(installed_id, Handoff::AppleId { data_dir: &data_dir, email, team_id: team }).await?;
         println!("Shared this computer's certificate with Apparition: sign in there with {email} and it signs with the same one.");
         return Ok(());
     };
-    let mut files = vec![(file_name(p12)?, std::fs::read(p12)?)];
-    for profile in &options.profiles {
-        files.push((file_name(profile)?, std::fs::read(profile)?));
-    }
-    tunnel.put_documents(installed_id, "Signing", &files).await?;
+    tunnel.hand_off_signing(installed_id, Handoff::Certificate { p12, profiles: &options.profiles }).await?;
     println!("Put your certificate and profiles in Apparition's inbox: open Apparition and enter the .p12's password once.");
     Ok(())
-}
-
-fn file_name(path: &Path) -> Result<String, Error> {
-    Ok(path.file_name().ok_or_else(|| fail("bad file name"))?.to_string_lossy().to_string())
 }
 
 // MARK: Apple ID and its slots
@@ -581,33 +416,8 @@ fn file_name(path: &Path) -> Result<String, Error> {
 async fn sign_in(email: &str, anisette: &str) -> Result<api::Session, Error> {
     let password = ask_secret(&format!("Apple ID password for {email}: "));
     println!("Signing in…");
-    let (session, _) = api::sign_in(email, password, anisette, &data_dir().join("apple-id"), two_factor).await?;
+    let (session, _) = api::sign_in(email, password, anisette, &store().apple_id_dir(), two_factor).await?;
     Ok(session)
-}
-
-#[derive(Clone, Copy)]
-enum Slot {
-    Certificates,
-    AppIds,
-}
-
-impl Slot {
-    fn full_message(self) -> &'static str {
-        match self {
-            Slot::Certificates => "The account has no room for another development certificate (a free account has two).",
-            Slot::AppIds => "The account can't make another App ID right now (a free account gets ten a week).",
-        }
-    }
-}
-
-/// Which of Apple's limits an error is about (the same test as the app's DeveloperSlots).
-fn slot_error(text: &str) -> Option<Slot> {
-    let lower = text.to_lowercase();
-    if lower.contains("7460") || lower.contains("maximum number of certificates") {
-        return Some(Slot::Certificates);
-    }
-    (lower.contains("app id") && ["limit", "maximum", "more than", "9401"].iter().any(|w| lower.contains(w)))
-        .then_some(Slot::AppIds)
 }
 
 async fn account_command(args: &[String], slot: Slot) -> Result<(), Error> {
