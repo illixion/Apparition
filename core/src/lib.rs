@@ -27,6 +27,8 @@ mod share;
 mod identity;
 mod ipa;
 mod tunnel;
+#[cfg(all(feature = "anisette", unix))]
+pub mod anisette;
 use serde::Serialize;
 use serde_json::{Value, json};
 
