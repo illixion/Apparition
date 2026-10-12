@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>Apparition Installer</title>
+<title>Apparition</title>
 <link rel="stylesheet" href="style.css">
 <script type="module" src="app.js"></script>
 </head>
@@ -12,7 +12,11 @@
 <header class="top" data-tauri-drag-region>
   <div class="brand" data-tauri-drag-region>
     <img src="logo.svg" alt="" width="30" height="30">
-    <span>Apparition Installer</span>
+    <span>Apparition</span>
+  </div>
+  <div class="views" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-install" aria-selected="true" aria-controls="view-install">Install</button>
+    <button type="button" role="tab" id="tab-companion" aria-selected="false" aria-controls="view-companion">Companion <span class="tab-dot" id="companion-dot" hidden></span></button>
   </div>
   <div id="update" class="update" hidden>
     <span id="update-text">A newer installer is available.</span>
@@ -20,7 +24,7 @@
   </div>
 </header>
 
-<div class="shell">
+<div class="shell" id="view-install" role="tabpanel" aria-labelledby="tab-install">
   <nav class="trail" aria-label="Steps">
     <ol id="trail">
       <li data-step="welcome"><span class="mark"></span><span class="text"><span class="label">Welcome</span></span></li>
@@ -38,13 +42,59 @@
   </div>
 </div>
 
+<div class="companion-view" id="view-companion" role="tabpanel" aria-labelledby="tab-companion" hidden>
+  <main class="panel" id="companion-panel" tabindex="-1"></main>
+</div>
+
 <!-- ============================================================ steps -->
+
+<template id="t-companion">
+  <section class="step companion">
+    <h1>Companion</h1>
+    <p class="lede">Apparition on your devices relies on this computer for two things: reaching the device it runs on (the relay) and, if you choose, signing in to Apple (anisette). It keeps doing both from the <span data-role="where">menu bar</span> when this window is closed.</p>
+
+    <div class="group">
+      <div class="group-head">
+        <h2 class="small">Relay</h2>
+        <span class="badge" data-role="relay-badge"></span>
+      </div>
+      <label class="check"><input type="checkbox" data-role="relay-on"><span>Relay Apparition's connections back to its device</span></label>
+      <p class="hint">Apparition can't reach its own device's pairing service directly, so it connects through this computer (port <span data-role="relay-port">49160</span>), on the same Wi&#8209;Fi or over Tailscale. In Apparition, Find companion shows <strong data-role="computer">this computer</strong>. What passes through is encrypted end to end: this computer holds no keys and no Apple ID.</p>
+      <p class="status error" data-role="relay-error" hidden></p>
+      <table class="connections" data-role="connections" hidden>
+        <thead><tr><th>Started</th><th>From</th><th>Port</th><th>To device</th><th>From device</th><th>State</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" data-role="no-connections">No connections yet.</p>
+    </div>
+
+    <div class="group">
+      <h2 class="small">Anisette for your devices</h2>
+      <p class="hint">To sign in to Apple, Apparition on a device needs an anisette server. This computer can offer one, and Apparition then offers to use it.</p>
+      <div class="modes compact" data-role="anisette-modes">
+        <label class="mode"><input type="radio" name="anisette-mode" value="off"><span class="mode-title">Don't offer one</span><span class="mode-text">Apparition uses whichever v3 server you give it.</span></label>
+        <label class="mode" data-role="mode-builtin"><input type="radio" name="anisette-mode" value="builtin"><span class="mode-title">This computer's own</span><span class="mode-text">Made with Apple's libraries (fetched from Apple the first time) and served to your network on port <span data-role="anisette-port">6969</span>. Anyone on the network can ask it for anisette data; it never sees an Apple ID or password.</span></label>
+        <label class="mode"><input type="radio" name="anisette-mode" value="local"><span class="mode-title">The Docker server</span><span class="mode-text">Dadoum's anisette-v3-server in your Docker (Docker Desktop, OrbStack or Colima), on port <span data-role="anisette-port">6969</span>, offered while it answers.</span></label>
+      </div>
+      <div class="row" data-role="docker-row" hidden>
+        <button type="button" class="button quiet small" data-role="docker-up">Start the Docker server</button>
+        <button type="button" class="button quiet small" data-role="docker-down">Stop it</button>
+      </div>
+      <p class="status" data-role="anisette-status" hidden></p>
+    </div>
+
+    <div class="group">
+      <h2 class="small">At login</h2>
+      <label class="check"><input type="checkbox" data-role="login"><span>Open Apparition when you log in, straight to the <span data-role="where">menu bar</span></span></label>
+    </div>
+  </section>
+</template>
 
 <template id="t-welcome">
   <section class="step welcome">
     <div class="welcome-copy">
       <h1>Put Apparition on your Apple device.</h1>
-      <p class="lede">Apparition installs apps on your Vision Pro, iPhone or iPad and signs them right there, with your own Apple ID. This computer is needed once, to put Apparition itself on the device.</p>
+      <p class="lede">Apparition installs apps on your Vision Pro, iPhone or iPad and signs them right there, with your own Apple ID. This computer is needed once, to put Apparition itself on the device; after that it can keep running as Apparition's companion.</p>
       <h2 class="small">What you need</h2>
       <ul class="needs">
         <li><strong>The device and this computer on the same Wi&#8209;Fi.</strong></li>
@@ -168,7 +218,7 @@
       </label>
       <p class="hint" data-role="anisette-builtin-hint">Signing in to Apple needs "anisette" data that identifies this computer. Apparition makes it with Apple's own libraries, fetched from Apple the first time you sign in (about 4 MB), so there is nothing to run or install. Only Apple sees it.</p>
       <label class="field" data-role="anisette-server">Anisette server<input name="anisette" autocomplete="off" spellcheck="false" inputmode="url"></label>
-      <p class="hint" data-role="anisette-server-hint">Signing in to Apple needs an anisette (v3) server. Apparition doesn't pick one for you: run your own with the Docker Compose file in Apparition's repository (it listens on port 6969), let Apparition Companion start it, or use any v3 server you trust. It sees this computer's anisette identity and IP address, never your Apple ID or password. <button type="button" class="link" data-role="help">More in the FAQ</button></p>
+      <p class="hint" data-role="anisette-server-hint">Signing in to Apple needs an anisette (v3) server. Apparition doesn't pick one for you: start the Docker one from the Companion tab (it listens on port 6969), run your own with the Docker Compose file in Apparition's repository, or use any v3 server you trust. It sees this computer's anisette identity and IP address, never your Apple ID or password. <button type="button" class="link" data-role="help">More in the FAQ</button></p>
       <p class="hint">Your password goes to Apple and nowhere else. It isn't saved.</p>
       <div class="row"><button type="submit" class="button primary">Sign in</button></div>
     </form>

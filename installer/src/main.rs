@@ -584,7 +584,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         }
     }
     let log: relay::Log = std::sync::Arc::new(|line: &str| println!("{line}"));
-    let companion = Companion::start(port, advertise, &anisette_dir(), log).await?;
+    let companion = Companion::start(port, relay::ANISETTE_PORT, advertise, &anisette_dir(), log).await?;
     println!("Apparition companion relay listening on port {}.", companion.relay.port());
     println!("In Apparition, use \"Find companion\" on this network, or set the relay to this computer's address, port {}.", companion.relay.port());
     match anisette.as_str() {

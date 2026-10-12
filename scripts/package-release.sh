@@ -112,19 +112,21 @@ ditto "$app" "$WORK/ipa/Payload/Apparition.app"
 if [[ "$ONLY_APP" == 0 ]]; then
   # ---------------------------------------------------------------- the installer
   cd "$ROOT/installer"
-  bin=apparition-installer
+  bin=apparition
   readme() {
     cat > "$1/README.txt" <<EOF
-Apparition Installer $VERSION ($COMMIT)
+Apparition $VERSION ($COMMIT)
 
-Puts Apparition on your Apple Vision Pro: pair once, then install.
+Puts Apparition on your Apple devices (pair once, then install), and is the companion
+Apparition on them uses: the relay back to their own device, and an anisette server.
 
 $3
 
 Or from a terminal:
 
   $2 pair        (with Settings > General > Remote Devices open on the headset)
-  $2 install --apple-id you@example.com --anisette <url>
+  $2 install --apple-id you@example.com      (add --anisette <url> outside macOS)
+  $2 relay       (the companion, until Ctrl-C)
 
 Run it without arguments for every command. https://apparition.illixion.com
 EOF
@@ -138,10 +140,10 @@ EOF
   xcrun lipo -create -output "$WORK/macos/$bin" \
     target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
   echo "==> desktop app for macOS (universal)"
-  app_name="Apparition Installer"
+  app_name="Apparition"
   (cd "$ROOT/desktop" && MACOSX_DEPLOYMENT_TARGET=11.0 cargo tauri build --target universal-apple-darwin --bundles app)
   ditto "$ROOT/desktop/target/universal-apple-darwin/release/bundle/macos/$app_name.app" "$WORK/macos/$app_name.app"
-  readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install. It isn't notarized: the first time, right-click it and choose Open."
+  readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized: the first time, right-click it and choose Open."
   (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$app_name.app" README.txt)
 
   echo "==> installer for Windows (x86_64)"
@@ -150,8 +152,8 @@ EOF
   cp "target/x86_64-pc-windows-gnu/release/$bin.exe" "$WORK/windows/"
   echo "==> desktop app for Windows (x86_64)"
   (cd "$ROOT/desktop" && cargo build -q --release --features custom-protocol --target x86_64-pc-windows-gnu)
-  cp "$ROOT/desktop/target/x86_64-pc-windows-gnu/release/apparition-installer-app.exe" "$WORK/windows/$app_name.exe"
-  readme "$WORK/windows" "$bin.exe" "Open $app_name.exe for a guided install (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have)."
+  cp "$ROOT/desktop/target/x86_64-pc-windows-gnu/release/apparition-app.exe" "$WORK/windows/$app_name.exe"
+  readme "$WORK/windows" "$bin.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have)."
   (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin.exe" "$app_name.exe" README.txt)
 
   if [[ "$LINUX" == 1 ]]; then
@@ -165,7 +167,9 @@ EOF
       platform=linux/amd64; [[ "$arch" == arm64 ]] && platform=linux/arm64
       src="$WORK/linux-src-$arch"
       mkdir -p "$src" "$WORK/linux-$arch"
+      mkdir -p "$src/selfhost"
       rsync -a --exclude target "$ROOT/core" "$ROOT/installer" "$ROOT/release-signers" "$src/"
+      rsync -a "$ROOT/selfhost/anisette" "$src/selfhost/"
       docker run --rm --platform "$platform" -v "apparition-cargo-$arch:/usr/local/cargo/registry" \
         -v "$src:/src" -w /src/installer -e CARGO_PROFILE_RELEASE_STRIP=true rust:1.97-alpine \
         sh -c 'apk add -q musl-dev && cargo build -q --release'

@@ -1,6 +1,6 @@
 // @ts-check
-// Apparition Installer's wizard. Every action is a Rust command (see src/flow.rs); this page
-// only shows steps and collects answers. Passwords are read from their field, sent with the
+// Apparition's page: the install wizard and the Companion view. Every action is a Rust command
+// (see src/flow.rs and src/companion.rs); this page only shows steps and collects answers. Passwords are read from their field, sent with the
 // command and cleared from the field at once; nothing here stores them.
 
 const { invoke } = window.__TAURI__.core;
@@ -195,7 +195,7 @@ function headset() {
     const nothing = state.found.length === 0 && searching.hidden;
     hint.hidden = !(nothing && state.info.platform === "macos-universal");
     hint.textContent =
-      "If macOS asked whether Apparition Installer may find devices on your local network, allow it. You can change that in System Settings > Privacy & Security > Local Network.";
+      "If macOS asked whether Apparition may find devices on your local network, allow it. You can change that in System Settings > Privacy & Security > Local Network.";
     if (state.selected && !rows.some((r) => r.key === state.selected.key)) choose(null);
     else continueButton.disabled = !state.selected;
   };
@@ -913,6 +913,145 @@ document.getElementById("prompt-cancel")?.addEventListener("click", () => {
 });
 dialog.addEventListener("cancel", () => invoke("cancel_prompt"));
 
+// ------------------------------------------------------------ companion
+
+const installView = /** @type {HTMLElement} */ (document.getElementById("view-install"));
+const companionView = /** @type {HTMLElement} */ (document.getElementById("view-companion"));
+const companionPanel = /** @type {HTMLElement} */ (document.getElementById("companion-panel"));
+const tabInstall = /** @type {HTMLButtonElement} */ (document.getElementById("tab-install"));
+const tabCompanion = /** @type {HTMLButtonElement} */ (document.getElementById("tab-companion"));
+/** @type {number|undefined} */ let companionTimer;
+/** What an action in progress, or one that just failed, has to say. @type {{text: string, kind?: "error"|"good"|""}|null} */
+let companionNote = null;
+
+function showView(/** @type {"install"|"companion"} */ view) {
+  const companion = view === "companion";
+  installView.hidden = companion;
+  companionView.hidden = !companion;
+  tabInstall.setAttribute("aria-selected", String(!companion));
+  tabCompanion.setAttribute("aria-selected", String(companion));
+  clearInterval(companionTimer);
+  if (companion) {
+    if (!companionPanel.firstElementChild) buildCompanion();
+    refreshCompanion();
+    companionTimer = setInterval(refreshCompanion, 2000);
+    companionPanel.focus({ preventScroll: true });
+  }
+}
+tabInstall.addEventListener("click", () => showView("install"));
+tabCompanion.addEventListener("click", () => showView("companion"));
+
+function buildCompanion() {
+  companionPanel.append(template("t-companion"));
+  const where = state.info.platform === "macos-universal" ? "menu bar" : "tray";
+  companionPanel.querySelectorAll('[data-role="where"]').forEach((el) => (el.textContent = where));
+  const relayOn = /** @type {HTMLInputElement} */ ($(companionPanel, "relay-on"));
+  relayOn.addEventListener("change", () => companionCall("companion_set_relay", { on: relayOn.checked }));
+  companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((input) =>
+    input.addEventListener("change", () => {
+      const mode = /** @type {HTMLInputElement} */ (input).value;
+      const note = mode === "builtin" ? "Starting this computer's anisette (the first time, it fetches Apple's libraries)…" : "";
+      companionCall("companion_set_anisette", { mode }, note);
+    }),
+  );
+  for (const [role, up] of [["docker-up", true], ["docker-down", false]]) {
+    const button = $(companionPanel, role);
+    button.addEventListener("click", async () => {
+      setBusy(button, true);
+      await companionCall("companion_docker", { up }, up ? "Starting the Docker server…" : "Stopping the Docker server…");
+      setBusy(button, false);
+    });
+  }
+  const login = /** @type {HTMLInputElement} */ ($(companionPanel, "login"));
+  invoke("launch_at_login").then((/** @type {boolean} */ on) => (login.checked = on));
+  login.addEventListener("change", async () => {
+    try {
+      login.checked = await invoke("set_launch_at_login", { on: login.checked });
+    } catch (error) {
+      login.checked = !login.checked;
+      companionNote = { text: messageOf(error), kind: "error" };
+      refreshCompanion();
+    }
+  });
+}
+
+/** Runs a companion command and shows the status it returns (or its error). */
+async function companionCall(/** @type {string} */ command, /** @type {any} */ args, /** @type {string} */ progress = "") {
+  companionNote = progress ? { text: progress } : null;
+  refreshCompanion();
+  try {
+    const status = await invoke(command, args);
+    companionNote = null;
+    drawCompanion(status);
+  } catch (error) {
+    companionNote = { text: messageOf(error), kind: "error" };
+    refreshCompanion();
+  }
+}
+
+async function refreshCompanion() {
+  try {
+    drawCompanion(await invoke("companion_status"));
+  } catch {}
+}
+
+const amount = (/** @type {number} */ bytes) => (bytes < 1000 ? `${bytes} B` : megabytes(bytes));
+const clock = (/** @type {number} */ seconds) => new Date(seconds * 1000).toLocaleTimeString(undefined, { timeStyle: "medium" });
+
+function drawCompanion(/** @type {any} */ status) {
+  /** @type {HTMLElement} */ (document.getElementById("companion-dot")).hidden = !status.relay.running;
+  if (!companionPanel.firstElementChild) return;
+  const relayOn = /** @type {HTMLInputElement} */ ($(companionPanel, "relay-on"));
+  relayOn.checked = status.relay.on;
+  $(companionPanel, "relay-port").textContent = String(status.relay.port);
+  $(companionPanel, "computer").textContent = status.computerName || "this computer";
+  const badge = $(companionPanel, "relay-badge");
+  badge.textContent = status.relay.running ? "On" : status.relay.error ? "Failed" : "Off";
+  badge.className = `badge ${status.relay.running ? "online" : ""}`.trim();
+  const relayError = $(companionPanel, "relay-error");
+  setStatus(relayError, status.relay.error ?? "", "error");
+
+  const table = $(companionPanel, "connections");
+  const rows = status.connections.map((/** @type {any} */ c) => {
+    const tr = document.createElement("tr");
+    const cells = [clock(c.started), c.peer, String(c.port), c.outcome ? amount(c.toDevice) : "…", c.outcome ? amount(c.fromDevice) : "…", c.outcome ?? "open"];
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.append(td);
+    }
+    if (!c.outcome) tr.lastElementChild?.classList.add("open");
+    return tr;
+  });
+  table.querySelector("tbody").replaceChildren(...rows);
+  table.hidden = rows.length === 0;
+  $(companionPanel, "no-connections").hidden = rows.length > 0 || !status.relay.running;
+
+  const anisette = status.anisette;
+  $(companionPanel, "mode-builtin").hidden = !anisette.builtinAvailable;
+  companionPanel.querySelectorAll('[data-role="anisette-port"]').forEach((el) => (el.textContent = String(anisette.port)));
+  companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((el) => {
+    const input = /** @type {HTMLInputElement} */ (el);
+    input.checked = input.value === anisette.mode;
+    // Offering anisette goes through the relay's advertisement, so it needs the relay.
+    input.disabled = !status.relay.on;
+  });
+  $(companionPanel, "docker-row").hidden = anisette.mode !== "local";
+  const text = companionNote?.text
+    ?? anisette.error
+    ?? (!status.relay.on
+      ? "Turn the relay on to offer anisette."
+      : anisette.offered === "builtin"
+        ? `Offering this computer's anisette on port ${anisette.port}.`
+        : anisette.offered === "local"
+          ? `Offering the server on port ${anisette.port}.`
+          : anisette.mode === "local"
+            ? `Nothing answers on port ${anisette.port} yet. Start the Docker server, or run your own there.`
+            : "");
+  const kind = companionNote?.kind ?? (anisette.error ? "error" : anisette.offered ? "good" : "");
+  setStatus($(companionPanel, "anisette-status"), text, kind);
+}
+
 // ------------------------------------------------------------ start
 
 async function start() {
@@ -927,12 +1066,17 @@ async function start() {
     .then((/** @type {any} */ update) => {
       if (!update) return;
       const box = /** @type {HTMLElement} */ (document.getElementById("update"));
-      /** @type {HTMLElement} */ (document.getElementById("update-text")).textContent = `Apparition Installer ${update.version} is available.`;
+      /** @type {HTMLElement} */ (document.getElementById("update-text")).textContent = `Apparition ${update.version} is available.`;
       box.hidden = false;
       document.getElementById("update-open")?.addEventListener("click", () => invoke("open_downloads"));
     })
     .catch(() => {});
 
+  refreshCompanion();
+  if (state.info.preview === "companion") {
+    render();
+    return showView("companion");
+  }
   if (state.info.preview) return preview(state.info.preview);
   render();
 }

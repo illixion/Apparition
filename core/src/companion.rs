@@ -13,6 +13,7 @@ use std::sync::Mutex;
 
 use rootcause::prelude::*;
 
+#[allow(unused_imports)]
 use crate::relay::{ANISETTE_PORT, Log, Relay};
 
 /// The compose file for the self-hosted anisette server.
@@ -33,17 +34,21 @@ pub struct Companion {
     builtin: tokio::sync::Mutex<Option<crate::anisette::Server>>,
     source: Mutex<Option<AnisetteSource>>,
     data_dir: PathBuf,
+    anisette_port: u16,
 }
 
 impl Companion {
-    /// Starts the relay. `data_dir` holds the built-in anisette's libraries.
-    pub async fn start(port: u16, advertise: bool, data_dir: &Path, log: Log) -> Result<Companion, Report> {
+    /// Starts the relay on `port`. `data_dir` holds the built-in anisette's libraries, and
+    /// `anisette_port` is where an anisette server is served or looked for (normally
+    /// [`ANISETTE_PORT`]).
+    pub async fn start(port: u16, anisette_port: u16, advertise: bool, data_dir: &Path, log: Log) -> Result<Companion, Report> {
         Ok(Companion {
             relay: Relay::start(port, advertise, log).await?,
             #[cfg(all(feature = "anisette", unix))]
             builtin: Default::default(),
             source: Mutex::new(None),
             data_dir: data_dir.to_owned(),
+            anisette_port,
         })
     }
 
@@ -52,20 +57,25 @@ impl Companion {
         *self.source.lock().unwrap()
     }
 
-    /// Serves the built-in anisette on the LAN (port 6969) and offers it.
+    pub fn anisette_port(&self) -> u16 {
+        self.anisette_port
+    }
+
+    /// Serves the built-in anisette on the LAN and offers it.
     pub async fn share_builtin_anisette(&self) -> Result<(), Report> {
         #[cfg(all(feature = "anisette", unix))]
         {
             let mut builtin = self.builtin.lock().await;
             if builtin.is_none() {
-                let bind = std::net::SocketAddr::from(([0, 0, 0, 0], ANISETTE_PORT));
-                let server = crate::anisette::start(&self.data_dir, bind)
-                    .await
-                    .context(format!("Couldn't serve anisette on port {ANISETTE_PORT} (is the Docker server running?)"))?;
+                let port = self.anisette_port;
+                let bind = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+                let server = crate::anisette::start(&self.data_dir, bind).await.context(format!(
+                    "Couldn't serve anisette on port {port}. If another program uses that port (the Docker server, say), stop it or offer that one instead."
+                ))?;
                 *builtin = Some(server);
             }
             *self.source.lock().unwrap() = Some(AnisetteSource::Builtin);
-            self.relay.set_anisette(Some(ANISETTE_PORT));
+            self.relay.set_anisette(Some(self.anisette_port));
             Ok(())
         }
         #[cfg(not(all(feature = "anisette", unix)))]
@@ -93,10 +103,10 @@ impl Companion {
         if self.anisette() == Some(AnisetteSource::Builtin) {
             return;
         }
-        let answers = crate::relay::anisette_answers(ANISETTE_PORT).await;
+        let answers = crate::relay::anisette_answers(self.anisette_port).await;
         let source = answers.then_some(AnisetteSource::Local);
         *self.source.lock().unwrap() = source;
-        self.relay.set_anisette(answers.then_some(ANISETTE_PORT));
+        self.relay.set_anisette(answers.then_some(self.anisette_port));
     }
 }
 

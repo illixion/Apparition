@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Apparition Installer",
-  "mainBinaryName": "Apparition Installer",
-  "identifier": "com.illixion.apparition.installer",
+  "productName": "Apparition",
+  "mainBinaryName": "Apparition",
+  "identifier": "com.illixion.apparition.desktop",
   "build": {
     "frontendDist": "ui"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Apparition Installer",
+        "title": "Apparition",
         "width": 980,
         "height": 700,
         "minWidth": 780,
@@ -41,8 +41,8 @@
     "active": true,
     "targets": "all",
     "category": "Utility",
-    "shortDescription": "Puts Apparition on your Apple Vision Pro",
-    "longDescription": "A guided installer for Apparition, the on-device sideloader: pair with the headset over Wi-Fi, sign with your Apple ID or your own certificate, and install.",
+    "shortDescription": "Puts Apparition on your Apple devices, and is its companion",
+    "longDescription": "Installs Apparition, the on-device sideloader, on Vision Pro, iPhone, iPad and Apple TV (pair over Wi-Fi, sign with your Apple ID or your own certificate, install), then stays in the menu bar or tray as the companion it uses: the relay to its own device and an anisette server for signing in to Apple.",
     "copyright": "MIT licensed",
     "license": "MIT",
     "icon": [

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 10 100 108" width="44" height="44">
+  <!-- The menu-bar (tray) icon: the logo's ghost as one shape, eyes cut out. A template image
+       on macOS: only its alpha counts, and the system colours it. -->
+  <defs>
+    <mask id="eyes">
+      <rect x="0" y="0" width="128" height="128" fill="#fff"/>
+      <ellipse cx="54" cy="49" rx="5.5" ry="7.5" fill="#000"/>
+      <ellipse cx="74" cy="49" rx="5.5" ry="7.5" fill="#000"/>
+    </mask>
+  </defs>
+  <g transform="rotate(-6 64 64)">
+    <path mask="url(#eyes)" fill="#000" d="M26 104V56C26 31 43 14 64 14S102 31 102 56V104Q91 119 81 106Q72.5 119 64 106Q55.5 119 47 106Q37 119 26 104Z"/>
+  </g>
+</svg>

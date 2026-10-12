@@ -104,7 +104,7 @@ pub struct Failure {
 }
 
 impl Failure {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         let message = message.into();
         Self { slot: Slot::of_error(&message), message, cancelled: false }
     }

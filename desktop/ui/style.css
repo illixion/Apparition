@@ -129,6 +129,49 @@ code { font: .875em/1.4 var(--mono); }
   font-size: 1.15rem;
 }
 
+/* Install | Companion */
+.views {
+  display: inline-flex;
+  gap: .2rem;
+  padding: .2rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  margin-right: auto;
+  margin-left: 1rem;
+}
+.views button {
+  font: 500 .875rem/1 var(--text);
+  color: var(--muted);
+  background: none;
+  border: 0;
+  border-radius: 999px;
+  padding: .45rem .9rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+}
+.views button[aria-selected="true"] { color: var(--ink); background: var(--surface); }
+.views button:focus-visible { outline: 2px solid var(--lilac); outline-offset: 1px; }
+.tab-dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--glow); box-shadow: 0 0 6px var(--glow-soft); }
+
+.companion-view { flex: 1; min-height: 0; display: flex; }
+.companion-view[hidden] { display: none; }
+.companion-view .panel { flex: 1; }
+.companion .group { margin-top: 1.75rem; }
+.companion .check { margin-top: 0; }
+.companion .modes { grid-template-columns: minmax(0, 1fr); max-width: 38rem; }
+
+.connections {
+  border-collapse: collapse;
+  font-size: .85rem;
+  max-width: 44rem;
+  width: 100%;
+}
+.connections th { text-align: left; font-weight: 600; color: var(--muted); padding: .3rem .6rem .3rem 0; border-bottom: 1px solid var(--line); }
+.connections td { padding: .35rem .6rem .35rem 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-variant-numeric: tabular-nums; }
+.connections td.open { color: var(--glow); }
+
 .update {
   display: inline-flex;
   align-items: center;
@@ -322,6 +365,15 @@ select {
   padding: .6rem .8rem;
   min-height: 2.6rem;
   width: 100%;
+}
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2.2rem;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' width='12' height='8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23a69ccf' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right .85rem center;
 }
 input:focus-visible, select:focus-visible { outline-offset: 1px; border-color: var(--lilac); }
 input::placeholder { color: color-mix(in srgb, var(--muted) 70%, transparent); }

@@ -3,10 +3,10 @@ name = "apparition-desktop"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Apparition Installer as a desktop app: a guided way to put Apparition on an Apple Vision Pro from Windows, Linux or macOS"
+description = "Apparition as a desktop app: a guided way to put Apparition on your Apple devices from Windows, Linux or macOS, and the companion it uses from the tray"
 
 [[bin]]
-name = "apparition-installer-app"
+name = "apparition-app"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -14,7 +14,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 apparition-core = { path = "../core", features = ["desktop"] }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tokio = { version = "1", features = ["sync", "time"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 rootcause = "0.12.0"
