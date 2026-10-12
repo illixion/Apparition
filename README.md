@@ -129,6 +129,11 @@ up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
 digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
 and IP address, never the Apple ID or password, which go straight to Apple.
 
+Release builds aren't notarized, so the built-in provider needs no entitlement today. It maps
+the libraries into memory and makes them executable itself, so if the macOS apps are ever
+notarized (hardened runtime), their entitlements must include
+`com.apple.security.cs.allow-unsigned-executable-memory`, or loading fails.
+
 The companion can run the same compose file with your Docker (Docker Desktop, OrbStack
 or Colima): Start in its window or menu. It then advertises the server, and Apparition
 offers "Use its anisette server" next to the companion; nothing switches on its own.
