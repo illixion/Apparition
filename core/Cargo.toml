@@ -36,6 +36,13 @@ sha2 = "0.10"
 # Official releases (release.rs): fetching them, and their SSHSIG signature.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "system-proxy"] }
 ed25519-dalek = "2"
+# The desktop front ends' shared pieces (api.rs): where they keep pairings, and mDNS.
+dirs = { version = "6", optional = true }
+mdns-sd = { version = "0.21.5", optional = true }
+
+[features]
+# For the desktop installer and app; the headset's static library leaves it out.
+desktop = ["dep:dirs", "dep:mdns-sd", "tokio/time"]
 
 [dev-dependencies]
 rand = "0.8"

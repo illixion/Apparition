@@ -135,3 +135,291 @@ impl Tunnel {
         Ok(())
     }
 }
+
+// MARK: Shared by the desktop front ends (the installer's command line and its app)
+
+/// Apparition's bundle ID. An installed app whose ID starts with it gets the signing handoff.
+pub const APPARITION_ID: &str = "com.illixion.apparition";
+/// The RemotePairing port on visionOS; mDNS says when it differs.
+pub const TUNNEL_PORT: u16 = 49152;
+
+/// The name this computer pairs under, shown in the headset's Remote Devices list.
+pub fn hostname() -> String {
+    let machine = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+        .or_else(|| {
+            std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
+        .filter(|s| !s.is_empty());
+    match machine {
+        Some(machine) => format!("Apparition Installer on {machine}"),
+        None => "Apparition Installer".to_string(),
+    }
+}
+
+/// The bundle ID of an unpacked app.
+pub fn bundle_id(app: &Path) -> Option<String> {
+    let info: plist::Dictionary = plist::from_file(app.join("Info.plist")).ok()?;
+    info.get("CFBundleIdentifier")?.as_string().map(str::to_string)
+}
+
+/// One of a free account's limits, which signing can run into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Slot {
+    Certificates,
+    AppIds,
+}
+
+impl Slot {
+    /// Which limit a signing error is about (the same test as the app's DeveloperSlots).
+    pub fn of_error(text: &str) -> Option<Slot> {
+        let lower = text.to_lowercase();
+        if lower.contains("7460") || lower.contains("maximum number of certificates") {
+            return Some(Slot::Certificates);
+        }
+        (lower.contains("app id") && ["limit", "maximum", "more than", "9401"].iter().any(|w| lower.contains(w)))
+            .then_some(Slot::AppIds)
+    }
+
+    pub fn full_message(self) -> &'static str {
+        match self {
+            Slot::Certificates => "The account has no room for another development certificate (a free account has two).",
+            Slot::AppIds => "The account can't make another App ID right now (a free account gets ten a week).",
+        }
+    }
+}
+
+/// Downloads the visionOS app of a verified release into `dir`, checked against the signed
+/// manifest. `progress` gets (bytes received, total).
+pub async fn download_apparition(
+    verified: &crate::release::Verified,
+    dir: &Path,
+    progress: impl Fn(u64, u64),
+) -> Result<std::path::PathBuf, Report> {
+    let asset = verified
+        .asset("app", "visionos")
+        .ok_or_else(|| report!("Apparition {} has no visionOS build", verified.release.version))?
+        .clone();
+    crate::release::download(verified, &asset, dir, progress).await
+}
+
+/// What signed Apparition, for handing to it so it can refresh itself and its apps.
+pub enum Handoff<'a> {
+    /// The Apple ID's certificate key, from `<data_dir>/storage.json`: Apparition then signs
+    /// with the same certificate, so the two use one of a free account's two.
+    AppleId { data_dir: &'a Path, email: &'a str, team_id: &'a str },
+    /// The .p12 and profiles, as files; Apparition asks for the .p12's password once.
+    Certificate { p12: &'a Path, profiles: &'a [std::path::PathBuf] },
+}
+
+impl Tunnel {
+    /// Puts `handoff` in the Files inbox (Documents/Signing) of the installed `bundle_id`.
+    pub async fn hand_off_signing(&mut self, bundle_id: &str, handoff: Handoff<'_>) -> Result<(), Report> {
+        let file_name = |path: &Path| -> Result<String, Report> {
+            Ok(path.file_name().ok_or_else(|| report!("bad file name"))?.to_string_lossy().to_string())
+        };
+        let files = match handoff {
+            Handoff::AppleId { data_dir, email, team_id } => {
+                let file = export_apple_id_key(data_dir, email, Some(team_id), &hostname())?;
+                vec![("apple-id.apparitionsigning".to_string(), file)]
+            }
+            Handoff::Certificate { p12, profiles } => {
+                let mut files = vec![(file_name(p12)?, std::fs::read(p12)?)];
+                for profile in profiles {
+                    files.push((file_name(profile)?, std::fs::read(profile)?));
+                }
+                files
+            }
+        };
+        self.put_documents(bundle_id, "Signing", &files).await
+    }
+}
+
+#[cfg(feature = "desktop")]
+pub use desktop::*;
+
+/// Paired devices and mDNS discovery, for the computer's side (the `desktop` feature).
+#[cfg(feature = "desktop")]
+mod desktop {
+    use std::{
+        net::{IpAddr, SocketAddr},
+        path::PathBuf,
+        time::Duration,
+    };
+
+    use rootcause::prelude::*;
+    use serde::{Deserialize, Serialize};
+
+    use super::{RpPairingFile, TUNNEL_PORT, Tunnel, hostname};
+
+    pub const MANUAL_PAIRING_SERVICE: &str = "_remotepairing-manual-pairing._tcp.local.";
+    pub const PAIRED_SERVICE: &str = "_remotepairing._tcp.local.";
+
+    /// A device this computer has paired with.
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct PairedDevice {
+        pub udid: String,
+        pub name: String,
+        pub address: IpAddr,
+        pub port: u16,
+        /// File name under pairings/.
+        pub pairing: String,
+    }
+
+    /// Where pairings and the Apple ID's storage live: `devices.json`, `pairings/<udid>.plist`
+    /// and `apple-id/`. The command line and the app share the default one.
+    #[derive(Debug, Clone)]
+    pub struct DeviceStore {
+        pub dir: PathBuf,
+    }
+
+    impl Default for DeviceStore {
+        fn default() -> Self {
+            Self { dir: dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("Apparition Installer") }
+        }
+    }
+
+    impl DeviceStore {
+        fn devices_path(&self) -> PathBuf {
+            self.dir.join("devices.json")
+        }
+
+        /// The Apple ID's data directory (anisette state and the certificate key).
+        pub fn apple_id_dir(&self) -> PathBuf {
+            self.dir.join("apple-id")
+        }
+
+        pub fn devices(&self) -> Vec<PairedDevice> {
+            std::fs::read(self.devices_path()).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default()
+        }
+
+        pub fn save(&self, devices: &[PairedDevice]) -> std::io::Result<()> {
+            std::fs::create_dir_all(&self.dir)?;
+            std::fs::write(self.devices_path(), serde_json::to_vec_pretty(devices)?)
+        }
+
+        pub fn device(&self, udid: &str) -> Option<PairedDevice> {
+            self.devices().into_iter().find(|d| d.udid == udid)
+        }
+
+        /// Forgets a device and its pairing file. The headset keeps this computer in its Remote
+        /// Devices list until it's removed there.
+        pub fn forget(&self, udid: &str) -> std::io::Result<()> {
+            let mut devices = self.devices();
+            if let Some(device) = devices.iter().find(|d| d.udid == udid) {
+                let _ = std::fs::remove_file(self.dir.join("pairings").join(&device.pairing));
+            }
+            devices.retain(|d| d.udid != udid);
+            self.save(&devices)
+        }
+
+        /// Pairs with a device showing Settings > General > Remote Devices, through its
+        /// manual-pairing service at `address:pairing_port` (`pin` returns the PIN it shows),
+        /// then asks the paired service who it is and remembers it.
+        pub async fn pair(
+            &self,
+            address: IpAddr,
+            pairing_port: u16,
+            pin: impl Fn() -> String,
+        ) -> Result<(PairedDevice, super::DeviceInfo), Report> {
+            let hostname = hostname();
+            let mut pairing = RpPairingFile::generate(&hostname);
+            super::pair(SocketAddr::new(address, pairing_port), &hostname, &mut pairing, &pin).await?;
+            let mut tunnel = super::connect(SocketAddr::new(address, TUNNEL_PORT), &hostname, &mut pairing, &pin).await?;
+            let info = tunnel.device_info().await?;
+            let file = format!("{}.plist", info.udid);
+            std::fs::create_dir_all(self.dir.join("pairings"))?;
+            std::fs::write(self.dir.join("pairings").join(&file), pairing.to_bytes())?;
+            let device = PairedDevice { udid: info.udid.clone(), name: info.name.clone(), address, port: TUNNEL_PORT, pairing: file };
+            let mut devices = self.devices();
+            devices.retain(|d| d.udid != info.udid);
+            devices.push(device.clone());
+            self.save(&devices)?;
+            Ok((device, info))
+        }
+
+        /// Opens a tunnel to a paired device. `pin` is asked only if it wants to pair again.
+        pub async fn connect(&self, device: &PairedDevice, pin: impl Fn() -> String) -> Result<Tunnel, Report> {
+            let data = std::fs::read(self.dir.join("pairings").join(&device.pairing))
+                .context(format!("The pairing with {} is missing; pair again", device.name))?;
+            let mut pairing = RpPairingFile::from_bytes(&data)?;
+            super::connect(SocketAddr::new(device.address, device.port), &hostname(), &mut pairing, pin).await
+        }
+
+        /// Updates a paired device's address, when mDNS finds it somewhere else.
+        pub fn set_address(&self, udid: &str, address: IpAddr) -> std::io::Result<()> {
+            let mut devices = self.devices();
+            for device in devices.iter_mut().filter(|d| d.udid == udid) {
+                device.address = address;
+            }
+            self.save(&devices)
+        }
+    }
+
+    /// A RemotePairing service seen on the network.
+    #[derive(Debug, Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Found {
+        pub name: String,
+        /// Showing Settings > General > Remote Devices: the manual-pairing service.
+        pub ready_to_pair: bool,
+        pub addresses: Vec<IpAddr>,
+        pub port: u16,
+    }
+
+    impl Found {
+        /// Prefers an IPv4 address: link-local IPv6 ones need a scope this doesn't track.
+        pub fn address(&self) -> Option<IpAddr> {
+            self.addresses.iter().find(|a| a.is_ipv4()).or_else(|| self.addresses.first()).copied()
+        }
+    }
+
+    /// Browses both RemotePairing services for `seconds`. On macOS a program outside an app
+    /// bundle can't use multicast (Local Network privacy), so it finds nothing there.
+    pub async fn browse(seconds: u64) -> Result<Vec<Found>, Report> {
+        let daemon = mdns_sd::ServiceDaemon::new()?;
+        let mut found: Vec<Found> = Vec::new();
+        for service in [MANUAL_PAIRING_SERVICE, PAIRED_SERVICE] {
+            let ready_to_pair = service == MANUAL_PAIRING_SERVICE;
+            let events = daemon.browse(service)?;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);
+            while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, events.recv_async()).await {
+                if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
+                    let name = info.get_property_val_str("name").unwrap_or(info.get_hostname()).trim_end_matches(".local.").to_string();
+                    let addresses: Vec<IpAddr> = info.get_addresses().iter().map(|a| a.to_ip_addr()).collect();
+                    // One device resolves once per interface: merge them.
+                    match found.iter_mut().find(|f| f.ready_to_pair == ready_to_pair && f.name == name && f.port == info.get_port()) {
+                        Some(existing) => {
+                            for address in addresses {
+                                if !existing.addresses.contains(&address) {
+                                    existing.addresses.push(address);
+                                }
+                            }
+                        }
+                        None => found.push(Found { name, ready_to_pair, addresses, port: info.get_port() }),
+                    }
+                }
+            }
+            let _ = daemon.stop_browse(service);
+        }
+        let _ = daemon.shutdown();
+        Ok(found)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Slot;
+
+    #[test]
+    fn slot_errors() {
+        assert_eq!(Slot::of_error("Apple error 7460: no more certificates"), Some(Slot::Certificates));
+        assert_eq!(Slot::of_error("You already have the maximum number of certificates"), Some(Slot::Certificates));
+        assert_eq!(Slot::of_error("Cannot create more than 10 App IDs"), Some(Slot::AppIds));
+        assert_eq!(Slot::of_error("Device registration failed"), None);
+    }
+}
