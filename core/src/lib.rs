@@ -52,6 +52,68 @@ impl Session {
     }
 }
 
+/// Experiment (profile reuse): signs `app_path` with the free profile of an App ID the team
+/// already has (`profile_app_id`, e.g. `com.utmapp.UTM.<team>`), keeping the app's own bundle
+/// ID or `bundle_id`. Registers nothing, so it uses up no App ID; the certificate is the one
+/// this install already signs with (none is made). See `identity::sign_keeping_bundle_id`.
+pub async fn sign_with_existing_profile(
+    session: &mut Session,
+    app_path: PathBuf,
+    profile_app_id: &str,
+    bundle_id: Option<&str>,
+    minimal: bool,
+) -> Result<Value, Report> {
+    use isideload::{
+        dev::app_ids::AppIdsApi,
+        sideload::cert_identity::CertificateIdentity,
+    };
+    let team = session.team.clone();
+    let storage = FileStorage::open(session.data_dir.join("storage.json"));
+    let dev = session.sideloader.get_dev_session();
+    let identity = CertificateIdentity::retrieve(
+        account::MACHINE_NAME,
+        &session.email,
+        dev,
+        &team,
+        &storage,
+        &MaxCertsBehavior::<MaxCertsCallbackBox>::Error,
+    )
+    .await
+    .context("No usable certificate")?;
+    let app_ids = dev.list_app_ids(&team, None).await?.app_ids;
+    let app_id = app_ids
+        .iter()
+        .find(|id| id.identifier == profile_app_id)
+        .ok_or_else(|| report!("The team has no App ID {profile_app_id}"))?;
+    let profile = dev.download_team_provisioning_profile(&team, app_id, None).await?;
+    identity::sign_keeping_bundle_id(
+        identity.certificate,
+        identity.private_key,
+        profile.encoded_profile.as_ref().to_vec(),
+        app_path,
+        bundle_id,
+        minimal,
+    )
+}
+
+/// Experiment: `sign_with_existing_profile` for the app's session. Returns `{ok, signedPath, ...}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_sign_with_existing_profile(
+    app_path: *const c_char,
+    profile_app_id: *const c_char,
+    bundle_id: *const c_char,
+    minimal: bool,
+) -> *mut c_char {
+    reply((|| {
+        let app_path = PathBuf::from(unsafe { text(app_path) }?);
+        let profile_app_id = unsafe { text(profile_app_id) }?;
+        let bundle_id = if bundle_id.is_null() { None } else { Some(unsafe { text(bundle_id) }?) };
+        let mut guard = SESSION.lock().unwrap();
+        let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
+        runtime().block_on(sign_with_existing_profile(session, app_path, &profile_app_id, bundle_id.as_deref(), minimal))
+    })())
+}
+
 /// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, state kept in
 /// `<data_dir>/storage.json`) and opens a developer session. `two_factor` answers 2FA.
 /// Returns the session and `{email, team, teams}`.

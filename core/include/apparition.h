@@ -36,6 +36,15 @@ char *apparition_profile_delete(const char *data_dir, const char *uuid);
 // install (the desktop installer), so both use one certificate. Ends the signed-in session.
 // Returns {ok, kind, appleId, teamId, from, replaced}.
 char *apparition_import_signing_file(const char *data_dir, const char *path);
+
+// Experiment: signs app_path with the free profile of an App ID the team already has, keeping the
+// app's bundle ID (or bundle_id, may be NULL). Needs the session. Returns {ok, signedPath, bundleId,
+// profileAppId, expires}.
+char *apparition_sign_with_existing_profile(const char *app_path, const char *profile_app_id, const char *bundle_id,
+                                           bool minimal);
+// Experiment control: the same with an imported certificate and profile (by UUID).
+char *apparition_sign_offline_keeping_id(const char *data_dir, const char *app_path, const char *identity_id,
+                                         const char *profile_uuid, const char *bundle_id, bool minimal);
 // Signs with identity_id and the best imported profile (profile_uuid, nullable, overrides it for
 // the main app). {ok, signedPath, bundleId, profile, profileName, expires, debuggable, strippedExtensions}.
 char *apparition_sign_offline(const char *data_dir, const char *app_path, const char *identity_id,

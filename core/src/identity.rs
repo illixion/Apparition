@@ -737,6 +737,96 @@ pub fn sign_offline(
         }))
 }
 
+/// Experiment (profile reuse): signs the app at `app_path` with `profile` as is, keeping the
+/// app's own bundle ID (or `bundle_id`) even though the profile names another App ID. The
+/// signature's application-identifier is the profile's, as build-and-sign does: paid-account
+/// profiles were seen to install under any bundle ID that way. Extensions are removed. Returns
+/// `{signedPath, bundleId, profileAppId, expires}`.
+pub(crate) fn sign_keeping_bundle_id(
+    certificate: Certificate,
+    key: RsaPrivateKey,
+    profile: Vec<u8>,
+    app_path: PathBuf,
+    bundle_id: Option<&str>,
+    minimal: bool,
+) -> Result<Value, Report> {
+    let profile = Profile::parse(profile)?;
+    let profile_app_id = profile.app_id_pattern();
+    if profile_app_id.contains('*') {
+        bail!("Use an explicit App ID's profile for this experiment, not a wildcard");
+    }
+    let mut app = Application::new(app_path)?;
+    let original = app.main_bundle_id()?;
+    let previous = signed_entitlements(&app.bundle.bundle_dir);
+    for folder in ["PlugIns", "Extensions"] {
+        let _ = std::fs::remove_dir_all(app.bundle.bundle_dir.join(folder));
+    }
+    let main_id = bundle_id.unwrap_or(&original).to_string();
+    if main_id != original {
+        app.bundle.set_bundle_identifier(&main_id);
+    }
+    app.bundle.write_info()?;
+
+    let chain = chain(&certificate, &profile.parsed)?;
+    let signer = RustCryptoCmsSigner::new(key, certificate, chain);
+    // Minimal: only what every development profile grants, nothing a capability adds.
+    let entitlements = if minimal {
+        let team = profile.team().to_string();
+        let concrete = format!("{team}.{profile_app_id}");
+        let mut e = Dictionary::new();
+        e.insert("application-identifier".into(), Plist::String(concrete.clone()));
+        e.insert("com.apple.developer.team-identifier".into(), Plist::String(team));
+        e.insert("get-task-allow".into(), Plist::Boolean(profile.get_task_allow()));
+        e.insert("keychain-access-groups".into(), Plist::Array(vec![Plist::String(concrete)]));
+        sorted(e)
+    } else {
+        entitlements_for(&profile, &profile_app_id, previous.as_ref())
+    };
+    let signed_keys: Vec<String> = entitlements.keys().cloned().collect();
+    let mut settings = BundleSigningSettings::new(profile.team(), entitlements, Some(&signer));
+    settings.embedded_mobileprovision = Some(&profile.data);
+    sign_bundle(&app.bundle.bundle_dir, &settings).context("Signing failed")?;
+    tracing::info!("signed with another App ID's profile (experiment)");
+    Ok(json!({
+        "profileEntitlements": profile.parsed.entitlements().keys().collect::<Vec<_>>(),
+        "signedEntitlements": signed_keys,
+        "signedPath": app.bundle.bundle_dir.to_string_lossy(),
+        "bundleId": main_id,
+        "profileAppId": profile_app_id,
+        "expires": profile.expires().map(iso),
+    }))
+}
+
+/// Experiment control: `sign_keeping_bundle_id` with an imported certificate and profile.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_sign_offline_keeping_id(
+    data_dir: *const c_char,
+    app_path: *const c_char,
+    identity_id: *const c_char,
+    profile_uuid: *const c_char,
+    bundle_id: *const c_char,
+    minimal: bool,
+) -> *mut c_char {
+    reply((|| {
+        let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
+        let identity = Identity::load(&data_dir, &unsafe { text(identity_id) }?)?;
+        let uuid = unsafe { text(profile_uuid) }?;
+        let profile = Profile::all(&data_dir)
+            .into_iter()
+            .find(|p| p.uuid() == uuid)
+            .ok_or_else(|| report!("No imported profile {uuid}"))?;
+        let bundle_id = unsafe { optional(bundle_id) }?;
+        sign_keeping_bundle_id(
+            identity.certificate,
+            identity.key,
+            profile.data,
+            PathBuf::from(unsafe { text(app_path) }?),
+            bundle_id.as_deref(),
+            minimal,
+        )
+    })())
+}
+
 /// ExtensionKit extensions (`Extensions/*.appex`) and the extension points the app declares
 /// for them (`Extensions/*.appexpt`). An app's own extension point is named after its bundle
 /// ID (UTM: `com.utmapp.UTM.qemu-helper`, which its code derives from the running app's ID),
