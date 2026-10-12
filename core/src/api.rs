@@ -50,7 +50,7 @@ pub async fn pair(
 ) -> Result<(), Report> {
     let control = crate::tunnel::dial(device, None).await.context("Can't reach the device's pairing service")?;
     let mut rpc = RemotePairingClient::new(RpPairingSocket::new(control), hostname);
-    rpc.connect(pairing, async || pin()).await.context("Pairing failed")?;
+    crate::tunnel::verify(&mut rpc, pairing, device, pin).await.context("Pairing failed")?;
     Ok(())
 }
 

@@ -72,12 +72,12 @@ pub(crate) async fn open(
 ) -> Result<(idevice::tcp::handle::AdapterHandle, RsdHandshake), Report> {
     let control = dial(device, relay).await.context("RemotePairing connection")?;
     let mut rpc = RemotePairingClient::new(RpPairingSocket::new(control), hostname);
-    rpc.connect(pairing, async || pin()).await?;
+    verify(&mut rpc, pairing, device, pin).await?;
 
     let mut tunnel_addr = device;
-    tunnel_addr.set_port(rpc.create_tcp_listener().await?);
+    tunnel_addr.set_port(step("the tunnel port", rpc.create_tcp_listener()).await??);
     let stream = dial(tunnel_addr, relay).await.context("tunnel connection")?;
-    let tunnel = connect_tls_psk_tunnel_native(stream, rpc.encryption_key()).await?;
+    let tunnel = step("the tunnel handshake", connect_tls_psk_tunnel_native(stream, rpc.encryption_key())).await??;
 
     let parse = |text: &str| text.parse::<std::net::IpAddr>().map_err(|e| IdeviceError::InternalError(format!("{e}")));
     let client_ip = parse(&tunnel.info.client_address)?;
@@ -87,9 +87,43 @@ pub(crate) async fn open(
     let mut adapter = idevice::tcp::adapter::Adapter::new(Box::new(tunnel.into_inner()), client_ip, server_ip);
     adapter.set_mss(mtu.saturating_sub(60));
     let mut adapter = adapter.to_async_handle();
-    let rsd = adapter.connect(rsd_port).await.map_err(|e| IdeviceError::InternalError(format!("{e}")))?;
-    let handshake = RsdHandshake::new(rsd).await?;
+    let rsd = step("the service list", adapter.connect(rsd_port)).await?.map_err(|e| IdeviceError::InternalError(format!("{e}")))?;
+    let handshake = step("the service list", RsdHandshake::new(rsd)).await??;
     Ok((adapter, handshake))
+}
+
+/// `future`, or an error naming `what` once it has taken longer than TIMEOUT.
+async fn step<T>(what: &str, future: impl Future<Output = T>) -> Result<T, Report> {
+    tokio::time::timeout(TIMEOUT, future).await.map_err(|_| report!("no answer for {what} within {} s", TIMEOUT.as_secs()))
+}
+
+/// Pair-verify, or pair-setup when the device asks for its PIN. Something that isn't the
+/// device's RemotePairing service (a wrong port, the companion's own port) never answers, so
+/// this gives up after TIMEOUT, but not once the PIN has been asked for: typing it can take
+/// minutes, and the prompt has its own limit.
+pub(crate) async fn verify<R: idevice::remote_pairing::RpPairingSocketProvider>(
+    rpc: &mut RemotePairingClient<R>,
+    pairing: &mut idevice::remote_pairing::RpPairingFile,
+    device: SocketAddr,
+    pin: impl Fn() -> String,
+) -> Result<(), Report> {
+    let asked = std::sync::atomic::AtomicBool::new(false);
+    let connect = rpc.connect(pairing, async || {
+        asked.store(true, std::sync::atomic::Ordering::Relaxed);
+        pin()
+    });
+    tokio::pin!(connect);
+    loop {
+        tokio::select! {
+            result = &mut connect => return Ok(result?),
+            _ = tokio::time::sleep(TIMEOUT) => {
+                if !asked.load(std::sync::atomic::Ordering::Relaxed) {
+                    bail!("no RemotePairing answer from port {} within {} s: is that the device's pairing port?",
+                          device.port(), TIMEOUT.as_secs());
+                }
+            }
+        }
+    }
 }
 
 /// Opens a tunnel to `device_host:device_port`, or, with `relay` (`ip:port`), through a
@@ -175,7 +209,7 @@ pub unsafe extern "C" fn apparition_pair_relay(
             let device = SocketAddr::new("0.0.0.0".parse().unwrap(), port);
             let control = dial(device, Some(relay)).await.context("RemotePairing connection")?;
             let mut rpc = RemotePairingClient::new(RpPairingSocket::new(control), &hostname);
-            rpc.connect(pairing, async || ask_pin()).await?;
+            verify(&mut rpc, pairing, device, ask_pin).await?;
             Ok::<_, Report>(())
         })?;
         Ok(json!({}))
