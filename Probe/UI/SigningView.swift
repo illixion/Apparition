@@ -107,7 +107,7 @@ struct SigningView: View {
         } header: {
             Text("Your Certificates")
         } footer: {
-            Text("An Apple Development or Distribution certificate exported with its private key. Its password opens the file once and isn't kept. The key stays in Apparition's storage on this headset.")
+            Text("An Apple Development or Distribution certificate exported with its private key. Its password opens the file once and isn't kept. The key stays in Apparition's storage on this \(ThisDevice.noun).")
         }
     }
 
@@ -131,9 +131,9 @@ struct SigningView: View {
                 if identity.expired {
                     Note(text: "Expired. Make a new certificate in your developer account and import it.", kind: .error)
                 } else if usable.isEmpty {
-                    Note(text: "No imported profile lets this certificate sign for this headset yet. Import one that includes it and this headset's UDID.", kind: .warning)
+                    Note(text: "No imported profile lets this certificate sign for this \(ThisDevice.noun) yet. Import one that includes it and this \(ThisDevice.noun)'s UDID.", kind: .warning)
                 } else {
-                    Note(text: "\(Self.profiles(usable.count)) for this headset", kind: .success)
+                    Note(text: "\(Self.profiles(usable.count)) for this \(ThisDevice.noun)", kind: .success)
                 }
             }
             Spacer()
@@ -146,7 +146,7 @@ struct SigningView: View {
 
     private func removeMessage(_ identity: SigningStore.Identity) -> String {
         let users = library.installed.filter { signing.signer(for: $0) == identity.id }
-        var text = "Its private key is deleted from this headset. Installed apps keep working until their profiles expire."
+        var text = "Its private key is deleted from this \(ThisDevice.noun). Installed apps keep working until their profiles expire."
         if !users.isEmpty {
             text += " \(users.map(\.name).formatted(.list(type: .and))) will sign with \(users.count == 1 ? "its" : "their") default again at the next refresh."
         }
@@ -172,7 +172,7 @@ struct SigningView: View {
         } header: {
             Text("Provisioning Profiles")
         } footer: {
-            Text("Apparition picks, for each app and extension, a profile for your certificate that lists this headset: one made for the app's own ID first, then the closest wildcard. An explicit App ID renames the app to it; a wildcard (*) keeps the app's own ID. Development profiles allow Launch with JIT; ad hoc and enterprise ones don't.")
+            Text("Apparition picks, for each app and extension, a profile for your certificate that lists this \(ThisDevice.noun): one made for the app's own ID first, then the closest wildcard. An explicit App ID renames the app to it; a wildcard (*) keeps the app's own ID. Development profiles allow Launch with JIT; ad hoc and enterprise ones don't.")
         }
     }
 
@@ -196,7 +196,7 @@ struct SigningView: View {
                     expiryText(profile.expires)
                 }
                 if let problem = problem(profile, certificates: certificates) {
-                    Note(text: problem, kind: profile.expired || profile.kind == "appStore" || profile.forVision == false ? .error : .warning)
+                    Note(text: problem, kind: profile.expired || profile.kind == "appStore" || profile.forPlatform == false ? .error : .warning)
                 } else {
                     Note(text: "Signs with \(certificates.map(\.name).formatted(.list(type: .or)))", kind: .success)
                 }
@@ -221,11 +221,11 @@ struct SigningView: View {
     private func problem(_ profile: SigningStore.Profile, certificates: [SigningStore.Identity]) -> String? {
         if profile.expired { return "Expired." }
         if profile.kind == "appStore" { return "An App Store profile can't install apps on a device. Use a development or ad hoc one." }
-        if profile.forVision == false {
-            return "Made for \(profile.platforms.joined(separator: ", ")), not visionOS. Make the profile for an iOS or visionOS App ID."
+        if profile.forPlatform == false {
+            return "Made for \(profile.platforms.joined(separator: ", ")), not \(ThisDevice.os). Make the profile for an App ID that includes \(ThisDevice.os)."
         }
         if profile.includesDevice == false {
-            return "Doesn't list this headset. Add its UDID to the profile's devices in your developer account, download the profile again and import it."
+            return "Doesn't list this \(ThisDevice.noun). Add its UDID to the profile's devices in your developer account, download the profile again and import it."
         }
         if certificates.isEmpty { return "None of your imported certificates can sign with it. Import the certificate it was made for." }
         return nil
@@ -248,7 +248,7 @@ struct SigningView: View {
     private var howToSection: some View {
         Section {
             if let pairedUDID {
-                LabeledContent("This headset's UDID") {
+                LabeledContent("This \(ThisDevice.noun)'s UDID") {
                     Text(pairedUDID).font(.callout.monospaced()).textSelection(.enabled)
                 }
             }

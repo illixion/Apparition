@@ -154,7 +154,13 @@ final class Relay {
                     self?.pipe(from: device, to: client, session: index, toDevice: false)
                 })
             case .failed(let error), .waiting(let error):
-                self?.refuse(client, "can't connect to :\(port): \(error)")
+                // macOS reports a Local Network privacy block as "Network is down" (ENETDOWN).
+                let hint = if case .posix(.ENETDOWN) = error {
+                    " (is Apparition Companion allowed in System Settings > Privacy & Security > Local Network?)"
+                } else {
+                    ""
+                }
+                self?.refuse(client, "can't connect to :\(port): \(error)\(hint)")
                 device.cancel()
                 Task { @MainActor in self?.finish(index, "failed: \(error)") }
             default:

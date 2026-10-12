@@ -77,7 +77,7 @@ struct SettingsView: View {
         } header: {
             Text("Companion")
         } footer: {
-            Text("Apparition Companion relays the connection back to this headset. On Tailscale, type its Tailscale address.")
+            Text("Apparition Companion relays the connection back to this \(ThisDevice.noun). On Tailscale, type its Tailscale address.")
         }
     }
 
@@ -96,7 +96,7 @@ struct SettingsView: View {
         } header: {
             Text("Anisette Server")
         } footer: {
-            Text("An anisette-v3 server for Apple sign-in. It sees this headset's anisette identity and IP address, never your Apple ID or password.")
+            Text("An anisette-v3 server for Apple sign-in. It sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password.")
         }
     }
 
@@ -135,12 +135,12 @@ struct SettingsView: View {
             }
             Toggle(isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 })) {
                 Text("Remember password")
-                Text(Keychain.hasPassword ? "A password is stored on this headset." : "Takes effect at the next sign-in.")
+                Text(Keychain.hasPassword ? "A password is stored on this \(ThisDevice.noun)." : "Takes effect at the next sign-in.")
             }
         } header: {
             Text("Apple ID")
         } footer: {
-            Text("A remembered password stays in this headset's Keychain, never synced or sent anywhere but Apple, so refreshes can sign in on their own. Turning it off deletes it.")
+            Text("A remembered password stays in this \(ThisDevice.noun)'s Keychain, never synced or sent anywhere but Apple, so refreshes can sign in on their own. Turning it off deletes it.")
         }
     }
 
@@ -165,13 +165,13 @@ struct SettingsView: View {
                 Button("Pair in Setup…", action: onSetup)
             }
         } header: {
-            Text("This Headset")
+            Text("This \(ThisDevice.title)")
         }
     }
 
     private var shortcutsSection: some View {
         Section {
-            Text("Free-account apps expire after 7 days. To keep them fresh without opening Apparition, make a personal automation in the Shortcuts app (for example daily, at a time the headset is usually on and the companion is reachable) that runs Apparition's refresh action.")
+            Text("Free-account apps expire after 7 days. To keep them fresh without opening Apparition, make a personal automation in the Shortcuts app (for example daily, at a time the \(ThisDevice.noun) is usually on and the companion is reachable) that runs Apparition's refresh action.")
                 .foregroundStyle(.secondary)
         } header: {
             Text("Shortcuts")
@@ -190,7 +190,7 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section {
             LabeledContent("Version", value: Self.version)
-            Text("Apparition installs apps from AltStore-format sources and GitHub releases, signs them with your own Apple ID on this headset, keeps them refreshed and launches them with JIT. MIT licensed.")
+            Text("Apparition installs apps from AltStore-format sources and GitHub releases, signs them with your own Apple ID on this \(ThisDevice.noun), keeps them refreshed and launches them with JIT. MIT licensed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         } header: {

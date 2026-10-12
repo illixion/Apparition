@@ -30,6 +30,8 @@ const PAIRED: &str = "_remotepairing._tcp.local.";
 /// The RemotePairing port on visionOS; mDNS says when it differs.
 const TUNNEL_PORT: u16 = 49152;
 const APPARITION_ID: &str = "com.illixion.apparition";
+/// What Apparition calls itself when it pairs (ProbeModel.hostname).
+const APP_PAIRING_HOST: &str = "Apparition";
 
 const USAGE: &str = "\
 Apparition Installer
@@ -39,6 +41,9 @@ Apparition Installer
   apparition-installer pair [<address>[:<port>]]
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
+  apparition-installer pair --usb [<UDID>]
+      Pair with an iPhone or iPad over its cable (it has no PIN pairing screen). It must
+      trust this computer already; afterwards it's reached over the network like a headset.
   apparition-installer install [<app.ipa>] [--device <name or UDID>]
           (--apple-id <email> --anisette <url> | --p12 <file> --profile <file>...)
           [--keep-extensions] [--no-handoff] [--release-site <url>]
@@ -118,6 +123,7 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("devices") => devices().await,
+        Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
@@ -202,8 +208,11 @@ async fn devices() -> Result<(), Error> {
 // MARK: Pairing
 
 /// Prefers an IPv4 address: link-local IPv6 ones need a scope this program doesn't track.
+/// A link-local IPv4 one (169.254.*, a cable's or AWDL's) is a last resort: it's gone when
+/// the device is unplugged or moves.
 fn pick(addresses: &[IpAddr]) -> Option<IpAddr> {
-    addresses.iter().find(|a| a.is_ipv4()).or_else(|| addresses.first()).copied()
+    let lan = |a: &&IpAddr| matches!(a, IpAddr::V4(v4) if !v4.is_link_local());
+    addresses.iter().find(lan).or_else(|| addresses.iter().find(|a| a.is_ipv4())).or_else(|| addresses.first()).copied()
 }
 
 async fn pair(target: Option<&str>) -> Result<(), Error> {
@@ -252,6 +261,64 @@ async fn pair(target: Option<&str>) -> Result<(), Error> {
     devices.push(Device { udid: info.udid.clone(), name: info.name.clone(), address, port: TUNNEL_PORT, pairing: file });
     save_devices(&devices)?;
     println!("Paired with {} ({}, {} {}).", info.name, info.udid, info.product_type, info.os_version);
+    Ok(())
+}
+
+/// iPhone and iPad: the RemotePairing record is made over usbmuxd (USB, or the network once
+/// trusted), then the device's own `_remotepairing._tcp` service is found over mDNS by trying
+/// each until one answers to the new record. Its port isn't fixed as on visionOS.
+async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
+    let devices = api::usb_devices().await?;
+    let udid = match (wanted, devices.as_slice()) {
+        (Some(udid), _) => udid.to_string(),
+        (None, []) => return Err(fail("usbmuxd sees no device. Plug it in, unlock it and tap Trust")),
+        (None, [one]) => one.udid.clone(),
+        (None, many) => {
+            for (index, device) in many.iter().enumerate() {
+                println!("  {}. {}{}", index + 1, device.udid, if device.usb { " (USB)" } else { " (network)" });
+            }
+            let choice: usize = ask("Which one? ").parse().unwrap_or(0);
+            many.get(choice.wrapping_sub(1)).ok_or_else(|| fail("no such device"))?.udid.clone()
+        }
+    };
+    let hostname = hostname();
+    let mut pairing = RpPairingFile::generate(&hostname);
+    println!("Pairing with {udid} as \"{hostname}\"…");
+    let info = api::pair_usb(&udid, &hostname, &mut pairing).await?;
+    // Apparition on the device can't pair with its own device either, so it gets a record of
+    // its own (under its name, so the device lists it separately), handed over at install.
+    let mut app_pairing = RpPairingFile::generate(APP_PAIRING_HOST);
+    api::pair_usb(&udid, APP_PAIRING_HOST, &mut app_pairing).await?;
+    std::fs::create_dir_all(data_dir().join("pairings"))?;
+    std::fs::write(data_dir().join("pairings").join(format!("{}.app.plist", info.udid)), app_pairing.to_bytes())?;
+    println!("Paired with {} ({} {}). Looking for it on the network…", info.name, info.product_type, info.os_version);
+
+    let no_pin = || String::new();
+    let mut reached = None;
+    for found in browse(4).await?.into_iter().filter(|f| f.service == PAIRED) {
+        let Some(address) = pick(&found.addresses) else { continue };
+        let attempt = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            api::connect(SocketAddr::new(address, found.port), &hostname, &mut pairing, no_pin),
+        );
+        if let Ok(Ok(mut tunnel)) = attempt.await {
+            if tunnel.device_info().await.is_ok_and(|i| i.udid == info.udid) {
+                reached = Some((address, found.port));
+                break;
+            }
+        }
+    }
+    let file = format!("{}.plist", info.udid);
+    std::fs::create_dir_all(data_dir().join("pairings"))?;
+    std::fs::write(data_dir().join("pairings").join(&file), pairing.to_bytes())?;
+    let (address, port) = reached.ok_or_else(|| {
+        fail("paired, but the device didn't answer on the network. Keep it unlocked on the same Wi-Fi and run `pair --usb` again")
+    })?;
+    let mut devices = load_devices();
+    devices.retain(|d| d.udid != info.udid);
+    devices.push(Device { udid: info.udid.clone(), name: info.name.clone(), address, port, pairing: file });
+    save_devices(&devices)?;
+    println!("Reached {} at {address}:{port}.", info.name);
     Ok(())
 }
 
@@ -421,7 +488,7 @@ async fn sign_and_install(
             api::import_profile(scratch, std::fs::read(profile)?, Some(&info.udid))?;
         }
         println!("Signing with {}…", identity["identity"]["name"].as_str().unwrap_or("your certificate"));
-        api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None)?
+        api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None, api::Platform::of_product(&info.product_type))?
     } else {
         let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap()).await?;
         println!("Signing for team {}…", session.team_id());
@@ -464,8 +531,19 @@ async fn sign_and_install(
     }
 
     if options.handoff && installed_id.starts_with(APPARITION_ID) {
+        hand_over_pairing(tunnel, &installed_id, &info.udid).await?;
         handoff(options, tunnel, &installed_id, apple_id.as_ref()).await?;
     }
+    Ok(())
+}
+
+/// An iPhone or iPad paired with `pair --usb`: puts the record made for Apparition where it
+/// keeps its own (Documents/apparition_rp_pairing.plist), so it can reach its device.
+async fn hand_over_pairing(tunnel: &mut api::Tunnel, installed_id: &str, udid: &str) -> Result<(), Error> {
+    let path = data_dir().join("pairings").join(format!("{udid}.app.plist"));
+    let Ok(record) = std::fs::read(&path) else { return Ok(()) };
+    tunnel.put_documents(installed_id, "", &[("apparition_rp_pairing.plist".to_string(), record)]).await?;
+    println!("Gave Apparition its pairing with this device.");
     Ok(())
 }
 

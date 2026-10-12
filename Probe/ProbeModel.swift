@@ -56,6 +56,18 @@ final class ProbeModel {
     /// Where unattended work (installs, refreshes) opens its tunnel: the relay when one is set.
     var defaultTunnelHost: String { relay == nil ? Self.vpnLoopback : Self.relayHost }
 
+    /// This device's own RemotePairing port: always 49152 on visionOS. iPhone and iPad pick
+    /// another one each boot, so it's the one Bonjour last reported for this device.
+    var defaultTunnelPort: Int {
+        #if os(visionOS)
+        49152
+        #else
+        UserDefaults.standard.object(forKey: Self.selfTunnelPortKey) as? Int ?? 49152
+        #endif
+    }
+
+    nonisolated static let selfTunnelPortKey = "selfTunnelPort"
+
     func tunnelTarget(host: String, port: Int) -> IDevice.Target {
         if host == Self.relayHost, let relay {
             return IDevice.Target(host: "0.0.0.0", port: UInt16(port), relay: relay)
@@ -170,6 +182,9 @@ final class ProbeModel {
                 self.advertised[key]?.port = port
                 self.advertised[key]?.addresses = addresses
                 self.advertised[key]?.isSelf = addresses.contains { own.contains($0) }
+                if type == Self.pairedType, self.advertised[key]?.isSelf == true, port > 0 {
+                    UserDefaults.standard.set(port, forKey: Self.selfTunnelPortKey)
+                }
                 self.resolvers[key] = nil
                 log.info("resolved \(type, privacy: .public) port \(port, privacy: .public), \(addresses.count, privacy: .public) addresses")
             }

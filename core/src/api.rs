@@ -22,7 +22,7 @@ use serde_json::Value;
 pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
-    identity::{import_identity, import_profile, sign_offline},
+    identity::{Platform, import_identity, import_profile, sign_offline},
     share::{export_apple_id_key, import_signing_file},
     sign_in, sign_with_apple_id,
 };
@@ -52,6 +52,78 @@ pub async fn pair(
     let mut rpc = RemotePairingClient::new(RpPairingSocket::new(control), hostname);
     rpc.connect(pairing, async || pin()).await.context("Pairing failed")?;
     Ok(())
+}
+
+/// A device usbmuxd knows: plugged in over USB, or on the network once this computer is
+/// trusted. iPhone and iPad have no PIN pairing screen, so they pair this way.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UsbDevice {
+    pub udid: String,
+    /// False for a device usbmuxd reaches over the network.
+    pub usb: bool,
+}
+
+/// The devices usbmuxd lists (Apple's on macOS and Windows, usbmuxd on Linux).
+pub async fn usb_devices() -> Result<Vec<UsbDevice>, Report> {
+    let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default()
+        .await
+        .context("Can't reach usbmuxd. On Windows install Apple Devices (or iTunes); on Linux install and start usbmuxd.")?;
+    let mut devices: Vec<UsbDevice> = Vec::new();
+    for device in usbmuxd.get_devices().await? {
+        let usb = matches!(device.connection_type, idevice::usbmuxd::Connection::Usb);
+        match devices.iter_mut().find(|d| d.udid == device.udid) {
+            Some(known) => known.usb |= usb,
+            None => devices.push(UsbDevice { udid: device.udid, usb }),
+        }
+    }
+    Ok(devices)
+}
+
+/// Pairs with `udid` through usbmuxd and lockdown: remotepairingdeviced's lockdown service
+/// creates the RemotePairing record (no PIN; the computer has to be trusted already, which
+/// the device asks for when it's first plugged in). Fills in `pairing`, the same record the
+/// PIN flow makes, so every later connection is over the network. Returns the device's
+/// identity, read over the same lockdown connection.
+pub async fn pair_usb(udid: &str, hostname: &str, pairing: &mut RpPairingFile) -> Result<DeviceInfo, Report> {
+    use idevice::{IdeviceService, remote_pairing::RemotePairingLockdownService};
+    let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.context("Can't reach usbmuxd")?;
+    let devices = usbmuxd.get_devices().await?;
+    // Prefer the cable: lockdown services that set up pairing may refuse the network.
+    let device = devices
+        .iter()
+        .filter(|d| d.udid == udid)
+        .min_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb))
+        .ok_or_else(|| report!("{udid} isn't connected. Plug it in with a cable and unlock it."))?;
+    let provider = device.to_provider(idevice::usbmuxd::UsbmuxdAddr::default(), "apparition");
+    let info = {
+        let mut lockdown = LockdownClient::connect(&provider)
+            .await
+            .context("Can't reach lockdown. Unlock the device and tap Trust if it asks.")?;
+        let pairing_file = provider_pairing_file(&provider).await?;
+        lockdown.start_session(&pairing_file).await.context("This computer isn't trusted by the device yet. Unlock it, tap Trust, then try again.")?;
+        let mut value = async |key: &str| -> Result<String, Report> {
+            let value = lockdown.get_value(Some(key), None).await?;
+            Ok(value.as_string().unwrap_or_default().to_string())
+        };
+        DeviceInfo {
+            udid: value("UniqueDeviceID").await?,
+            name: value("DeviceName").await?,
+            product_type: value("ProductType").await?,
+            os_version: value("ProductVersion").await?,
+        }
+    };
+    let service = RemotePairingLockdownService::connect(&provider)
+        .await
+        .context("The device didn't start its pairing service (remotepairingdeviced)")?;
+    let mut client = service.into_client(hostname)?;
+    client.connect(pairing, async || "000000".to_string()).await.context("Pairing failed")?;
+    Ok(info)
+}
+
+async fn provider_pairing_file(
+    provider: &impl idevice::provider::IdeviceProvider,
+) -> Result<idevice::pairing_file::PairingFile, Report> {
+    Ok(provider.get_pairing_file().await.context("usbmuxd has no pair record for this device: trust this computer on it first")?)
 }
 
 /// Opens a tunnel to a paired device's RemotePairing service at `device` (port 49152 on
@@ -112,7 +184,7 @@ impl Tunnel {
     }
 
     /// Writes files into an installed app's Documents folder through house_arrest, under
-    /// `folder` (created if missing). Works for apps that share files with Files
+    /// `folder` (created if missing; "" for Documents itself). Works for apps that share files with Files
     /// (UIFileSharingEnabled), Apparition among them.
     pub async fn put_documents(&mut self, bundle_id: &str, folder: &str, files: &[(String, Vec<u8>)]) -> Result<(), Report> {
         let house_arrest = HouseArrestClient::connect_rsd(&mut self.adapter, &mut self.handshake)
@@ -122,8 +194,13 @@ impl Tunnel {
             .vend_documents(bundle_id)
             .await
             .context(format!("{bundle_id} doesn't share its Documents (is it installed?)"))?;
-        let folder = format!("/Documents/{}", folder.trim_matches('/'));
-        let _ = afc.mk_dir(folder.clone()).await;
+        let folder = match folder.trim_matches('/') {
+            "" => "/Documents".to_string(),
+            name => format!("/Documents/{name}"),
+        };
+        if folder != "/Documents" {
+            let _ = afc.mk_dir(folder.clone()).await;
+        }
         for (name, data) in files {
             if name.contains('/') || name.starts_with('.') {
                 bail!("bad file name {name}");

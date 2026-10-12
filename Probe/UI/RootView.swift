@@ -1,8 +1,8 @@
 import RAVEUI
 import SwiftUI
 
-/// The main window's tabs, in RAVEUI's ornament tab bar.
-enum AppTab: String, CaseIterable, RAVETabItem {
+/// The main window's tabs: in RAVEUI's ornament tab bar on visionOS, a TabView elsewhere.
+enum AppTab: String, CaseIterable {
     case library = "Library"
     case browse = "Browse"
     case setup = "Setup"
@@ -19,9 +19,14 @@ enum AppTab: String, CaseIterable, RAVETabItem {
         }
     }
 
+}
+
+#if os(visionOS)
+extension AppTab: RAVETabItem {
     /// Pinned to the case name, not the display title.
     var accessibilityIdentifier: String { RAVEA11y.tab(String(describing: self)) }
 }
+#endif
 
 /// The main window: one screen per tab, the tab bar below it, and what's running beside the tabs.
 struct RootView: View {
@@ -53,8 +58,51 @@ struct RootView: View {
     }
 
     var body: some View {
-        Group {
-            switch tab {
+        tabs
+            .onChange(of: showDiagnostics) { _, shown in
+                if !shown && tab == .diagnostics { tab = .settings }
+            }
+            .onAppear { model.startBrowsing() }
+            // Certificates and profiles: put in Files > Apparition > Signing, or shared or opened here.
+            .onChange(of: scenePhase, initial: true) { _, phase in
+                if phase == .active { Task { await library.signing.scanInbox() } }
+            }
+            .onOpenURL { url in
+                Task { await library.signing.receive(url) }
+            }
+            .sheet(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
+                IncomingSigningSheet(signing: library.signing)
+            }
+    }
+
+    #if os(visionOS)
+    private var tabs: some View {
+        screen(tab)
+            .id(tab)
+            .transition(.opacity)
+            .animation(.smooth(duration: 0.25), value: tab)
+            .ornament(attachmentAnchor: .scene(.bottomFront), contentAlignment: .top) {
+                RAVETabBar(tabs: visibleTabs, selection: $tab) {
+                    activity
+                }
+            }
+    }
+    #else
+    private var tabs: some View {
+        TabView(selection: $tab) {
+            ForEach(visibleTabs, id: \.self) { item in
+                Tab(item.rawValue, systemImage: item.systemImage, value: item) {
+                    screen(item)
+                }
+            }
+        }
+        .modifier(ActivityAccessory(active: activityText != nil) { activity })
+    }
+    #endif
+
+    @ViewBuilder
+    private func screen(_ shown: AppTab) -> some View {
+            switch shown {
             case .library:
                 LibraryView(model: model, account: account, library: library,
                             onBrowse: { tab = .browse }, onSetup: { tab = .setup })
@@ -70,36 +118,15 @@ struct RootView: View {
             case .diagnostics:
                 DiagnosticsView(model: model, account: account, library: library, companions: companions)
             }
-        }
-        .id(tab)
-        .transition(.opacity)
-        .animation(.smooth(duration: 0.25), value: tab)
-        .ornament(attachmentAnchor: .scene(.bottomFront), contentAlignment: .top) {
-            RAVETabBar(tabs: visibleTabs, selection: $tab) {
-                activity
-            }
-        }
-        .onChange(of: showDiagnostics) { _, shown in
-            if !shown && tab == .diagnostics { tab = .settings }
-        }
-        .onAppear { model.startBrowsing() }
-        // Certificates and profiles: put in Files > Apparition > Signing, or shared or opened here.
-        .onChange(of: scenePhase, initial: true) { _, phase in
-            if phase == .active { Task { await library.signing.scanInbox() } }
-        }
-        .onOpenURL { url in
-            Task { await library.signing.receive(url) }
-        }
-        .sheet(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
-            IncomingSigningSheet(signing: library.signing)
-        }
     }
 
     /// Long work (a refresh, a sign-in, a tunnel) shown past the tabs, so it's visible from any tab.
     @ViewBuilder
     private var activity: some View {
         if let text = activityText {
+            #if os(visionOS)
             Divider().frame(height: 28)
+            #endif
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
                 Text(text)
@@ -121,9 +148,25 @@ struct RootView: View {
             case "pair": return model.pinRequested ? "Waiting for the pairing code" : "Pairing…"
             case "jit": return "Serving JIT"
             case "install": return "Installing…"
-            default: return "Talking to the headset…"
+            default: return "Talking to the \(ThisDevice.noun)…"
             }
         }
         return nil
     }
 }
+
+#if !os(visionOS)
+/// Long work shown above the tab bar, where iOS 26.1 can hide the accessory while idle.
+private struct ActivityAccessory<Accessory: View>: ViewModifier {
+    let active: Bool
+    @ViewBuilder let accessory: () -> Accessory
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.1, *) {
+            content.tabViewBottomAccessory(isEnabled: active) { accessory() }
+        } else {
+            content
+        }
+    }
+}
+#endif

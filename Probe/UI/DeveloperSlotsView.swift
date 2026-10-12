@@ -123,7 +123,7 @@ struct DeveloperSlotsView: View {
                 HStack(spacing: 8) {
                     Text(certificate.name ?? "Development certificate").font(.headline)
                     if certificate.inUseHere == true {
-                        StatusPill(text: "Signs on this headset", systemImage: "checkmark.seal.fill", tint: .green)
+                        StatusPill(text: "Signs on this \(ThisDevice.noun)", systemImage: "checkmark.seal.fill", tint: .green)
                     } else if certificate.madeByApparition {
                         StatusPill(text: "Apparition", systemImage: "sparkles", tint: .purple)
                     }
@@ -157,9 +157,9 @@ struct DeveloperSlotsView: View {
     private func revokeMessage(_ certificate: DeveloperSlots.Certificate) -> String {
         var text = "Apps signed with this certificate stop opening until they're signed again. Apparition makes a new certificate at the next install or refresh, and refreshing re-signs your library apps with it."
         if certificate.inUseHere == true {
-            text += " It's the one this headset signs with, so your library apps stop opening until you refresh them."
+            text += " It's the one this \(ThisDevice.noun) signs with, so your library apps stop opening until you refresh them."
         } else if certificate.madeByApparition {
-            text += " This headset doesn't sign with it: Apparition on another device or computer probably does, and its apps stop opening too."
+            text += " This \(ThisDevice.noun) doesn't sign with it: Apparition on another device or computer probably does, and its apps stop opening too."
         } else {
             text += " It wasn't made by Apparition, so the tool that made it (\(certificate.machineName ?? "Xcode or another sideloader")) will need to make a new one too."
         }

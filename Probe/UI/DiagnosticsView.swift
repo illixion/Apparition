@@ -142,7 +142,7 @@ struct DiagnosticsView: View {
                     .autocorrectionDisabled()
                 Button("Add") {
                     let url = sourceURL
-                    let pattern = url.hasPrefix("github:") ? "visionOS" : nil
+                    let pattern = url.hasPrefix("github:") ? ThisDevice.utmAssetPattern : nil
                     Task { await library.addSource(url, assetPattern: pattern, prereleases: true) }
                 }
             }
@@ -203,7 +203,7 @@ struct DiagnosticsView: View {
                     Spacer()
                     Button("Sign") {
                         let udid = UserDefaults.standard.string(forKey: "pairedUDID") ?? ""
-                        let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
+                        let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
                         Task { await account.sign(file: file, udid: udid, deviceName: name) }
                     }
                     .buttonStyle(.bordered)

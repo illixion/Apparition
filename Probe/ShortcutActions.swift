@@ -14,8 +14,6 @@ private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Appari
 /// read the same instances the UI shows through `@Dependency`.
 @MainActor
 enum ShortcutActions {
-    /// The RemotePairing tunnel port that installs and refreshes use too.
-    static let tunnelPort = 49152
     /// How long Launch with JIT waits for the debugger's first JIT request, as the endpoint does.
     static let jitWaitSeconds = 600
 
@@ -177,7 +175,7 @@ enum ShortcutActions {
         let host = probe.defaultTunnelHost
         let route = host == ProbeModel.relayHost ? "the companion" : "LocalDevVPN"
         let startedAt = DebugTime.iso(Date())
-        Task { await probe.launchJIT(host: host, port: tunnelPort, bundleId: bundleId, waitSeconds: jitWaitSeconds) }
+        Task { await probe.launchJIT(host: host, port: probe.defaultTunnelPort, bundleId: bundleId, waitSeconds: jitWaitSeconds) }
         log.info("JIT launch started through \(route, privacy: .public)")
 
         let deadline = ContinuousClock.now + .seconds(8)

@@ -24,7 +24,7 @@ struct IncomingSigningSheet: View {
                     } header: {
                         Text(pending.url.lastPathComponent)
                     } footer: {
-                        Text("The password chosen when the certificate was exported. It opens the file once on this headset and isn't stored.")
+                        Text("The password chosen when the certificate was exported. It opens the file once on this \(ThisDevice.noun) and isn't stored.")
                     }
                     Section {
                         Button("Import Certificate") { submit(pending) }

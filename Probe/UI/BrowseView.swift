@@ -19,7 +19,7 @@ struct BrowseView: View {
                     ContentUnavailableView {
                         Label("No Sources", systemImage: "tray")
                     } description: {
-                        Text("Add an AltStore or SideStore source URL, or github:owner/repo for apps published only as release assets (UTM's visionOS build is github:utmapp/UTM).")
+                        Text("Add an AltStore or SideStore source URL, or github:owner/repo for apps published only as release assets (UTM's \(ThisDevice.os) build is github:utmapp/UTM).")
                     } actions: {
                         Button("Add Source") { addingSource = true }
                             .buttonStyle(.borderedProminent)
@@ -179,7 +179,7 @@ struct AddSourceSheet: View {
     let library: LibraryModel
     @Environment(\.dismiss) private var dismiss
     @State private var url = ""
-    @State private var assetPattern = "visionOS"
+    @State private var assetPattern = ThisDevice.utmAssetPattern
     @State private var prereleases = true
     @State private var adding = false
 
@@ -219,9 +219,9 @@ struct AddSourceSheet: View {
                     }
                 }
                 Section("Suggestions") {
-                    Button("UTM for visionOS (github:utmapp/UTM)") {
+                    Button("UTM for \(ThisDevice.os) (github:utmapp/UTM)") {
                         url = "github:utmapp/UTM"
-                        assetPattern = "visionOS"
+                        assetPattern = ThisDevice.utmAssetPattern
                         prereleases = true
                     }
                 }
