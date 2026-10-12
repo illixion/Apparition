@@ -4,16 +4,19 @@
 # the release site (apparition.illixion.com, scripts/publish.py) expects:
 #
 #   Apparition-<version>-visionOS.ipa                       unsigned; signed on install
-#   Apparition-Installer-<version>-macos-universal.zip      arm64 + x86_64
-#   Apparition-Installer-<version>-windows-x86_64.zip
-#   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, built in Docker
+#   Apparition-Installer-<version>-macos-universal.zip      arm64 + x86_64: the desktop app
+#                                                           and the command line
+#   Apparition-Installer-<version>-windows-x86_64.zip       the same two for Windows
+#   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, built in Docker;
+#                                                           the command line only (see below)
 #
 #   scripts/package-release.sh 0.2.0
 #   scripts/package-release.sh 0.2.0 --linux        # also Linux x86_64 and arm64
 #   scripts/package-release.sh 0.2.0 --only-app     # just the IPA
 #
-# The version has to be committed first, in both places that carry it: MARKETING_VERSION
-# in project.yml and `version` in installer/Cargo.toml. The build number is the commit
+# The version has to be committed first, in every place that carries it: MARKETING_VERSION
+# in project.yml, and `version` in installer/Cargo.toml and desktop/Cargo.toml (the desktop
+# app's tauri.conf.json takes it from there). The build number is the commit
 # count, so every release's is higher than the last. A dirty tree is refused, so a release
 # is always a commit you can name.
 #
@@ -22,7 +25,12 @@
 #
 # Needs: Xcode with the visionOS SDK, xcodegen, rustup targets aarch64-apple-visionos,
 # aarch64-apple-darwin, x86_64-apple-darwin and x86_64-pc-windows-gnu (with mingw-w64 from
-# Homebrew), and Docker for --linux.
+# Homebrew), the Tauri CLI for the desktop app (cargo install tauri-cli --version '^2'
+# --locked), and Docker for --linux.
+#
+# The Linux tarballs carry only the command line: the desktop app needs WebKitGTK
+# (libwebkit2gtk-4.1-dev and friends) in the build image, and an AppImage or .deb to carry
+# it, which this doesn't build yet.
 
 set -euo pipefail
 
@@ -48,10 +56,13 @@ cd "$ROOT"
 
 app_version="$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' project.yml | head -1)"
 installer_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' installer/Cargo.toml | head -1)"
+desktop_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop/Cargo.toml | head -1)"
 [[ "$app_version" == "$VERSION" ]] \
   || { echo "error: project.yml's MARKETING_VERSION is $app_version, not $VERSION; commit the bump first" >&2; exit 1; }
 [[ "$ONLY_APP" == 1 || "$installer_version" == "$VERSION" ]] \
   || { echo "error: installer/Cargo.toml's version is $installer_version, not $VERSION; commit the bump first" >&2; exit 1; }
+[[ "$ONLY_APP" == 1 || "$desktop_version" == "$VERSION" ]] \
+  || { echo "error: desktop/Cargo.toml's version is $desktop_version, not $VERSION; commit the bump first" >&2; exit 1; }
 if [[ -n "$(git status --porcelain)" ]]; then
   if [[ "$ALLOW_DIRTY" == 1 ]]; then
     echo "warning: the tree has uncommitted changes; don't publish this build" >&2
@@ -105,6 +116,10 @@ Apparition Installer $VERSION ($COMMIT)
 
 Puts Apparition on your Apple Vision Pro: pair once, then install.
 
+$3
+
+Or from a terminal:
+
   $2 pair        (with Settings > General > Remote Devices open on the headset)
   $2 install --apple-id you@example.com --anisette <url>
 
@@ -119,15 +134,22 @@ EOF
   mkdir -p "$WORK/macos"
   xcrun lipo -create -output "$WORK/macos/$bin" \
     target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
-  readme "$WORK/macos" "./$bin"
-  (cd "$WORK/macos" && zip -qX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" README.txt)
+  echo "==> desktop app for macOS (universal)"
+  app_name="Apparition Installer"
+  (cd "$ROOT/desktop" && MACOSX_DEPLOYMENT_TARGET=11.0 cargo tauri build --target universal-apple-darwin --bundles app)
+  ditto "$ROOT/desktop/target/universal-apple-darwin/release/bundle/macos/$app_name.app" "$WORK/macos/$app_name.app"
+  readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install. It isn't notarized: the first time, right-click it and choose Open."
+  (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$app_name.app" README.txt)
 
   echo "==> installer for Windows (x86_64)"
   cargo build -q --release --target x86_64-pc-windows-gnu
   mkdir -p "$WORK/windows"
   cp "target/x86_64-pc-windows-gnu/release/$bin.exe" "$WORK/windows/"
-  readme "$WORK/windows" "$bin.exe"
-  (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin.exe" README.txt)
+  echo "==> desktop app for Windows (x86_64)"
+  (cd "$ROOT/desktop" && cargo build -q --release --features custom-protocol --target x86_64-pc-windows-gnu)
+  cp "$ROOT/desktop/target/x86_64-pc-windows-gnu/release/apparition-installer-app.exe" "$WORK/windows/$app_name.exe"
+  readme "$WORK/windows" "$bin.exe" "Open $app_name.exe for a guided install (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have)."
+  (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin.exe" "$app_name.exe" README.txt)
 
   if [[ "$LINUX" == 1 ]]; then
     # In Docker, from a copy of the repo (just core/, installer/ and release-signers), so the
@@ -141,7 +163,7 @@ EOF
       docker run --rm --platform "$platform" -v "$src:/src" -w /src/installer rust:1.97-slim \
         cargo build -q --release
       cp "$src/installer/target/release/$bin" "$WORK/linux-$arch/"
-      readme "$WORK/linux-$arch" "./$bin"
+      readme "$WORK/linux-$arch" "./$bin" "The guided desktop app isn't built for Linux yet; use the command line below."
       tar -C "$WORK/linux-$arch" -czf "$OUT/Apparition-Installer-$VERSION-linux-$arch.tar.gz" "$bin" README.txt
     done
   fi

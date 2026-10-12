@@ -92,6 +92,31 @@ certificate: an Apple ID with no free certificate slot fails with Apple's error 
     cd installer && cargo build --release                                   # this machine
     cargo build --release --target x86_64-pc-windows-gnu                    # Windows, from macOS with mingw-w64
 
+### The desktop app
+
+`desktop/` is the same installer as a guided app (Tauri v2) for macOS, Windows and Linux, so
+nobody needs a terminal: it finds the headset over mDNS (or takes its address), pairs with the
+PIN the headset shows, signs in to an Apple ID (asking for the 2FA code) or opens a .p12 and
+profiles, installs the latest signed release (or an IPA you pick) with progress, and hands
+Apparition its signing at the end. When a free account's certificate or App ID slots are full
+it lists them and frees one only after you type `revoke` or `delete`. It drives the same
+`apparition_core::api` as the command line and shares its pairings and Apple ID data, so a
+headset paired with one is paired with both. Passwords go from the app's own fields to the
+core and nowhere else. On launch it checks the release site for a newer installer and links to
+it; it never replaces itself.
+
+    cargo install tauri-cli --version '^2' --locked                         # once
+    cd desktop && cargo tauri build --bundles app                           # this Mac
+    cargo tauri build --target universal-apple-darwin --bundles app         # arm64 + x86_64
+    cargo build --release --features custom-protocol --target x86_64-pc-windows-gnu   # Windows exe
+
+The page is plain HTML, CSS and JavaScript in `desktop/ui/` (no npm), under a strict CSP. A
+debug build opens on any step with `APPARITION_DESKTOP_PREVIEW=signing` (or `pair`, `pin`,
+`twofactor`, `install`, `progress`, `slots`, `done`), and can read a scratch release site with
+`APPARITION_RELEASE_SITE` and `APPARITION_RELEASE_SIGNERS`; release builds ignore all three.
+`scripts/package-release.sh` puts the app in the macOS and Windows installer zips next to the
+command line. Linux needs WebKitGTK in the build image and an AppImage or .deb, not built yet.
+
 ## Anisette
 
 Signing in to Apple needs an anisette-v3 server. Apparition ships none: enter the URL of
