@@ -37,7 +37,7 @@ struct LibraryView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    RAVEScreenHeading("Library", takesFocus: false)
+                    RAVEScreenHeading("Library")
                     content
                 }
                 .padding(32)

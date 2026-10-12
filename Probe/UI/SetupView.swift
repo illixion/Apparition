@@ -51,7 +51,7 @@ struct SetupView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    RAVEScreenHeading("Setup", takesFocus: false)
+                    RAVEScreenHeading("Setup")
                     intro(status)
                     StepPanel(number: 1, title: "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
                         CompanionStep(model: model, account: account, companions: companions)
