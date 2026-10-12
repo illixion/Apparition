@@ -9,10 +9,13 @@ struct ApparitionApp: App {
     @State private var account: AccountModel
     @State private var library: LibraryModel
     @State private var companions = CompanionFinder()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier ?? "Apparition"]))
         DebugTraceServer.startIfRequested()
+        // Before any model reads its files: brings back what a tvOS storage purge removed.
+        StateVault.sync()
         let model = ProbeModel()
         _model = State(initialValue: model)
         ProbeEndpoints.register(model)
@@ -30,6 +33,7 @@ struct ApparitionApp: App {
         DeveloperSlotsEndpoints.register()
         #if !APPARITION_RELEASE
         ExperimentEndpoints.register(probe: model, account: account)
+        VaultEndpoints.register()
         #endif
         ShortcutActions.register(probe: model, account: account, library: library)
         IntentEndpoints.register(probe: model, account: account, library: library)
@@ -40,6 +44,9 @@ struct ApparitionApp: App {
             RootView(model: model, account: account, library: library, companions: companions)
                 .debugApprovalPrompts()
                 .task { await library.scheduleRefreshIfNeeded() }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase != .active { StateVault.sync() }
+                }
         }
         #if !os(tvOS)
         .defaultSize(width: 1180, height: 820)
