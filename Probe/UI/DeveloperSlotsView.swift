@@ -340,7 +340,7 @@ struct ManageSlotsButton: View {
             Label("Manage Certificates & App IDs", systemImage: "person.badge.key")
         }
         .buttonStyle(.bordered)
-        .sheet(isPresented: $showing) {
+        .panel(isPresented: $showing) {
             NavigationStack {
                 DeveloperSlotsView(account: account, library: library, onSignIn: {
                     showing = false
@@ -352,7 +352,7 @@ struct ManageSlotsButton: View {
                     }
                 }
             }
-            .frame(minWidth: 820, minHeight: 640)
+            .sheetFrame(minWidth: 820, minHeight: 640)
         }
     }
 }

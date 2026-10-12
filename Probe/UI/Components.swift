@@ -208,3 +208,29 @@ struct Disclosure<Content: View>: View {
         #endif
     }
 }
+
+extension View {
+    /// A sheet; full screen on tvOS, where a sheet is a small floating card that clips a form.
+    /// The remote's Menu button dismisses it there.
+    @ViewBuilder
+    func panel<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) -> some View {
+        #if os(tvOS)
+        // A cover draws no backdrop of its own on tvOS, so the screen behind would show through.
+        fullScreenCover(isPresented: isPresented) {
+            content().background(Color(white: 0.07).ignoresSafeArea())
+        }
+        #else
+        sheet(isPresented: isPresented, content: content)
+        #endif
+    }
+
+    /// A sheet's minimum size on visionOS and iPad; tvOS presents it full screen instead.
+    @ViewBuilder
+    func sheetFrame(minWidth: CGFloat, minHeight: CGFloat) -> some View {
+        #if os(tvOS)
+        self
+        #else
+        frame(minWidth: minWidth, minHeight: minHeight)
+        #endif
+    }
+}

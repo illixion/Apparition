@@ -71,7 +71,7 @@ struct IncomingSigningSheet: View {
             }
             .onAppear { focused = true }
         }
-        .frame(minWidth: 560, minHeight: 360)
+        .sheetFrame(minWidth: 560, minHeight: 360)
     }
 
     private func submit(_ pending: SigningStore.IncomingCertificate) {

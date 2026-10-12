@@ -70,7 +70,7 @@ struct RootView: View {
             .onOpenURL { url in
                 Task { await library.signing.receive(url) }
             }
-            .sheet(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
+            .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }
     }

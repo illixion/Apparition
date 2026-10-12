@@ -47,7 +47,7 @@ struct BrowseView: View {
                     .help("Add a source")
                 }
             }
-            .sheet(isPresented: $addingSource) {
+            .panel(isPresented: $addingSource) {
                 AddSourceSheet(library: library)
             }
             .confirmationDialog("Remove \(pendingRemoval?.name ?? pendingRemoval?.id ?? "source")?",
@@ -240,7 +240,7 @@ struct AddSourceSheet: View {
                 }
             }
         }
-        .frame(minWidth: 640, minHeight: 520)
+        .sheetFrame(minWidth: 640, minHeight: 520)
     }
 
     private func add() {
