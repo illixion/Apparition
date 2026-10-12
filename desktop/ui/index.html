@@ -60,6 +60,7 @@
       </div>
       <label class="check"><input type="checkbox" data-role="relay-on"><span>Relay Apparition's connections back to its device</span></label>
       <p class="hint">Apparition can't reach its own device's pairing service directly, so it connects through this computer (port <span data-role="relay-port">49160</span>), on the same Wi&#8209;Fi or over Tailscale. In Apparition, Find companion shows <strong data-role="computer">this computer</strong>. What passes through is encrypted end to end: this computer holds no keys and no Apple ID.</p>
+      <p class="hint" data-role="windows-firewall" hidden>If Find companion doesn't list this PC, or connections never show up here, Windows Defender Firewall may be blocking Apparition: it adds a block rule when its question goes unanswered (at login, say). Allow Apparition for private networks in Windows Security &gt; Firewall &amp; network protection &gt; Allow an app through firewall.</p>
       <p class="status error" data-role="relay-error" hidden></p>
       <table class="connections" data-role="connections" hidden>
         <thead><tr><th>Started</th><th>From</th><th>Port</th><th>To device</th><th>From device</th><th>State</th></tr></thead>

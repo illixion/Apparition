@@ -945,6 +945,7 @@ function buildCompanion() {
   companionPanel.append(template("t-companion"));
   const where = state.info.platform === "macos-universal" ? "menu bar" : "tray";
   companionPanel.querySelectorAll('[data-role="where"]').forEach((el) => (el.textContent = where));
+  $(companionPanel, "windows-firewall").hidden = !state.info.platform.startsWith("windows");
   const relayOn = /** @type {HTMLInputElement} */ ($(companionPanel, "relay-on"));
   relayOn.addEventListener("change", () => companionCall("companion_set_relay", { on: relayOn.checked }));
   companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((input) =>
