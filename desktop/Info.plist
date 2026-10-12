@@ -3,11 +3,12 @@
 <plist version="1.0">
 <dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Apparition Installer looks for your Apple Vision Pro on this network, and connects to it to pair and install.</string>
+	<string>Apparition looks for your devices on this network and connects to them to pair and install, and as their companion relays Apparition's connections back to them and advertises itself so they can find it.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_remotepairing._tcp</string>
 		<string>_remotepairing-manual-pairing._tcp</string>
+		<string>_apparition._tcp</string>
 	</array>
 </dict>
 </plist>

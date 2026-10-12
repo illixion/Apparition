@@ -95,7 +95,7 @@ enum ProbeEndpoints {
                 let outcome = await model.listApps(host: model.defaultTunnelHost, port: model.defaultTunnelPort)
                 return DeviceAppsReply(outcome: outcome, fetchedAt: model.deviceAppsFetchedAt, apps: model.deviceApps)
             },
-                        .command("setRelay", "Set the Apparition Companion relay (ip:port), or clear it with an empty string",
+                        .command("setRelay", "Set the companion relay (ip:port), or clear it with an empty string",
                      parameters: [.string("relay", "e.g. 172.20.48.198:49160", required: true)]) { args in
                 let relay = try args.requireString("relay").trimmingCharacters(in: .whitespaces)
                 model.relay = relay.isEmpty ? nil : relay

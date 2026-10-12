@@ -5,7 +5,7 @@ import Observation
 
 private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "Companion")
 
-/// Finds Apparition Companions on the local network (Bonjour) and asks one what it offers.
+/// Finds companions (Apparition on a Mac or PC, or `apparition relay`) on the local network (Bonjour) and asks one what it offers.
 /// Over Tailscale there is no Bonjour, so the relay is typed in and `check` asks it directly.
 @MainActor @Observable
 final class CompanionFinder {
@@ -128,7 +128,7 @@ final class CompanionFinder {
         let line = String(decoding: reply, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard line.hasPrefix("INFO "),
               let json = try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as? [String: Any] else {
-            throw IDevice.ProbeError("not an Apparition Companion (or an old one): \(line.prefix(40))")
+            throw IDevice.ProbeError("not an Apparition companion (or an old one): \(line.prefix(40))")
         }
         let anisette = (json["anisette"] as? Int).map { "http://\(address):\($0)" }
         return Companion(name: name, relay: "\(address):\(port)", anisetteURL: anisette)
@@ -152,7 +152,7 @@ private final class Once: @unchecked Sendable {
 enum CompanionEndpoints {
     static func register(_ finder: CompanionFinder, probe: ProbeModel) {
         DebugSurface.shared.register([
-            .command("findCompanions", "Browse the local network for Apparition Companions and ask each what it offers (relay address, anisette server)",
+            .command("findCompanions", "Browse the local network for Apparition companions and ask each what it offers (relay address, anisette server)",
                      parameters: [.number("seconds", "How long to browse", default: 3)], timeout: .seconds(30)) { args in
                 await finder.search(seconds: args.double("seconds") ?? 3)
             },

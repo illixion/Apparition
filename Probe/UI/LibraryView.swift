@@ -233,7 +233,7 @@ struct LibraryView: View {
             }
             if model.relay == nil {
                 Button(action: onSetup) {
-                    Note(text: "No companion relay is set, so refreshes and JIT go through LocalDevVPN. Set up Apparition Companion in Setup.", kind: .warning)
+                    Note(text: "No companion relay is set, so refreshes and JIT go through LocalDevVPN. Set up a companion in Setup.", kind: .warning)
                 }
                 .buttonStyle(.plain)
             }

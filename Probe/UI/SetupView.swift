@@ -165,7 +165,7 @@ struct CompanionStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("This \(ThisDevice.noun) can't reach its own developer services directly, so Apparition goes through Apparition Companion: a small relay running on your Mac (the menu-bar app) or on Windows or Linux (the command-line companion). It only carries encrypted traffic and never sees keys.")
+            Text("This \(ThisDevice.noun) can't reach its own developer services directly, so Apparition goes through a companion: Apparition on your Mac or PC, which keeps running in its menu bar or tray (or `apparition relay` on the command line). It only carries encrypted traffic and never sees keys.")
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
@@ -481,7 +481,7 @@ struct AnisetteStep: View {
 
             Disclosure("Host your own") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Apparition Companion can run one with your Docker (Docker Desktop, OrbStack or Colima): choose Start in its menu, then Find Companion above and use it.")
+                    Text("Apparition on your Mac can offer its own (no Docker needed), and on any computer it can run one with your Docker: choose it in its Companion tab, then Find Companion above and use it.")
                     Text("Or, on any machine with Docker, from the Apparition repository:")
                     Text("docker compose -f selfhost/anisette/compose.yaml up -d")
                         .font(.callout.monospaced())

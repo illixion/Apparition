@@ -45,10 +45,10 @@ final class ProbeModel {
     nonisolated static let hostname = "Apparition"
     /// LocalDevVPN routes this address back to the device's own services.
     nonisolated static let vpnLoopback = "10.7.0.1"
-    /// Pass as `host` to go through the Apparition Companion relay instead.
+    /// Pass as `host` to go through the companion relay instead.
     nonisolated static let relayHost = "relay"
 
-    /// The Apparition Companion relay ("ip:port"), or nil to use LocalDevVPN.
+    /// The companion relay ("ip:port"), or nil to use LocalDevVPN.
     var relay: String? = UserDefaults.standard.string(forKey: "relay") {
         didSet { UserDefaults.standard.set(relay, forKey: "relay") }
     }

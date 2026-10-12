@@ -17,15 +17,27 @@ skips 2FA for a device it already trusts). Background tasks ask to run this abou
 ~30 s (uploading UTM takes 40 to 150 s). They need the companion or LocalDevVPN, and their
 firing is not verified yet (`scheduleBackgroundRefresh` is the test hook).
 
-`Companion/` is Apparition Companion, an optional macOS menu-bar app. It replaces
-LocalDevVPN: the headset resets connections it makes to its own RemotePairing service,
-so Apparition asks the companion (TCP 49160) to connect back to it. The headset then sees
-the connection coming from the Mac. The companion only ever connects back to the address
-that asked, and it carries only ciphertext (pair-verify, then TLS-PSK) with no keys. With
-the headset on Tailscale, which LocalDevVPN no longer occupies, a companion at home keeps
-signing and JIT working from anywhere. Tested 2026-10-11 with LocalDevVPN off: tunnel,
-refresh (109 s over the LAN, 150 s over Tailscale) and JIT launch. On the LAN, Apparition
-finds the companion over Bonjour ("Find companion"); over Tailscale, type its address.
+The companion replaces LocalDevVPN: the headset resets connections it makes to its own
+RemotePairing service, so Apparition asks a companion on a computer (TCP 49160) to connect
+back to it. The headset then sees the connection coming from that computer. The companion
+only ever connects back to the address that asked, and it carries only ciphertext
+(pair-verify, then TLS-PSK) with no keys. With the headset on Tailscale, which LocalDevVPN no
+longer occupies, a companion at home keeps signing and JIT working from anywhere. Tested
+2026-10-11 with LocalDevVPN off: tunnel, refresh (109 s over the LAN, 150 s over Tailscale)
+and JIT launch. On the LAN, Apparition finds the companion over mDNS ("Find companion"); over
+Tailscale, type its address. The companion is the desktop app, which keeps it running from
+the menu bar or tray, or `apparition relay` on the command line (see below); both run
+`core/src/companion.rs`.
+
+Windows asks to allow the companion through its firewall the first time it starts from a
+desktop session; elsewhere allow inbound TCP 49160 (and 6969 to offer anisette), e.g. from an
+elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction Inbound
+-Protocol TCP -LocalPort 49160,6969 -Action Allow -Profile Private`. On macOS, Local Network
+privacy blocks an unbundled binary's multicast, so `apparition relay` there can't advertise
+itself: use the desktop app, or type the address in Apparition. `apparition browse` lists the
+companions mDNS sees from a machine. (The relay protocol was tested 2026-10-11 from macOS over
+Tailscale and from a Windows 11 VM on the LAN, then with the Swift and Rust companions this
+app replaces.)
 
 `Lab/` is a test app for JIT experiments, launched through the probe's `launchJIT`.
 Its first experiment (2026-10-11, visionOS 27.2): bytes the debugger writes into the
@@ -65,18 +77,20 @@ Releases are listed on [apparition.illixion.com](https://apparition.illixion.com
 `apparition.illixion.com`, whose README has the steps). `scripts/package-release.sh <version>`
 builds the unsigned IPA and the installers; the site signs their SHA256SUMS with a key in
 `release-signers`. `core/src/release.rs` checks that signature against the keys compiled in,
-then every download's hash, so the files can be hosted anywhere. `apparition-installer install`
+then every download's hash, so the files can be hosted anywhere. `apparition install`
 with no IPA installs the latest release this way.
 
 ## Installing Apparition from a computer
 
-`installer/` is Apparition Installer, a command-line program for Windows, Linux and macOS
-that puts Apparition (or any IPA) on the headset without Xcode, using the same Rust core:
+`installer/` is `apparition`, the command line for Windows, Linux and macOS: it puts
+Apparition (or any IPA) on the headset without Xcode, using the same Rust core, and runs the
+companion (`apparition relay`, `apparition anisette serve|up|down`):
 
-    apparition-installer pair       # with Settings > General > Remote Devices open; type the PIN
-    apparition-installer install --apple-id you@example.com   # macOS; elsewhere add --anisette <url>
-    apparition-installer install --p12 development.p12 --profile wildcard.mobileprovision
-    apparition-installer install Other.ipa --apple-id you@example.com --anisette http://host:6969
+    apparition pair       # with Settings > General > Remote Devices open; type the PIN
+    apparition install --apple-id you@example.com   # macOS; elsewhere add --anisette <url>
+    apparition install --p12 development.p12 --profile wildcard.mobileprovision
+    apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969
+    apparition relay      # the companion, with this computer's anisette on macOS; until Ctrl-C
 
 Without an IPA it installs the latest signed release of Apparition (see Releases).
 
@@ -94,8 +108,10 @@ certificate: an Apple ID with no free certificate slot fails with Apple's error 
 
 ### The desktop app
 
-`desktop/` is the same installer as a guided app (Tauri v2) for macOS, Windows and Linux, so
-nobody needs a terminal: it finds the headset over mDNS (or takes its address) and pairs with
+`desktop/` is Apparition for macOS, Windows and Linux (Tauri v2): the same installer as a
+guided app, so nobody needs a terminal, and the companion, kept running from the menu bar or
+tray after the window closes (its Companion tab: the relay and its connections, the anisette
+server offered to devices, opening at login). As an installer, it finds the headset over mDNS (or takes its address) and pairs with
 the PIN it shows, or pairs an iPhone or iPad over its cable (like `pair --usb`), signs in to an Apple ID (asking for the 2FA code) or opens a .p12 and
 profiles, installs the latest signed release (or an IPA you pick) with progress, and hands
 Apparition its signing at the end. When a free account's certificate or App ID slots are full
@@ -112,8 +128,9 @@ it; it never replaces itself.
 
 The page is plain HTML, CSS and JavaScript in `desktop/ui/` (no npm), under a strict CSP. A
 debug build opens on any step with `APPARITION_DESKTOP_PREVIEW=signing` (or `pair`, `pin`,
-`usbpair`, `twofactor`, `install`, `progress`, `slots`, `done`), and can read a scratch release site with
-`APPARITION_RELEASE_SITE` and `APPARITION_RELEASE_SIGNERS`; release builds ignore all three.
+`usbpair`, `twofactor`, `install`, `progress`, `slots`, `done`, `companion`), can read a scratch release site with
+`APPARITION_RELEASE_SITE` and `APPARITION_RELEASE_SIGNERS`, and can move the companion's ports with
+`APPARITION_COMPANION_PORTS=<relay>,<anisette>`; release builds ignore all four.
 `scripts/package-release.sh` puts the app in the macOS and Windows installer zips next to the
 command line. Linux needs WebKitGTK in the build image and an AppImage or .deb, not built yet.
 
@@ -134,9 +151,11 @@ the libraries into memory and makes them executable itself, so if the macOS apps
 notarized (hardened runtime), their entitlements must include
 `com.apple.security.cs.allow-unsigned-executable-memory`, or loading fails.
 
-The companion can run the same compose file with your Docker (Docker Desktop, OrbStack
-or Colima): Start in its window or menu. It then advertises the server, and Apparition
-offers "Use its anisette server" next to the companion; nothing switches on its own.
+The companion can offer the headset an anisette server too: this computer's own (built in,
+served to the network on port 6969), or the same compose file run with your Docker (Docker
+Desktop, OrbStack or Colima), from the desktop app's Companion tab or `apparition relay
+--anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
+anisette server" next to the companion; nothing switches on its own.
 
 ## Build
 
@@ -146,10 +165,5 @@ offers "Use its anisette server" next to the companion; nothing switches on its 
     build-and-sign             # or open Apparition.xcodeproj and Run
     SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab BUILD_BUNDLE_ID=com.illixion.apparition.lab \
         build-and-sign --no-mcp    # the lab app
-    xcodebuild -scheme ApparitionCompanion -allowProvisioningUpdates build   # the Mac companion
-
-Run the companion from /Applications (or anywhere other users can read). mDNSResponder
-reads its Info.plist to allow the Bonjour service, and can't inside a private home or
-temp directory: the relay then still works, but Apparition won't find it on its own.
 
 Licensed MIT.

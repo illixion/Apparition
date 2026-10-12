@@ -94,7 +94,7 @@ enum IDevice {
     typealias PinCallback = @convention(c) (UnsafeMutableRawPointer?) -> UnsafePointer<CChar>?
 
     /// Where a tunnel goes: straight to host:port (LocalDevVPN's 10.7.0.1), or through a
-    /// Apparition Companion relay ("ip:port"), which connects back to this device on `port`.
+    /// companion relay ("ip:port"), which connects back to this device on `port`.
     struct Target: Sendable, CustomStringConvertible {
         let host: String
         let port: UInt16

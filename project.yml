@@ -125,30 +125,3 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_OBJC_BRIDGING_HEADER: Lab/ApparitionLab-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: minimal
-  ApparitionCompanion:
-    type: application
-    platform: macOS
-    sources:
-      - path: Companion
-        excludes:
-          - Info.plist
-      - path: selfhost/anisette/compose.yaml
-        buildPhase: resources
-    dependencies:
-      - package: DebugTrace
-        product: DebugTrace
-    info:
-      path: Companion/Info.plist
-      properties:
-        CFBundleDisplayName: Apparition Companion
-        CFBundleShortVersionString: "0.1"
-        CFBundleVersion: "1"
-        NSLocalNetworkUsageDescription: Apparition Companion relays Apparition's connection back to your headset over the local network.
-        NSBonjourServices:
-          - _apparition._tcp
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.companion
-        DEVELOPMENT_TEAM: 9T5F88VJFL
-        ENABLE_HARDENED_RUNTIME: YES
-        SWIFT_STRICT_CONCURRENCY: minimal

@@ -1,4 +1,4 @@
-//! The RemotePairing tunnel, opened directly or through an Apparition Companion relay.
+//! The RemotePairing tunnel, opened directly or through a companion relay (Apparition on a computer).
 //!
 //! The device resets any connection it makes to its own RemotePairing service, so Apparition
 //! can't reach the headset it runs on directly. Two ways around that:

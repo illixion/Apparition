@@ -82,7 +82,7 @@ struct SettingsView: View {
         } header: {
             Text("Companion")
         } footer: {
-            Text("Apparition Companion relays the connection back to this \(ThisDevice.noun). On Tailscale, type its Tailscale address.")
+            Text("The companion (Apparition on your Mac or PC) relays the connection back to this \(ThisDevice.noun). On Tailscale, type its Tailscale address.")
         }
     }
 
