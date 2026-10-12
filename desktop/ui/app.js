@@ -384,6 +384,7 @@ function signing() {
   panel.append(template("t-signing"));
   const appleForm = /** @type {HTMLFormElement} */ ($(panel, "apple-id"));
   const certForm = /** @type {HTMLFormElement} */ ($(panel, "certificate"));
+  const keyForm = /** @type {HTMLFormElement} */ ($(panel, "key-import"));
   const signed = $(panel, "signed");
   const status = $(panel, "status");
   const continueButton = /** @type {HTMLButtonElement} */ ($(panel, "continue"));
@@ -400,6 +401,7 @@ function signing() {
     });
     const done = !!state.signing;
     appleForm.hidden = done || state.mode !== "appleId";
+    keyForm.hidden = appleForm.hidden;
     certForm.hidden = done || state.mode !== "certificate";
     signed.hidden = !done;
     continueButton.disabled = !done;
@@ -489,6 +491,53 @@ function signing() {
       setBusy(submit, false);
       state.busy = false;
       draw();
+    }
+  });
+
+  // Another device's certificate key, before signing in
+  /** @type {string|null} */ let keyPath = null;
+  /** @type {string|null} */ let keyFrom = null;
+  const keyStatus = $(keyForm, "key-status");
+  const drawKey = () => {
+    $(keyForm, "key-name").textContent = keyPath ? basename(keyPath) : "No key file chosen";
+    $(keyForm, "key-words-field").hidden = !keyPath || !keyFrom;
+    $(keyForm, "key-words-label").textContent = keyFrom ? `The five words ${keyFrom} showed` : "The five words";
+    $(keyForm, "key-submit-row").hidden = !keyPath;
+  };
+  drawKey();
+  $(keyForm, "pick-key").addEventListener("click", async () => {
+    const [path] = await invoke("pick_file", { kind: "key" });
+    if (!path) return;
+    try {
+      keyFrom = await invoke("signing_key_from", { path });
+      keyPath = path;
+      setStatus(keyStatus, "");
+    } catch (error) {
+      setStatus(keyStatus, messageOf(error), "error");
+    }
+    drawKey();
+    if (keyFrom) keyForm.words.focus();
+  });
+  keyForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!keyPath) return;
+    const submit = /** @type {HTMLButtonElement} */ (keyForm.querySelector('[type="submit"]'));
+    setBusy(submit, true);
+    setStatus(keyStatus, "Opening the key file…");
+    try {
+      const imported = await invoke("import_signing_key", { path: keyPath, words: keyFrom ? keyForm.words.value : null });
+      keyForm.words.value = "";
+      keyPath = null;
+      keyFrom = null;
+      let text = `Done: signing as ${imported.appleId} here uses the same certificate as ${imported.from}. Sign in above to continue.`;
+      if (imported.replaced) text += " This computer's own certificate for it stays on the account until you revoke it.";
+      setStatus(keyStatus, text, "good");
+      if (!appleForm.email.value) appleForm.email.value = imported.appleId;
+    } catch (error) {
+      setStatus(keyStatus, messageOf(error), "error");
+    } finally {
+      setBusy(submit, false);
+      drawKey();
     }
   });
 

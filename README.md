@@ -101,8 +101,20 @@ Apple ID, and installs. Installing Apparition also hands it what signed it, thro
 inbox: the .p12 and profiles (it asks for the .p12's password once), or the Apple ID's
 certificate key as a `.apparitionsigning` file. With the key, Apparition signs with the same
 certificate as the computer once signed in to the same Apple ID, so the two use one of a free
-account's two certificates instead of one each. An
-update of an app that is open on the headset finishes when it's closed. It never revokes a
+account's two certificates instead of one each.
+
+Between devices, and from a device back to a computer, the key goes sealed: Settings > Share
+Signing in Apparition (or `apparition signing share --apple-id <email>`) writes a
+`.apparitionkey` file and shows five words. Send the file any way (AirDrop, Messages, a USB
+stick), open it in Apparition on the other device, or on a computer in the desktop app's
+signing step or with `apparition signing import`, and type the words. The words make the key
+with Argon2id (64 MiB, four passes) and the file is ChaCha20-Poly1305, so the file alone is
+useless. The words come from the [EFF's short wordlist
+2.0](https://www.eff.org/dice) (CC BY 3.0 US, in `core/assets/`), where each word is known by
+its first three letters, so case, spacing and a mistyped ending don't matter. Apple TV has no
+share sheet; it gets the key from a computer over the cable or network.
+
+An update of an app that is open on the headset finishes when it's closed. It never revokes a
 certificate: an Apple ID with no free certificate slot fails with Apple's error instead.
 
     cd installer && cargo build --release                                   # this machine

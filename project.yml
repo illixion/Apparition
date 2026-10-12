@@ -58,6 +58,9 @@ targets:
           - CFBundleTypeName: Apparition Signing File
             LSItemContentTypes: [com.illixion.apparition.signing]
             LSHandlerRank: Owner
+          - CFBundleTypeName: Apparition Key File
+            LSItemContentTypes: [com.illixion.apparition.key]
+            LSHandlerRank: Owner
         # A shared Apple ID certificate key (core/src/share.rs).
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.illixion.apparition.signing
@@ -65,6 +68,12 @@ targets:
             UTTypeConformsTo: [public.data]
             UTTypeTagSpecification:
               public.filename-extension: [apparitionsigning]
+          # The same, sealed under five words for AirDrop and other channels.
+          - UTTypeIdentifier: com.illixion.apparition.key
+            UTTypeDescription: Apparition Key File
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [apparitionkey]
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.apple.mobileprovision
             UTTypeDescription: Provisioning Profile

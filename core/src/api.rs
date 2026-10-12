@@ -23,7 +23,7 @@ pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
     identity::{Platform, import_identity, import_profile, sign_offline},
-    share::{export_apple_id_key, import_signing_file},
+    share::{SEALED_EXTENSION, export_apple_id_key, export_apple_id_key_sealed, import_any_signing_file, import_signing_file, sealed_from},
     BUILTIN_ANISETTE, builtin_anisette_available, sign_in, sign_with_apple_id,
 };
 

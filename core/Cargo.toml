@@ -30,9 +30,11 @@ p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
 rsa = "0.9.10"
 x509-cert = "0.2.5"
 ring = "0.17"
-# Sharing the Apple ID's certificate key (share.rs).
+# Sharing the Apple ID's certificate key (share.rs), and sealing it under a passphrase
+# (ring's ChaCha20-Poly1305 and random numbers, above).
 base64 = "0.22"
 sha2 = "0.10"
+argon2 = "0.5"
 # Official releases (release.rs): fetching them, and their SSHSIG signature.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "system-proxy"] }
 ed25519-dalek = "2"
@@ -60,6 +62,10 @@ tokio = { version = "1.49", features = ["macros"] }
 # Signs ExtensionKit extensions (Extensions/) too; see vendor/apple-codesign-quick/VENDORED.md.
 apple-codesign-quick = { path = "vendor/apple-codesign-quick" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
+
+# Argon2id (sealing shared signing keys) takes seconds unoptimised; debug builds optimise it.
+[profile.dev.package.argon2]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

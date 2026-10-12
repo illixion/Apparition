@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var confirmForget = false
     @State private var confirmSignOut = false
     @State private var checking = false
+    @State private var sharingSigning = false
 
     var body: some View {
         NavigationStack {
@@ -138,6 +139,18 @@ struct SettingsView: View {
             } label: {
                 Label("Certificates & App IDs", systemImage: "person.badge.key")
             }
+            #if !os(tvOS)
+            if let email = account.email ?? account.lastAppleID {
+                Button {
+                    sharingSigning = true
+                } label: {
+                    Label("Share Signing with Another Device…", systemImage: "square.and.arrow.up")
+                }
+                .panel(isPresented: $sharingSigning) {
+                    ShareSigningSheet(signing: library.signing, email: email, teamId: account.team?.id) { sharingSigning = false }
+                }
+            }
+            #endif
             Toggle(isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 })) {
                 Text("Remember password")
                 Text(Keychain.hasPassword ? "A password is stored on this \(ThisDevice.noun)." : "Takes effect at the next sign-in.")

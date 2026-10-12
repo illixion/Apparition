@@ -32,10 +32,18 @@ char *apparition_identity_delete(const char *data_dir, const char *identity_id);
 char *apparition_profile_import(const char *data_dir, const char *path, const char *udid);
 char *apparition_profile_delete(const char *data_dir, const char *uuid);
 
-// Imports a .apparitionsigning file: an Apple ID's certificate key shared by another Apparition
-// install (the desktop installer), so both use one certificate. Ends the signed-in session.
-// Returns {ok, kind, appleId, teamId, from, replaced}.
-char *apparition_import_signing_file(const char *data_dir, const char *path);
+// Imports a .apparitionsigning file, or a sealed .apparitionkey with the five words its sender
+// showed (passphrase; NULL for a plain file): an Apple ID's certificate key shared by another
+// Apparition install, so both use one certificate. Ends the signed-in session (only once the
+// file has opened). Returns {ok, kind, appleId, teamId, from, replaced}.
+char *apparition_import_signing_file(const char *data_dir, const char *path, const char *passphrase);
+// Who sealed a .apparitionkey file, readable without the words: {ok, from}.
+char *apparition_signing_file_from(const char *path);
+// Seals the Apple ID's certificate key for another device into
+// <out_dir>/Apple ID signing.apparitionkey. team_id may be NULL. Returns {ok, path, passphrase}:
+// the five words to show, which open it.
+char *apparition_export_signing_share(const char *data_dir, const char *email, const char *team_id,
+                                      const char *from, const char *out_dir);
 
 // Experiment: signs app_path with the free profile of an App ID the team already has, keeping the
 // app's bundle ID (or bundle_id, may be NULL). Needs the session. Returns {ok, signedPath, bundleId,

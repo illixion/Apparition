@@ -2,12 +2,13 @@ import RAVEUI
 import SwiftUI
 
 /// Shown over any tab when signing files arrive (shared, opened in Apparition, picked, or put
-/// in Files > Apparition > Signing): asks each certificate's password and lists what was
-/// imported.
+/// in Files > Apparition > Signing): asks each key file's five words and each certificate's
+/// password, and lists what was imported.
 struct IncomingSigningSheet: View {
     let signing: SigningStore
 
     @State private var password = ""
+    @State private var words = ""
     @State private var error: String?
     @State private var working = false
     @FocusState private var focused: Bool
@@ -16,7 +17,29 @@ struct IncomingSigningSheet: View {
         NavigationStack {
             Form {
                 RAVEScreenHeading(title)
-                if let pending = signing.pendingCertificates.first {
+                if let key = signing.pendingKeys.first {
+                    Section {
+                        TextField("Five words", text: $words)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focused)
+                            .onSubmit { submit(key) }
+                        if let error { Note(text: error, kind: .error) }
+                    } header: {
+                        Text("From \(key.from)")
+                    } footer: {
+                        Text("The words \(key.from) shows with this file. They open it once on this \(ThisDevice.noun) and aren't stored. Apps signed with that Apple ID here then use the same certificate, rather than another of the account's two.")
+                    }
+                    Section {
+                        Button("Use This Key") { submit(key) }
+                            .disabled(working || words.isEmpty)
+                        Button("Skip", role: .cancel) {
+                            signing.skipPendingKey(key)
+                            reset()
+                        }
+                        .disabled(working)
+                    }
+                } else if let pending = signing.pendingCertificates.first {
                     Section {
                         SecureField("Password", text: $password)
                             .textContentType(.password)
@@ -66,7 +89,7 @@ struct IncomingSigningSheet: View {
             }
             .raveScreenTitle(title)
             .toolbar {
-                if signing.pendingCertificates.isEmpty {
+                if signing.pendingCertificates.isEmpty && signing.pendingKeys.isEmpty {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done") { signing.clearResults() }
                     }
@@ -78,7 +101,22 @@ struct IncomingSigningSheet: View {
     }
 
     private var title: String {
-        signing.pendingCertificates.isEmpty ? "Signing Files" : "Import Certificate"
+        !signing.pendingKeys.isEmpty ? "Use Shared Signing" : signing.pendingCertificates.isEmpty ? "Signing Files" : "Import Certificate"
+    }
+
+    private func submit(_ key: SigningStore.IncomingKey) {
+        guard !words.isEmpty else { return }
+        working = true
+        let typed = words
+        Task {
+            do {
+                try await signing.importPendingKey(key, words: typed)
+                reset()
+            } catch {
+                self.error = "\(error)"
+            }
+            working = false
+        }
     }
 
     private func submit(_ pending: SigningStore.IncomingCertificate) {
@@ -98,11 +136,12 @@ struct IncomingSigningSheet: View {
 
     private func reset() {
         password = ""
+        words = ""
         error = nil
     }
 }
 
 extension SigningStore {
     /// Whether IncomingSigningSheet has anything to show.
-    var hasIncoming: Bool { !pendingCertificates.isEmpty || !incomingResults.isEmpty }
+    var hasIncoming: Bool { !pendingCertificates.isEmpty || !pendingKeys.isEmpty || !incomingResults.isEmpty }
 }

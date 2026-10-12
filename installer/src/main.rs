@@ -54,6 +54,14 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       What uses up a free account's two certificates and ten App IDs a week, and freeing
       one you choose (after you confirm). Revoking a certificate stops the apps signed with
       it until they are signed again.
+  apparition signing share --apple-id <email>
+      Seal this computer's certificate key for the Apple ID into a .apparitionkey file
+      here, and print the five words that open it. AirDrop or send the file to a device and
+      open it in Apparition (or `signing import` it on another computer), so both sign with
+      one certificate instead of using another of the account's two.
+  apparition signing import <file>
+      Use the certificate key in a .apparitionkey from another device (asks its five words) or
+      a .apparitionsigning file, for that Apple ID's signing here.
   apparition forget <name or UDID>
       Forget a paired device (remove the computer from its Remote Devices list too).
   apparition relay [--port <port>] [--no-mdns] [--anisette builtin|local|none]
@@ -99,6 +107,7 @@ async fn main() -> ExitCode {
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
+        Some("signing") => signing(&args[1..]),
         Some("certificates") => account_command(&args[1..], Slot::Certificates).await,
         Some("app-ids") => account_command(&args[1..], Slot::AppIds).await,
         Some("relay") => relay(&args[1..]).await,
@@ -124,6 +133,48 @@ type Error = Report;
 
 fn fail(message: impl Into<String>) -> Error {
     report!("{}", message.into())
+}
+
+// MARK: Sharing the Apple ID's certificate key
+
+fn signing(args: &[String]) -> Result<(), Error> {
+    let data_dir = store().apple_id_dir();
+    match args.first().map(String::as_str) {
+        Some("share") => {
+            let email = match (args.get(1).map(String::as_str), args.get(2)) {
+                (Some("--apple-id"), Some(email)) => email,
+                _ => return Err(fail("usage: apparition signing share --apple-id <email>")),
+            };
+            let (file, words) = api::export_apple_id_key_sealed(&data_dir, email, None, &api::hostname())?;
+            let path = PathBuf::from(format!("Apple ID signing.{}", api::SEALED_EXTENSION));
+            std::fs::write(&path, file).context(format!("Can't write {}", path.display()))?;
+            println!("Wrote {}. Open it in Apparition on the other device and type these words:", path.display());
+            println!();
+            println!("    {words}");
+            println!();
+            println!("Anyone with the file and the words can sign as this Apple ID: delete the file once it's imported.");
+            Ok(())
+        }
+        Some("import") => {
+            let path = args.get(1).ok_or_else(|| fail("usage: apparition signing import <file>"))?;
+            let data = std::fs::read(path).context(format!("Can't read {path}"))?;
+            let words = match api::sealed_from(&data) {
+                Some(from) => Some(ask(&format!("The five words {from} showed: "))),
+                None => None,
+            };
+            let imported = api::import_any_signing_file(&data_dir, &data, words.as_deref())?;
+            println!(
+                "Signing with {} here now uses the same certificate as {}.",
+                imported["appleId"].as_str().unwrap_or("that Apple ID"),
+                imported["from"].as_str().unwrap_or("the other device")
+            );
+            if imported["replaced"] == true {
+                println!("This computer's own certificate for it stays on the account until revoked (`apparition certificates`).");
+            }
+            Ok(())
+        }
+        _ => Err(fail("usage: apparition signing share --apple-id <email> | signing import <file>")),
+    }
 }
 
 // MARK: Discovery

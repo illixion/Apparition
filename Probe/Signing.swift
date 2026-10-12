@@ -165,7 +165,17 @@ final class SigningStore {
         var profileUUID: String? = nil
     }
 
+    /// A sealed key file from another device (.apparitionkey), waiting for the five words its
+    /// sender showed.
+    struct IncomingKey: Identifiable, Equatable {
+        let id = UUID()
+        let url: URL
+        /// Who sealed it, readable without the words.
+        let from: String
+    }
+
     private(set) var pendingCertificates: [IncomingCertificate] = []
+    private(set) var pendingKeys: [IncomingKey] = []
     /// After a shared Apple ID certificate key is imported: the core ended the session.
     var onAppleIDKeyImported: (() -> Void)?
     private(set) var incomingResults: [IncomingResult] = []
@@ -177,13 +187,14 @@ final class SigningStore {
             .appendingPathComponent("Signing", isDirectory: true)
     }
 
-    private enum Kind { case certificate, profile, signingFile }
+    private enum Kind { case certificate, profile, signingFile, sealedSigningFile }
 
     private static func kind(of url: URL) -> Kind? {
         switch url.pathExtension.lowercased() {
         case "p12", "pfx": .certificate
         case "mobileprovision", "provisionprofile": .profile
         case "apparitionsigning": .signingFile
+        case "apparitionkey": .sealedSigningFile
         default: nil
         }
     }
@@ -214,19 +225,19 @@ final class SigningStore {
             }
         case .signingFile:
             do {
+                try await importKey(from: url, words: nil)
+            } catch {
+                report(url, "\(error)", ok: false)
+            }
+        case .sealedSigningFile:
+            do {
                 let path = try Self.copyIn(url)
                 defer { try? FileManager.default.removeItem(atPath: path) }
-                let dataDir = Self.dataDir
-                let reply = await Task.detached { AccountModel.call(apparition_import_signing_file(dataDir, path)) }.value
-                struct Imported: Decodable { let appleId: String; let from: String; let replaced: Bool }
-                let imported = try Self.decode(Imported.self, reply)
-                removeIfOurs(url)
-                onAppleIDKeyImported?()
-                var text = "Apps signed with \(imported.appleId) now use the same certificate as \(imported.from)"
-                if imported.replaced {
-                    text += ". This \(ThisDevice.noun)'s own certificate for it stays on the account until you revoke it in Certificates & App IDs"
+                struct Sealed: Decodable { let from: String }
+                let sealed = try Self.decode(Sealed.self, AccountModel.call(apparition_signing_file_from(path)))
+                if !pendingKeys.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
+                    pendingKeys.append(IncomingKey(url: url, from: sealed.from))
                 }
-                report(url, text, ok: true)
             } catch {
                 report(url, "\(error)", ok: false)
             }
@@ -235,7 +246,7 @@ final class SigningStore {
                 pendingCertificates.append(IncomingCertificate(url: url))
             }
         case nil:
-            if !Self.isInbox(url) { report(url, "Not a certificate (.p12), provisioning profile or Apparition signing file", ok: false) }
+            if !Self.isInbox(url) { report(url, "Not a certificate (.p12), provisioning profile or Apparition key file", ok: false) }
         }
     }
 
@@ -248,6 +259,56 @@ final class SigningStore {
         let usable = usableProfiles(for: identity).count
         report(incoming.url, "Imported \(identity.name)" + (usable == 0 ? "" : ", with \(usable) profile\(usable == 1 ? "" : "s") for this \(ThisDevice.noun)"),
                ok: true, identityId: identity.id)
+    }
+
+    /// Imports a shared Apple ID certificate key: a plain .apparitionsigning (words nil) or a
+    /// sealed .apparitionkey with its five words. Wrong words throw, and change nothing.
+    private func importKey(from url: URL, words: String?) async throws {
+        let path = try Self.copyIn(url)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let dataDir = Self.dataDir
+        let reply = await Task.detached { AccountModel.call(apparition_import_signing_file(dataDir, path, words)) }.value
+        struct Imported: Decodable { let appleId: String; let from: String; let replaced: Bool }
+        let imported = try Self.decode(Imported.self, reply)
+        removeIfOurs(url)
+        onAppleIDKeyImported?()
+        var text = "Apps signed with \(imported.appleId) now use the same certificate as \(imported.from)"
+        if imported.replaced {
+            text += ". This \(ThisDevice.noun)'s own certificate for it stays on the account until you revoke it in Certificates & App IDs"
+        }
+        report(url, text, ok: true)
+    }
+
+    /// Imports a waiting key file with the words typed for it. Wrong words throw and leave it
+    /// waiting, so they can be typed again.
+    func importPendingKey(_ incoming: IncomingKey, words: String) async throws {
+        try await importKey(from: incoming.url, words: words)
+        pendingKeys.removeAll { $0.id == incoming.id }
+    }
+
+    func skipPendingKey(_ incoming: IncomingKey) {
+        pendingKeys.removeAll { $0.id == incoming.id }
+    }
+
+    /// Seals the Apple ID's certificate key for another device: the file to share, and the
+    /// five words that open it, to show. The file is in a folder of its own under tmp; delete
+    /// it (`discardShare`) once shared.
+    func shareAppleIDKey(email: String, teamId: String?) async throws -> (file: URL, words: String) {
+        let dataDir = Self.dataDir
+        let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
+        let from = "Apparition on \(name)"
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(UUID().uuidString)", isDirectory: true)
+        let reply = await Task.detached {
+            AccountModel.call(apparition_export_signing_share(dataDir, email, teamId, from, folder.path))
+        }.value
+        struct Shared: Decodable { let path: String; let passphrase: String }
+        let shared = try Self.decode(Shared.self, reply)
+        log.info("sealed the Apple ID certificate key to share")
+        return (URL(fileURLWithPath: shared.path), shared.passphrase)
+    }
+
+    func discardShare(_ file: URL) {
+        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }
 
     /// Skips a waiting certificate. One in the inbox stays there until imported or deleted in Files.
@@ -263,6 +324,7 @@ final class SigningStore {
     /// at the next scan) and forget the results.
     func dismissIncoming() {
         pendingCertificates = []
+        pendingKeys = []
         incomingResults = []
     }
 

@@ -230,6 +230,18 @@
       <div class="row"><button type="submit" class="button primary">Sign in</button></div>
     </form>
 
+    <form class="form key-import" data-role="key-import" hidden autocomplete="off">
+      <h2 class="small">Signing with this Apple ID on another device already?</h2>
+      <p class="hint">A free Apple ID has two certificates. Use the one your other device signs with, rather than making another here: in Apparition there, choose Share Signing in Settings, send the file here, and type the five words it shows.</p>
+      <div class="file-row">
+        <button type="button" class="button quiet" data-role="pick-key">Choose key file…</button>
+        <span class="file-name" data-role="key-name">No key file chosen</span>
+      </div>
+      <label class="field" data-role="key-words-field" hidden><span data-role="key-words-label">The five words</span><input name="words" autocomplete="off" spellcheck="false" autocapitalize="off"></label>
+      <div class="row" data-role="key-submit-row" hidden><button type="submit" class="button quiet">Use this key</button></div>
+      <p class="status" data-role="key-status" hidden></p>
+    </form>
+
     <form class="form" data-role="certificate" hidden autocomplete="off">
       <div class="file-row">
         <button type="button" class="button quiet" data-role="pick-p12">Choose .p12…</button>

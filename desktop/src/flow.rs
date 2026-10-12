@@ -420,7 +420,34 @@ pub fn sign_out(state: Shared<'_>) {
     *state.session.lock().unwrap() = None;
 }
 
-/// A file picker for "ipa", "p12" or "profile" (several at once). Empty when cancelled.
+/// Who sealed a key file (`.apparitionkey`), to ask for the words it showed; null for a plain
+/// `.apparitionsigning`, which needs none.
+#[tauri::command]
+pub async fn signing_key_from(path: String) -> Result<Option<String>, Failure> {
+    blocking(move || {
+        let data = std::fs::read(&path)?;
+        Ok(api::sealed_from(&data))
+    })
+    .await
+}
+
+/// Imports the Apple ID's certificate key from another device's key file (with the five words
+/// it showed, for a sealed one), so this computer signs with the same certificate. Ends a
+/// signed-in session, whose copy of the storage would otherwise keep the old key. Returns
+/// `{appleId, from, replaced}`.
+#[tauri::command]
+pub async fn import_signing_key(state: Shared<'_>, path: String, words: Option<String>) -> Result<Value, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let data = std::fs::read(&path)?;
+        let imported = api::import_any_signing_file(&state.store.apple_id_dir(), &data, words.as_deref())?;
+        *state.session.lock().unwrap() = None;
+        Ok(imported)
+    })
+    .await
+}
+
+/// A file picker for "ipa", "p12", "key" or "profile" (several at once). Empty when cancelled.
 #[tauri::command]
 pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Failure> {
     blocking(move || {
@@ -430,6 +457,12 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
             "p12" => dialog
                 .set_title("Choose your certificate")
                 .add_filter("Certificate with its key", &["p12", "pfx"])
+                .blocking_pick_file()
+                .into_iter()
+                .collect(),
+            "key" => dialog
+                .set_title("Choose the key file from your other device")
+                .add_filter("Apparition key files", &[api::SEALED_EXTENSION, "apparitionsigning"])
                 .blocking_pick_file()
                 .into_iter()
                 .collect(),

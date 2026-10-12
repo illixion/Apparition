@@ -50,6 +50,8 @@ fn main() {
             flow::sign_out,
             flow::pick_file,
             flow::import_certificate,
+            flow::signing_key_from,
+            flow::import_signing_key,
             flow::prepare_latest,
             flow::prepare_local,
             flow::install,
