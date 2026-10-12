@@ -20,6 +20,7 @@ struct ApparitionApp: App {
         _account = State(initialValue: account)
         AccountEndpoints.register(account)
         let signing = SigningStore()
+        signing.onAppleIDKeyImported = { [weak account] in account?.refreshSession() }
         SigningEndpoints.register(signing)
         let library = LibraryModel(account: account, probe: model, signing: signing)
         _library = State(initialValue: library)

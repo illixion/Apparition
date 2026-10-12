@@ -22,6 +22,7 @@ use rootcause::prelude::*;
 
 pub mod api;
 mod account;
+mod share;
 mod identity;
 mod ipa;
 mod tunnel;
@@ -155,9 +156,26 @@ impl FileStorage {
     }
 }
 
+impl FileStorage {
+    fn get(&self, key: &str) -> Option<String> {
+        self.values.lock().unwrap().get(key).cloned()
+    }
+
+    fn put(&self, key: &str, value: &str) -> Result<(), Report> {
+        self.store(key, value)
+    }
+}
+
 impl SideloadingStorage for FileStorage {
+    /// Merges into what's on disk: another instance (the anisette provider's, an imported
+    /// shared key) may have written since this one was opened.
     fn store(&self, key: &str, value: &str) -> Result<(), Report> {
         let mut values = self.values.lock().unwrap();
+        if let Some(on_disk) = std::fs::read(&self.path).ok().and_then(|d| serde_json::from_slice::<HashMap<String, String>>(&d).ok()) {
+            for (name, stored) in on_disk {
+                values.entry(name).or_insert(stored);
+            }
+        }
         if value.is_empty() {
             values.remove(key);
         } else {

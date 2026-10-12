@@ -69,8 +69,11 @@ that puts Apparition (or any IPA) on the headset without Xcode, using the same R
     apparition-installer install Apparition.ipa --apple-id you@example.com --anisette http://host:6969
 
 It pairs over the network once (the pairing is kept), signs with your own certificate or an
-Apple ID, and installs. Installing Apparition also copies the .p12 and profiles into its Files
-inbox, so it asks for the .p12's password once and can then refresh itself and its apps. An
+Apple ID, and installs. Installing Apparition also hands it what signed it, through its Files
+inbox: the .p12 and profiles (it asks for the .p12's password once), or the Apple ID's
+certificate key as a `.apparitionsigning` file. With the key, Apparition signs with the same
+certificate as the computer once signed in to the same Apple ID, so the two use one of a free
+account's two certificates instead of one each. An
 update of an app that is open on the headset finishes when it's closed. It never revokes a
 certificate: an Apple ID with no free certificate slot fails with Apple's error instead.
 

@@ -166,6 +166,8 @@ final class SigningStore {
     }
 
     private(set) var pendingCertificates: [IncomingCertificate] = []
+    /// After a shared Apple ID certificate key is imported: the core ended the session.
+    var onAppleIDKeyImported: (() -> Void)?
     private(set) var incomingResults: [IncomingResult] = []
 
     /// Documents/Signing, which Files shows as Apparition > Signing. Anything put there is
@@ -175,12 +177,13 @@ final class SigningStore {
             .appendingPathComponent("Signing", isDirectory: true)
     }
 
-    private enum Kind { case certificate, profile }
+    private enum Kind { case certificate, profile, signingFile }
 
     private static func kind(of url: URL) -> Kind? {
         switch url.pathExtension.lowercased() {
         case "p12", "pfx": .certificate
         case "mobileprovision", "provisionprofile": .profile
+        case "apparitionsigning": .signingFile
         default: nil
         }
     }
@@ -209,12 +212,30 @@ final class SigningStore {
             } catch {
                 report(url, "\(error)", ok: false)
             }
+        case .signingFile:
+            do {
+                let path = try Self.copyIn(url)
+                defer { try? FileManager.default.removeItem(atPath: path) }
+                let dataDir = Self.dataDir
+                let reply = await Task.detached { AccountModel.call(apparition_import_signing_file(dataDir, path)) }.value
+                struct Imported: Decodable { let appleId: String; let from: String; let replaced: Bool }
+                let imported = try Self.decode(Imported.self, reply)
+                removeIfOurs(url)
+                onAppleIDKeyImported?()
+                var text = "Apps signed with \(imported.appleId) now use the same certificate as \(imported.from)"
+                if imported.replaced {
+                    text += ". This headset's own certificate for it stays on the account until you revoke it in Certificates & App IDs"
+                }
+                report(url, text, ok: true)
+            } catch {
+                report(url, "\(error)", ok: false)
+            }
         case .certificate:
             if !pendingCertificates.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
                 pendingCertificates.append(IncomingCertificate(url: url))
             }
         case nil:
-            if !Self.isInbox(url) { report(url, "Not a certificate (.p12) or provisioning profile", ok: false) }
+            if !Self.isInbox(url) { report(url, "Not a certificate (.p12), provisioning profile or Apparition signing file", ok: false) }
         }
     }
 

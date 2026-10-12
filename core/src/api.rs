@@ -21,6 +21,7 @@ use serde_json::Value;
 
 pub use crate::{
     Session, identity::{import_identity, import_profile, sign_offline},
+    share::{export_apple_id_key, import_signing_file},
     sign_in, sign_with_apple_id,
 };
 

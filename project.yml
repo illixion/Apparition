@@ -49,6 +49,16 @@ targets:
           - CFBundleTypeName: Provisioning Profile
             LSItemContentTypes: [com.apple.mobileprovision]
             LSHandlerRank: Owner
+          - CFBundleTypeName: Apparition Signing File
+            LSItemContentTypes: [com.illixion.apparition.signing]
+            LSHandlerRank: Owner
+        # A shared Apple ID certificate key (core/src/share.rs).
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.illixion.apparition.signing
+            UTTypeDescription: Apparition Signing File
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [apparitionsigning]
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.apple.mobileprovision
             UTTypeDescription: Provisioning Profile

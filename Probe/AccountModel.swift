@@ -266,6 +266,9 @@ final class AccountModel {
         if reply["signedIn"] as? Bool == true {
             email = reply["email"] as? String
             team = Self.team(reply["team"])
+        } else {
+            // The core ended the session (an imported certificate key): sign in again when next needed.
+            team = nil
         }
     }
 

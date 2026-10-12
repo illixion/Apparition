@@ -369,6 +369,8 @@ async fn sign_and_install(
     scratch: &Path,
     strip: bool,
 ) -> Result<(), Error> {
+    // The Apple ID and team that signed, for handing the certificate to Apparition.
+    let mut apple_id: Option<(String, String)> = None;
     let signed = if let Some(p12) = &options.p12 {
         let password = ask_secret(&format!("Password for {}: ", p12.display()));
         let identity = api::import_identity(scratch, &std::fs::read(p12)?, password)?;
@@ -386,6 +388,7 @@ async fn sign_and_install(
         let (mut session, _) =
             api::sign_in(email, password, options.anisette.as_deref().unwrap(), &apple_dir, two_factor).await?;
         println!("Signing for team {}…", session.team_id());
+        apple_id = Some((session.email().to_string(), session.team_id().to_string()));
         api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await?
     };
     let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| fail("signing returned no app"))?);
@@ -410,16 +413,25 @@ async fn sign_and_install(
     }
 
     if options.handoff && installed_id.starts_with(APPARITION_ID) {
-        handoff(options, tunnel, &installed_id).await?;
+        handoff(options, tunnel, &installed_id, apple_id.as_ref()).await?;
     }
     Ok(())
 }
 
-/// Puts the .p12 and profiles in Apparition's Files inbox, where it asks for the .p12's
-/// password and imports them: then it can refresh itself and its apps on its own.
-async fn handoff(options: &Options, tunnel: &mut api::Tunnel, installed_id: &str) -> Result<(), Error> {
+/// Puts what signed Apparition in its Files inbox, so it can refresh itself and its apps:
+/// the Apple ID's certificate key (then both use one of the account's two certificates), or
+/// the .p12 and profiles (it asks for the .p12's password once).
+async fn handoff(
+    options: &Options,
+    tunnel: &mut api::Tunnel,
+    installed_id: &str,
+    apple_id: Option<&(String, String)>,
+) -> Result<(), Error> {
     let Some(p12) = &options.p12 else {
-        println!("Open Apparition and sign in with the same Apple ID to keep it refreshed.");
+        let Some((email, team)) = apple_id else { return Ok(()) };
+        let file = api::export_apple_id_key(&data_dir().join("apple-id"), email, Some(team), &hostname())?;
+        tunnel.put_documents(installed_id, "Signing", &[("apple-id.apparitionsigning".to_string(), file)]).await?;
+        println!("Shared this computer's certificate with Apparition: sign in there with {email} and it signs with the same one.");
         return Ok(());
     };
     let mut files = vec![(file_name(p12)?, std::fs::read(p12)?)];

@@ -30,6 +30,12 @@ p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
 rsa = "0.9.10"
 x509-cert = "0.2.5"
 ring = "0.17"
+# Sharing the Apple ID's certificate key (share.rs).
+base64 = "0.22"
+sha2 = "0.10"
+
+[dev-dependencies]
+rand = "0.8"
 
 # isideload depends on idevice from crates.io; use the same revision the FFI is built from,
 # so the binary carries one copy of it.

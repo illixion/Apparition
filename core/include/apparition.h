@@ -31,6 +31,11 @@ char *apparition_identity_delete(const char *data_dir, const char *identity_id);
 // {ok, profile}; udid is nullable.
 char *apparition_profile_import(const char *data_dir, const char *path, const char *udid);
 char *apparition_profile_delete(const char *data_dir, const char *uuid);
+
+// Imports a .apparitionsigning file: an Apple ID's certificate key shared by another Apparition
+// install (the desktop installer), so both use one certificate. Ends the signed-in session.
+// Returns {ok, kind, appleId, teamId, from, replaced}.
+char *apparition_import_signing_file(const char *data_dir, const char *path);
 // Signs with identity_id and the best imported profile (profile_uuid, nullable, overrides it for
 // the main app). {ok, signedPath, bundleId, profile, profileName, expires, debuggable, strippedExtensions}.
 char *apparition_sign_offline(const char *data_dir, const char *app_path, const char *identity_id,

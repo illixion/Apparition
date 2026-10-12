@@ -143,6 +143,7 @@ name = "apparition-core"
 version = "0.1.0"
 dependencies = [
  "apple-codesign-quick",
+ "base64 0.22.1",
  "crc32fast",
  "idevice",
  "idevice-ffi",
@@ -155,6 +156,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "tracing-subscriber",
