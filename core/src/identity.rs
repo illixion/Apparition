@@ -307,9 +307,13 @@ impl Profile {
     }
 }
 
+/// The bundle ID to sign `original` under with a profile for `pattern`. An explicit App ID
+/// for another app is never taken over: that installs as an update of that app, replacing it
+/// (an Apple TV lost VisionVNC this way). A paid team's profile signs a mismatched bundle ID
+/// anyway; a free one is refused at install (0xe8008016), which is the safer failure.
 fn bundle_id_for(pattern: &str, original: &str) -> String {
     match pattern.strip_suffix('*') {
-        None => pattern.to_string(),
+        None => original.to_string(),
         Some(prefix) if original.starts_with(prefix) => original.to_string(),
         Some(prefix) => format!("{prefix}{original}"),
     }
@@ -465,7 +469,11 @@ fn keychain_group_allowed(profile_groups: &[Plist], group: &str) -> bool {
 /// build-and-sign) still finds its Keychain items.
 fn entitlements_for(profile: &Profile, bundle_id: &str, existing: Option<&Dictionary>) -> Dictionary {
     let team = profile.team();
-    let concrete = format!("{team}.{bundle_id}");
+    // An explicit App ID signs only as itself: a paid profile lets the bundle ID differ
+    // (bundle_id_for keeps the app's own), but application-identifier must still be the
+    // profile's, or installd finds no valid profile (0xe8008015).
+    let pattern = profile.app_id_pattern();
+    let concrete = if pattern.ends_with('*') { format!("{team}.{bundle_id}") } else { format!("{team}.{pattern}") };
     let kept_groups = existing
         .and_then(|e| e.get("keychain-access-groups")?.as_array().cloned())
         .filter(|groups| !groups.is_empty())
@@ -980,7 +988,7 @@ mod tests {
             ("*", "com.utmapp.UTM", "com.utmapp.UTM", true),
             ("com.utmapp.*", "com.utmapp.UTM", "com.utmapp.UTM", true),
             ("com.example.*", "com.utmapp.UTM", "com.example.com.utmapp.UTM", false),
-            ("com.example.vm", "com.utmapp.UTM", "com.example.vm", false),
+            ("com.example.vm", "com.utmapp.UTM", "com.utmapp.UTM", false),
             ("com.utmapp.UTM", "com.utmapp.UTM", "com.utmapp.UTM", true),
         ] {
             assert_eq!(bundle_id_for(pattern, original), expected, "{pattern}");

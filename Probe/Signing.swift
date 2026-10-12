@@ -173,7 +173,7 @@ final class SigningStore {
     /// Documents/Signing, which Files shows as Apparition > Signing. Anything put there is
     /// imported the next time Apparition is in front, and removed once imported.
     nonisolated static var inboxDir: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppFolders.documents
             .appendingPathComponent("Signing", isDirectory: true)
     }
 
@@ -279,7 +279,7 @@ final class SigningStore {
     /// Removes a file once imported, if it's a copy in Apparition's own Documents (the inbox,
     /// or Documents/Inbox, where a share lands). A file opened in place elsewhere is left alone.
     private func removeIfOurs(_ url: URL) {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].standardizedFileURL.path
+        let documents = AppFolders.documents.standardizedFileURL.path
         guard url.standardizedFileURL.path.hasPrefix(documents + "/") else { return }
         try? FileManager.default.removeItem(at: url)
     }
@@ -368,7 +368,7 @@ enum SigningEndpoints {
                      parameters: [.string("file", "File name inside Documents", required: true)]) { args in
                 let name = try args.requireString("file")
                 guard !name.contains("/") else { throw SigningStore.Failure(description: "a file name, not a path") }
-                let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let documents = AppFolders.documents
                 return try await store.importProfile(from: documents.appendingPathComponent(name))
             },
         ])

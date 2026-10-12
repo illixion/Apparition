@@ -212,7 +212,7 @@ struct DeveloperSlotsView: View {
                 Text(appID.identifier)
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                    .selectableText()
                 HStack(spacing: 8) {
                     if let app {
                         StatusPill(text: "Used by \(app.name)", systemImage: "square.stack.3d.up", tint: .blue)

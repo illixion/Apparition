@@ -82,19 +82,19 @@ final class AccountModel {
     private let twoFactorBox = PinBox()
 
     nonisolated static var dataDir: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        AppFolders.support
             .appendingPathComponent("Apparition", isDirectory: true)
     }
 
     nonisolated static var appsDir: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppFolders.documents
             .appendingPathComponent("apps", isDirectory: true)
     }
 
     init() {
         try? FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: Self.appsDir, withIntermediateDirectories: true)
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let documents = AppFolders.documents
         apparition_init_logging(documents.appendingPathComponent("apparition-core.log").path)
         refreshDownloads()
     }

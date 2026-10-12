@@ -136,7 +136,7 @@ async fn pair(target: Option<&str>) -> Result<(), Error> {
             Err(_) => (text.parse::<IpAddr>().map_err(|_| fail(format!("{text} isn't an IP address")))?, None),
         },
         None => {
-            println!("Open Settings > General > Remote Devices on the headset. Looking for it…");
+            println!("Open Settings > General > Remote Devices on the headset (Apple TV: Remotes and Devices > Remote App and Devices). Looking for it…");
             let found: Vec<Found> = browse(5).await?.into_iter().filter(|f| f.ready_to_pair).collect();
             let found = match found.as_slice() {
                 [] => return Err(fail("no headset is waiting to pair. Keep Remote Devices open, or pass its address")),
@@ -158,7 +158,7 @@ async fn pair(target: Option<&str>) -> Result<(), Error> {
             .map_err(|_| fail("not a port number"))?,
     };
 
-    println!("Pairing as \"{}\". The headset shows a PIN.", api::hostname());
+    println!("Pairing as \"{}\". The device shows a PIN (an Apple TV asks twice: the second is for Apparition).", api::hostname());
     let pin = || ask("PIN: ").chars().filter(char::is_ascii_digit).collect::<String>();
     let (_, info) = store().pair(address, pairing_port, pin).await?;
     println!("Paired with {} ({}, {} {}).", info.name, info.udid, info.product_type, info.os_version);

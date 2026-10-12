@@ -75,7 +75,7 @@ struct Note: View {
 
     var body: some View {
         Label {
-            Text(text).textSelection(.enabled)
+            Text(text).selectableText()
         } icon: {
             Image(systemName: icon)
         }
@@ -160,5 +160,51 @@ extension Date {
 
     static func iso(_ text: String?) -> Date? {
         text.flatMap { try? Date($0, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)) }
+    }
+}
+
+// MARK: - Platform fallbacks
+
+extension View {
+    /// Selectable text where the platform has selection (not tvOS, which moves focus instead).
+    @ViewBuilder
+    func selectableText() -> some View {
+        #if os(tvOS)
+        self
+        #else
+        textSelection(.enabled)
+        #endif
+    }
+
+    /// A bordered text field; tvOS draws its own focusable field.
+    @ViewBuilder
+    func roundedFieldStyle() -> some View {
+        #if os(tvOS)
+        self
+        #else
+        textFieldStyle(.roundedBorder)
+        #endif
+    }
+}
+
+/// DisclosureGroup, which tvOS lacks: there the content is simply shown under its title.
+struct Disclosure<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.content = content
+    }
+
+    var body: some View {
+        #if os(tvOS)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline)
+            content()
+        }
+        #else
+        DisclosureGroup(title, content: content)
+        #endif
     }
 }

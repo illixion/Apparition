@@ -5,11 +5,11 @@
 #   build/core-out/include/            idevice.h, plist.h, apparition.h (platform-independent)
 #   build/core-out/lib/<PLATFORM_NAME>/libapparition_core.a
 #
-# <PLATFORM_NAME> is Xcode's name for the SDK (xros, xrsimulator, iphoneos), so a target's
+# <PLATFORM_NAME> is Xcode's name for the SDK (xros, xrsimulator, iphoneos, appletvos), so a target's
 # LIBRARY_SEARCH_PATHS can be $(SRCROOT)/build/core-out/lib/$(PLATFORM_NAME) and pick the
 # right one for whatever it is being built for.
 #
-#   scripts/build-core.sh                      # visionOS device and iOS device (the default)
+#   scripts/build-core.sh                      # visionOS, iOS and tvOS devices (the default)
 #   scripts/build-core.sh visionos-sim         # just the visionOS simulator
 #   PLATFORMS="visionos visionos-sim" scripts/build-core.sh
 set -euo pipefail
@@ -23,7 +23,7 @@ out="$root/build/core-out"
 if [[ $# -gt 0 ]]; then
   platforms=("$@")
 else
-  read -r -a platforms <<< "${PLATFORMS:-visionos ios}"
+  read -r -a platforms <<< "${PLATFORMS:-visionos ios tvos}"
 fi
 
 # platform -> rust target, Xcode SDK, deployment-target variable and value
@@ -33,7 +33,9 @@ spec() {
     visionos-sim) echo "aarch64-apple-visionos-sim xrsimulator XROS_DEPLOYMENT_TARGET 26.0" ;;
     ios)          echo "aarch64-apple-ios iphoneos IPHONEOS_DEPLOYMENT_TARGET 17.0" ;;
     ios-sim)      echo "aarch64-apple-ios-sim iphonesimulator IPHONEOS_DEPLOYMENT_TARGET 17.0" ;;
-    *) echo "unknown platform: $1 (visionos, visionos-sim, ios, ios-sim)" >&2; return 1 ;;
+    tvos)         echo "aarch64-apple-tvos appletvos TVOS_DEPLOYMENT_TARGET 17.0" ;;
+    tvos-sim)     echo "aarch64-apple-tvos-sim appletvsimulator TVOS_DEPLOYMENT_TARGET 17.0" ;;
+    *) echo "unknown platform: $1 (visionos, visionos-sim, ios, ios-sim, tvos, tvos-sim)" >&2; return 1 ;;
   esac
 }
 

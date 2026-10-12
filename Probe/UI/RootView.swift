@@ -96,7 +96,9 @@ struct RootView: View {
                 }
             }
         }
+        #if os(iOS)
         .modifier(ActivityAccessory(active: activityText != nil) { activity })
+        #endif
     }
     #endif
 
@@ -155,7 +157,7 @@ struct RootView: View {
     }
 }
 
-#if !os(visionOS)
+#if os(iOS)
 /// Long work shown above the tab bar, where iOS 26.1 can hide the accessory while idle.
 private struct ActivityAccessory<Accessory: View>: ViewModifier {
     let active: Bool

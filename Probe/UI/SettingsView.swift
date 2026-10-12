@@ -150,7 +150,7 @@ struct SettingsView: View {
             if let pairedName { LabeledContent("Device", value: pairedName) }
             if let pairedUDID {
                 LabeledContent("UDID") {
-                    Text(pairedUDID).font(.caption.monospaced()).textSelection(.enabled)
+                    Text(pairedUDID).font(.caption.monospaced()).selectableText()
                 }
             }
             if model.hasPairingFile {

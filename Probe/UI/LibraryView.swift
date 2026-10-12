@@ -178,7 +178,7 @@ struct LibraryView: View {
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .textSelection(.enabled)
+                            .selectableText()
                         if let signer = app.signer {
                             Text(signer).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
                         }

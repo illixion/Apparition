@@ -41,7 +41,9 @@ struct ApparitionApp: App {
                 .debugApprovalPrompts()
                 .task { await library.scheduleRefreshIfNeeded() }
         }
+        #if !os(tvOS)
         .defaultSize(width: 1180, height: 820)
+        #endif
         #if os(visionOS)
         DebugApprovalWindow()
         #endif

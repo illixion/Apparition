@@ -186,20 +186,38 @@ impl Tunnel {
     /// Writes files into an installed app's Documents folder through house_arrest, under
     /// `folder` (created if missing; "" for Documents itself). Works for apps that share files with Files
     /// (UIFileSharingEnabled), Apparition among them.
+    ///
+    /// tvOS doesn't let an app open its own Documents (only Caches), so on an Apple TV the
+    /// files go to `Library/Caches/Apparition/Documents`, where Apparition keeps what it would
+    /// keep in Documents elsewhere (AppFolders.documents). That needs the whole container,
+    /// which house_arrest vends only for a development-signed app; Apparition is one.
     pub async fn put_documents(&mut self, bundle_id: &str, folder: &str, files: &[(String, Vec<u8>)]) -> Result<(), Report> {
+        let tv = self.device_info().await.is_ok_and(|i| Platform::of_product(&i.product_type) == Platform::TvOS);
         let house_arrest = HouseArrestClient::connect_rsd(&mut self.adapter, &mut self.handshake)
             .await
             .context("house_arrest connect failed")?;
-        let mut afc = house_arrest
-            .vend_documents(bundle_id)
-            .await
-            .context(format!("{bundle_id} doesn't share its Documents (is it installed?)"))?;
-        let folder = match folder.trim_matches('/') {
-            "" => "/Documents".to_string(),
-            name => format!("/Documents/{name}"),
+        let (mut afc, root) = if tv {
+            let afc = house_arrest
+                .vend_container(bundle_id)
+                .await
+                .context(format!("{bundle_id}'s container isn't open to this computer (is it installed, and development-signed?)"))?;
+            (afc, "/Library/Caches/Apparition/Documents")
+        } else {
+            let afc = house_arrest
+                .vend_documents(bundle_id)
+                .await
+                .context(format!("{bundle_id} doesn't share its Documents (is it installed?)"))?;
+            (afc, "/Documents")
         };
-        if folder != "/Documents" {
-            let _ = afc.mk_dir(folder.clone()).await;
+        let folder = match folder.trim_matches('/') {
+            "" => root.to_string(),
+            name => format!("{root}/{name}"),
+        };
+        // mk_dir doesn't make parents, so each level in turn (failing on one that exists).
+        let mut path = String::new();
+        for part in folder.split('/').filter(|p| !p.is_empty()) {
+            path = format!("{path}/{part}");
+            let _ = afc.mk_dir(path.clone()).await;
         }
         for (name, data) in files {
             if name.contains('/') || name.starts_with('.') {
@@ -429,9 +447,10 @@ mod desktop {
             self.save(&devices)
         }
 
-        /// Pairs with a device showing Settings > General > Remote Devices, through its
-        /// manual-pairing service at `address:pairing_port` (`pin` returns the PIN it shows),
-        /// then asks the paired service who it is and remembers it.
+        /// Pairs with a device showing Settings > General > Remote Devices (an Apple TV:
+        /// Remotes and Devices > Remote App and Devices), through its manual-pairing service at
+        /// `address:pairing_port` (`pin` returns the PIN it shows), then asks the paired service
+        /// who it is and remembers it. An Apple TV is asked a second PIN, for Apparition's record.
         pub async fn pair(
             &self,
             address: IpAddr,
@@ -446,6 +465,16 @@ mod desktop {
             let file = format!("{}.plist", info.udid);
             std::fs::create_dir_all(self.dir.join("pairings"))?;
             std::fs::write(self.dir.join("pairings").join(&file), pairing.to_bytes())?;
+            // An Apple TV's pairing screen closes when Apparition comes to the front, so it
+            // can't pair itself as on visionOS: pair a record for it now (the TV shows a second
+            // PIN) and hand it over at install, as for iPhone and iPad.
+            if super::Platform::of_product(&info.product_type) == super::Platform::TvOS {
+                let mut app_pairing = RpPairingFile::generate(APP_PAIRING_HOST);
+                super::pair(SocketAddr::new(address, pairing_port), APP_PAIRING_HOST, &mut app_pairing, &pin)
+                    .await
+                    .context("Pairing Apparition's own record failed")?;
+                std::fs::write(self.dir.join("pairings").join(format!("{}.app.plist", info.udid)), app_pairing.to_bytes())?;
+            }
             let device = PairedDevice {
                 udid: info.udid.clone(),
                 name: info.name.clone(),

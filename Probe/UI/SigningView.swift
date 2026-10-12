@@ -43,6 +43,9 @@ struct SigningView: View {
         }
         .navigationTitle("Signing")
         .onAppear { signing.load() }
+        #if !os(tvOS)
+        // tvOS has no Files app: certificates and profiles arrive from a computer instead
+        // (Apparition Installer puts them in the Signing inbox).
         .fileImporter(isPresented: Binding(get: { importing != nil }, set: { if !$0 { importing = nil } }),
                       allowedContentTypes: importing?.types ?? [.data],
                       allowsMultipleSelection: importing == .profiles) { result in
@@ -50,6 +53,7 @@ struct SigningView: View {
             importing = nil
             handlePicked(result, kind: kind)
         }
+        #endif
         .confirmationDialog("Remove \(pendingIdentity?.name ?? "this certificate")?",
                             isPresented: Binding(get: { pendingIdentity != nil }, set: { if !$0 { pendingIdentity = nil } }),
                             titleVisibility: .visible, presenting: pendingIdentity) { identity in
@@ -187,7 +191,7 @@ struct SigningView: View {
                 Text(profile.appIdPattern)
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                    .selectableText()
                 HStack(spacing: 8) {
                     kindPill(profile)
                     if profile.debuggable {
@@ -249,7 +253,7 @@ struct SigningView: View {
         Section {
             if let pairedUDID {
                 LabeledContent("This \(ThisDevice.noun)'s UDID") {
-                    Text(pairedUDID).font(.callout.monospaced()).textSelection(.enabled)
+                    Text(pairedUDID).font(.callout.monospaced()).selectableText()
                 }
             }
             Text("""

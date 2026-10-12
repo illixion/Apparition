@@ -114,12 +114,12 @@ final class ProbeModel {
     private let pinBox = PinBox()
 
     private var pairingFileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppFolders.documents
             .appendingPathComponent("apparition_rp_pairing.plist")
     }
 
     init() {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let documents = AppFolders.documents
         IDevice.startLogging(to: documents.appendingPathComponent("idevice.log"))
         hasPairingFile = FileManager.default.fileExists(atPath: pairingFileURL.path)
         loadDeviceApps()

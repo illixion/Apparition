@@ -188,7 +188,7 @@ struct CompanionStep: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
-                        .textFieldStyle(.roundedBorder)
+                        .roundedFieldStyle()
                         .frame(maxWidth: 340)
                         .onSubmit(useDraft)
                     Button("Use and Check", action: useDraft)
@@ -285,6 +285,18 @@ struct PairStep: View {
             .foregroundStyle(.secondary)
 
             serviceStatus
+            #elseif os(tvOS)
+            // Settings' pairing screen closes when Apparition comes back to the front, so a
+            // computer pairs instead and hands Apparition its own record when it installs it.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("1. Open Settings > Remotes and Devices > Remote App and Devices on this Apple TV.")
+                Text("2. On a computer on the same network, run Apparition Installer: apparition-installer pair, then install. The Apple TV shows a code twice: once for the computer, once for Apparition.")
+                Text("3. Come back here and confirm the identity.")
+            }
+            .foregroundStyle(.secondary)
+            if !model.hasPairingFile {
+                Note(text: "Not paired yet. Install Apparition from a computer with Apparition Installer to pair it.", kind: .info)
+            }
             #else
             // iPhone and iPad have no Remote Devices screen to pair from: a computer pairs over
             // the cable and hands Apparition its record when it installs it.
@@ -433,16 +445,16 @@ struct AnisetteStep: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.body.monospaced())
-                .textFieldStyle(.roundedBorder)
+                .roundedFieldStyle()
                 .frame(maxWidth: 480)
 
-            DisclosureGroup("Host your own") {
+            Disclosure("Host your own") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Apparition Companion can run one with your Docker (Docker Desktop, OrbStack or Colima): choose Start in its menu, then Find Companion above and use it.")
                     Text("Or, on any machine with Docker, from the Apparition repository:")
                     Text("docker compose -f selfhost/anisette/compose.yaml up -d")
                         .font(.callout.monospaced())
-                        .textSelection(.enabled)
+                        .selectableText()
                         .padding(10)
                         .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
                     Text("and enter http://<that machine>:6969 here.")
@@ -500,11 +512,11 @@ struct AppleIDStep: View {
                 .keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
+                .roundedFieldStyle()
                 .frame(maxWidth: 420)
             SecureField("Password", text: $password)
                 .textContentType(.password)
-                .textFieldStyle(.roundedBorder)
+                .roundedFieldStyle()
                 .frame(maxWidth: 420)
                 .onSubmit(signIn)
             Toggle(isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 })) {
