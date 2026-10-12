@@ -1,4 +1,5 @@
 import DebugTrace
+import RAVEUI
 import SwiftUI
 
 private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "Setup")
@@ -50,6 +51,7 @@ struct SetupView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    RAVEScreenHeading("Setup", takesFocus: false)
                     intro(status)
                     StepPanel(number: 1, title: "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
                         CompanionStep(model: model, account: account, companions: companions)
@@ -71,7 +73,7 @@ struct SetupView: View {
                 .frame(maxWidth: 960)
                 .frame(maxWidth: .infinity)
             }
-            .navigationTitle("Setup")
+            .raveScreenTitle("Setup")
         }
     }
 
@@ -105,6 +107,7 @@ struct SetupView: View {
                     .controlSize(.large)
             }
         }
+        .focusRow()
     }
 }
 
@@ -175,6 +178,7 @@ struct CompanionStep: View {
                 .disabled(companions.searching)
                 if companions.searching { ProgressView() }
             }
+            .focusRow()
 
             ForEach(companions.found) { companion in
                 companionRow(companion)
@@ -196,6 +200,7 @@ struct CompanionStep: View {
                         .disabled(relayDraft.trimmingCharacters(in: .whitespaces).isEmpty || checking)
                     if checking { ProgressView() }
                 }
+                .focusRow()
                 Text("Over Tailscale there is no Bonjour, so enter the companion's Tailscale address with port 49160.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -215,6 +220,7 @@ struct CompanionStep: View {
                     .buttonStyle(.borderless)
                     .disabled(checking)
                 }
+                .focusRow()
             }
             if let error = companions.lastError {
                 Note(text: error, kind: .warning)
@@ -253,6 +259,7 @@ struct CompanionStep: View {
                 .buttonStyle(.bordered)
             }
         }
+        .focusRow()
         .padding(14)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
@@ -340,6 +347,7 @@ struct PairStep: View {
 
                 if model.busy { ProgressView() }
             }
+            .focusRow()
 
             if model.pinRequested {
                 pinEntry
@@ -366,6 +374,7 @@ struct PairStep: View {
                 Button("Look Again") { model.startBrowsing() }
                     .buttonStyle(.borderless)
             }
+            .focusRow()
         }
     }
 
@@ -385,6 +394,7 @@ struct PairStep: View {
                 }
                 .buttonStyle(.bordered)
             }
+            .focusRow()
         }
         .padding(18)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -422,6 +432,24 @@ struct AnisetteStep: View {
             Text("Signing in to Apple needs an anisette server (v3). Apparition doesn't pick one for you: use the one your companion runs, any v3 server you trust, or your own. The server sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password.")
                 .foregroundStyle(.secondary)
 
+            #if os(tvOS)
+            // One menu instead of a row per companion: rows of text and buttons made the step
+            // long enough that moving between them scrolled a whole screen.
+            let offered = companions.found.filter { $0.anisetteURL != nil }
+            if !offered.isEmpty {
+                Menu {
+                    ForEach(offered) { companion in
+                        Button("\(companion.name): \(companion.anisetteURL ?? "")") {
+                            account.anisetteURL = companion.anisetteURL ?? ""
+                        }
+                    }
+                } label: {
+                    let current = offered.first { $0.anisetteURL == account.anisetteURL }
+                    Label(current.map { "Using \($0.name)'s server" } ?? "Use a Companion's Server", systemImage: "desktopcomputer")
+                }
+                .focusRow()
+            }
+            #else
             ForEach(companions.found.filter { $0.anisetteURL != nil }) { companion in
                 if let url = companion.anisetteURL {
                     HStack(spacing: 12) {
@@ -436,8 +464,11 @@ struct AnisetteStep: View {
                                 .buttonStyle(.bordered)
                         }
                     }
+                    .focusRow()
                 }
             }
+
+            #endif
 
             TextField("http://your-server:6969", text: Binding(get: { account.anisetteURL },
                                                               set: { account.anisetteURL = $0.trimmingCharacters(in: .whitespaces) }))
@@ -561,6 +592,7 @@ struct AppleIDStep: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(code.count != 6)
             }
+            .focusRow()
             HStack(spacing: 12) {
                 if request.sms {
                     Button("Text Again") { account.answerTwoFactor("resend") }
@@ -577,6 +609,7 @@ struct AppleIDStep: View {
                 }
                 Button("Cancel", role: .cancel) { account.answerTwoFactor("abort") }
             }
+            .focusRow()
             .buttonStyle(.bordered)
         }
         .padding(18)

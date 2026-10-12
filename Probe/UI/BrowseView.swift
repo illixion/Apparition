@@ -1,3 +1,4 @@
+import RAVEUI
 import SwiftUI
 
 /// Sources and the apps they offer, with Install. A source is an AltStore/SideStore JSON URL
@@ -28,7 +29,7 @@ struct BrowseView: View {
                     list
                 }
             }
-            .navigationTitle("Browse")
+            .raveScreenTitle("Browse")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Button {
@@ -62,6 +63,7 @@ struct BrowseView: View {
 
     private var list: some View {
         List {
+            RAVEScreenHeading("Browse")
             if library.busy, let status = library.status {
                 Section {
                     HStack(spacing: 12) {
@@ -118,6 +120,7 @@ struct BrowseView: View {
             .buttonStyle(.borderless)
             .help("Remove this source")
         }
+        .focusRow()
         .textCase(nil)
     }
 
@@ -135,6 +138,7 @@ struct BrowseView: View {
             Spacer()
             installButton(app, source: source, installed: installed)
         }
+        .focusRow()
         .padding(.vertical, 6)
     }
 
@@ -171,6 +175,7 @@ struct BrowseView: View {
                 button.buttonStyle(.bordered)
             }
         }
+        .focusRow()
     }
 }
 
@@ -193,6 +198,7 @@ struct AddSourceSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                RAVEScreenHeading("Add Source")
                 Section {
                     TextField("https://example.com/source.json or github:owner/repo", text: $url)
                         .keyboardType(.URL)
@@ -226,7 +232,7 @@ struct AddSourceSheet: View {
                     }
                 }
             }
-            .navigationTitle("Add Source")
+            .raveScreenTitle("Add Source")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

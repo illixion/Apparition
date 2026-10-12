@@ -1,3 +1,4 @@
+import RAVEUI
 import SwiftUI
 
 /// Everything Setup configured, editable in place, plus the account, pairing and about.
@@ -18,6 +19,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                RAVEScreenHeading("Settings")
                 companionSection
                 anisetteSection
                 accountSection
@@ -26,7 +28,7 @@ struct SettingsView: View {
                 advancedSection
                 aboutSection
             }
-            .navigationTitle("Settings")
+            .raveScreenTitle("Settings")
         }
     }
 
@@ -44,6 +46,7 @@ struct SettingsView: View {
                     .multilineTextAlignment(.trailing)
                     .font(.body.monospaced())
                     .textFieldTapTarget()
+                    .wideFieldOnTV()
             }
             HStack {
                 Button(companions.searching ? "Searching…" : "Find Companion") { Task { await companions.search() } }
@@ -58,6 +61,7 @@ struct SettingsView: View {
                     .disabled(checking)
                 }
             }
+            .focusRow()
             ForEach(companions.found) { companion in
                 HStack {
                     VStack(alignment: .leading) {
@@ -72,6 +76,7 @@ struct SettingsView: View {
                             .buttonStyle(.borderless)
                     }
                 }
+                .focusRow()
             }
             if let error = companions.lastError { Note(text: error, kind: .warning) }
         } header: {
@@ -173,6 +178,7 @@ struct SettingsView: View {
         Section {
             Text("Free-account apps expire after 7 days. To keep them fresh without opening Apparition, make a personal automation in the Shortcuts app (for example daily, at a time the \(ThisDevice.noun) is usually on and the companion is reachable) that runs Apparition's refresh action.")
                 .foregroundStyle(.secondary)
+                .focusableText()
         } header: {
             Text("Shortcuts")
         } footer: {
@@ -193,6 +199,7 @@ struct SettingsView: View {
             Text("Apparition installs apps from AltStore-format sources and GitHub releases, signs them with your own Apple ID on this \(ThisDevice.noun), keeps them refreshed and launches them with JIT. MIT licensed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .focusableText()
         } header: {
             Text("About")
         }

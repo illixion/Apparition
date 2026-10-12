@@ -1,3 +1,4 @@
+import RAVEUI
 import SwiftUI
 
 /// Shown over any tab when signing files arrive (shared, opened in Apparition, picked, or put
@@ -14,6 +15,7 @@ struct IncomingSigningSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                RAVEScreenHeading(title)
                 if let pending = signing.pendingCertificates.first {
                     Section {
                         SecureField("Password", text: $password)
@@ -53,6 +55,7 @@ struct IncomingSigningSheet: View {
                                         .buttonStyle(.bordered)
                                 }
                             }
+                            .focusRow()
                         }
                     } header: {
                         Text("Imported")
@@ -61,7 +64,7 @@ struct IncomingSigningSheet: View {
                     }
                 }
             }
-            .navigationTitle(signing.pendingCertificates.isEmpty ? "Signing Files" : "Import Certificate")
+            .raveScreenTitle(title)
             .toolbar {
                 if signing.pendingCertificates.isEmpty {
                     ToolbarItem(placement: .confirmationAction) {
@@ -72,6 +75,10 @@ struct IncomingSigningSheet: View {
             .onAppear { focused = true }
         }
         .sheetFrame(minWidth: 560, minHeight: 360)
+    }
+
+    private var title: String {
+        signing.pendingCertificates.isEmpty ? "Signing Files" : "Import Certificate"
     }
 
     private func submit(_ pending: SigningStore.IncomingCertificate) {

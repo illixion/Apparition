@@ -1,3 +1,4 @@
+import RAVEUI
 import SwiftUI
 
 /// The signed-in account's development certificates and App IDs, and freeing them. A free
@@ -33,7 +34,7 @@ struct DeveloperSlotsView: View {
                 list
             }
         }
-        .navigationTitle("Certificates & App IDs")
+        .raveScreenTitle("Certificates & App IDs")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 if loading {
@@ -67,6 +68,7 @@ struct DeveloperSlotsView: View {
 
     private var list: some View {
         List {
+            RAVEScreenHeading("Certificates & App IDs")
             if let working {
                 Section {
                     HStack(spacing: 12) {
@@ -142,6 +144,7 @@ struct DeveloperSlotsView: View {
                 .buttonStyle(.bordered)
                 .disabled(certificate.serialNumber == nil || working != nil)
         }
+        .focusRow()
         .padding(.vertical, 6)
     }
 
@@ -229,6 +232,7 @@ struct DeveloperSlotsView: View {
                 .buttonStyle(.bordered)
                 .disabled(working != nil)
         }
+        .focusRow()
         .padding(.vertical, 6)
     }
 

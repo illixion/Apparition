@@ -1,4 +1,5 @@
 import DebugTrace
+import RAVEUI
 import SwiftUI
 
 private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "UI")
@@ -35,8 +36,11 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                content
-                    .padding(32)
+                VStack(alignment: .leading, spacing: 0) {
+                    RAVEScreenHeading("Library", takesFocus: false)
+                    content
+                }
+                .padding(32)
             }
             .task { await library.checkForUpdate() }
             .task {
@@ -45,7 +49,7 @@ struct LibraryView: View {
                 Self.listedThisLaunch = true
                 await model.listApps(host: model.defaultTunnelHost, port: model.defaultTunnelPort)
             }
-            .navigationTitle("Library")
+            .raveScreenTitle("Library")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
@@ -113,6 +117,7 @@ struct LibraryView: View {
                 Button("Browse Sources", action: onBrowse)
                     .buttonStyle(.bordered)
             }
+            .focusRow()
         } else {
             summary
             LazyVGrid(columns: Self.columns, spacing: 20) {
@@ -140,6 +145,7 @@ struct LibraryView: View {
                 .disabled(model.busy || library.busy)
             }
         }
+        .focusRow()
         if let attempt = model.latestAttempt("apps"), let outcome = attempt.outcome, outcome.hasPrefix("error") {
             Note(text: "Couldn't list this \(ThisDevice.noun)'s apps: \(outcome.dropFirst(7))", kind: .warning)
         }
@@ -323,6 +329,7 @@ struct LibraryView: View {
                     .buttonStyle(.bordered)
                     .disabled(library.busy || model.busy)
                 }
+                .focusRow()
             }
         }
     }
@@ -361,6 +368,7 @@ struct LibraryView: View {
                     Spacer(minLength: 0)
                     moreMenu(app, listing: listing)
                 }
+                .focusRow()
                 result(app)
                 if let jit = jitStatus(app) { jit }
                 actions(app, listing: listing)
@@ -437,6 +445,7 @@ struct LibraryView: View {
                 .disabled(library.busy || model.busy)
             }
         }
+        .focusRow()
         .buttonStyle(.bordered)
     }
 

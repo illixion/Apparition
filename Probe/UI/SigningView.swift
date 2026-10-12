@@ -1,3 +1,4 @@
+import RAVEUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -32,6 +33,7 @@ struct SigningView: View {
 
     var body: some View {
         Form {
+            RAVEScreenHeading("Signing")
             if let message {
                 Section { Note(text: message.text, kind: message.kind) }
             }
@@ -41,7 +43,7 @@ struct SigningView: View {
             appleIDSection
             howToSection
         }
-        .navigationTitle("Signing")
+        .raveScreenTitle("Signing")
         .onAppear { signing.load() }
         #if !os(tvOS)
         // tvOS has no Files app: certificates and profiles arrive from a computer instead
@@ -145,6 +147,7 @@ struct SigningView: View {
                 .buttonStyle(.bordered)
                 .disabled(working)
         }
+        .focusRow()
         .padding(.vertical, 6)
     }
 
@@ -210,6 +213,7 @@ struct SigningView: View {
                 .buttonStyle(.bordered)
                 .disabled(working)
         }
+        .focusRow()
         .padding(.vertical, 6)
     }
 

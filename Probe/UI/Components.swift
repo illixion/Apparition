@@ -187,10 +187,13 @@ extension View {
     }
 }
 
-/// DisclosureGroup, which tvOS lacks: there the content is simply shown under its title.
+/// DisclosureGroup, which tvOS lacks. There it's a button that opens the content on a
+/// page of its own: shown inline it made a section long enough that moving focus between
+/// its buttons scrolled a whole screen.
 struct Disclosure<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
+    @State private var open = false
 
     init(_ title: String, @ViewBuilder content: @escaping () -> Content) {
         self.title = title
@@ -199,9 +202,21 @@ struct Disclosure<Content: View>: View {
 
     var body: some View {
         #if os(tvOS)
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
-            content()
+        Button {
+            open = true
+        } label: {
+            Label(title, systemImage: "info.circle")
+        }
+        .focusRow()
+        .panel(isPresented: $open) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(title).font(.title2.weight(.bold)).focusable()
+                    content()
+                }
+                .padding(60)
+                .frame(maxWidth: 1200, alignment: .leading)
+            }
         }
         #else
         DisclosureGroup(title, content: content)
@@ -231,6 +246,45 @@ extension View {
         self
         #else
         frame(minWidth: minWidth, minHeight: minHeight)
+        #endif
+    }
+}
+
+extension View {
+    /// A row of controls as one full-width focus section on tvOS. The focus engine only
+    /// moves up or down to something whose frame overlaps the focused control's column, so
+    /// from a button on the right of one row it couldn't reach a button on the left of the
+    /// row above, and focus got stuck. Nothing elsewhere.
+    @ViewBuilder
+    func focusRow() -> some View {
+        #if os(tvOS)
+        frame(maxWidth: .infinity, alignment: .leading).focusSection()
+        #else
+        self
+        #endif
+    }
+}
+
+extension View {
+    /// Text that can take focus on tvOS, where a screen scrolls only to bring the focused
+    /// control into view: text after the last control would otherwise never be scrolled to.
+    @ViewBuilder
+    func focusableText() -> some View {
+        #if os(tvOS)
+        focusable()
+        #else
+        self
+        #endif
+    }
+
+    /// A field that spans its row on tvOS, so moving focus up or down from it finds what's
+    /// above or below (the tab bar, centred) instead of nothing in a narrow right-hand column.
+    @ViewBuilder
+    func wideFieldOnTV() -> some View {
+        #if os(tvOS)
+        frame(maxWidth: .infinity)
+        #else
+        self
         #endif
     }
 }

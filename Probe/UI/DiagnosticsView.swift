@@ -1,3 +1,4 @@
+import RAVEUI
 import SwiftUI
 
 /// The developer probe that was the whole UI before the app had screens: every step by hand,
@@ -17,6 +18,7 @@ struct DiagnosticsView: View {
     var body: some View {
         NavigationStack {
             List {
+                RAVEScreenHeading("Diagnostics")
                 Section("Steps") {
                     Text("1. Open Settings > General > Remote Devices in a window beside this one.")
                     Text("2. Pair against the manual-pairing service on the device marked \"this device\". Type the code Settings shows.")
@@ -32,6 +34,7 @@ struct DiagnosticsView: View {
                             Button("Submit") { model.submitPin(DigitCodeField.digits(in: pin, length: 6)); pin = "" }
                             Button("Cancel", role: .cancel) { model.cancelPin() }
                         }
+                        .focusRow()
                     }
                 }
 
@@ -78,7 +81,7 @@ struct DiagnosticsView: View {
                     ForEach(model.interfaces, id: \.self) { Text($0).font(.caption.monospaced()) }
                 }
             }
-            .navigationTitle("Diagnostics")
+            .raveScreenTitle("Diagnostics")
             .toolbar {
                 Button("Browse") { model.startBrowsing() }
             }
@@ -102,6 +105,7 @@ struct DiagnosticsView: View {
                     Button("Check \(relay)") { Task { await companions.check(relay: relay) } }
                 }
             }
+            .focusRow()
             ForEach(companions.found) { companion in
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(companion.name) at \(companion.relay)").font(.caption)
@@ -114,6 +118,7 @@ struct DiagnosticsView: View {
                             Button("Use its anisette server") { account.anisetteURL = anisette }
                         }
                     }
+                    .focusRow()
                     .buttonStyle(.borderless)
                 }
             }
@@ -146,6 +151,7 @@ struct DiagnosticsView: View {
                     Task { await library.addSource(url, assetPattern: pattern, prereleases: true) }
                 }
             }
+            .focusRow()
             if let status = library.status { Text(status).font(.caption) }
         }
     }
@@ -184,6 +190,7 @@ struct DiagnosticsView: View {
                     Button("Send to devices") { account.answerTwoFactor("devices") }
                     Button("Cancel", role: .cancel) { account.answerTwoFactor("abort") }
                 }
+                .focusRow()
                 .buttonStyle(.bordered)
             }
             if account.busy { ProgressView(account.downloadProgress ?? "Working…") }
@@ -209,6 +216,7 @@ struct DiagnosticsView: View {
                     .buttonStyle(.bordered)
                     .disabled(account.busy || account.team == nil || UserDefaults.standard.string(forKey: "pairedUDID") == nil)
                 }
+                .focusRow()
             }
             ForEach(Array(account.signs.enumerated()), id: \.offset) { _, result in
                 VStack(alignment: .leading) {
@@ -238,6 +246,7 @@ struct DiagnosticsView: View {
                             Button("Tunnel") { Task { await model.tunnel(host: host, port: port) } }
                         }
                     }
+                    .focusRow()
                     .buttonStyle(.bordered)
                     .disabled(model.busy)
                 }
