@@ -90,6 +90,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition
         TARGETED_DEVICE_FAMILY: "7"
+        # Probe/Assets.xcassets: the website's ghost logo as a layered (parallax) icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OBJC_BRIDGING_HEADER: Probe/Apparition-Bridging-Header.h
         HEADER_SEARCH_PATHS: $(SRCROOT)/build/core-out/include
         # scripts/build-core.sh stages one library per SDK (xros, xrsimulator, iphoneos).
