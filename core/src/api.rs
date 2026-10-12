@@ -24,7 +24,7 @@ pub use crate::{
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
     identity::{Platform, import_identity, import_profile, sign_offline},
     share::{export_apple_id_key, import_signing_file},
-    sign_in, sign_with_apple_id,
+    BUILTIN_ANISETTE, builtin_anisette_available, sign_in, sign_with_apple_id,
 };
 
 /// Sets up what the core's crypto and isideload need. Call once, before anything else.

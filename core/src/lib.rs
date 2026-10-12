@@ -117,8 +117,44 @@ pub unsafe extern "C" fn apparition_sign_with_existing_profile(
     })())
 }
 
-/// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, state kept in
-/// `<data_dir>/storage.json`) and opens a developer session. `two_factor` answers 2FA.
+/// What to pass as the anisette address to use the built-in provider (Apple's own libraries,
+/// loaded in this process) instead of a v3 server. See [`builtin_anisette_available`].
+pub const BUILTIN_ANISETTE: &str = "builtin";
+
+/// Whether this build and platform has the built-in anisette provider.
+pub fn builtin_anisette_available() -> bool {
+    cfg!(all(feature = "anisette", unix))
+}
+
+/// The v3 server address to use for `requested`: itself, or the built-in provider's, which is
+/// started on first use and stays up for the life of the process.
+async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result<String, Report> {
+    if requested != BUILTIN_ANISETTE {
+        return Ok(requested.to_string());
+    }
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        static SERVER: tokio::sync::OnceCell<anisette::Server> = tokio::sync::OnceCell::const_new();
+        let server = SERVER
+            .get_or_try_init(|| async {
+                // Next to the Apple ID's folder, so the libraries are fetched once, not per Apple ID.
+                let dir = data_dir.parent().unwrap_or(data_dir).join("anisette");
+                anisette::start(&dir, std::net::SocketAddr::from(([127, 0, 0, 1], 0))).await
+            })
+            .await
+            .context("Couldn't start the built-in anisette provider")?;
+        Ok(server.url())
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = data_dir;
+        bail!("This build has no built-in anisette provider; give the address of an anisette v3 server")
+    }
+}
+
+/// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, or the built-in
+/// provider for [`BUILTIN_ANISETTE`]; state kept in `<data_dir>/storage.json`) and opens a
+/// developer session. `two_factor` answers 2FA.
 /// Returns the session and `{email, team, teams}`.
 pub async fn sign_in(
     email: &str,
@@ -129,8 +165,9 @@ pub async fn sign_in(
 ) -> Result<(Session, Value), Report> {
     std::fs::create_dir_all(data_dir)?;
     let storage_path = data_dir.join("storage.json");
+    let anisette_url = anisette_address(anisette_url, data_dir).await?;
     let anisette =
-        RemoteV3AnisetteProvider::new(anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?;
+        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?;
     let two_factor = &two_factor;
     let mut account = AppleAccount::builder(email)
         .anisette_provider(anisette)
@@ -779,4 +816,26 @@ pub unsafe extern "C" fn apparition_launch_jit(
             Ok(json!({"pid": pid, "events": events, "preparedBytes": prepared_bytes, "detached": detached}))
         })
     })())
+}
+
+#[cfg(all(test, feature = "anisette", unix))]
+mod builtin_anisette_tests {
+    /// The built-in address starts a server next to the Apple ID's folder and answers. Reaches
+    /// the network for the libraries: `APPARITION_NET=1`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn builtin_address_serves_client_info() {
+        if std::env::var_os("APPARITION_NET").is_none() {
+            return;
+        }
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let root = std::env::temp_dir().join(format!("apparition-builtin-{}", std::process::id()));
+        let url = super::anisette_address(super::BUILTIN_ANISETTE, &root.join("apple-id")).await.unwrap();
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        assert!(root.join("anisette/libraries/libCoreADI.so").exists());
+        let info = reqwest::get(format!("{url}/v3/client_info")).await.unwrap().text().await.unwrap();
+        assert!(info.contains("client_info"), "{info}");
+        // Anything else is passed through untouched.
+        assert_eq!(super::anisette_address("http://example.test:1", &root).await.unwrap(), "http://example.test:1");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

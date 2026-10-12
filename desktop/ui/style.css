@@ -312,7 +312,8 @@ code { font: .875em/1.4 var(--mono); }
   max-width: 26rem;
 }
 .field.narrow { min-width: 8rem; flex: 0 1 9rem; }
-input:not([type="radio"]):not([type="checkbox"]) {
+input:not([type="radio"]):not([type="checkbox"]),
+select {
   font: 400 1rem/1.3 var(--text);
   color: var(--ink);
   background: var(--surface);
@@ -322,7 +323,7 @@ input:not([type="radio"]):not([type="checkbox"]) {
   min-height: 2.6rem;
   width: 100%;
 }
-input:focus-visible { outline-offset: 1px; border-color: var(--lilac); }
+input:focus-visible, select:focus-visible { outline-offset: 1px; border-color: var(--lilac); }
 input::placeholder { color: color-mix(in srgb, var(--muted) 70%, transparent); }
 input[type="checkbox"] { accent-color: var(--glow); }
 input[type="radio"] {

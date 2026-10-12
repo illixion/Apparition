@@ -160,8 +160,15 @@
     <form class="form" data-role="apple-id" hidden autocomplete="off">
       <label class="field">Apple ID<input name="email" type="email" required autocomplete="off" spellcheck="false" placeholder="you@example.com"></label>
       <label class="field">Password<input name="password" type="password" required autocomplete="off" spellcheck="false"></label>
-      <label class="field">Anisette server<input name="anisette" required autocomplete="off" spellcheck="false" inputmode="url"></label>
-      <p class="hint">Signing in to Apple needs an anisette (v3) server. Apparition doesn't pick one for you: run your own with the Docker Compose file in Apparition's repository (it listens on port 6969), let Apparition Companion start it, or use any v3 server you trust. It sees this computer's anisette identity and IP address, never your Apple ID or password. <button type="button" class="link" data-role="help">More in the FAQ</button></p>
+      <label class="field" data-role="anisette-source">Anisette data
+        <select name="source">
+          <option value="builtin">Made on this computer</option>
+          <option value="server">From an anisette server</option>
+        </select>
+      </label>
+      <p class="hint" data-role="anisette-builtin-hint">Signing in to Apple needs "anisette" data that identifies this computer. Apparition makes it with Apple's own libraries, fetched from Apple the first time you sign in (about 4 MB), so there is nothing to run or install. Only Apple sees it.</p>
+      <label class="field" data-role="anisette-server">Anisette server<input name="anisette" autocomplete="off" spellcheck="false" inputmode="url"></label>
+      <p class="hint" data-role="anisette-server-hint">Signing in to Apple needs an anisette (v3) server. Apparition doesn't pick one for you: run your own with the Docker Compose file in Apparition's repository (it listens on port 6969), let Apparition Companion start it, or use any v3 server you trust. It sees this computer's anisette identity and IP address, never your Apple ID or password. <button type="button" class="link" data-role="help">More in the FAQ</button></p>
       <p class="hint">Your password goes to Apple and nowhere else. It isn't saved.</p>
       <div class="row"><button type="submit" class="button primary">Sign in</button></div>
     </form>

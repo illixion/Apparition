@@ -74,7 +74,7 @@ with no IPA installs the latest release this way.
 that puts Apparition (or any IPA) on the headset without Xcode, using the same Rust core:
 
     apparition-installer pair       # with Settings > General > Remote Devices open; type the PIN
-    apparition-installer install --apple-id you@example.com --anisette http://host:6969
+    apparition-installer install --apple-id you@example.com   # macOS; elsewhere add --anisette <url>
     apparition-installer install --p12 development.p12 --profile wildcard.mobileprovision
     apparition-installer install Other.ipa --apple-id you@example.com --anisette http://host:6969
 
@@ -119,8 +119,12 @@ command line. Linux needs WebKitGTK in the build image and an AppImage or .deb, 
 
 ## Anisette
 
-Signing in to Apple needs an anisette-v3 server. Apparition ships none: enter the URL of
-any v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
+Signing in to Apple needs "anisette" data that identifies the computer. On macOS the installer
+makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
+Android uses; nothing of Apple's is stored in this repository), loads them in its own process
+(`core/src/anisette/`) and talks to Apple through them. Nothing to run or install. Elsewhere, and
+on a Mac that prefers it, use a server: Apparition ships none, so enter the URL of
+any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
 up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
 digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
 and IP address, never the Apple ID or password, which go straight to Apple.

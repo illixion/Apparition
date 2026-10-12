@@ -30,6 +30,7 @@ const state = {
   keepExtensions: false,
   handOff: true,
   /** @type {any} */ settings: {},
+  builtinAnisette: false,
   busy: false,
 };
 
@@ -452,11 +453,25 @@ function signing() {
 
   // Apple ID
   appleForm.email.value = state.settings.email ?? "";
-  appleForm.anisette.value = state.settings.anisette ?? DEFAULT_ANISETTE;
+  const savedAnisette = state.settings.anisette;
+  appleForm.anisette.value = savedAnisette && savedAnisette !== "builtin" ? savedAnisette : DEFAULT_ANISETTE;
+  const sourceField = /** @type {HTMLElement} */ ($(appleForm, "anisette-source"));
+  const sourceSelect = /** @type {HTMLSelectElement} */ (appleForm.elements.namedItem("source"));
+  // Only offered where this computer can make its own; elsewhere a server is the one way.
+  sourceSelect.value = state.builtinAnisette && savedAnisette !== undefined && savedAnisette !== "builtin" ? "server" : state.builtinAnisette ? "builtin" : "server";
+  sourceField.hidden = !state.builtinAnisette;
+  const drawSource = () => {
+    const builtin = sourceSelect.value === "builtin";
+    for (const role of ["anisette-builtin-hint"]) $(appleForm, role).hidden = !builtin;
+    for (const role of ["anisette-server", "anisette-server-hint"]) $(appleForm, role).hidden = builtin;
+    appleForm.anisette.required = !builtin;
+  };
+  sourceSelect.addEventListener("change", drawSource);
+  drawSource();
   appleForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submit = /** @type {HTMLButtonElement} */ (appleForm.querySelector('[type="submit"]'));
-    const args = { email: appleForm.email.value, password: appleForm.password.value, anisette: appleForm.anisette.value };
+    const args = { email: appleForm.email.value, password: appleForm.password.value, anisette: sourceSelect.value === "builtin" ? "builtin" : appleForm.anisette.value };
     appleForm.password.value = "";
     setBusy(submit, true);
     state.busy = true;
@@ -468,7 +483,7 @@ function signing() {
       state.settings = { email: result.email, anisette: args.anisette.trim() };
       setStatus(status, "");
     } catch (error) {
-      setStatus(status, signInError(error), error?.cancelled ? "" : "error");
+      setStatus(status, signInError(error, args.anisette !== "builtin"), error?.cancelled ? "" : "error");
     } finally {
       args.password = "";
       setBusy(submit, false);
@@ -532,10 +547,12 @@ function platformMatches(/** @type {string[]|undefined} */ platforms) {
   return (platforms ?? []).some((p) => names.includes(p));
 }
 
-function signInError(/** @type {any} */ error) {
+function signInError(/** @type {any} */ error, /** @type {boolean} */ usingServer = true) {
   const message = messageOf(error);
   if (error?.cancelled) return message;
-  if (/anisette/i.test(message) || /connect|dns|resolve|refused/i.test(message))
+  if (!usingServer && /anisette|connect|dns|resolve|refused/i.test(message))
+    return `Couldn't sign in. Check the internet connection (Apparition fetches Apple's anisette libraries on first use).\n\n${message}`;
+  if (usingServer && (/anisette/i.test(message) || /connect|dns|resolve|refused/i.test(message)))
     return `Couldn't sign in. Check that the anisette server is running and its address is right.\n\n${message}`;
   return message;
 }
@@ -904,6 +921,7 @@ async function start() {
   state.info = await invoke("app_info");
   document.body.classList.toggle("mac", state.info.platform === "macos-universal");
   state.settings = await invoke("saved_settings");
+  state.builtinAnisette = await invoke("builtin_anisette");
 
   invoke("check_update")
     .then((/** @type {any} */ update) => {

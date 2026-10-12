@@ -35,15 +35,18 @@ Apparition Installer
       Pair with an iPhone or iPad over its cable (it has no PIN pairing screen). It must
       trust this computer already; afterwards it's reached over the network like a headset.
   apparition-installer install [<app.ipa>] [--device <name or UDID>]
-          (--apple-id <email> --anisette <url> | --p12 <file> --profile <file>...)
+          (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
           [--keep-extensions] [--no-handoff] [--release-site <url>]
       Sign and install. Without an IPA, installs the latest Apparition from
       apparition.illixion.com, checked against its release signature first. With an Apple
       ID, a free account's apps last 7 days; with your own certificate, as long as its
       profile. Installing Apparition also puts the certificate in its Files inbox
       (--no-handoff skips that).
-  apparition-installer certificates --apple-id <email> --anisette <url>
-  apparition-installer app-ids --apple-id <email> --anisette <url>
+      Signing in to Apple needs anisette data. Where this build has it (macOS), it makes
+      its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
+      and is required elsewhere.
+  apparition-installer certificates --apple-id <email> [--anisette <url>]
+  apparition-installer app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
       one you choose (after you confirm). Revoking a certificate stops the apps signed with
       it until they are signed again.
@@ -254,7 +257,9 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
         }
     }
     match (&options.apple_id, &options.p12) {
-        (Some(_), None) if options.anisette.is_none() => Err(fail("--apple-id needs --anisette <url> (an anisette v3 server)")),
+        (Some(_), None) if options.anisette.is_none() && !api::builtin_anisette_available() => {
+            Err(fail("--apple-id needs --anisette <url> (an anisette v3 server) on this platform"))
+        }
         (Some(_), None) => Ok(options),
         (None, Some(_)) if options.profiles.is_empty() => Err(fail("--p12 needs at least one --profile")),
         (None, Some(_)) => Ok(options),
@@ -341,7 +346,7 @@ async fn sign_and_install(
         println!("Signing with {}…", identity["identity"]["name"].as_str().unwrap_or("your certificate"));
         api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None, api::Platform::of_product(&info.product_type))?
     } else {
-        let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap()).await?;
+        let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap_or(api::BUILTIN_ANISETTE)).await?;
         println!("Signing for team {}…", session.team_id());
         apple_id = Some((session.email().to_string(), session.team_id().to_string()));
         match api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await {
@@ -430,8 +435,13 @@ async fn account_command(args: &[String], slot: Slot) -> Result<(), Error> {
             other => return Err(fail(format!("unexpected {other}"))),
         }
     }
-    let (Some(email), Some(anisette)) = (email, anisette) else {
-        return Err(fail("needs --apple-id <email> and --anisette <url>"));
+    let Some(email) = email else {
+        return Err(fail("needs --apple-id <email>"));
+    };
+    let anisette = match anisette {
+        Some(url) => url,
+        None if api::builtin_anisette_available() => api::BUILTIN_ANISETTE.to_string(),
+        None => return Err(fail("needs --anisette <url> (an anisette v3 server) on this platform")),
     };
     let mut session = sign_in(&email, &anisette).await?;
     manage(&mut session, slot).await?;

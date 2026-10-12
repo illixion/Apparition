@@ -346,6 +346,12 @@ pub struct Settings {
     anisette: Option<String>,
 }
 
+/// Whether signing in can make its own anisette data (see `api::BUILTIN_ANISETTE`).
+#[tauri::command]
+pub fn builtin_anisette() -> bool {
+    api::builtin_anisette_available()
+}
+
 #[tauri::command]
 pub fn saved_settings(state: Shared<'_>) -> Settings {
     std::fs::read(state.settings_path()).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
@@ -366,7 +372,11 @@ pub async fn apple_id_sign_in(
     if !email.contains('@') {
         return Err("Enter the email address of your Apple ID.".into());
     }
-    if !(anisette.starts_with("http://") || anisette.starts_with("https://")) {
+    if anisette == api::BUILTIN_ANISETTE {
+        if !api::builtin_anisette_available() {
+            return Err("This computer can't make its own anisette data; give the address of an anisette server.".into());
+        }
+    } else if !(anisette.starts_with("http://") || anisette.starts_with("https://")) {
         return Err("The anisette server's address starts with http:// or https://.".into());
     }
     let state = state.inner().clone();
