@@ -477,7 +477,7 @@ fn list(data_dir: &Path, udid: Option<&str>) -> Value {
     })
 }
 
-unsafe fn optional(pointer: *const c_char) -> Result<Option<String>, Report> {
+pub(crate) unsafe fn optional(pointer: *const c_char) -> Result<Option<String>, Report> {
     if pointer.is_null() {
         return Ok(None);
     }
@@ -619,6 +619,9 @@ pub unsafe extern "C" fn apparition_profile_delete(data_dir: *const c_char, uuid
 /// each extension an imported profile that allows the certificate, lists `udid`, hasn't
 /// expired and covers the bundle ID (an explicit App ID matching the app first, then the
 /// narrowest wildcard; `profile_uuid`, when given, is used for the main app instead).
+/// `previous_app` (nullable) is a signed .app whose keychain groups to keep, for an app that
+/// is unsigned now but replaces one already installed (Apparition updating itself); without
+/// it they come from `app_path`'s own signature.
 /// Returns `{ok, signedPath, bundleId, profile, expires, debuggable, strippedExtensions}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_sign_offline(
@@ -628,9 +631,11 @@ pub unsafe extern "C" fn apparition_sign_offline(
     profile_uuid: *const c_char,
     udid: *const c_char,
     strip_extensions: bool,
+    previous_app: *const c_char,
 ) -> *mut c_char {
     reply((|| {
         let chosen = unsafe { optional(profile_uuid) }?;
+        let previous = unsafe { optional(previous_app) }?.map(PathBuf::from);
         sign_offline(
             &PathBuf::from(unsafe { text(data_dir) }?),
             PathBuf::from(unsafe { text(app_path) }?),
@@ -638,6 +643,7 @@ pub unsafe extern "C" fn apparition_sign_offline(
             chosen.as_deref(),
             &unsafe { text(udid) }?,
             strip_extensions,
+            previous.as_deref(),
         )
     })())
 }
@@ -650,6 +656,7 @@ pub fn sign_offline(
     chosen: Option<&str>,
     udid: &str,
     strip_extensions: bool,
+    previous_app: Option<&Path>,
 ) -> Result<Value, Report> {
         let identity = Identity::load(data_dir, identity_id)?;
         if not_after(&identity.certificate) < SystemTime::now() {
@@ -671,7 +678,7 @@ pub fn sign_offline(
         let mut app = Application::new(app_path)?;
         let original = app.main_bundle_id()?;
         // Read before anything is re-signed.
-        let previous = signed_entitlements(&app.bundle.bundle_dir);
+        let previous = signed_entitlements(previous_app.unwrap_or(&app.bundle.bundle_dir));
 
         let main = match &chosen {
             Some(uuid) => usable
@@ -976,14 +983,14 @@ mod local {
         let id = imported["identity"]["id"].as_str().unwrap().to_string();
         let profile = call(unsafe { apparition_profile_import(data_c.as_ptr(), c(dir.join("fake.mobileprovision").to_str().unwrap()).as_ptr(), c("FAKE-UDID-0001").as_ptr()) });
         println!("profile: {profile}");
-        let refused = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("OTHER-UDID").as_ptr(), false) });
+        let refused = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("OTHER-UDID").as_ptr(), false, std::ptr::null()) });
         println!("other device: {refused}");
         assert_eq!(refused["ok"], false);
         let started = std::time::Instant::now();
-        let signed = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), true) });
+        let signed = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), true, std::ptr::null()) });
         println!("signed in {:?}: {signed}", started.elapsed());
         assert_eq!(signed["ok"], true);
-        let kept = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), false) });
+        let kept = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), false, std::ptr::null()) });
         println!("with extensions: {kept}");
         assert_eq!(kept["ok"], true);
         assert_eq!(kept["strippedExtensions"].as_array().unwrap().len(), 0);
@@ -1004,7 +1011,7 @@ mod local {
         // A prefix wildcard renames the app, its ExtensionKit helper and the extension point.
         call(unsafe { apparition_profile_delete(data_c.as_ptr(), c("11111111-2222-3333-4444-555555555555").as_ptr()) });
         call(unsafe { apparition_profile_import(data_c.as_ptr(), c(dir.join("fake-prefix.mobileprovision").to_str().unwrap()).as_ptr(), std::ptr::null()) });
-        let renamed = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), false) });
+        let renamed = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), false, std::ptr::null()) });
         println!("renamed: {renamed}");
         assert_eq!(renamed["ok"], true);
         let app = PathBuf::from(renamed["signedPath"].as_str().unwrap());

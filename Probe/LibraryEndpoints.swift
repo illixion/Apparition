@@ -26,6 +26,15 @@ enum LibraryEndpoints {
         let record: LibraryModel.SelfRecord
     }
 
+    struct UpdateState: Encodable {
+        let current: String
+        let latest: SelfUpdate.Latest?
+        let available: String?
+        let error: String?
+        let site: String?
+        let testSigners: Bool
+    }
+
     static func state(_ model: LibraryModel, _ account: AccountModel) -> State {
         State(busy: model.busy, status: model.status, sources: model.sources, installed: model.installed,
               refreshRuns: Array(model.refreshRuns.prefix(5)), rememberPassword: account.rememberPassword,
@@ -86,6 +95,34 @@ enum LibraryEndpoints {
                 Task { await model.refreshSelf() }
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
+            },
+            .command("checkUpdate", "Ask the release site for the latest Apparition, verified against the release keys",
+                     timeout: .seconds(60)) { _ in
+                await model.checkForUpdate(force: true)
+                return UpdateState(current: SelfUpdate.currentVersion, latest: model.updateCheck.latest,
+                                   available: model.availableUpdate?.version, error: model.updateCheck.error,
+                                   site: SelfUpdate.site, testSigners: SelfUpdate.signers != nil)
+            },
+            .command("updateSelf", "Download the latest release, sign it with selfSigner and hand it to installd, which installs it when the app closes. Returns at once; poll libraryState.apparition",
+                     timeout: .seconds(5)) { _ in
+                Task { await model.updateSelf() }
+                try await Task.sleep(for: .seconds(1))
+                return state(model, account)
+            },
+            .command("setReleaseSite", "Development builds only (not official releases): check another release site, trusting other keys (an allowed-signers file's text). Both empty: back to apparition.illixion.com and the release keys",
+                     parameters: [
+                        .string("site", "https://… base URL serving release.json"),
+                        .string("signers", "allowed-signers lines: releases@apparition.illixion.com ssh-ed25519 AAAA… comment"),
+                     ]) { args in
+                for (key, value) in [(SelfUpdate.siteKey, args.string("site")), (SelfUpdate.signersKey, args.string("signers"))] {
+                    if let value, !value.isEmpty {
+                        UserDefaults.standard.set(value, forKey: key)
+                    } else {
+                        UserDefaults.standard.removeObject(forKey: key)
+                    }
+                }
+                return UpdateState(current: SelfUpdate.currentVersion, latest: nil, available: nil, error: nil,
+                                   site: SelfUpdate.site, testSigners: SelfUpdate.signers != nil)
             },
             .query("backgroundTasks", "Background refresh requests the system still holds") { _ in
                 await model.pendingBackgroundTasks()

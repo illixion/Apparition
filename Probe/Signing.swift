@@ -312,11 +312,13 @@ final class SigningStore {
     // MARK: Signing
 
     /// Signs the IPA at `path` with an imported certificate; `{ok, signedPath, bundleId, ...}`.
+    /// `previousApp`: a signed .app whose keychain groups to keep, when `path` is an unsigned
+    /// update of it (Apparition updating itself).
     nonisolated static func signFile(_ path: String, identityId: String, udid: String,
-                                     stripExtensions: Bool) async -> [String: Any] {
+                                     stripExtensions: Bool, previousApp: String? = nil) async -> [String: Any] {
         let dataDir = Self.dataDir
         return await Task.detached {
-            AccountModel.call(apparition_sign_offline(dataDir, path, identityId, nil, udid, stripExtensions))
+            AccountModel.call(apparition_sign_offline(dataDir, path, identityId, nil, udid, stripExtensions, previousApp))
         }.value
     }
 

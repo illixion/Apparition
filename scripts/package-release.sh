@@ -73,10 +73,13 @@ echo "==> Apparition $VERSION, build $BUILD ($COMMIT)"
 echo "==> core for visionOS"
 scripts/build-core.sh visionos
 xcodegen generate --quiet
+# APPARITION_RELEASE leaves out what only development builds carry (the experiment endpoints,
+# the release-site override). build-and-sign also builds Release, so DEBUG can't tell them apart.
 echo "==> app (Release, unsigned)"
 xcodebuild -project Apparition.xcodeproj -scheme Apparition -configuration Release \
   -sdk xros -destination 'generic/platform=visionOS' -derivedDataPath "$WORK/DerivedData" \
   MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) APPARITION_RELEASE' \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
   -quiet build
 app="$WORK/DerivedData/Build/Products/Release-xros/Apparition.app"

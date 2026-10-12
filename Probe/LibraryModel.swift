@@ -48,6 +48,16 @@ final class LibraryModel {
         /// `SelfApp.installStamp()` before installing: a different one at launch means the update took.
         let previousStamp: String?
         let signedWith: String
+        /// The release being installed, when this is an update rather than a refresh.
+        var version: String?
+    }
+
+    /// The latest official release, as last checked (`checkForUpdate`). Not kept across launches.
+    struct UpdateCheck: Sendable {
+        var latest: SelfUpdate.Latest?
+        var checkedAt: Date?
+        var error: String?
+        var checking = false
     }
 
     struct RefreshRun: Codable, Sendable {
@@ -74,6 +84,7 @@ final class LibraryModel {
     private(set) var status: String?
     private(set) var refreshRuns: [RefreshRun] = []
     private(set) var selfRecord = SelfRecord()
+    private(set) var updateCheck = UpdateCheck()
     /// This copy of Apparition, read once: its profile only changes with a reinstall, which relaunches.
     let selfApp = SelfApp.current()
     /// The result key for Apparition itself in a refresh run.
@@ -317,27 +328,78 @@ final class LibraryModel {
         return expires.timeIntervalSinceNow < Self.refreshMargin
     }
 
+    /// A newer release this copy can install: one for this platform, signed by a release key.
+    var availableUpdate: SelfUpdate.Latest? {
+        guard let latest = updateCheck.latest, latest.appSize != nil,
+              SelfUpdate.isNewer(latest.version, than: SelfUpdate.currentVersion) else { return nil }
+        return latest
+    }
+
+    /// Asks apparition.illixion.com for the latest release, at most every 6 hours unless `force`.
+    func checkForUpdate(force: Bool = false) async {
+        if updateCheck.checking { return }
+        if !force, let checked = updateCheck.checkedAt, Date().timeIntervalSince(checked) < 6 * 3600 { return }
+        updateCheck.checking = true
+        defer { updateCheck.checking = false }
+        do {
+            updateCheck.latest = try await SelfUpdate.latest()
+            updateCheck.error = nil
+            log.info("latest release \(self.updateCheck.latest?.version ?? "?", privacy: .public), this is \(SelfUpdate.currentVersion, privacy: .public)")
+        } catch {
+            // What failed to verify isn't offered, even if an earlier check had it.
+            updateCheck.latest = nil
+            updateCheck.error = "\(error)"
+            log.error("update check failed: \(error, privacy: .private)")
+        }
+        updateCheck.checkedAt = Date()
+    }
+
+    /// Downloads the latest release, signs it like a self-refresh and installs it over this copy,
+    /// keeping its data. It applies when Apparition next closes.
+    func updateSelf() async {
+        await runSelf(trigger: "update", label: "update Apparition") { runStartedAt in
+            let downloaded: SelfUpdate.Downloaded
+            do {
+                downloaded = try await SelfUpdate.download()
+            } catch {
+                return self.selfFail("couldn't download the update: \(error)")
+            }
+            defer { SelfUpdate.cleanUp() }
+            guard SelfUpdate.isNewer(downloaded.version, than: SelfUpdate.currentVersion) else {
+                return self.selfFail("the site's latest release is \(downloaded.version), not newer than this copy (\(SelfUpdate.currentVersion))")
+            }
+            return await self.signAndInstallSelf(runStartedAt: runStartedAt, update: downloaded)
+        }
+    }
+
     /// Re-signs Apparition now, due or not; the update applies when the app next closes.
     func refreshSelf() async {
-        var run = RefreshRun(startedAt: DebugTime.iso(Date()), trigger: "self")
+        await runSelf(trigger: "self", label: "refresh Apparition") { runStartedAt in
+            await self.signAndInstallSelf(runStartedAt: runStartedAt)
+        }
+    }
+
+    private func runSelf(trigger: String, label: String, _ body: @escaping (String) async -> String) async {
+        var run = RefreshRun(startedAt: DebugTime.iso(Date()), trigger: trigger)
         refreshRuns.insert(run, at: 0)
         save()
-        await exclusive("refresh Apparition") {
-            let outcome = await self.signAndInstallSelf(runStartedAt: run.startedAt)
+        await exclusive(label) {
+            let outcome = await body(run.startedAt)
             run.results[Self.selfResultKey] = outcome
             return outcome
         }
         run.finishedAt = DebugTime.iso(Date())
-        if let index = refreshRuns.firstIndex(where: { $0.startedAt == run.startedAt && $0.trigger == "self" }) {
+        if let index = refreshRuns.firstIndex(where: { $0.startedAt == run.startedAt && $0.trigger == trigger }) {
             if run.results.isEmpty { run.results["-"] = "busy" }
             refreshRuns[index] = run
         }
         save()
     }
 
-    /// Copies the installed bundle, signs it with `selfSigner` under the same bundle ID and
-    /// team, and installs it over the running copy, which keeps the app's data.
-    private func signAndInstallSelf(runStartedAt: String?) async -> String {
+    /// Copies the installed bundle (or `update`'s, a newer release), signs it with `selfSigner`
+    /// under the same bundle ID and team, and installs it over the running copy, which keeps
+    /// the app's data.
+    private func signAndInstallSelf(runStartedAt: String?, update: SelfUpdate.Downloaded? = nil) async -> String {
         guard let me = selfApp, let team = me.teamId else {
             return selfFail("this copy of Apparition has no provisioning profile to renew")
         }
@@ -361,7 +423,12 @@ final class LibraryModel {
 
         let copy: URL
         do {
-            copy = try SelfApp.copyBundle(bundleId: signingId)
+            // A release is built as the plain bundle ID; it has to install as this copy's.
+            copy = if let update {
+                try SelfApp.copyBundle(from: update.appURL, bundleId: signingId ?? me.bundleId)
+            } else {
+                try SelfApp.copyBundle(bundleId: signingId)
+            }
         } catch {
             return selfFail("couldn't copy Apparition for signing: \(error)")
         }
@@ -369,7 +436,9 @@ final class LibraryModel {
         let signed: [String: Any] = if signer == SigningStore.appleID {
             await AccountModel.signFile(copy.path, udid: udid, deviceName: name, stripExtensions: false)
         } else {
-            await SigningStore.signFile(copy.path, identityId: signer, udid: udid, stripExtensions: false)
+            // An update is unsigned, so the Keychain groups to keep come from the running copy.
+            await SigningStore.signFile(copy.path, identityId: signer, udid: udid, stripExtensions: false,
+                                        previousApp: update == nil ? nil : Bundle.main.bundleURL.path)
         }
         guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
             return selfFail("sign failed: \(signed["error"] as? String ?? "unknown")")
@@ -382,14 +451,16 @@ final class LibraryModel {
         let signedWith = signing.signerName(signer)
         selfRecord.pending = PendingSelfRefresh(startedAt: DebugTime.iso(Date()), runStartedAt: runStartedAt,
                                                 previousExpires: me.expires.map(DebugTime.iso),
-                                                previousStamp: SelfApp.installStamp(), signedWith: signedWith)
+                                                previousStamp: SelfApp.installStamp(), signedWith: signedWith,
+                                                version: update?.version)
         save()
         log.info("installing over itself")
         // installd waits for Apparition to close before applying the update, so don't wait for that.
         let outcome = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath,
                                           detachAfterMs: 20_000)
         if outcome == "queued" {
-            return "ok, waiting: close Apparition to apply the update (expires \(main?.profileExpires ?? "?"))"
+            let what = update.map { "install \($0.version)" } ?? "apply the update"
+            return "ok, waiting: close Apparition to \(what) (expires \(main?.profileExpires ?? "?"))"
         }
         selfRecord.pending = nil
         guard outcome == "ok" else {
@@ -420,7 +491,7 @@ final class LibraryModel {
             selfRecord.signedAt = pending.startedAt
             selfRecord.signedWith = pending.signedWith
             selfRecord.lastError = nil
-            outcome = "ok, expires \(DebugTime.iso(expires))"
+            outcome = (pending.version == nil ? "ok" : "ok, updated to \(SelfUpdate.currentVersion)") + ", expires \(DebugTime.iso(expires))"
         } else {
             selfRecord.lastError = "the reinstall didn't take: this is still the copy from before"
             outcome = "error: \(selfRecord.lastError!)"

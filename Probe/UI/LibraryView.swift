@@ -15,6 +15,7 @@ struct LibraryView: View {
     @State private var jitAppId: String?
     @State private var pendingRemoval: LibraryModel.InstalledApp?
     @State private var confirmingSelfRefresh = false
+    @State private var confirmingUpdate = false
     @MainActor private static var listedThisLaunch = false
 
     private static let columns = [GridItem(.adaptive(minimum: 420, maximum: 640), spacing: 20)]
@@ -37,6 +38,7 @@ struct LibraryView: View {
                 content
                     .padding(32)
             }
+            .task { await library.checkForUpdate() }
             .task {
                 // Once per launch: who else installed debuggable apps here. Refresh by hand after.
                 guard !Self.listedThisLaunch, model.hasPairingFile, !model.busy, !library.busy else { return }
@@ -62,6 +64,11 @@ struct LibraryView: View {
                 Button("Remove", role: .destructive) { library.removeInstalled(app.id) }
             } message: { _ in
                 Text("Apparition stops refreshing it and deletes its kept copy. The app stays on this headset until its profile expires; delete it from the Home View to remove it now.")
+            }
+            .confirmationDialog("Update Apparition to \(library.availableUpdate?.version ?? "")?", isPresented: $confirmingUpdate, titleVisibility: .visible) {
+                Button("Download and Install") { Task { await library.updateSelf() } }
+            } message: {
+                Text("Apparition downloads the official release, checks its signature, signs it with \(library.signing.signerName(library.selfSigner)) and hands it to visionOS, keeping its data. It installs when you close Apparition, like an App Store update.")
             }
             .confirmationDialog("Refresh Apparition now?", isPresented: $confirmingSelfRefresh, titleVisibility: .visible) {
                 Button("Refresh and Reinstall") { Task { await library.refreshSelf() } }
@@ -268,7 +275,7 @@ struct LibraryView: View {
                                 .font(.title3.weight(.semibold))
                             StatusPill(text: "This app", systemImage: "sparkles", tint: .accentColor)
                         }
-                        Text([me.teamName, me.teamId.map { "Team \($0)" }].compactMap { $0 }.joined(separator: " · "))
+                        Text(["Version \(SelfUpdate.currentVersion)", me.teamName, me.teamId.map { "Team \($0)" }].compactMap { $0 }.joined(separator: " · "))
                             .font(.callout)
                             .foregroundStyle(.secondary)
                         TimelineView(.periodic(from: .now, by: 60)) { _ in
@@ -284,16 +291,38 @@ struct LibraryView: View {
                 } else if let signed = Date.iso(library.selfRecord.signedAt) {
                     Note(text: "Refreshed itself \(signed.relativeToNow)" + (library.selfRecord.signedWith.map { " with \($0)" } ?? ""), kind: .success)
                 }
+                if let update = library.availableUpdate {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Note(text: "Apparition \(update.version) is available.", kind: .info)
+                        if let notes = update.notes, !notes.isEmpty {
+                            Text(notes)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(6)
+                        }
+                    }
+                }
                 Text("Refreshes itself with \(library.signing.signerName(library.selfSigner)) once due, after the other apps. The update applies the next time Apparition closes.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Button {
-                    confirmingSelfRefresh = true
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                HStack(spacing: 12) {
+                    if let update = library.availableUpdate {
+                        Button {
+                            confirmingUpdate = true
+                        } label: {
+                            Label("Update to \(update.version)", systemImage: "arrow.down.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(library.busy || model.busy)
+                    }
+                    Button {
+                        confirmingSelfRefresh = true
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(library.busy || model.busy)
                 }
-                .buttonStyle(.bordered)
-                .disabled(library.busy || model.busy)
             }
         }
     }

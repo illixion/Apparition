@@ -18,6 +18,7 @@
 
 use std::{
     collections::BTreeMap,
+    ffi::c_char,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -25,7 +26,10 @@ use std::{
 use base64::prelude::*;
 use rootcause::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sha2::{Digest, Sha256, Sha512};
+
+use crate::{identity::optional, reply, runtime, text};
 
 /// Where official releases are listed.
 pub const SITE: &str = "https://apparition.illixion.com/";
@@ -106,7 +110,8 @@ pub async fn latest(site: &str) -> Result<Verified, Report> {
     latest_signed_by(site, SIGNERS).await
 }
 
-async fn latest_signed_by(site: &str, signers: &str) -> Result<Verified, Report> {
+/// [`latest`] with other keys than the compiled-in ones, for testing against a scratch site.
+pub async fn latest_signed_by(site: &str, signers: &str) -> Result<Verified, Report> {
     let site = reqwest::Url::parse(site).context("bad release site URL")?;
     let client = http()?;
     let index: Index = serde_json::from_slice(&fetch(&client, site.join("release.json")?.as_str()).await?)
@@ -365,6 +370,75 @@ pub fn verify_sshsig(data: &[u8], armored: &str, namespace: &str, signers: &str)
         .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
         .map_err(|_| report!("the release signature doesn't verify"))?;
     Ok(signer.clone())
+}
+
+// MARK: C ABI (the app's self-update)
+
+unsafe fn signers_arg(signers: *const c_char) -> Result<String, Report> {
+    Ok(unsafe { optional(signers) }?.unwrap_or_else(|| SIGNERS.to_string()))
+}
+
+unsafe fn site_arg(site: *const c_char) -> Result<String, Report> {
+    Ok(unsafe { optional(site) }?.unwrap_or_else(|| SITE.to_string()))
+}
+
+/// The latest verified release at `site` (NULL: [`SITE`]), checked against `signers` (NULL:
+/// the compiled-in keys; only a development build of the app passes others). Returns `{ok, version,
+/// build, date, notes, signer, asset: {name, size} | null}`, the asset being `platform`'s app.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_release_latest(
+    site: *const c_char,
+    signers: *const c_char,
+    platform: *const c_char,
+) -> *mut c_char {
+    reply((|| {
+        let (site, signers) = (unsafe { site_arg(site) }?, unsafe { signers_arg(signers) }?);
+        let platform = unsafe { text(platform) }?;
+        let verified = runtime().block_on(latest_signed_by(&site, &signers))?;
+        let asset = verified.asset("app", &platform).map(|a| json!({"name": a.name, "size": a.size}));
+        let release = &verified.release;
+        Ok(json!({
+            "version": release.version, "build": release.build, "date": release.date,
+            "notes": release.notes, "signer": verified.signer, "asset": asset,
+        }))
+    })())
+}
+
+/// Fetches and verifies the latest release again, downloads `platform`'s app into `dir`
+/// (emptied first) and unpacks it there. Returns `{ok, version, build, ipaPath, appPath}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_release_download_app(
+    site: *const c_char,
+    signers: *const c_char,
+    platform: *const c_char,
+    dir: *const c_char,
+) -> *mut c_char {
+    reply((|| {
+        let (site, signers) = (unsafe { site_arg(site) }?, unsafe { signers_arg(signers) }?);
+        let platform = unsafe { text(platform) }?;
+        let dir = PathBuf::from(unsafe { text(dir) }?);
+        let _ = std::fs::remove_dir_all(&dir);
+        let (verified, ipa) = runtime().block_on(async {
+            let verified = latest_signed_by(&site, &signers).await?;
+            let asset = verified
+                .asset("app", &platform)
+                .ok_or_else(|| report!("Apparition {} has no {platform} app", verified.release.version))?
+                .clone();
+            let ipa = download(&verified, &asset, &dir, |_, _| {}).await?;
+            Ok::<_, Report>((verified, ipa))
+        })?;
+        let unpacked = dir.join("unpacked");
+        zip::ZipArchive::new(std::fs::File::open(&ipa)?)?.extract(&unpacked)?;
+        let app = std::fs::read_dir(unpacked.join("Payload"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+            .ok_or_else(|| report!("the IPA has no .app in Payload"))?;
+        Ok(json!({
+            "version": verified.release.version, "build": verified.release.build,
+            "ipaPath": ipa.to_string_lossy(), "appPath": app.to_string_lossy(),
+        }))
+    })())
 }
 
 #[cfg(test)]

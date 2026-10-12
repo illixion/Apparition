@@ -421,7 +421,7 @@ async fn sign_and_install(
             api::import_profile(scratch, std::fs::read(profile)?, Some(&info.udid))?;
         }
         println!("Signing with {}…", identity["identity"]["name"].as_str().unwrap_or("your certificate"));
-        api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip)?
+        api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None)?
     } else {
         let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap()).await?;
         println!("Signing for team {}…", session.team_id());

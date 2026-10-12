@@ -47,8 +47,10 @@ char *apparition_sign_offline_keeping_id(const char *data_dir, const char *app_p
                                          const char *profile_uuid, const char *bundle_id, bool minimal);
 // Signs with identity_id and the best imported profile (profile_uuid, nullable, overrides it for
 // the main app). {ok, signedPath, bundleId, profile, profileName, expires, debuggable, strippedExtensions}.
+// previous_app (nullable): a signed .app whose keychain groups to keep, for an unsigned update of it.
 char *apparition_sign_offline(const char *data_dir, const char *app_path, const char *identity_id,
-                              const char *profile_uuid, const char *udid, bool strip_extensions);
+                              const char *profile_uuid, const char *udid, bool strip_extensions,
+                              const char *previous_app);
 // Handles from idevice's tunnel_create_rppairing; borrowed, not freed.
 char *apparition_install(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                      const char *app_path);
@@ -88,5 +90,15 @@ char *apparition_list_certificates(void);
 char *apparition_revoke_certificate(const char *serial_number);
 char *apparition_list_app_ids(void);
 char *apparition_delete_app_id(const char *app_id_id);
+
+// Official releases (core/src/release.rs), verified against the pinned release keys. site and
+// signers may be NULL (apparition.illixion.com, the compiled-in keys); only development builds pass
+// others. platform is "visionos", "ios" or "tvos".
+// {ok, version, build, date, notes, signer, asset: {name, size} | null}
+char *apparition_release_latest(const char *site, const char *signers, const char *platform);
+// Downloads the latest release's app into dir (emptied first), checks it against the signed
+// manifest and unpacks it: {ok, version, build, ipaPath, appPath}.
+char *apparition_release_download_app(const char *site, const char *signers, const char *platform,
+                                      const char *dir);
 
 #endif

@@ -45,14 +45,14 @@ struct SelfApp: Sendable {
         return String(bundleId.dropLast(suffix.count))
     }
 
-    /// Copies the installed bundle somewhere writable for signing, optionally with another
-    /// CFBundleIdentifier in its Info.plist. Returns the copy's path.
-    static func copyBundle(bundleId: String?) throws -> URL {
+    /// Copies the installed bundle (or `source`, an update of it) somewhere writable for
+    /// signing, optionally with another CFBundleIdentifier in its Info.plist. Returns the copy's path.
+    static func copyBundle(from source: URL = Bundle.main.bundleURL, bundleId: String?) throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("self-refresh")
         try? FileManager.default.removeItem(at: directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let copy = directory.appendingPathComponent(Bundle.main.bundleURL.lastPathComponent)
-        try FileManager.default.copyItem(at: Bundle.main.bundleURL, to: copy)
+        try FileManager.default.copyItem(at: source, to: copy)
         if let bundleId {
             let plist = copy.appendingPathComponent("Info.plist")
             var format = PropertyListSerialization.PropertyListFormat.binary
