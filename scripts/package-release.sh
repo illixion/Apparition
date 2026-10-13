@@ -159,7 +159,7 @@ EOF
   # would sign the helper over without its entitlements).
   cp "$WORK/macos/$helper" "$WORK/macos/$app_name.app/Contents/MacOS/$helper"
   codesign -f -s - "$WORK/macos/$app_name.app"
-  readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it the first time: open it, then click Open Anyway in System Settings > Privacy & Security (or run: xattr -dr com.apple.quarantine $app_name.app)."
+  readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it until you clear the download quarantine. Move $app_name.app to Applications, then run in Terminal: xattr -dr com.apple.quarantine /Applications/$app_name.app (and for the command line, in this folder: xattr -d com.apple.quarantine $bin $helper). Or open it once and click Open Anyway in System Settings > Privacy & Security. Don't re-sign it with codesign: that strips the anisette helper's entitlements."
   (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)
 
   echo "==> installer for Windows (x86_64)"

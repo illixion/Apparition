@@ -24,7 +24,9 @@ that it can stay in the menu bar or tray as Apparition's companion, or not be ne
 ## Getting started
 
 1. Download the desktop app for macOS, Windows or Linux from
-   [apparition.illixion.com](https://apparition.illixion.com) and open it.
+   [apparition.illixion.com](https://apparition.illixion.com) and open it. It isn't notarized,
+   so on macOS move it to Applications and clear the download quarantine first:
+   `xattr -dr com.apple.quarantine /Applications/Apparition.app`.
 2. Pair the device: on Vision Pro, open Settings > General > Remote Devices and type the code it
    shows; on an iPhone or iPad, plug it in and tap Trust (once).
 3. Sign in with your Apple ID, or choose your own certificate and profile, and install.
