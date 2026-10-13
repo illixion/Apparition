@@ -289,9 +289,3 @@ anisette server" next to the companion; nothing switches on its own.
 
 Licensed MIT. Signing (`core/signer`) builds on [apple-codesign](https://github.com/indygreg/apple-platform-rs)
 (MPL-2.0), used unmodified from crates.io.
-
-## History
-
-`Probe/` (the app) started as the first spike: could an
-app pair with, and open a RemotePairing tunnel to, the device it runs on, with no computer
-involved.
