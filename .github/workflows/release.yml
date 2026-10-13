@@ -1,0 +1,132 @@
+# Builds a release's files with scripts/package-release.sh, the same script as a local build,
+# and attests where each came from (`gh attestation verify <file> -R illixion/Apparition`).
+#
+# Nothing here signs a release. The files land as a workflow artifact; publishing them is the
+# usual step on the release site (scripts/publish.py add), which hashes the files downloaded from
+# here and signs that list with a release key that never leaves its owner. So an attestation says
+# "GitHub built this from that commit", and the release signature says "and its owner vouches
+# for it".
+#
+# Run it by hand (Actions > Release build > Run workflow) or by pushing a v<version> tag. The
+# version must already be committed in project.yml, installer/Cargo.toml and desktop/Cargo.toml.
+
+name: Release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (major.minor.patch), as committed"
+        required: true
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+  RUST_TOOLCHAIN: "1.97.1"
+
+jobs:
+  apple:
+    name: Apps, macOS and Windows
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      # The app builds against two sibling packages by path (project.yml), so they're checked
+      # out beside it, the way they sit on a developer's machine.
+      - uses: actions/checkout@v7
+        with:
+          path: Apparition
+          fetch-depth: 0 # the build number is the commit count
+      - uses: actions/checkout@v7
+        with: { repository: illixion/DebugTrace, path: DebugTrace }
+      - uses: actions/checkout@v7
+        with: { repository: illixion/RAVESDK, path: RAVESDK }
+      - name: Record the sibling packages' commits
+        run: |
+          for repo in DebugTrace RAVESDK; do
+            echo "$repo $(git -C "$repo" rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Choose Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -E 'xros|iphoneos|appletvos'
+      - name: Tools
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
+            --target aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos,aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-gnu
+          rustup default "$RUST_TOOLCHAIN"
+          brew install xcodegen mingw-w64
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin/cargo-tauri
+          key: apple-cargo-${{ hashFiles('Apparition/core/Cargo.lock', 'Apparition/installer/Cargo.lock', 'Apparition/desktop/Cargo.lock') }}
+          restore-keys: apple-cargo-
+      - name: Tauri CLI
+        run: command -v cargo-tauri || cargo install tauri-cli --version '^2' --locked
+      - name: Build
+        working-directory: Apparition
+        run: scripts/package-release.sh "${VERSION#v}" --parts app,macos,windows
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apple
+          path: Apparition/build/release/*/*
+          if-no-files-found: error
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      # One architecture failing shouldn't cancel the other: both results are worth seeing.
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: Apparition
+          fetch-depth: 0
+      - name: Build, in the same Docker images as a local build
+        working-directory: Apparition
+        env:
+          LINUX_ARCHS: ${{ matrix.arch }}
+        run: scripts/package-release.sh "${VERSION#v}" --parts linux
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: Apparition/build/release/*/*
+          if-no-files-found: error
+
+  attest:
+    name: Attest
+    needs: [apple, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: files
+          merge-multiple: true
+      - name: List
+        run: |
+          cd files && ls -l && sha256sum * | tee SHA256SUMS
+          { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "files/Apparition-*"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ env.VERSION }}
+          path: files/*

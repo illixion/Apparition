@@ -15,6 +15,9 @@
 #   scripts/package-release.sh 0.2.0 --linux        # also Linux x86_64 and arm64
 #   LINUX_X86_64_HOST=tuxpc scripts/package-release.sh 0.2.0 --linux   # x86_64 natively there
 #   scripts/package-release.sh 0.2.0 --only-app     # just the IPAs
+#   scripts/package-release.sh 0.2.0 --parts app,macos,windows,linux   # any of these (CI builds
+#                                                    # them on separate runners); LINUX_ARCHS
+#                                                    # narrows linux to x86_64 or arm64
 #
 # The version has to be committed first, in every place that carries it: MARKETING_VERSION
 # in project.yml, and `version` in installer/Cargo.toml and desktop/Cargo.toml (the desktop
@@ -40,21 +43,36 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:?usage: package-release.sh <version> [--linux] [--only-app] [--allow-dirty]}"
+VERSION="${1:?usage: package-release.sh <version> [--linux] [--only-app] [--parts LIST] [--allow-dirty]}"
 shift
 LINUX=0
 ONLY_APP=0
+PARTS=""
 ALLOW_DIRTY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --linux) LINUX=1 ;;
     --only-app) ONLY_APP=1 ;;
+    --parts) PARTS="${2:?--parts needs a list: app,macos,windows,linux}"; shift ;;
     # For trying the packaging itself; such a build isn't one to publish.
     --allow-dirty) ALLOW_DIRTY=1 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# What to build: the IPAs ("app"), the macOS and Windows installers, and with --linux both Linux
+# ones, unless --parts names them.
+if [[ -z "$PARTS" ]]; then
+  PARTS=app,macos,windows
+  [[ "$LINUX" == 1 ]] && PARTS+=,linux
+  [[ "$ONLY_APP" == 1 ]] && PARTS=app
+fi
+for part in ${PARTS//,/ }; do
+  case "$part" in app|macos|windows|linux) ;; *) echo "error: no part called $part (app, macos, windows, linux)" >&2; exit 2 ;; esac
+done
+has() { [[ ",$PARTS," == *",$1,"* ]]; }
+installers() { has macos || has windows || has linux; }
 
 cd "$ROOT"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: $VERSION isn't major.minor.patch (Cargo needs all three)" >&2; exit 1; }
@@ -64,9 +82,9 @@ installer_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' installer/Cargo.toml |
 desktop_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop/Cargo.toml | head -1)"
 [[ "$app_version" == "$VERSION" ]] \
   || { echo "error: project.yml's MARKETING_VERSION is $app_version, not $VERSION; commit the bump first" >&2; exit 1; }
-[[ "$ONLY_APP" == 1 || "$installer_version" == "$VERSION" ]] \
+{ ! installers || [[ "$installer_version" == "$VERSION" ]]; } \
   || { echo "error: installer/Cargo.toml's version is $installer_version, not $VERSION; commit the bump first" >&2; exit 1; }
-[[ "$ONLY_APP" == 1 || "$desktop_version" == "$VERSION" ]] \
+{ ! installers || [[ "$desktop_version" == "$VERSION" ]]; } \
   || { echo "error: desktop/Cargo.toml's version is $desktop_version, not $VERSION; commit the bump first" >&2; exit 1; }
 if [[ -n "$(git status --porcelain)" ]]; then
   if [[ "$ALLOW_DIRTY" == 1 ]]; then
@@ -175,49 +193,51 @@ LINUX_PIDS=()
 LINUX_ARCHS=()
 # A failure here leaves no Linux build running on its own.
 trap 'for pid in "${LINUX_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
-if [[ "$LINUX" == 1 && "$ONLY_APP" == 0 ]]; then
-  for arch in x86_64 arm64; do
+if has linux; then
+  for arch in ${LINUX_ARCHS:-x86_64 arm64}; do
     ( set -e; linux_build "$arch" ) > "$LOGS/linux-$arch.log" 2>&1 &
     LINUX_PIDS+=("$!")
     LINUX_ARCHS+=("$arch")
   done
-  echo "==> Linux x86_64${LINUX_X86_64_HOST:+ (on $LINUX_X86_64_HOST)} and arm64 building in the background (build/release/linux-<arch>.log)"
+  echo "==> Linux ${LINUX_ARCHS:-x86_64 arm64}${LINUX_X86_64_HOST:+ (x86_64 on $LINUX_X86_64_HOST)} building in the background (build/release/linux-<arch>.log)"
 fi
 
 # ------------------------------------------------------------------ the app
-xcodegen generate --quiet
-# One IPA per platform: <build-core.sh platform> <SDK> <name in the file name>.
-for spec in "visionos xros visionOS" "ios iphoneos iOS" "tvos appletvos tvOS"; do
-  read -r core sdk name <<< "$spec"
-  echo "==> core for $name"
-  scripts/build-core.sh "$core"
-  # APPARITION_RELEASE leaves out what only development builds carry (the experiment endpoints,
-  # the release-site override). build-and-sign also builds Release, so DEBUG can't tell them apart.
-  echo "==> app for $name (Release, unsigned)"
-  xcodebuild -project Apparition.xcodeproj -scheme Apparition -configuration Release \
-    -sdk "$sdk" -destination "generic/platform=$name" -derivedDataPath "$WORK/DerivedData" \
-    MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
-    SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) APPARITION_RELEASE' \
-    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-    -quiet build
-  app="$WORK/DerivedData/Build/Products/Release-$sdk/Apparition.app"
-  [[ -d "$app" ]] || { echo "error: no Apparition.app at $app" >&2; exit 1; }
-  built_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")"
-  [[ "$built_version" == "$VERSION" ]] || { echo "error: the $name app says $built_version" >&2; exit 1; }
-  # A free Apple ID pays an App ID for every extension, and Apparition is meant to have none.
-  if [[ -d "$app/PlugIns" || -d "$app/Extensions" ]]; then
-    echo "error: the $name Apparition.app embeds extensions; each costs a free account an App ID" >&2
-    exit 1
-  fi
-  rm -rf "$WORK/ipa"
-  mkdir -p "$WORK/ipa/Payload"
-  ditto "$app" "$WORK/ipa/Payload/Apparition.app"
-  (cd "$WORK/ipa" && zip -qryX "$OUT/Apparition-$VERSION-$name.ipa" Payload)
-done
+if has app; then
+  xcodegen generate --quiet
+  # One IPA per platform: <build-core.sh platform> <SDK> <name in the file name>.
+  for spec in "visionos xros visionOS" "ios iphoneos iOS" "tvos appletvos tvOS"; do
+    read -r core sdk name <<< "$spec"
+    echo "==> core for $name"
+    scripts/build-core.sh "$core"
+    # APPARITION_RELEASE leaves out what only development builds carry (the experiment endpoints,
+    # the release-site override). build-and-sign also builds Release, so DEBUG can't tell them apart.
+    echo "==> app for $name (Release, unsigned)"
+    xcodebuild -project Apparition.xcodeproj -scheme Apparition -configuration Release \
+      -sdk "$sdk" -destination "generic/platform=$name" -derivedDataPath "$WORK/DerivedData" \
+      MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) APPARITION_RELEASE' \
+      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+      -quiet build
+    app="$WORK/DerivedData/Build/Products/Release-$sdk/Apparition.app"
+    [[ -d "$app" ]] || { echo "error: no Apparition.app at $app" >&2; exit 1; }
+    built_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")"
+    [[ "$built_version" == "$VERSION" ]] || { echo "error: the $name app says $built_version" >&2; exit 1; }
+    # A free Apple ID pays an App ID for every extension, and Apparition is meant to have none.
+    if [[ -d "$app/PlugIns" || -d "$app/Extensions" ]]; then
+      echo "error: the $name Apparition.app embeds extensions; each costs a free account an App ID" >&2
+      exit 1
+    fi
+    rm -rf "$WORK/ipa"
+    mkdir -p "$WORK/ipa/Payload"
+    ditto "$app" "$WORK/ipa/Payload/Apparition.app"
+    (cd "$WORK/ipa" && zip -qryX "$OUT/Apparition-$VERSION-$name.ipa" Payload)
+  done
+fi
 
-if [[ "$ONLY_APP" == 0 ]]; then
-  # ---------------------------------------------------------------- the installer
-  cd "$ROOT/installer"
+# ------------------------------------------------------------------ the installers
+cd "$ROOT/installer"
+if has macos; then
 
   echo "==> installer for macOS (arm64 + x86_64)"
   for target in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -242,7 +262,9 @@ if [[ "$ONLY_APP" == 0 ]]; then
   codesign -f -s - "$WORK/macos/$app_name.app"
   readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it until you clear the download quarantine. Move $app_name.app to Applications, then run in Terminal: xattr -dr com.apple.quarantine /Applications/$app_name.app (and for the command line, in this folder: xattr -d com.apple.quarantine $bin $helper). Or open it once and click Open Anyway in System Settings > Privacy & Security. Don't re-sign it with codesign: that strips the anisette helper's entitlements."
   (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)
+fi
 
+if has windows; then
   echo "==> installer for Windows (x86_64)"
   cargo build -q --release --target x86_64-pc-windows-gnu
   mkdir -p "$WORK/windows"
