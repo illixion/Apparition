@@ -15,6 +15,10 @@ use tracing::warn;
 
 #[cfg(not(feature = "wasm"))]
 use crate::sideload::cert_identity::APPLE_ROOT;
+
+/// gsd.apple.com (machine provisioning) chains to this root, which Linux's and Windows' trust
+/// stores may not have; macOS's does.
+const APPLE_ROOT_G3: &[u8] = include_bytes!("../assets/AppleRootCA-G3.cer");
 use crate::{SideloadError, anisette::AnisetteClientInfo, util::plist::PlistDataExtract};
 
 const URL_BAG: &str = "https://gsa.apple.com/grandslam/GsService2/lookup";
@@ -247,8 +251,11 @@ impl GrandSlam {
         #[cfg(not(feature = "wasm"))]
         let cert = Certificate::from_der(APPLE_ROOT)?;
         #[cfg(not(feature = "wasm"))]
+        let cert_g3 = Certificate::from_der(APPLE_ROOT_G3)?;
+        #[cfg(not(feature = "wasm"))]
         let client = ClientBuilder::new()
             .add_root_certificate(cert)
+            .add_root_certificate(cert_g3)
             .http1_title_case_headers()
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)

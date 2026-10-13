@@ -13,3 +13,8 @@ and a public field) makes `login` ask for that code once the password is accepte
 `validateCode` alone, and sign in again (src/auth/builder.rs, src/auth/apple_account.rs:
 `code_after_login`, `code_checked`). Core sets it only after the Xcode token is refused, since
 Apple stops pushing codes once the anisette identity is trusted.
+
+A second change: the GrandSlam client also trusts Apple Root CA - G3
+(src/assets/AppleRootCA-G3.cer, src/auth/grandslam.rs). gsd.apple.com, where machine
+provisioning goes, chains to it rather than to Apple Root CA; macOS trusts it anyway, but Linux's
+trust store doesn't, so provisioning failed there with "error sending request".
