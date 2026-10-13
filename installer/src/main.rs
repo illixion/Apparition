@@ -100,6 +100,10 @@ fn ask_secret(prompt: &str) -> String {
 #[tokio::main]
 async fn main() -> ExitCode {
     api::init();
+    // APPARITION_LOG=<file>: isideload's progress (info and up, no secrets), for diagnosing sign-in.
+    if let Some(path) = std::env::var_os("APPARITION_LOG").and_then(|path| path.into_string().ok()).and_then(|path| std::ffi::CString::new(path).ok()) {
+        unsafe { apparition_core::apparition_init_logging(path.as_ptr()) };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("devices") => devices().await,
