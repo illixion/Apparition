@@ -135,7 +135,8 @@ linux_build() {
   on() { "$@"; }
   if [[ -n "$host" ]]; then
     dir="$(ssh "${SSH_OPTS[@]}" "$host" 'printf %s "$HOME"')/apparition-release/linux-src-$arch"
-    ssh "${SSH_OPTS[@]}" "$host" "mkdir -p '$dir'"
+    # The containers write as root; clear what the last run left through Docker as well.
+    ssh "${SSH_OPTS[@]}" "$host" "mkdir -p '$dir' && docker run --rm -v '$dir:/src' rust:1.97-alpine rm -rf /src/bundles"
     rsync -a --delete -e "ssh ${SSH_OPTS[*]}" "$src/" "$host:$dir/"
     on() { ssh "${SSH_OPTS[@]}" "$host" "$(printf '%q ' "$@")"; }
   fi
@@ -144,7 +145,7 @@ linux_build() {
   on docker run --rm --platform "$platform" -v "apparition-cargo-$arch:/usr/local/cargo/registry" \
     -v "apparition-installer-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
     -v "$dir:/src" -w /src/installer -e CARGO_PROFILE_RELEASE_STRIP=true rust:1.97-alpine \
-    sh -c 'apk add -q musl-dev && cargo build -q --release && mkdir -p /src/bundles && cp /target/release/apparition /src/bundles/'
+    sh -c 'apk add -q musl-dev && cargo build -q --release && mkdir -p /src/bundles && cp /target/release/apparition /src/bundles/ && { chown -R "$(stat -c %u:%g /src)" /src/bundles || true; }'
 
   echo "==> desktop app for Linux ($arch${host:+, on $host})"
   on docker build -q --platform "$platform" -t "apparition-desktop-linux:$arch" \
@@ -155,7 +156,8 @@ linux_build() {
     -v "apparition-desktop-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
     -v "$dir:/src" -w /src/desktop "apparition-desktop-linux:$arch" sh -c 'rm -rf /target/release/bundle &&
       cargo tauri build --bundles deb,appimage >/tmp/log 2>&1 || { tail -30 /tmp/log; exit 1; }
-      cp /target/release/bundle/appimage/*.AppImage /target/release/bundle/deb/*.deb /src/bundles/'
+      cp /target/release/bundle/appimage/*.AppImage /target/release/bundle/deb/*.deb /src/bundles/ &&
+      { chown -R "$(stat -c %u:%g /src)" /src/bundles || true; }'
   if [[ -n "$host" ]]; then
     rsync -a -e "ssh ${SSH_OPTS[*]}" "$host:$dir/bundles/" "$src/bundles/"
   fi
