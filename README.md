@@ -16,6 +16,8 @@ that it can stay in the menu bar or tray as Apparition's companion, or not be ne
 - **Refresh** apps before they expire, on the device: from the app, a Shortcuts automation or
   in the background, through the companion or LocalDevVPN.
 - **Launch with JIT** for apps that need it (emulators), using the debugger the way Xcode does.
+  It speaks the JIT26 requests StikDebug defined, so apps built for them work as they are:
+  tested on Vision Pro with UTM (an Alpine VM) and ARMSX2, the PS2 emulator (GTA San Andreas).
 - **Pair over Wi-Fi.** Vision Pro and Apple TV pair with the code they show in Settings; an
   iPhone or iPad needs a cable once, unless it already syncs with your Mac over Wi-Fi.
 - **Share one certificate** between your devices and computers, sealed under five words, so a
@@ -117,7 +119,7 @@ app replaces.)
 Its first experiment (2026-10-11, visionOS 27.2): bytes the debugger writes into the
 app's own signed `__TEXT` keep running after it detaches, including code first run
 only after the detach and a site rewritten to branch to a trampoline. Apparition serves
-this through an experimental JIT26 command, `x16 = 2` (copy x2 bytes from x1 to x0).
+this through an experimental JIT26 command, `x16 = 0x4150` (copy x2 bytes from x1 to x0).
 
 ## Shortcuts automation
 

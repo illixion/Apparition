@@ -57,7 +57,7 @@ __asm__(
 
 // Apparition's experimental JIT26 command: copy len bytes from src to dst. Returns 0 on success.
 __attribute__((naked, noinline)) static uint64_t jit26_write(void *dst, const void *src, uint64_t len) {
-    __asm__ volatile("mov x16, #2\n"
+    __asm__ volatile("mov x16, #0x4150\n"
                      "brk #0xf00d\n"
                      "ret\n");
 }

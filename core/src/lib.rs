@@ -725,7 +725,8 @@ fn stop_thread(reply: &str) -> Option<u64> {
 /// Launches `bundle_id` suspended over the tunnel, attaches debugserver, and serves the JIT
 /// protocols until the app no longer needs a debugger:
 /// - legacy `brk #0x69` (x0 = region, x1 = size; UTM's QEMU): prepare in place, then detach;
-/// - universal `brk #0xf00d` (x16 = 1 prepare x0/x1, x16 = 0 detach; StikDebug's JIT26).
+/// - universal `brk #0xf00d` (x16 = 1 prepare x0/x1, x16 = 0 detach; StikDebug's JIT26). Its
+///   x16 = 2 (a script for StikDebug to run) and unknown commands are skipped.
 ///
 /// Blocks for up to `wait_seconds` waiting for the first request (UTM asks when a VM
 /// starts). Returns `{ok, pid, events, preparedBytes, detached}`.
@@ -833,6 +834,11 @@ pub unsafe extern "C" fn apparition_launch_jit(
                         break;
                     }
                     Some(0xf00d) => match gdb.register(X16, thread).await? {
+                        // Nothing to prepare (StikDebug's script answers this with nothing too).
+                        1 if gdb.register(0, thread).await? == 0 && gdb.register(1, thread).await? == 0 => {
+                            gdb.set_register(PC, thread, pc + 4).await?;
+                            log(&mut events, "brk #0xf00d prepare: nothing asked".into());
+                        }
                         1 => {
                             let (mut address, length) = (gdb.register(0, thread).await?, gdb.register(1, thread).await?);
                             if address == 0 {
@@ -850,7 +856,8 @@ pub unsafe extern "C" fn apparition_launch_jit(
                         // Experimental, Apparition only: copy x2 bytes from x1 to x0, which may be the
                         // app's own signed __TEXT (debugserver writes through VM_PROT_COPY).
                         // x0 = 0 on success. Used to test whether patched text runs after detach.
-                        2 => {
+                        // Not 2: that's StikDebug's "here is a script", handled below.
+                        0x4150 => {
                             let (destination, source, length) =
                                 (gdb.register(0, thread).await?, gdb.register(1, thread).await?, gdb.register(2, thread).await?);
                             let result = if length == 0 || length > 4096 {
@@ -870,7 +877,14 @@ pub unsafe extern "C" fn apparition_launch_jit(
                             detached = true;
                             break;
                         }
-                        other => bail!("unsupported JIT26 command {other}"),
+                        // 2 hands StikDebug a script of breakpoint handlers to run, and anything
+                        // else is someone else's extension: skip it rather than end the session,
+                        // as StikDebug does with commands it doesn't know.
+                        other => {
+                            gdb.set_register(PC, thread, pc + 4).await?;
+                            log(&mut events, format!("brk #0xf00d: skipped command {other:#x}{}",
+                                                     if other == 2 { " (a StikDebug script; Apparition runs none)" } else { "" }));
+                        }
                     },
                     _ => {
                         // Not ours: hand the signal back to the app and keep waiting.

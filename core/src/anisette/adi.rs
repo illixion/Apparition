@@ -74,10 +74,6 @@ impl Exports {
         }
     }
 
-    pub(crate) fn is_provisioned(&self) -> bool {
-        self.login_code() == 0
-    }
-
     /// 0 when the selected identity is provisioned, else ADI's reason.
     pub(crate) fn login_code(&self) -> i32 {
         unsafe { (self.login_code)(DS_ID) }
@@ -201,7 +197,7 @@ mod tests {
         let provisioned = adi
             .run(move |adi| {
                 adi.select("0123456789ABCDEF", &folder2).unwrap();
-                adi.is_provisioned()
+                adi.login_code() == 0
             })
             .unwrap();
         assert!(!provisioned, "a new folder has nothing provisioned");
