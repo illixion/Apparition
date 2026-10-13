@@ -4,7 +4,7 @@ From https://github.com/nab138/isideload at 0bee45d8cdb07ca24524a26f38fdda0dbb4e
 LICENSE alongside), used as core's `isideload` dependency by path. `readme` in Cargo.toml points
 at this folder's README.md instead of the repository's.
 
-One change, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Two changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -18,3 +18,9 @@ A second change: the GrandSlam client also trusts Apple Root CA - G3
 (src/assets/AppleRootCA-G3.cer, src/auth/grandslam.rs). gsd.apple.com, where machine
 provisioning goes, chains to it rather than to Apple Root CA; macOS trusts it anyway, but Linux's
 trust store doesn't, so provisioning failed there with "error sending request".
+
+A third change: it signs with core's signer (`apparition-signer`, core/signer, over indygreg's
+apple-codesign, MPL-2.0) instead of `apple-codesign-quick`, which is LGPL. Cargo.toml depends on
+it by path, and src/sideload/sign.rs, cert_identity.rs and sideloader.rs import
+`ProvisioningProfile`, `BundleSigningSettings`, `Signer` (was `RustCryptoCmsSigner`, whose `new`
+now returns a `Result`) and `sign_bundle` from it.

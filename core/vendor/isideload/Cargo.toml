@@ -62,7 +62,7 @@ futures = "0.3.32"
 ws_stream_wasm = { version = "0.7.5", optional = true}
 web-time = "1"
 x509-cert = "0.2.5"
-apple-codesign-quick = "0.1.0"
+apparition-signer = { path = "../../signer" }
 
 
 # There is a bug in rustls-platform-verifier that causes an invalid certificate error with apple's root cert.

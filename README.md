@@ -255,7 +255,8 @@ anisette server" next to the companion; nothing switches on its own.
     SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab BUILD_BUNDLE_ID=com.illixion.apparition.lab \
         build-and-sign --no-mcp    # the lab app
 
-Licensed MIT.
+Licensed MIT. Signing (`core/signer`) builds on [apple-codesign](https://github.com/indygreg/apple-platform-rs)
+(MPL-2.0), used unmodified from crates.io.
 
 ## History
 

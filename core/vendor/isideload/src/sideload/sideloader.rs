@@ -18,7 +18,7 @@ use crate::{
 
 use std::path::PathBuf;
 
-use apple_codesign_quick::ProvisioningProfile;
+use apparition_signer::ProvisioningProfile;
 use idevice::provider::IdeviceProvider;
 use plist::Dictionary;
 use rootcause::{option_ext::OptionExt, prelude::*};

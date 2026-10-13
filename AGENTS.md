@@ -4,9 +4,11 @@ An on-device sideloader for Apple Vision Pro (and later iPhone/iPad): it reads
 AltStore-format source JSON, signs apps with the user's own Apple ID, installs
 and refreshes them, and launches them with debugger-prepared JIT.
 
-- Licence hygiene: the project is MIT. Depend on MIT crates only
-  (jkcoxson/idevice, nab138/isideload). SideStore, AltStore and StikDebug are
-  AGPL-3.0: read them for behaviour, never copy their code.
+- Licence hygiene: the project is MIT. Depend on MIT and other permissive crates only
+  (jkcoxson/idevice, nab138/isideload); never GPL, LGPL or AGPL code. MPL-2.0 is fine
+  unmodified from crates.io: the signer (core/signer) builds on indygreg's apple-codesign,
+  so change our layer, never its files. SideStore, AltStore, StikDebug and Sideloader are
+  (A)GPL: read them for behaviour, never copy their code.
 - Distribution is GitHub only, signed by the installing user. No App Store target.
 - Keep the app free of app groups and app extensions, so a free Apple ID can
   build and run it straight from Xcode as the first install.

@@ -1,0 +1,18 @@
+[package]
+name = "apparition-signer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Signs app bundles for Apparition with an imported or Apple ID certificate, on top of apple-codesign"
+
+[dependencies]
+# indygreg's apple-codesign (MPL-2.0), used unmodified from crates.io. Without its default
+# `notarize` feature, which brings the AWS SDK.
+apple-codesign = { version = "0.29.0", default-features = false }
+# The certificate and key types apple-codesign signs with, and the CMS parser for profiles,
+# at the versions it uses.
+x509-certificate = "0.24.0"
+cryptographic-message-syntax = "0.27.0"
+plist = "1"
+rsa = "0.9.10"
+x509-cert = "0.2.5"

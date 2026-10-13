@@ -23,7 +23,6 @@ tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "si
 
 # The core's patches apply only where it is the root, so they're repeated here.
 [patch.crates-io]
-apple-codesign-quick = { path = "../core/vendor/apple-codesign-quick" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
 
 # Argon2id (sealing shared signing keys) takes seconds unoptimised; debug builds optimise it.

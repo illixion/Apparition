@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use apple_codesign_quick::{
-    BundleSigningSettings, ProvisioningProfile, RustCryptoCmsSigner, sign_bundle,
-};
+use apparition_signer::{BundleSigningSettings, ProvisioningProfile, Signer, sign_bundle};
 
 use plist::Dictionary;
 use rootcause::prelude::*;
@@ -32,11 +30,11 @@ where
     let profile = ProvisioningProfile::parse(main_provisioning_profile.encoded_profile.as_ref())?;
     let certificate_chain = cert_identity.profile_to_certificate_chain(&profile)?;
 
-    let signer = RustCryptoCmsSigner::new(
+    let signer = Signer::new(
         cert_identity.private_key.clone(),
         cert_identity.certificate.clone(),
         certificate_chain,
-    );
+    )?;
     if let Some(callback) = &progress_callback {
         callback(0.4).await;
     }

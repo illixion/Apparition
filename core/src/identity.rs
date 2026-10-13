@@ -19,7 +19,7 @@ use std::{
     time::SystemTime,
 };
 
-use apple_codesign_quick::{BundleSigningSettings, ProvisioningProfile, RustCryptoCmsSigner, sign_bundle};
+use apparition_signer::{BundleSigningSettings, ProvisioningProfile, Signer, sign_bundle};
 use isideload::sideload::{application::Application, cert_identity};
 use p12_keystore::{KeyStore, KeyStoreEntry, Pkcs12ImportPolicy};
 use plist::{Dictionary, Value as Plist};
@@ -789,7 +789,7 @@ pub fn sign_offline(
         }
 
         let certificate_chain = chain(&identity.certificate, &main.parsed)?;
-        let signer = RustCryptoCmsSigner::new(identity.key.clone(), identity.certificate.clone(), certificate_chain);
+        let signer = Signer::new(identity.key.clone(), identity.certificate.clone(), certificate_chain)?;
         let mut settings =
             BundleSigningSettings::new(main.team(), entitlements_for(main, &main_id, previous.as_ref()), Some(&signer));
         settings.embedded_mobileprovision = Some(&main.data);
@@ -842,7 +842,7 @@ pub(crate) fn sign_keeping_bundle_id(
     app.bundle.write_info()?;
 
     let chain = chain(&certificate, &profile.parsed)?;
-    let signer = RustCryptoCmsSigner::new(key, certificate, chain);
+    let signer = Signer::new(key, certificate, chain)?;
     // Minimal: only what every development profile grants, nothing a capability adds.
     let entitlements = if minimal {
         let team = profile.team().to_string();

@@ -13,7 +13,7 @@ crate-type = ["staticlib", "rlib"]
 # Linked here, rather than as a second static library, so the app carries one Rust runtime.
 idevice-ffi = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065", default-features = false, features = ["ring", "core_device", "debug_proxy", "rsd", "remote_pairing", "tcp", "tunnel_tcp_stack", "afc", "house_arrest", "installation_proxy", "usbmuxd"] }
-# Vendored at 0bee45d with one change (code_after_login); see vendor/isideload/VENDORED.md.
+# Vendored at 0bee45d with two changes (code_after_login, signing with signer/); see vendor/isideload/VENDORED.md.
 isideload = { path = "vendor/isideload", default-features = false, features = ["install", "tokio-mt"] }
 rootcause = "0.12.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
@@ -28,7 +28,8 @@ zip = { version = "8.3", default-features = false, features = ["deflate"] }
 plist = "1"
 crc32fast = "1"
 # Offline signing with an imported certificate (identity.rs), at the versions isideload uses.
-apple-codesign-quick = "0.1.0"
+# The signer (signer/) is ours, over indygreg's apple-codesign; isideload signs with it too.
+apparition-signer = { path = "signer" }
 p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
 rsa = "0.9.10"
 x509-cert = "0.2.5"
@@ -62,8 +63,6 @@ tokio = { version = "1.49", features = ["macros"] }
 # isideload depends on idevice from crates.io; use the same revision the FFI is built from,
 # so the binary carries one copy of it.
 [patch.crates-io]
-# Signs ExtensionKit extensions (Extensions/) too; see vendor/apple-codesign-quick/VENDORED.md.
-apple-codesign-quick = { path = "vendor/apple-codesign-quick" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
 
 # Argon2id (sealing shared signing keys) takes seconds unoptimised; debug builds optimise it.
