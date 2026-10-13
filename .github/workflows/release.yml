@@ -129,6 +129,9 @@ jobs:
       # built afresh, which compiles the Tauri CLI each time.
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
+        env:
+          # No build record artifact: the attest job wants only the release's own.
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: Apparition/scripts
           file: Apparition/scripts/desktop-linux.Dockerfile
@@ -175,6 +178,9 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: files
+          # The build jobs' own artifacts, nothing another action uploaded (a Docker build
+          # record failed its digest check every time).
+          pattern: "{apple,linux}-*"
           merge-multiple: true
       - name: List
         run: |
