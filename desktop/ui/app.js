@@ -334,8 +334,8 @@ function pair() {
     howto.replaceChildren();
     for (const text of [
       "Keep it plugged into this computer, and unlocked.",
-      "If it asks whether to trust this computer, tap Trust and enter its passcode.",
       "Keep it on the same Wi-Fi as this computer, then select Start pairing. No code is needed.",
+      "If it asks whether to trust this computer, tap Trust and enter its passcode.",
     ]) {
       const li = document.createElement("li");
       li.textContent = text;
@@ -348,6 +348,8 @@ function pair() {
     back.disabled = true;
     const usb = target?.kind === "usb";
     setStatus(status, usb ? "Pairing over the cable, then looking for it on Wi-Fi…" : "Waiting for the headset to show its code…");
+    // Over the cable, the device may first ask whether to trust this computer.
+    const stop = usb ? await listen("pair-status", (/** @type {any} */ e) => setStatus(status, `${e.payload} Pairing continues once it's trusted…`)) : null;
     try {
       const device = usb
         ? await invoke("pair_usb_device", { udid: target.udid })
@@ -362,6 +364,7 @@ function pair() {
       setStatus(status, pairingError(error), error?.cancelled ? "" : "error");
       start.textContent = "Try again";
     } finally {
+      stop?.();
       setBusy(start, false);
       back.disabled = false;
     }

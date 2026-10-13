@@ -83,12 +83,18 @@ pub async fn usb_devices() -> Result<Vec<UsbDevice>, Report> {
 }
 
 /// Pairs with `udid` through usbmuxd and lockdown: remotepairingdeviced's lockdown service
-/// creates the RemotePairing record (no PIN; the computer has to be trusted already, which
-/// the device asks for when it's first plugged in). Fills in `pairing`, the same record the
-/// PIN flow makes, so every later connection is over the network. Returns the device's
-/// identity, read over the same lockdown connection.
-pub async fn pair_usb(udid: &str, hostname: &str, pairing: &mut RpPairingFile) -> Result<DeviceInfo, Report> {
-    use idevice::{IdeviceService, remote_pairing::RemotePairingLockdownService};
+/// creates the RemotePairing record (no PIN). It needs usbmuxd's lockdown pair record for the
+/// device; when there's none (Linux, where nothing makes one), this computer asks the device
+/// to trust it first, and `waiting` hears once that it's waiting for the user to tap Trust.
+/// Fills in `pairing`, the same record the PIN flow makes, so every later connection is over
+/// the network. Returns the device's identity, read over the same lockdown connection.
+pub async fn pair_usb(
+    udid: &str,
+    hostname: &str,
+    pairing: &mut RpPairingFile,
+    waiting: &(dyn Fn(&str) + Send + Sync),
+) -> Result<DeviceInfo, Report> {
+    use idevice::{IdeviceService, provider::IdeviceProvider, remote_pairing::RemotePairingLockdownService};
     let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.context("Can't reach usbmuxd")?;
     let devices = usbmuxd.get_devices().await?;
     // Prefer the cable: lockdown services that set up pairing may refuse the network.
@@ -98,11 +104,23 @@ pub async fn pair_usb(udid: &str, hostname: &str, pairing: &mut RpPairingFile) -
         .min_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb))
         .ok_or_else(|| report!("{udid} isn't connected. Plug it in with a cable and unlock it."))?;
     let provider = device.to_provider(idevice::usbmuxd::UsbmuxdAddr::default(), "apparition");
+    let pairing_file = match provider.get_pairing_file().await {
+        Ok(file) => file,
+        #[cfg(feature = "desktop")]
+        Err(_) => {
+            trust(&mut usbmuxd, &provider, udid, hostname, waiting).await?;
+            provider_pairing_file(&provider).await?
+        }
+        #[cfg(not(feature = "desktop"))]
+        Err(_) => {
+            let _ = waiting;
+            provider_pairing_file(&provider).await?
+        }
+    };
     let info = {
         let mut lockdown = LockdownClient::connect(&provider)
             .await
             .context("Can't reach lockdown. Unlock the device and tap Trust if it asks.")?;
-        let pairing_file = provider_pairing_file(&provider).await?;
         lockdown.start_session(&pairing_file).await.context("This computer isn't trusted by the device yet. Unlock it, tap Trust, then try again.")?;
         let mut value = async |key: &str| -> Result<String, Report> {
             let value = lockdown.get_value(Some(key), None).await?;
@@ -121,6 +139,71 @@ pub async fn pair_usb(udid: &str, hostname: &str, pairing: &mut RpPairingFile) -
     let mut client = service.into_client(hostname)?;
     client.connect(pairing, async || "000000".to_string()).await.context("Pairing failed")?;
     Ok(info)
+}
+
+/// Makes usbmuxd's lockdown pair record for `udid`, as Finder or Apple Devices would: lockdown
+/// pairing with a new host certificate, which the device shows as "Trust This Computer?". Waits
+/// up to two minutes for the user to unlock it and tap Trust, then saves the record to usbmuxd
+/// (SavePairRecord), where later runs, and the system, find it.
+#[cfg(feature = "desktop")]
+async fn trust(
+    usbmuxd: &mut idevice::usbmuxd::UsbmuxdConnection,
+    provider: &idevice::provider::UsbmuxdProvider,
+    udid: &str,
+    hostname: &str,
+    waiting: &(dyn Fn(&str) + Send + Sync),
+) -> Result<(), Report> {
+    use idevice::{IdeviceError, IdeviceService};
+    use std::time::{Duration, Instant};
+    let buid = usbmuxd.get_buid().await.context("usbmuxd didn't give its system BUID")?;
+    let host_id = random_uuid();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut name = None;
+    let mut asked = false;
+    loop {
+        let mut lockdown = LockdownClient::connect(provider)
+            .await
+            .context("Can't reach lockdown. Keep the device plugged in and unlocked.")?;
+        if name.is_none() {
+            // Lockdown tells an untrusted computer the device's name.
+            name = lockdown.get_value(Some("DeviceName"), None).await.ok().and_then(|v| v.as_string().map(str::to_string));
+        }
+        let device = name.as_deref().unwrap_or("the device");
+        match lockdown.pair_once(host_id.as_str(), buid.as_str(), Some(hostname)).await {
+            Ok(mut record) => {
+                record.udid = Some(udid.to_string());
+                let record = record.serialize().context("Can't write the pair record")?;
+                usbmuxd.save_pair_record(udid, record).await.context("usbmuxd didn't save the pair record")?;
+                return Ok(());
+            }
+            Err(IdeviceError::PairingDialogResponsePending | IdeviceError::PasswordProtected) => {
+                if !asked {
+                    waiting(&format!("Unlock {device} and tap Trust, then enter its passcode."));
+                    asked = true;
+                }
+            }
+            Err(IdeviceError::UserDeniedPairing) => {
+                bail!("{device} doesn't trust this computer (Don't Trust was tapped). Unplug it and plug it back in to be asked again, then pair again.");
+            }
+            Err(error) => Err(error).context(format!("{device} refused to pair with this computer"))?,
+        }
+        if Instant::now() >= deadline {
+            bail!("{device} wasn't trusted in time. Unlock it, tap Trust and enter its passcode, then pair again.");
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// A random (version 4) UUID in capitals, the form lockdown's HostID takes.
+#[cfg(feature = "desktop")]
+fn random_uuid() -> String {
+    use ring::rand::SecureRandom;
+    let mut b = [0u8; 16];
+    let _ = ring::rand::SystemRandom::new().fill(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|x| format!("{x:02X}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
 }
 
 async fn provider_pairing_file(
@@ -501,19 +584,23 @@ mod desktop {
             super::connect(SocketAddr::new(device.address, device.port), &hostname(), &mut pairing, pin).await
         }
 
-        /// Pairs with an iPhone or iPad over usbmuxd (it has no PIN screen, and must trust this
-        /// computer already), then finds its own `_remotepairing._tcp` service over mDNS (its
+        /// Pairs with an iPhone or iPad over usbmuxd (it has no PIN screen; if it doesn't trust
+        /// this computer yet, it's asked to, and `waiting` hears what to do on it), then finds its own `_remotepairing._tcp` service over mDNS (its
         /// port isn't fixed as on visionOS) by trying each until one answers to the new record.
         /// Also makes and keeps a record for Apparition on the device, which
         /// [`DeviceStore::hand_over_pairing`] gives it at install.
-        pub async fn pair_usb(&self, udid: &str) -> Result<(PairedDevice, super::DeviceInfo), Report> {
+        pub async fn pair_usb(
+            &self,
+            udid: &str,
+            waiting: &(dyn Fn(&str) + Send + Sync),
+        ) -> Result<(PairedDevice, super::DeviceInfo), Report> {
             let hostname = hostname();
             let mut pairing = RpPairingFile::generate(&hostname);
-            let info = super::pair_usb(udid, &hostname, &mut pairing).await?;
+            let info = super::pair_usb(udid, &hostname, &mut pairing, waiting).await?;
             // Apparition on the device can't pair with its own device either, so it gets a
             // record of its own (under its name, so the device lists it separately).
             let mut app_pairing = RpPairingFile::generate(APP_PAIRING_HOST);
-            super::pair_usb(udid, APP_PAIRING_HOST, &mut app_pairing).await?;
+            super::pair_usb(udid, APP_PAIRING_HOST, &mut app_pairing, waiting).await?;
             let pairings = self.dir.join("pairings");
             std::fs::create_dir_all(&pairings)?;
             std::fs::write(pairings.join(format!("{}.app.plist", info.udid)), app_pairing.to_bytes())?;

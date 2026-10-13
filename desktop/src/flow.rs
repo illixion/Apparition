@@ -310,13 +310,17 @@ pub async fn usb_devices(state: Shared<'_>) -> Result<Vec<Value>, Failure> {
     .await
 }
 
-/// Pairs with an iPhone or iPad over usbmuxd: no PIN, but it must trust this computer, and
-/// then be found on the network.
+/// Pairs with an iPhone or iPad over usbmuxd: no PIN, but it must trust this computer (if it
+/// doesn't yet, it asks, and `pair-status` says what to do on it), and then be found on the
+/// network.
 #[tauri::command]
-pub async fn pair_usb_device(state: Shared<'_>, udid: String) -> Result<DeviceView, Failure> {
+pub async fn pair_usb_device(app: AppHandle, state: Shared<'_>, udid: String) -> Result<DeviceView, Failure> {
     let state = state.inner().clone();
     blocking(move || {
-        let (device, info) = block_on(state.store.pair_usb(&udid))?;
+        let waiting = |what: &str| {
+            let _ = app.emit("pair-status", what);
+        };
+        let (device, info) = block_on(state.store.pair_usb(&udid, &waiting))?;
         Ok(DeviceView::of(&device, Some(&info)))
     })
     .await

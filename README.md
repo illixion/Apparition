@@ -134,10 +134,15 @@ Apparition (or any IPA) on the headset without Xcode, using the same Rust core, 
 companion (`apparition relay`, `apparition anisette serve|up|down`):
 
     apparition pair       # with Settings > General > Remote Devices open; type the PIN
+    apparition pair --usb # an iPhone or iPad on a cable; tap Trust on it if it asks
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969
     apparition relay      # the companion, with this computer's anisette (not on Windows); until Ctrl-C
+
+On Linux, `pair --usb` needs usbmuxd running. Nothing else there makes the device trust the
+computer (Finder and Apple Devices do on macOS and Windows), so Apparition asks it itself and
+saves the record to usbmuxd; there's no need for `idevicepair`.
 
 Without an IPA it installs the latest signed release of Apparition (see Releases).
 
