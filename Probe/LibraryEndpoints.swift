@@ -137,5 +137,20 @@ enum LibraryEndpoints {
                 return await model.pendingBackgroundTasks()
             },
         ])
+        #if DEBUG
+        DebugSurface.shared.register([
+            .command("sampleAppLimit", "Debug builds: show the free-profile app-limit card for the installd error an iPhone gave (or `error`), as if installing `appId` hit it. Nothing is installed or removed until a Remove is confirmed on the device",
+                     parameters: [
+                        .string("appId", "A library app's id to retry; defaults to the first one"),
+                        .string("error", "The install error to parse instead of the sample"),
+                     ]) { args in
+                let error = args.string("error") ?? AppLimit.sampleError
+                guard let blocking = model.showAppLimit(error, appId: args.string("appId")) else {
+                    throw DebugError.invalidArgument("not an app-limit error", hint: "It must contain \"\(AppLimit.marker)\"")
+                }
+                return blocking
+            },
+        ])
+        #endif
     }
 }

@@ -71,6 +71,10 @@ struct BrowseView: View {
                         Text(status).foregroundStyle(.secondary)
                     }
                 }
+            } else if let limit = library.appLimit {
+                Section {
+                    AppLimitView(model: model, library: library, limit: limit)
+                }
             } else if let status = library.status, status.contains("error") {
                 Section {
                     Note(text: status, kind: .error)

@@ -85,6 +85,9 @@ final class LibraryModel {
     private(set) var refreshRuns: [RefreshRun] = []
     private(set) var selfRecord = SelfRecord()
     private(set) var updateCheck = UpdateCheck()
+    /// Set when the last install hit installd's free-profile app limit; cleared by the next
+    /// install that gets past it, fails otherwise, or is dismissed.
+    private(set) var appLimit: AppLimit?
     /// This copy of Apparition, read once: its profile only changes with a reinstall, which relaunches.
     let selfApp = SelfApp.current()
     /// The result key for Apparition itself in a refresh run.
@@ -259,6 +262,77 @@ final class LibraryModel {
         log.info("removed an app from the library")
     }
 
+    // MARK: The free-profile app limit
+
+    func dismissAppLimit() {
+        appLimit = nil
+    }
+
+    /// Deletes `bundleId` from the device to free a slot under the app limit, then retries the
+    /// install that hit it. A library app removed this way is forgotten too, or its next
+    /// refresh would take the slot back. Never Apparition itself.
+    func removeForAppLimit(_ bundleId: String) async {
+        guard let limit = appLimit, bundleId != Bundle.main.bundleIdentifier, !busy else { return }
+        appLimit?.removalError = nil
+        var outcome = "busy"
+        await exclusive("remove \(displayName(of: bundleId))") {
+            outcome = await self.probe.uninstall(host: self.probe.defaultTunnelHost, port: self.probe.defaultTunnelPort,
+                                                 bundleId: bundleId)
+            return outcome
+        }
+        guard outcome == "ok" else {
+            appLimit?.removalError = outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome
+            log.error("removing an app for the app limit failed")
+            return
+        }
+        log.info("removed \(bundleId, privacy: .private(mask: .hash)) for the app limit")
+        if let managed = installed.first(where: { $0.installedBundleId == bundleId }) {
+            removeInstalled(managed.id)
+        }
+        appLimit = nil
+        await retry(limit.retry)
+    }
+
+    /// Runs the install that hit the limit again (after the user deleted an app themselves).
+    func retryAfterAppLimit() async {
+        guard let limit = appLimit, !busy else { return }
+        await retry(limit.retry)
+    }
+
+    private func retry(_ retry: AppLimit.Retry) async {
+        switch retry {
+        case .app(let id): await refresh(appId: id)
+        case .selfRefresh: await refreshSelf()
+        case .selfUpdate: await updateSelf()
+        }
+    }
+
+    #if DEBUG
+    /// Shows the app-limit card for `error` as if installing `appId` (default: the first
+    /// library app) hit it. Returns the parsed bundle IDs, or nil when it isn't that error.
+    func showAppLimit(_ error: String, appId: String?) -> [String]? {
+        guard let blocking = AppLimit.blockingApps(in: error) else { return nil }
+        let record = installed.first { $0.id == appId } ?? installed.first
+        appLimit = AppLimit(blocking: blocking, appName: record?.name ?? "UTM", retry: .app(id: record?.id ?? appId ?? "-"))
+        return blocking
+    }
+    #endif
+
+    /// What the user calls an app on the device: the library's name, the last app listing's,
+    /// or the bundle ID.
+    func displayName(of bundleId: String) -> String {
+        if bundleId == Bundle.main.bundleIdentifier { return "Apparition" }
+        return installed.first { $0.installedBundleId == bundleId }?.name
+            ?? probe.deviceApps.first { $0.bundleId == bundleId }?.name
+            ?? bundleId
+    }
+
+    /// The icon a library app's source lists, for an app on the device.
+    func iconURL(of bundleId: String) -> URL? {
+        installed.first { $0.installedBundleId == bundleId }
+            .flatMap(sourceApp(for:))?.iconURL.flatMap(URL.init(string:))
+    }
+
     /// Chooses what signs an app from its next refresh on (nil: the default).
     func setSigner(_ signer: String?, for id: String) {
         guard let index = installed.firstIndex(where: { $0.id == id }) else { return }
@@ -304,8 +378,13 @@ final class LibraryModel {
         let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           sourceIPA: path)
         try? FileManager.default.removeItem(atPath: signedPath)
+        if let blocking = AppLimit.blockingApps(in: outcome) {
+            appLimit = AppLimit(blocking: blocking, appName: record.name, retry: .app(id: record.id))
+            return fail(&record, Self.appLimitMessage(blocking), logged: "free-profile app limit reached")
+        }
+        appLimit = nil
         guard outcome == "ok" else {
-            return fail(&record, "install failed (LocalDevVPN connected, or the companion running?): \(outcome)")
+            return fail(&record, Self.installFailure(outcome))
         }
         record.installedBundleId = main?.bundleId
         record.signedAt = DebugTime.iso(Date())
@@ -463,8 +542,13 @@ final class LibraryModel {
             return "ok, waiting: close Apparition to \(what) (expires \(main?.profileExpires ?? "?"))"
         }
         selfRecord.pending = nil
+        if let blocking = AppLimit.blockingApps(in: outcome) {
+            appLimit = AppLimit(blocking: blocking, appName: "Apparition", retry: update == nil ? .selfRefresh : .selfUpdate)
+            return selfFail(Self.appLimitMessage(blocking), logged: "free-profile app limit reached")
+        }
+        appLimit = nil
         guard outcome == "ok" else {
-            return selfFail("install failed (LocalDevVPN connected, or the companion running?): \(outcome)")
+            return selfFail(Self.installFailure(outcome))
         }
         selfRecord.signedAt = DebugTime.iso(Date())
         selfRecord.signedWith = signedWith
@@ -473,10 +557,11 @@ final class LibraryModel {
         return "ok, expires \(main?.profileExpires ?? "?") (applies when Apparition next opens)"
     }
 
-    private func selfFail(_ message: String) -> String {
+    /// `logged` replaces the message in the log when it names other apps.
+    private func selfFail(_ message: String, logged: String? = nil) -> String {
         selfRecord.lastError = message
         save()
-        log.error("Apparition: \(message, privacy: .public)")
+        log.error("Apparition: \(logged ?? message, privacy: .public)")
         return "error: \(message)"
     }
 
@@ -504,10 +589,24 @@ final class LibraryModel {
         log.info("self-refresh finished after relaunch: \(outcome.hasPrefix("ok") ? "ok" : "failed", privacy: .public)")
     }
 
-    private func fail(_ record: inout InstalledApp, _ message: String) -> String {
+    /// `logged` replaces the message in the log when it names other apps.
+    private func fail(_ record: inout InstalledApp, _ message: String, logged: String? = nil) -> String {
         record.lastError = message
-        log.error("\(record.name, privacy: .public): \(message, privacy: .public)")
+        log.error("\(record.name, privacy: .public): \(logged ?? message, privacy: .public)")
         return "error: \(message)"
+    }
+
+    /// Blames LocalDevVPN or the companion only when the tunnel or the service connection
+    /// failed; past that, installd answered and its reason is the whole story.
+    private static func installFailure(_ outcome: String) -> String {
+        let reason = outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome
+        let unreachable = reason.contains("tunnel via") || reason.contains("connect failed")
+        return unreachable ? "install failed (LocalDevVPN connected, or the companion running?): \(reason)" : "install failed: \(reason)"
+    }
+
+    private static func appLimitMessage(_ blocking: [String]) -> String {
+        "this \(ThisDevice.noun) already has \(blocking.isEmpty ? "the most" : "\(blocking.count)") apps signed by free Apple IDs that \(ThisDevice.os) allows: "
+            + (blocking.isEmpty ? "remove one, then try again" : blocking.joined(separator: ", "))
     }
 
     private func download(_ app: Sources.App) async throws -> String {

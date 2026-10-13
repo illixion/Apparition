@@ -85,6 +85,9 @@ struct LibraryView: View {
     @ViewBuilder
     private var content: some View {
         VStack(alignment: .leading, spacing: 24) {
+            if let limit = library.appLimit, !library.busy {
+                Card { AppLimitView(model: model, library: library, limit: limit) }
+            }
             if library.installed.isEmpty && otherApps.isEmpty && model.deviceAppsFetchedAt == nil {
                 if let me = library.selfApp { selfCard(me) }
                 emptyState

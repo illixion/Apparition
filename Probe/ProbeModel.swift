@@ -350,6 +350,29 @@ final class ProbeModel {
         return outcome
     }
 
+    /// Deletes `bundleId` and its data from the device through the tunnel, and drops it from
+    /// the kept app list. Returns "ok" or what failed.
+    @discardableResult
+    func uninstall(host: String, port: Int, bundleId: String) async -> String {
+        let target = tunnelTarget(host: host, port: port)
+        let outcome = await run(action: "uninstall", host: host, port: port) { file, box in
+            let reply = try IDevice.uninstall(target: target, hostname: Self.hostname, file: file,
+                                              pin: PinBox.callback, context: box, bundleId: bundleId)
+            guard reply["ok"] as? Bool == true else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "uninstall failed")
+            }
+            return { _ in }
+        }
+        if outcome == "ok" {
+            deviceApps.removeAll { $0.bundleId == bundleId }
+            if let fetchedAt = deviceAppsFetchedAt,
+               let data = try? JSONEncoder().encode(StoredApps(fetchedAt: fetchedAt, apps: deviceApps)) {
+                try? data.write(to: Self.deviceAppsURL, options: .atomic)
+            }
+        }
+        return outcome
+    }
+
     private func loadDeviceApps() {
         guard let data = try? Data(contentsOf: Self.deviceAppsURL),
               let stored = try? JSONDecoder().decode(StoredApps.self, from: data) else { return }
@@ -420,7 +443,9 @@ final class ProbeModel {
             log.info("\(action, privacy: .public) ok")
         case .failure(let error):
             attempts[0].outcome = "error: \(error)"
-            log.error("\(action, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            // The app-limit error lists other apps' bundle IDs, which stay out of the log.
+            let reason = AppLimit.blockingApps(in: "\(error)") == nil ? String(describing: error) : "free-profile app limit reached"
+            log.error("\(action, privacy: .public) failed: \(reason, privacy: .public)")
         }
         return attempts[0].outcome ?? "unknown"
     }
