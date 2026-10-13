@@ -129,4 +129,5 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ env.VERSION }}
-          path: files/*
+          # Only the release's own files: publish.py takes every file in the folder as one.
+          path: files/Apparition-*
