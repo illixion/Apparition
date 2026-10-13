@@ -23,6 +23,7 @@ use rootcause::prelude::*;
 pub mod api;
 pub mod release;
 pub(crate) mod account;
+pub mod errors;
 pub mod claimed_platform;
 mod share;
 mod identity;
@@ -280,6 +281,7 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 fn runtime() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {
         let _ = rustls::crypto::ring::default_provider().install_default();
+        errors::install_hooks();
         let _ = isideload::init();
         tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime")
     })
@@ -389,7 +391,7 @@ fn reply(result: Result<Value, Report>) -> *mut c_char {
         }
         Ok(other) => json!({"ok": true, "value": other}),
         Err(error) => {
-            let text = format!("{error}");
+            let text = errors::describe(&error);
             // A security-key-only account answers the 2FA step with a WebAuthn challenge, and
             // isideload reports the raw response (account name, key names) as the error.
             if text.contains("fsaChallenge") {

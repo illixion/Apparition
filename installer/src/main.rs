@@ -127,7 +127,7 @@ async fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("error: {}", api::describe(&error));
             ExitCode::FAILURE
         }
     }

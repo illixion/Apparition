@@ -116,7 +116,7 @@ impl Failure {
 
 impl From<Report> for Failure {
     fn from(error: Report) -> Self {
-        Self::new(error.to_string())
+        Self::new(api::describe(&error))
     }
 }
 

@@ -19,6 +19,7 @@ use idevice::{
 use rootcause::prelude::*;
 use serde_json::Value;
 
+pub use crate::errors::describe;
 pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
@@ -30,6 +31,8 @@ pub use crate::{
 /// Sets up what the core's crypto and isideload need. Call once, before anything else.
 pub fn init() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    // Before isideload's, which then leaves these in place (errors.rs).
+    crate::errors::install_hooks();
     let _ = isideload::init();
 }
 
