@@ -184,7 +184,11 @@ jobs:
           merge-multiple: true
       - name: List
         run: |
-          cd files && ls -l && sha256sum * | tee SHA256SUMS
+          set -o pipefail
+          # Each build uploads build/release/<version>/; merged, they can keep that folder.
+          find files -mindepth 2 -type f -name 'Apparition-*' -exec mv -n {} files/ \;
+          find files -mindepth 1 -type d -empty -delete
+          cd files && ls -l && sha256sum Apparition-* | tee SHA256SUMS
           { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/attest-build-provenance@v4
         with:
