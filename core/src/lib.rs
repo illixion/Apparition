@@ -23,6 +23,7 @@ use rootcause::prelude::*;
 pub mod api;
 pub mod release;
 pub(crate) mod account;
+pub mod claimed_platform;
 mod share;
 mod identity;
 mod ipa;
@@ -132,7 +133,8 @@ pub fn builtin_anisette_available() -> bool {
 
 /// Whether the built-in anisette uses this Mac's own headers (macOS 26 and earlier, or macOS 27
 /// with SIP and AMFI off and the helper beside this program) rather than Apple's Android
-/// libraries, which Apple refuses for sign-in since 2026-10-12. Found once; it can take a moment.
+/// libraries. Both sign in; a Mac's own goes through the usual 2FA (see claimed_platform).
+/// Found once; it can take a moment.
 pub fn native_anisette() -> bool {
     #[cfg(all(feature = "anisette", target_os = "macos"))]
     {
@@ -145,7 +147,7 @@ pub fn native_anisette() -> bool {
 }
 
 /// What Apple's `-80045` ("This action cannot be completed at this time") means here.
-pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045). Since 12 October 2026 Apple turns away anisette made by Apple's Android libraries, which most anisette servers and this app's built-in one off a Mac use. A Mac's own anisette still works: run Apparition's companion on a Mac with macOS 26 or earlier (or macOS 27 with SIP and AMFI turned off) and sign in with its anisette. With a paid developer account, a certificate and profile you make on Apple's developer website need no sign-in at all.";
+pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition says Android for anisette from Apple's Android libraries (what anisette servers run) and a Mac for a Mac's own, so this anisette server makes neither. Use the built-in anisette, Apparition's companion, or another anisette-v3 server.";
 
 /// The v3 server address to use for `requested`: itself, or the built-in provider's, which is
 /// started on first use and stays up for the life of the process.
@@ -187,28 +189,40 @@ pub async fn sign_in(
     std::fs::create_dir_all(data_dir)?;
     let storage_path = data_dir.join("storage.json");
     let anisette_url = anisette_address(anisette_url, data_dir).await?;
-    let anisette =
-        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?;
+    // Claim the platform the anisette was made on, or Apple refuses the sign-in (claimed_platform).
+    let served = claimed_platform::served_by(&anisette_url).await;
+    let anisette = claimed_platform::ClaimedPlatform::new(
+        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?,
+        served,
+    );
     let two_factor = &two_factor;
-    let mut account = AppleAccount::builder(email)
-        .anisette_provider(anisette)
-        .login(&password, |params: TwoFactorCallbackParams| {
-            let response = two_factor(&params);
-            async move { Ok(response) }
-        })
-        .await
-        .map_err(|error| {
-            if format!("{error:?}").contains("-80045") {
-                error.context(REFUSED_ANISETTE).into_dynamic()
-            } else {
-                error.context("Apple ID sign-in failed").into_dynamic()
-            }
-        })?;
-    drop(password);
+    let callback = |params: TwoFactorCallbackParams| {
+        let response = two_factor(&params);
+        async move { Ok(response) }
+    };
+    let refused = |error: Report| {
+        if format!("{error:?}").contains("-80045") {
+            error.context(REFUSED_ANISETTE).into_dynamic()
+        } else {
+            error.context("Apple ID sign-in failed").into_dynamic()
+        }
+    };
+    let mut account =
+        AppleAccount::builder(email).anisette_provider(anisette).login(&password, callback).await.map_err(refused)?;
 
-    let session = DeveloperSession::from_account(&mut account)
-        .await
-        .context("Failed to open a developer session")?;
+    let session = match DeveloperSession::from_account(&mut account).await {
+        Ok(session) => session,
+        // Claiming Android, a sign-in Apple doesn't trust yet gets no 2FA step and no Xcode
+        // token (-22411) until the code it pushes to the trusted devices is checked: sign in
+        // again, which pushes one, and check it (vendor/isideload, code_after_login).
+        Err(error) if served == claimed_platform::Served::Android && format!("{error:?}").contains("-22411") => {
+            account.code_after_login = true;
+            account.login(&password, callback).await.map_err(refused)?;
+            DeveloperSession::from_account(&mut account).await.context("Failed to open a developer session")?
+        }
+        Err(error) => return Err(error.context("Failed to open a developer session").into_dynamic()),
+    };
+    drop(password);
     let mut sideloader: Sideloader<MaxCertsCallbackBox> = SideloaderBuilder::new(session, email.to_string())
         .team_selection(TeamSelection::First)
         // Never revoke someone's existing certificates on our own: report instead.

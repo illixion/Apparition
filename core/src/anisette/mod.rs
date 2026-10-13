@@ -6,8 +6,8 @@
 //! redistributed), loads them (`elf`, with the libc they expect in `shim`), drives them (`adi`),
 //! and serves what they make over the v3 protocol isideload speaks (`server`).
 //!
-//! On a Mac, the headers come from macOS itself when it gives them (`native`): Apple has refused
-//! the Android libraries' since 2026-10-12, and still accepts a Mac's own.
+//! On a Mac, the headers come from macOS itself when it gives them (`native`), and the sign-in
+//! then claims a Mac rather than Android (see claimed_platform).
 
 mod adi;
 mod apk;

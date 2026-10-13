@@ -16,8 +16,10 @@
 //!
 //! Facts taken from the Dadoum `anisette-v3-server` (no licence stated; behaviour only): the
 //! ADI identifier is the UUID made of the client's 16 bytes, written in capitals, cut to 16
-//! characters; `X-Apple-I-MD-RINFO` is the constant 17106176; the client info is a MacBook Pro
-//! running Xcode, which is what Apple's anisette validation expects.
+//! characters; `X-Apple-I-MD-RINFO` is the constant 17106176.
+//!
+//! `/v3/client_info` also says what this server serves (`apparition_anisette`: `mac` or
+//! `android`), with the matching client info, which the sign-in claims (see claimed_platform).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -39,8 +41,6 @@ use super::adi::Adi;
 use super::apk;
 
 const RINFO: &str = "17106176";
-const CLIENT_INFO: &str = "<MacBookPro13,2> <macOS;13.1;22C65> <com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>";
-const USER_AGENT: &str = "akd/1.0 CFNetwork/808.1.4";
 /// How long the server waits for the client's next message while provisioning.
 const STEP: Duration = Duration::from_secs(60);
 
@@ -48,7 +48,6 @@ struct Shared {
     adi: Arc<Adi>,
     work: PathBuf,
     /// Whether the headers come from this Mac rather than the libraries (see `native`).
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     native: bool,
 }
 
@@ -152,8 +151,10 @@ impl Drop for Scratch {
     }
 }
 
-async fn client_info() -> Json<Value> {
-    Json(json!({ "client_info": CLIENT_INFO, "user_agent": USER_AGENT }))
+async fn client_info(State(shared): State<Arc<Shared>>) -> Json<Value> {
+    use crate::claimed_platform::{Served, USER_AGENT};
+    let served = if shared.native { Served::Mac } else { Served::Android };
+    Json(json!({ "client_info": served.client_info(), "user_agent": USER_AGENT, "apparition_anisette": served.name() }))
 }
 
 #[derive(Deserialize)]

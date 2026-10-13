@@ -144,6 +144,7 @@ version = "0.1.0"
 dependencies = [
  "apple-codesign-quick",
  "argon2",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "crc32fast",
@@ -1852,7 +1853,6 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "isideload"
 version = "0.4.4"
-source = "git+https://github.com/nab138/isideload.git?rev=0bee45d8cdb07ca24524a26f38fdda0dbb4e04b3#0bee45d8cdb07ca24524a26f38fdda0dbb4e04b3"
 dependencies = [
  "aes 0.9.3",
  "aes-gcm",

@@ -1098,7 +1098,7 @@ function drawCompanion(/** @type {any} */ status) {
       : anisette.offered === "builtin"
         ? anisette.native
           ? `Offering this Mac's own anisette on port ${anisette.port}.`
-          : `Offering anisette from Apple's Android libraries on port ${anisette.port}. Apple has refused these for sign-in since 12 October 2026; a Mac on macOS 26 or earlier offers its own instead.`
+          : `Offering anisette from Apple's Android libraries on port ${anisette.port}.`
         : anisette.offered === "local"
           ? `Offering the server on port ${anisette.port}.`
           : anisette.mode === "local"

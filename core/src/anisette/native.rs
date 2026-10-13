@@ -1,8 +1,10 @@
 //! This Mac's own anisette, from macOS itself rather than Apple's Android libraries.
 //!
-//! Since 2026-10-12 Apple refuses Apple ID sign-in (`-80045` at the first SRP step) when the
-//! anisette comes from the Android libraries, while a Mac's own anisette is still accepted. A
-//! Mac can give its anisette to other programs in two ways:
+//! Since 2026-10-12 Apple checks that the anisette matches the device the sign-in claims to be
+//! (see claimed_platform). The Android libraries' anisette signs in claiming Android, which gets
+//! no 2FA step and so needs the code Apple pushes checked separately; a Mac's own signs in
+//! claiming a Mac, through the usual 2FA, so on a Mac it's preferred. A Mac can give its anisette
+//! to other programs in two ways:
 //!
 //! - AOSKit's `+[AOSUtilities retrieveOTPHeadersForDSID:]`, in this process. It needs no
 //!   entitlement up to macOS 26. On macOS 27 the daemon behind it (`adid`) refuses programs that

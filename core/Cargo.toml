@@ -13,11 +13,14 @@ crate-type = ["staticlib", "rlib"]
 # Linked here, rather than as a second static library, so the app carries one Rust runtime.
 idevice-ffi = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065", default-features = false, features = ["ring", "core_device", "debug_proxy", "rsd", "remote_pairing", "tcp", "tunnel_tcp_stack", "afc", "house_arrest", "installation_proxy", "usbmuxd"] }
-isideload = { git = "https://github.com/nab138/isideload.git", rev = "0bee45d8cdb07ca24524a26f38fdda0dbb4e04b3", default-features = false, features = ["install", "tokio-mt"] }
+# Vendored at 0bee45d with one change (code_after_login); see vendor/isideload/VENDORED.md.
+isideload = { path = "vendor/isideload", default-features = false, features = ["install", "tokio-mt"] }
 rootcause = "0.12.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The anisette provider wrapper in claimed_platform.rs implements isideload's async trait.
+async-trait = "0.1"
 tokio = { version = "1.49", features = ["rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
