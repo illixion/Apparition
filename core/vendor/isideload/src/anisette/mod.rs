@@ -1,5 +1,6 @@
 pub mod remote_v3;
 
+use crate::SideloadError;
 use crate::auth::grandslam::GrandSlam;
 use plist::Dictionary;
 use plist_macro::plist;
@@ -111,6 +112,9 @@ pub trait AnisetteProvider {
     async fn provision(&mut self, gs: Arc<GrandSlam>) -> Result<(), Report>;
 
     fn needs_provisioning(&self) -> Result<bool, Report>;
+
+    /// Drops the saved provisioning, after the server refused it, so `provision` starts over.
+    fn forget_provisioning(&mut self) {}
 }
 
 #[derive(Clone)]
@@ -152,7 +156,19 @@ impl AnisetteDataGenerator {
             self.data = Some(arc_data.clone());
             Ok(arc_data)
         } else {
-            let data = provider.get_anisette_data().await?;
+            let data = match provider.get_anisette_data().await {
+                Ok(data) => data,
+                // Saved provisioning the server doesn't take: provision again, once.
+                Err(error) if not_provisioned(&error) => {
+                    drop(provider);
+                    let mut provider_write = self.provider.write().await;
+                    provider_write.forget_provisioning();
+                    provider_write.provision(gs).await?;
+                    drop(provider_write);
+                    self.provider.read().await.get_anisette_data().await?
+                }
+                Err(error) => return Err(error),
+            };
             let arc_data = Arc::new(data);
             self.data = Some(arc_data.clone());
             Ok(arc_data)
@@ -163,4 +179,10 @@ impl AnisetteDataGenerator {
         let provider = self.provider.read().await;
         provider.get_client_info().await
     }
+}
+
+fn not_provisioned(error: &Report) -> bool {
+    error.iter_reports().any(|cause| {
+        matches!(cause.downcast_current_context::<SideloadError>(), Some(SideloadError::AnisetteNotProvisioned))
+    })
 }

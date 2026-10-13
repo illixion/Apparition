@@ -153,6 +153,14 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
 
                 Ok(data)
             }
+            // The server doesn't take this identity's adi.pb (one provisioned elsewhere, or that
+            // the server lost): say so as AnisetteNotProvisioned, so the caller provisions again.
+            AnisetteHeaders::GetHeadersError { message } if message.to_lowercase().contains("provision") => {
+                Err(report!(SideloadError::AnisetteNotProvisioned)
+                    .context("Failed to get anisette headers")
+                    .attach(message)
+                    .into())
+            }
             AnisetteHeaders::GetHeadersError { message } => {
                 Err(report!("Failed to get anisette headers").attach(message))
             }
@@ -166,6 +174,12 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
                     .to_string(),
             user_agent: "akd/1.0 CFNetwork/808.1.4".to_string(),
         })
+    }
+
+    fn forget_provisioning(&mut self) {
+        if let Some(state) = &mut self.state {
+            state.adi_pb = None;
+        }
     }
 
     fn needs_provisioning(&self) -> Result<bool, Report> {

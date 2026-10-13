@@ -100,6 +100,10 @@ impl<P: AnisetteProvider + Send + Sync> AnisetteProvider for ClaimedPlatform<P> 
     fn needs_provisioning(&self) -> Result<bool, Report> {
         self.inner.needs_provisioning()
     }
+
+    fn forget_provisioning(&mut self) {
+        self.inner.forget_provisioning()
+    }
 }
 
 #[cfg(test)]
