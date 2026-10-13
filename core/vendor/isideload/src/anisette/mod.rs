@@ -143,36 +143,29 @@ impl AnisetteDataGenerator {
 
         // trying to avoid locking as write unless necessary to promote concurrency
         let provider = self.provider.read().await;
-
         if provider.needs_provisioning()? {
             drop(provider);
-            let mut provider_write = self.provider.write().await;
-            provider_write.provision(gs).await?;
-            drop(provider_write);
-
-            let provider = self.provider.read().await;
-            let data = provider.get_anisette_data().await?;
-            let arc_data = Arc::new(data);
-            self.data = Some(arc_data.clone());
-            Ok(arc_data)
+            self.provider.write().await.provision(gs.clone()).await?;
         } else {
-            let data = match provider.get_anisette_data().await {
-                Ok(data) => data,
-                // Saved provisioning the server doesn't take: provision again, once.
-                Err(error) if not_provisioned(&error) => {
-                    drop(provider);
-                    let mut provider_write = self.provider.write().await;
-                    provider_write.forget_provisioning();
-                    provider_write.provision(gs).await?;
-                    drop(provider_write);
-                    self.provider.read().await.get_anisette_data().await?
-                }
-                Err(error) => return Err(error),
-            };
-            let arc_data = Arc::new(data);
-            self.data = Some(arc_data.clone());
-            Ok(arc_data)
+            drop(provider);
         }
+
+        let result = self.provider.read().await.get_anisette_data().await;
+        let data = match result {
+            Ok(data) => data,
+            // Saved provisioning the server doesn't take: provision again, once.
+            Err(error) if not_provisioned(&error) => {
+                let mut provider_write = self.provider.write().await;
+                provider_write.forget_provisioning();
+                provider_write.provision(gs).await?;
+                drop(provider_write);
+                self.provider.read().await.get_anisette_data().await?
+            }
+            Err(error) => return Err(error),
+        };
+        let arc_data = Arc::new(data);
+        self.data = Some(arc_data.clone());
+        Ok(arc_data)
     }
 
     pub async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
