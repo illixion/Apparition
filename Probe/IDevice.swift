@@ -169,6 +169,14 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and deletes `bundleId` and its data from the device (apparition_uninstall).
+    static func uninstall(target: Target, hostname: String, file: PairingFile,
+                          pin: PinCallback, context: UnsafeMutableRawPointer, bundleId: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_uninstall(adapter, handshake, bundleId))
+        }
+    }
+
     /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
     /// return them (only pair-setup does), and signing needs the UDID.
     static func identify(target: Target, hostname: String, file: PairingFile,

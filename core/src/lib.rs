@@ -606,6 +606,32 @@ pub unsafe extern "C" fn apparition_list_apps(
     })())
 }
 
+/// Deletes `bundle_id` and its data from the device through installation_proxy over the
+/// tunnel. Returns `{ok}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_uninstall(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    bundle_id: *const c_char,
+) -> *mut c_char {
+    reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = unsafe { text(bundle_id) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        runtime().block_on(async {
+            use idevice::RsdService;
+            let mut installer = idevice::installation_proxy::InstallationProxyClient::connect_rsd(adapter, handshake)
+                .await
+                .context("installation_proxy connect failed")?;
+            installer.uninstall(bundle_id, None).await.context("Uninstall failed")?;
+            Ok(json!({}))
+        })
+    })())
+}
+
 // MARK: JIT launch
 
 const PAGE: u64 = 16 * 1024;
