@@ -88,6 +88,15 @@ final class LibraryModel {
     /// Set when the last install hit installd's free-profile app limit; cleared by the next
     /// install that gets past it, fails otherwise, or is dismissed.
     private(set) var appLimit: AppLimit?
+    /// The last install error of each source app, by bundle ID, shown under that app's row so
+    /// it's in view where Install was tapped.
+    private(set) var installErrors: [String: String] = [:]
+
+    /// Whether `status` is an install error already shown under its app's row.
+    var statusIsInline: Bool {
+        guard let status else { return false }
+        return installErrors.values.contains { status.hasSuffix($0) }
+    }
     /// This copy of Apparition, read once: its profile only changes with a reinstall, which relaunches.
     let selfApp = SelfApp.current()
     /// The result key for Apparition itself in a refresh run.
@@ -167,6 +176,17 @@ final class LibraryModel {
         guard let app = sources.first(where: { $0.id == sourceId })?.apps.first(where: { $0.id == appId }) else {
             status = "no app \(appId) in \(sourceId)"
             return
+        }
+        guard app.marketplace != true else {
+            status = "error: \(app.name) is an EU App Marketplace (AltStore PAL) listing, not an IPA, so it can't be sideloaded"
+            return
+        }
+        installErrors[app.id] = nil
+        defer {
+            let failed = "install \(app.name): error: "
+            if appLimit == nil, let status, status.hasPrefix(failed) {
+                installErrors[app.id] = String(status.dropFirst(failed.count))
+            }
         }
         await exclusive("install \(app.name)") {
             let file = try await self.download(app)
@@ -617,8 +637,16 @@ final class LibraryModel {
         guard let url = URL(string: app.downloadURL) else { throw IDevice.ProbeError("bad download URL") }
         status = "downloading \(app.name) \(app.version)"
         let (temporary, response) = try await URLSession.shared.download(from: url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw IDevice.ProbeError("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0) downloading \(app.name)")
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else {
+            switch code {
+            case 404, 410:
+                throw IDevice.ProbeError("\(app.name)'s download is gone (HTTP \(code)): the source still lists a file its developer removed. Try another source for it.")
+            case 401, 403:
+                throw IDevice.ProbeError("the server refused \(app.name)'s download (HTTP \(code)); the source may need its own app or account.")
+            default:
+                throw IDevice.ProbeError("HTTP \(code) downloading \(app.name)")
+            }
         }
         try FileManager.default.moveItem(at: temporary, to: destination)
         // Keep one version per app.

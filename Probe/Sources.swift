@@ -16,6 +16,9 @@ enum Sources {
         let size: Int?
         let minOSVersion: String?
         let iconURL: String?
+        /// An AltStore PAL listing: the download is an EU App Marketplace package, not an IPA,
+        /// so it can't be sideloaded. Missing in sources saved before this was recorded.
+        var marketplace: Bool? = nil
     }
 
     struct Source: Codable, Sendable, Identifiable {
@@ -51,10 +54,13 @@ enum Sources {
             let latest = (app["versions"] as? [[String: Any]])?.first ?? app
             guard let version = latest["version"] as? String,
                   let download = latest["downloadURL"] as? String else { return nil }
+            // PAL apps carry a marketplaceID; the odd one that also ships an IPA stays installable.
+            let marketplace = app["marketplaceID"] != nil
+                && !(URL(string: download)?.path.lowercased().hasSuffix(".ipa") ?? false)
             return App(id: bundle, name: name, developer: app["developerName"] as? String, version: version,
                        date: (latest["date"] ?? latest["versionDate"]) as? String, downloadURL: download,
                        size: latest["size"] as? Int, minOSVersion: latest["minOSVersion"] as? String,
-                       iconURL: app["iconURL"] as? String)
+                       iconURL: app["iconURL"] as? String, marketplace: marketplace)
         }
         return (root["name"] as? String ?? "Source", parsed)
     }

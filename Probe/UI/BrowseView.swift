@@ -51,13 +51,6 @@ struct BrowseView: View {
             .panel(isPresented: $addingSource) {
                 AddSourceSheet(library: library)
             }
-            .confirmationDialog("Remove \(pendingRemoval?.name ?? pendingRemoval?.id ?? "source")?",
-                                isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
-                                titleVisibility: .visible, presenting: pendingRemoval) { source in
-                Button("Remove Source", role: .destructive) { library.removeSource(source.id) }
-            } message: { _ in
-                Text("Apps you installed from it stay in your library and keep being refreshed.")
-            }
         }
     }
 
@@ -75,7 +68,7 @@ struct BrowseView: View {
                 Section {
                     AppLimitView(model: model, library: library, limit: limit)
                 }
-            } else if let status = library.status, status.contains("error") {
+            } else if let status = library.status, status.contains("error"), !library.statusIsInline {
                 Section {
                     Note(text: status, kind: .error)
                     if DeveloperSlots.isSlotError(status) {
@@ -88,12 +81,18 @@ struct BrowseView: View {
                     if let error = source.error {
                         Note(text: error, kind: .error)
                     }
+                    if !source.apps.isEmpty && source.apps.allSatisfy({ $0.marketplace == true }) {
+                        Note(text: "This is an AltStore PAL source: its apps install only through the EU App Marketplace, not by sideloading, so Apparition can't install them.", kind: .info)
+                    }
                     if source.apps.isEmpty && source.error == nil {
                         Text(source.fetchedAt == nil ? "Not fetched yet" : "This source lists no apps")
                             .foregroundStyle(.secondary)
                     }
                     ForEach(source.apps) { app in
                         row(app, in: source)
+                        if let error = library.installErrors[app.id] {
+                            Note(text: error, kind: .error)
+                        }
                     }
                 } header: {
                     header(source)
@@ -123,6 +122,11 @@ struct BrowseView: View {
             }
             .buttonStyle(.borderless)
             .help("Remove this source")
+            .confirmation("Remove \(source.name ?? source.id)?", item: $pendingRemoval, for: source.id) { source in
+                Button("Remove Source", role: .destructive) { library.removeSource(source.id) }
+            } message: { _ in
+                Text("Apps you installed from it stay in your library and keep being refreshed.")
+            }
         }
         .focusRow()
         .textCase(nil)
@@ -140,7 +144,13 @@ struct BrowseView: View {
                     .lineLimit(1)
             }
             Spacer()
-            installButton(app, source: source, installed: installed)
+            if app.marketplace == true {
+                Text("EU marketplace only")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                installButton(app, source: source, installed: installed)
+            }
         }
         .focusRow()
         .padding(.vertical, 6)
