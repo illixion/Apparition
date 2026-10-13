@@ -130,6 +130,23 @@ pub fn builtin_anisette_available() -> bool {
     cfg!(all(feature = "anisette", unix))
 }
 
+/// Whether the built-in anisette uses this Mac's own headers (macOS 26 and earlier, or macOS 27
+/// with SIP and AMFI off and the helper beside this program) rather than Apple's Android
+/// libraries, which Apple refuses for sign-in since 2026-10-12. Found once; it can take a moment.
+pub fn native_anisette() -> bool {
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
+    {
+        anisette::native::source().is_some()
+    }
+    #[cfg(not(all(feature = "anisette", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// What Apple's `-80045` ("This action cannot be completed at this time") means here.
+pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045). Since 12 October 2026 Apple turns away anisette made by Apple's Android libraries, which most anisette servers and this app's built-in one off a Mac use. A Mac's own anisette still works: run Apparition's companion on a Mac with macOS 26 or earlier (or macOS 27 with SIP and AMFI turned off) and sign in with its anisette. With a paid developer account, a certificate and profile you make on Apple's developer website need no sign-in at all.";
+
 /// The v3 server address to use for `requested`: itself, or the built-in provider's, which is
 /// started on first use and stays up for the life of the process.
 async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result<String, Report> {
@@ -180,7 +197,13 @@ pub async fn sign_in(
             async move { Ok(response) }
         })
         .await
-        .context("Apple ID sign-in failed")?;
+        .map_err(|error| {
+            if format!("{error:?}").contains("-80045") {
+                error.context(REFUSED_ANISETTE).into_dynamic()
+            } else {
+                error.context("Apple ID sign-in failed").into_dynamic()
+            }
+        })?;
     drop(password);
 
     let session = DeveloperSession::from_account(&mut account)

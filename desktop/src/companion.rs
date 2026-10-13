@@ -161,6 +161,8 @@ impl CompanionState {
                 "offered": offered.map(|source| match source { AnisetteSource::Builtin => "builtin", AnisetteSource::Local => "local" }),
                 "port": ports().1,
                 "builtinAvailable": api::builtin_anisette_available(),
+                // This Mac's own headers, which Apple accepts, rather than the Android libraries'.
+                "native": tokio::task::spawn_blocking(api::native_anisette).await.unwrap_or(false),
                 "error": *self.anisette_error.lock().unwrap(),
             },
             "connections": running.as_ref().map(|c| c.relay.connections()).unwrap_or_default(),

@@ -167,6 +167,25 @@ up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
 digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
 and IP address, never the Apple ID or password, which go straight to Apple.
 
+**Since 12 October 2026 Apple refuses that anisette.** Sign-in fails at its first step with
+`-80045` ("This action cannot be completed at this time") whenever the anisette comes from the
+Android libraries, which is what the built-in provider off a Mac, Dadoum's server and most
+public servers use. Every free-account sideloader is affected. A Mac's own anisette is still
+accepted, so on a Mac the built-in provider asks macOS for it instead
+(`core/src/anisette/native.rs`):
+
+- **macOS 26 and earlier:** AOSKit gives it to any program. Nothing to set up.
+- **macOS 27:** only programs with AuthKit's private entitlements get it. The release ships
+  `apparition-anisette-helper` signed with them, next to `apparition` and inside the app, and
+  macOS runs it only with SIP off and `sudo nvram boot-args="amfi_get_out_of_my_way=1"`. That
+  suits a spare Mac or a macOS VM, not an everyday one.
+
+Provisioning still goes through the Android libraries (Apple accepts it there), so a device's
+stored identity works with any server. To sign from Linux, Windows or a headset, run the
+companion on such a Mac and use its anisette. With a paid developer account there is a route
+with no sign-in at all: make the certificate and a wildcard or single-App-ID profile on Apple's
+developer website and sign with them (`--p12 … --profile …`, or the app's Signing screen).
+
 Release builds aren't notarized, so the built-in provider needs no entitlement today. It maps
 the libraries into memory and makes them executable itself, so if the macOS apps are ever
 notarized (hardened runtime), their entitlements must include

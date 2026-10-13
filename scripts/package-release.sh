@@ -139,12 +139,22 @@ EOF
   mkdir -p "$WORK/macos"
   xcrun lipo -create -output "$WORK/macos/$bin" \
     target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
+  # This Mac's anisette on macOS 27 (core/src/anisette/native.rs): AuthKit's private entitlements,
+  # so macOS runs it only with SIP and AMFI off. It sits next to whatever uses it.
+  helper=apparition-anisette-helper
+  xcrun lipo -create -output "$WORK/macos/$helper" \
+    target/aarch64-apple-darwin/release/$helper target/x86_64-apple-darwin/release/$helper
+  codesign -f -s - --entitlements "$ROOT/installer/anisette-helper.entitlements" "$WORK/macos/$helper"
   echo "==> desktop app for macOS (universal)"
   app_name="Apparition"
   (cd "$ROOT/desktop" && MACOSX_DEPLOYMENT_TARGET=11.0 cargo tauri build --target universal-apple-darwin --bundles app)
   ditto "$ROOT/desktop/target/universal-apple-darwin/release/bundle/macos/$app_name.app" "$WORK/macos/$app_name.app"
+  # The helper keeps its own signature; the app is sealed again around it (not --deep, which
+  # would sign the helper over without its entitlements).
+  cp "$WORK/macos/$helper" "$WORK/macos/$app_name.app/Contents/MacOS/$helper"
+  codesign -f -s - "$WORK/macos/$app_name.app"
   readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized: the first time, right-click it and choose Open."
-  (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$app_name.app" README.txt)
+  (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)
 
   echo "==> installer for Windows (x86_64)"
   cargo build -q --release --target x86_64-pc-windows-gnu

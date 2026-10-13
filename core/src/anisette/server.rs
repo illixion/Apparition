@@ -47,6 +47,9 @@ const STEP: Duration = Duration::from_secs(60);
 struct Shared {
     adi: Arc<Adi>,
     work: PathBuf,
+    /// Whether the headers come from this Mac rather than the libraries (see `native`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    native: bool,
 }
 
 /// The libraries are loaded once per process, whatever number of servers use them: they keep
@@ -66,6 +69,8 @@ async fn shared_adi(data_dir: &Path) -> Result<Arc<Adi>, Report> {
 /// A running server. Dropping it stops serving.
 pub struct Server {
     pub address: SocketAddr,
+    /// The headers are this Mac's own (see `native`); otherwise the Android libraries make them.
+    pub native: bool,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -89,7 +94,8 @@ pub async fn start(data_dir: &Path, bind: SocketAddr) -> Result<Server, Report> 
     let adi = shared_adi(data_dir).await?;
     let work = data_dir.join("work");
     std::fs::create_dir_all(&work)?;
-    let shared = Arc::new(Shared { adi, work });
+    let native = native_available().await;
+    let shared = Arc::new(Shared { adi, work, native });
     let app = Router::new()
         .route("/v3/client_info", get(client_info))
         .route("/v3/get_headers", post(get_headers))
@@ -100,7 +106,19 @@ pub async fn start(data_dir: &Path, bind: SocketAddr) -> Result<Server, Report> 
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    Ok(Server { address, task })
+    Ok(Server { address, native, task })
+}
+
+/// Whether this Mac gives its own anisette (found once; it can take a moment).
+async fn native_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        tokio::task::spawn_blocking(|| super::native::source().is_some()).await.unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 /// ADI's identifier for the client's 16 bytes.
@@ -153,6 +171,18 @@ async fn get_headers(State(shared): State<Arc<Shared>>, Json(request): Json<Head
 }
 
 async fn headers_for(shared: &Arc<Shared>, request: HeadersRequest) -> Result<Value, Report> {
+    // This Mac's own headers, whatever the identity: the client's identifier and adi.pb still
+    // give its X-Mme-Device-Id and X-Apple-I-MD-LU, which Apple takes alongside them.
+    #[cfg(target_os = "macos")]
+    if shared.native {
+        let headers = tokio::task::spawn_blocking(super::native::headers).await.context("the native anisette task failed")??;
+        return Ok(json!({
+            "result": "Headers",
+            "X-Apple-I-MD-M": headers.machine_id,
+            "X-Apple-I-MD": headers.one_time_password,
+            "X-Apple-I-MD-RINFO": RINFO,
+        }));
+    }
     let identifier = identifier_from(&request.identifier).ok_or_else(|| report!("the identifier isn't 16 bytes of base64"))?;
     let adi_pb = B64.decode(&request.adi_pb).context("adi_pb isn't base64")?;
     let scratch = Scratch::new(&shared.work)?;

@@ -9,6 +9,11 @@ description = "Installs Apparition (or any IPA) onto an Apple Vision Pro from Wi
 name = "apparition"
 path = "src/main.rs"
 
+# This Mac's anisette on macOS 27 with SIP and AMFI off; signed with anisette-helper.entitlements.
+[[bin]]
+name = "apparition-anisette-helper"
+path = "src/anisette_helper.rs"
+
 [dependencies]
 apparition-core = { path = "../core", features = ["desktop"] }
 rootcause = "0.12.0"

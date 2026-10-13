@@ -642,7 +642,8 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         "builtin" => {
             println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
             companion.share_builtin_anisette().await?;
-            println!("Offering anisette on port {}.", relay::ANISETTE_PORT);
+            println!("Offering {} on port {}.", anisette_kind(), relay::ANISETTE_PORT);
+            warn_if_refused();
         }
         "local" => println!("Offering an anisette server on port {} whenever one answers here.", relay::ANISETTE_PORT),
         "none" => {}
@@ -660,6 +661,18 @@ async fn relay(args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
+/// What the built-in anisette serves, said plainly.
+fn anisette_kind() -> &'static str {
+    if api::native_anisette() { "this Mac's own anisette" } else { "anisette from Apple's Android libraries" }
+}
+
+/// Apple's refusal of the Android libraries' anisette, when that's what is served.
+fn warn_if_refused() {
+    if !api::native_anisette() {
+        println!("Apple refuses that anisette for sign-in since 12 October 2026. A Mac on macOS 26 or earlier serves its own instead (macOS 27 too, with SIP and AMFI off).");
+    }
+}
+
 async fn anisette(args: &[String]) -> Result<(), Error> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["serve"] | ["serve", "--port", _] => {
@@ -674,7 +687,8 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             {
                 println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
                 let server = apparition_core::anisette::start(&anisette_dir(), SocketAddr::from(([0, 0, 0, 0], port))).await?;
-                println!("Serving anisette (v3) on port {}. Ctrl-C stops it.", server.address.port());
+                println!("Serving {} (v3) on port {}. Ctrl-C stops it.", anisette_kind(), server.address.port());
+                warn_if_refused();
                 let _ = tokio::signal::ctrl_c().await;
             }
             let _ = port;

@@ -599,6 +599,8 @@ function platformMatches(/** @type {string[]|undefined} */ platforms) {
 function signInError(/** @type {any} */ error, /** @type {boolean} */ usingServer = true) {
   const message = messageOf(error);
   if (error?.cancelled) return message;
+  // core's REFUSED_ANISETTE already explains it.
+  if (/-80045/.test(message)) return message;
   if (!usingServer && /anisette|connect|dns|resolve|refused/i.test(message))
     return `Couldn't sign in. Check the internet connection (Apparition fetches Apple's anisette libraries on first use).\n\n${message}`;
   if (usingServer && (/anisette/i.test(message) || /connect|dns|resolve|refused/i.test(message)))
@@ -1094,7 +1096,9 @@ function drawCompanion(/** @type {any} */ status) {
     ?? (!status.relay.on
       ? "Turn the relay on to offer anisette."
       : anisette.offered === "builtin"
-        ? `Offering this computer's anisette on port ${anisette.port}.`
+        ? anisette.native
+          ? `Offering this Mac's own anisette on port ${anisette.port}.`
+          : `Offering anisette from Apple's Android libraries on port ${anisette.port}. Apple has refused these for sign-in since 12 October 2026; a Mac on macOS 26 or earlier offers its own instead.`
         : anisette.offered === "local"
           ? `Offering the server on port ${anisette.port}.`
           : anisette.mode === "local"
