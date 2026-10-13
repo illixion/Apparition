@@ -239,16 +239,33 @@ extension View {
         #endif
     }
 
-    /// A sheet's minimum size on visionOS and iPad; tvOS presents it full screen instead.
+    /// A sheet's minimum size on visionOS and iPad. tvOS presents it full screen, and an
+    /// iPhone (compact width) gives it the screen's width, which is narrower than these.
     @ViewBuilder
     func sheetFrame(minWidth: CGFloat, minHeight: CGFloat) -> some View {
         #if os(tvOS)
         self
         #else
-        frame(minWidth: minWidth, minHeight: minHeight)
+        modifier(SheetFrame(minWidth: minWidth, minHeight: minHeight))
         #endif
     }
 }
+
+#if !os(tvOS)
+private struct SheetFrame: ViewModifier {
+    let minWidth: CGFloat
+    let minHeight: CGFloat
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    func body(content: Content) -> some View {
+        if sizeClass == .compact {
+            content
+        } else {
+            content.frame(minWidth: minWidth, minHeight: minHeight)
+        }
+    }
+}
+#endif
 
 extension View {
     /// A row of controls as one full-width focus section on tvOS. The focus engine only
