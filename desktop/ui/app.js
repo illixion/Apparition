@@ -460,7 +460,8 @@ function signing() {
   const sourceField = /** @type {HTMLElement} */ ($(appleForm, "anisette-source"));
   const sourceSelect = /** @type {HTMLSelectElement} */ (appleForm.elements.namedItem("source"));
   // Only offered where this computer can make its own; elsewhere a server is the one way.
-  sourceSelect.value = state.builtinAnisette && savedAnisette !== undefined && savedAnisette !== "builtin" ? "server" : state.builtinAnisette ? "builtin" : "server";
+  // Nothing saved comes back as null, so `!= null` (not `!== undefined`).
+  sourceSelect.value = state.builtinAnisette && savedAnisette != null && savedAnisette !== "builtin" ? "server" : state.builtinAnisette ? "builtin" : "server";
   sourceField.hidden = !state.builtinAnisette;
   const drawSource = () => {
     const builtin = sourceSelect.value === "builtin";
