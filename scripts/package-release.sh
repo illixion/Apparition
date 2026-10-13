@@ -3,7 +3,7 @@
 # Builds the files of an Apparition release into build/release/<version>/, named the way
 # the release site (apparition.illixion.com, scripts/publish.py) expects:
 #
-#   Apparition-<version>-visionOS.ipa                       unsigned; signed on install
+#   Apparition-<version>-<visionOS|iOS|tvOS>.ipa            unsigned; signed on install
 #   Apparition-Installer-<version>-macos-universal.zip      arm64 + x86_64: the desktop app
 #                                                           and the command line
 #   Apparition-Installer-<version>-windows-x86_64.zip       the same two for Windows
@@ -13,7 +13,7 @@
 #
 #   scripts/package-release.sh 0.2.0
 #   scripts/package-release.sh 0.2.0 --linux        # also Linux x86_64 and arm64
-#   scripts/package-release.sh 0.2.0 --only-app     # just the IPA
+#   scripts/package-release.sh 0.2.0 --only-app     # just the IPAs
 #
 # The version has to be committed first, in every place that carries it: MARKETING_VERSION
 # in project.yml, and `version` in installer/Cargo.toml and desktop/Cargo.toml (the desktop
@@ -27,7 +27,8 @@
 # Signing a release happens on the site: publish.py hashes these files into SHA256SUMS and
 # signs that with a release key. Nothing here holds a key.
 #
-# Needs: Xcode with the visionOS SDK, xcodegen, rustup targets aarch64-apple-visionos,
+# Needs: Xcode with the visionOS, iOS and tvOS SDKs, xcodegen, rustup targets
+# aarch64-apple-visionos, aarch64-apple-ios, aarch64-apple-tvos,
 # aarch64-apple-darwin, x86_64-apple-darwin and x86_64-pc-windows-gnu (with mingw-w64 from
 # Homebrew), the Tauri CLI for the desktop app (cargo install tauri-cli --version '^2'
 # --locked), and Docker for --linux.
@@ -84,30 +85,35 @@ mkdir -p "$OUT" "$WORK"
 echo "==> Apparition $VERSION, build $BUILD ($COMMIT)"
 
 # ------------------------------------------------------------------ the app
-echo "==> core for visionOS"
-scripts/build-core.sh visionos
 xcodegen generate --quiet
-# APPARITION_RELEASE leaves out what only development builds carry (the experiment endpoints,
-# the release-site override). build-and-sign also builds Release, so DEBUG can't tell them apart.
-echo "==> app (Release, unsigned)"
-xcodebuild -project Apparition.xcodeproj -scheme Apparition -configuration Release \
-  -sdk xros -destination 'generic/platform=visionOS' -derivedDataPath "$WORK/DerivedData" \
-  MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
-  SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) APPARITION_RELEASE' \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-  -quiet build
-app="$WORK/DerivedData/Build/Products/Release-xros/Apparition.app"
-[[ -d "$app" ]] || { echo "error: no Apparition.app at $app" >&2; exit 1; }
-built_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")"
-[[ "$built_version" == "$VERSION" ]] || { echo "error: the app says $built_version" >&2; exit 1; }
-# A free Apple ID pays an App ID for every extension, and Apparition is meant to have none.
-if [[ -d "$app/PlugIns" || -d "$app/Extensions" ]]; then
-  echo "error: Apparition.app embeds extensions; each costs a free account an App ID" >&2
-  exit 1
-fi
-mkdir -p "$WORK/ipa/Payload"
-ditto "$app" "$WORK/ipa/Payload/Apparition.app"
-(cd "$WORK/ipa" && zip -qryX "$OUT/Apparition-$VERSION-visionOS.ipa" Payload)
+# One IPA per platform: <build-core.sh platform> <SDK> <name in the file name>.
+for spec in "visionos xros visionOS" "ios iphoneos iOS" "tvos appletvos tvOS"; do
+  read -r core sdk name <<< "$spec"
+  echo "==> core for $name"
+  scripts/build-core.sh "$core"
+  # APPARITION_RELEASE leaves out what only development builds carry (the experiment endpoints,
+  # the release-site override). build-and-sign also builds Release, so DEBUG can't tell them apart.
+  echo "==> app for $name (Release, unsigned)"
+  xcodebuild -project Apparition.xcodeproj -scheme Apparition -configuration Release \
+    -sdk "$sdk" -destination "generic/platform=$name" -derivedDataPath "$WORK/DerivedData" \
+    MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) APPARITION_RELEASE' \
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+    -quiet build
+  app="$WORK/DerivedData/Build/Products/Release-$sdk/Apparition.app"
+  [[ -d "$app" ]] || { echo "error: no Apparition.app at $app" >&2; exit 1; }
+  built_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")"
+  [[ "$built_version" == "$VERSION" ]] || { echo "error: the $name app says $built_version" >&2; exit 1; }
+  # A free Apple ID pays an App ID for every extension, and Apparition is meant to have none.
+  if [[ -d "$app/PlugIns" || -d "$app/Extensions" ]]; then
+    echo "error: the $name Apparition.app embeds extensions; each costs a free account an App ID" >&2
+    exit 1
+  fi
+  rm -rf "$WORK/ipa"
+  mkdir -p "$WORK/ipa/Payload"
+  ditto "$app" "$WORK/ipa/Payload/Apparition.app"
+  (cd "$WORK/ipa" && zip -qryX "$OUT/Apparition-$VERSION-$name.ipa" Payload)
+done
 
 if [[ "$ONLY_APP" == 0 ]]; then
   # ---------------------------------------------------------------- the installer
@@ -153,7 +159,7 @@ EOF
   # would sign the helper over without its entitlements).
   cp "$WORK/macos/$helper" "$WORK/macos/$app_name.app/Contents/MacOS/$helper"
   codesign -f -s - "$WORK/macos/$app_name.app"
-  readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized: the first time, right-click it and choose Open."
+  readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it the first time: open it, then click Open Anyway in System Settings > Privacy & Security (or run: xattr -dr com.apple.quarantine $app_name.app)."
   (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)
 
   echo "==> installer for Windows (x86_64)"
