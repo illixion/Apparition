@@ -75,7 +75,12 @@ impl Exports {
     }
 
     pub(crate) fn is_provisioned(&self) -> bool {
-        unsafe { (self.login_code)(DS_ID) == 0 }
+        self.login_code() == 0
+    }
+
+    /// 0 when the selected identity is provisioned, else ADI's reason.
+    pub(crate) fn login_code(&self) -> i32 {
+        unsafe { (self.login_code)(DS_ID) }
     }
 
     /// First half of provisioning: Apple's `spim` in, the `cpim` to send back and a session out.

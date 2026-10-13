@@ -193,8 +193,9 @@ async fn headers_for(shared: &Arc<Shared>, request: HeadersRequest) -> Result<Va
         .adi
         .run(move |adi| -> Result<_, Report> {
             adi.select(&identifier, &folder)?;
-            if !adi.is_provisioned() {
-                bail!("this device isn't provisioned");
+            let code = adi.login_code();
+            if code != 0 {
+                bail!("this device isn't provisioned (ADI {code})");
             }
             adi.request_otp()
         })??;
