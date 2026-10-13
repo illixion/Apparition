@@ -31,7 +31,8 @@ env:
 jobs:
   apple:
     name: Apps, macOS and Windows
-    runs-on: macos-26
+    # The image with Xcode 27 (macos-26 has only Xcode 26).
+    runs-on: xcode-27
     timeout-minutes: 90
     steps:
       # The app builds against two sibling packages by path (project.yml), so they're checked
@@ -51,8 +52,8 @@ jobs:
           done
       - name: Choose Xcode
         run: |
-          ls -d /Applications/Xcode*.app
-          sudo xcode-select -s "$(ls -d /Applications/Xcode_27*.app | sort -V | tail -1)"
+          # 27.0, the release Xcode, not the image's betas.
+          sudo xcode-select -s /Applications/Xcode_27.0.app
           xcodebuild -version
           xcodebuild -showsdks | grep -E 'xros|iphoneos|appletvos'
       - name: Tools

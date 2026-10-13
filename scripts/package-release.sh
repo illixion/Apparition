@@ -190,14 +190,14 @@ linux_build() {
 }
 
 LINUX_PIDS=()
-LINUX_ARCHS=()
+LINUX_STARTED=()
 # A failure here leaves no Linux build running on its own.
 trap 'for pid in "${LINUX_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
 if has linux; then
   for arch in ${LINUX_ARCHS:-x86_64 arm64}; do
     ( set -e; linux_build "$arch" ) > "$LOGS/linux-$arch.log" 2>&1 &
     LINUX_PIDS+=("$!")
-    LINUX_ARCHS+=("$arch")
+    LINUX_STARTED+=("$arch")
   done
   echo "==> Linux ${LINUX_ARCHS:-x86_64 arm64}${LINUX_X86_64_HOST:+ (x86_64 on $LINUX_X86_64_HOST)} building in the background (build/release/linux-<arch>.log)"
 fi
@@ -280,10 +280,10 @@ fi
 failed=0
 for i in "${!LINUX_PIDS[@]}"; do
   if wait "${LINUX_PIDS[$i]}"; then
-    echo "==> Linux ${LINUX_ARCHS[$i]} done"
+    echo "==> Linux ${LINUX_STARTED[$i]} done"
   else
-    echo "error: the Linux ${LINUX_ARCHS[$i]} build failed; the end of build/release/linux-${LINUX_ARCHS[$i]}.log:" >&2
-    tail -30 "$LOGS/linux-${LINUX_ARCHS[$i]}.log" >&2
+    echo "error: the Linux ${LINUX_STARTED[$i]} build failed; the end of build/release/linux-${LINUX_STARTED[$i]}.log:" >&2
+    tail -30 "$LOGS/linux-${LINUX_STARTED[$i]}.log" >&2
     failed=1
   fi
 done
