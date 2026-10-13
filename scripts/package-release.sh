@@ -136,6 +136,11 @@ EOF
 # LINUX_X86_64_HOST=user@host builds x86_64 there instead, natively: here it runs under
 # emulation, the slowest step. The host needs Docker (usable without sudo) and rsync; the same
 # images and commands run there, so the files come out the same.
+#
+# For CI, where Docker volumes go with the machine: LINUX_CACHE=<folder> keeps the registries and
+# build output in that folder instead (on Linux, where the mount takes linuxdeploy's files), for
+# the workflow to cache, and LINUX_DESKTOP_IMAGE_BUILT=1 says the desktop image is already
+# built (from the workflow's own layer cache).
 LOGS="$ROOT/build/release"
 SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$HOME/.ssh/apparition-release-%C" -o ControlPersist=900)
 
@@ -159,23 +164,37 @@ linux_build() {
     on() { ssh "${SSH_OPTS[@]}" "$host" "$(printf '%q ' "$@")"; }
   fi
 
+  # A Docker volume by this name, or with LINUX_CACHE (not for a remote host) a folder in it.
+  store() {
+    if [[ -n "${LINUX_CACHE:-}" && -z "$host" ]]; then
+      mkdir -p "$LINUX_CACHE/$1" && printf %s "$LINUX_CACHE/$1"
+    else
+      printf %s "apparition-$1"
+    fi
+  }
+  # The containers run as root; what they leave in the source and in the stores goes back to
+  # the owner of the source, so it can be cached and removed without root.
+  local give_back='{ chown -R "$(stat -c %u:%g /src)" /src /target /usr/local/cargo/registry || true; }'
+
   echo "==> installer for Linux ($arch${host:+, on $host})"
-  on docker run --rm --platform "$platform" -v "apparition-cargo-$arch:/usr/local/cargo/registry" \
-    -v "apparition-installer-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
+  on docker run --rm --platform "$platform" -v "$(store "cargo-$arch"):/usr/local/cargo/registry" \
+    -v "$(store "installer-target-$arch"):/target" -e CARGO_TARGET_DIR=/target \
     -v "$dir:/src" -w /src/installer -e CARGO_PROFILE_RELEASE_STRIP=true rust:1.97-alpine \
-    sh -c 'apk add -q musl-dev && cargo build -q --release && mkdir -p /src/bundles && cp /target/release/apparition /src/bundles/ && { chown -R "$(stat -c %u:%g /src)" /src || true; }'
+    sh -c "apk add -q musl-dev && cargo build -q --release && mkdir -p /src/bundles && cp /target/release/apparition /src/bundles/ && $give_back"
 
   echo "==> desktop app for Linux ($arch${host:+, on $host})"
-  on docker build -q --platform "$platform" -t "apparition-desktop-linux:$arch" \
-    -f "$dir/scripts/desktop-linux.Dockerfile" "$dir/scripts" >/dev/null
+  if [[ -z "${LINUX_DESKTOP_IMAGE_BUILT:-}" ]]; then
+    on docker build -q --platform "$platform" -t "apparition-desktop-linux:$arch" \
+      -f "$dir/scripts/desktop-linux.Dockerfile" "$dir/scripts" >/dev/null
+  fi
   # The target directory is a volume, not the mount: linuxdeploy copies files with their
-  # permissions, which the host mount refuses. Only the two bundles come out.
-  on docker run --rm --platform "$platform" -v "apparition-cargo-desktop-$arch:/usr/local/cargo/registry" \
-    -v "apparition-desktop-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
-    -v "$dir:/src" -w /src/desktop "apparition-desktop-linux:$arch" sh -c 'rm -rf /target/release/bundle &&
-      cargo tauri build --bundles deb,appimage >/tmp/log 2>&1 || { tail -30 /tmp/log; exit 1; }
+  # permissions, which a macOS host's mount refuses. Only the two bundles come out.
+  on docker run --rm --platform "$platform" -v "$(store "cargo-desktop-$arch"):/usr/local/cargo/registry" \
+    -v "$(store "desktop-target-$arch"):/target" -e CARGO_TARGET_DIR=/target \
+    -v "$dir:/src" -w /src/desktop "apparition-desktop-linux:$arch" sh -c "rm -rf /target/release/bundle &&
+      { cargo tauri build --bundles deb,appimage >/tmp/log 2>&1 || { tail -30 /tmp/log; exit 1; }; } &&
       cp /target/release/bundle/appimage/*.AppImage /target/release/bundle/deb/*.deb /src/bundles/ &&
-      { chown -R "$(stat -c %u:%g /src)" /src || true; }'
+      $give_back"
   if [[ -n "$host" ]]; then
     rsync -a -e "ssh ${SSH_OPTS[*]}" "$host:$dir/bundles/" "$src/bundles/"
   fi

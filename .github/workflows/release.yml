@@ -62,15 +62,31 @@ jobs:
             --target aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos,aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-gnu
           rustup default "$RUST_TOOLCHAIN"
           brew install xcodegen mingw-w64
-      - uses: actions/cache@v6
+      # Compiling the Tauri CLI takes about 9 minutes, so it's cached on its own and saved as
+      # soon as it's built: a cache saved at the end of the job is lost whenever the build fails.
+      - uses: actions/cache/restore@v6
+        id: tauri-cli
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/bin/cargo-tauri
-          key: apple-cargo-${{ hashFiles('Apparition/core/Cargo.lock', 'Apparition/installer/Cargo.lock', 'Apparition/desktop/Cargo.lock') }}
-          restore-keys: apple-cargo-
+          path: ~/.cargo/bin/cargo-tauri
+          key: tauri-cli-2-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}
       - name: Tauri CLI
-        run: command -v cargo-tauri || cargo install tauri-cli --version '^2' --locked
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        run: cargo install tauri-cli --version '^2' --locked
+      - uses: actions/cache/save@v6
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: ${{ steps.tauri-cli.outputs.cache-primary-key }}
+      # The three workspaces' dependencies, compiled for every target; Apparition's own crates
+      # always build afresh. Kept even when the build fails, so a rerun starts warm.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            Apparition/core
+            Apparition/installer
+            Apparition/desktop
+          cache-on-failure: true
+          cache-bin: false
       - name: Build
         working-directory: Apparition
         run: scripts/package-release.sh "${VERSION#v}" --parts app,macos,windows
@@ -96,11 +112,38 @@ jobs:
         with:
           path: Apparition
           fetch-depth: 0
+      # The desktop image (WebKitGTK, Rust and the Tauri CLI) from the layer cache, rather than
+      # built afresh, which compiles the Tauri CLI each time.
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: Apparition/scripts
+          file: Apparition/scripts/desktop-linux.Dockerfile
+          tags: apparition-desktop-linux:${{ matrix.arch }}
+          load: true
+          cache-from: type=gha,scope=desktop-linux-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=desktop-linux-${{ matrix.arch }}
+      # The registries and build output the containers keep (LINUX_CACHE in the script).
+      - uses: actions/cache/restore@v6
+        id: linux-cache
+        with:
+          path: ~/linux-cache
+          key: linux-${{ matrix.arch }}-${{ hashFiles('Apparition/installer/Cargo.lock', 'Apparition/desktop/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: linux-${{ matrix.arch }}-
       - name: Build, in the same Docker images as a local build
         working-directory: Apparition
         env:
           LINUX_ARCHS: ${{ matrix.arch }}
-        run: scripts/package-release.sh "${VERSION#v}" --parts linux
+          LINUX_DESKTOP_IMAGE_BUILT: "1"
+        run: |
+          mkdir -p ~/linux-cache && export LINUX_CACHE=~/linux-cache
+          scripts/package-release.sh "${VERSION#v}" --parts linux
+      # Saved even when the build fails, so a rerun starts warm.
+      - uses: actions/cache/save@v6
+        if: always() && steps.linux-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/linux-cache
+          key: ${{ steps.linux-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v7
         with:
           name: linux-${{ matrix.arch }}
