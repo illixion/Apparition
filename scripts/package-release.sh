@@ -13,6 +13,7 @@
 #
 #   scripts/package-release.sh 0.2.0
 #   scripts/package-release.sh 0.2.0 --linux        # also Linux x86_64 and arm64
+#   LINUX_X86_64_HOST=tuxpc scripts/package-release.sh 0.2.0 --linux   # x86_64 natively there
 #   scripts/package-release.sh 0.2.0 --only-app     # just the IPAs
 #
 # The version has to be committed first, in every place that carries it: MARKETING_VERSION
@@ -84,6 +85,103 @@ rm -rf "$OUT" "$WORK"
 mkdir -p "$OUT" "$WORK"
 echo "==> Apparition $VERSION, build $BUILD ($COMMIT)"
 
+app_name="Apparition"
+bin=apparition
+readme() {
+  cat > "$1/README.txt" <<EOF
+Apparition $VERSION ($COMMIT)
+
+Puts Apparition on your Apple devices (pair once, then install), and is the companion
+Apparition on them uses: the relay back to their own device, and an anisette server.
+
+$3
+
+Or from a terminal:
+
+$2 pair        (with Settings > General > Remote Devices open on the headset)
+$2 install --apple-id you@example.com      (add --anisette <url> on Windows)
+$2 relay       (the companion, until Ctrl-C)
+
+Run it without arguments for every command. https://apparition.illixion.com
+EOF
+}
+
+# ------------------------------------------------------------------ Linux, in the background
+# Both architectures build in Docker while everything else builds here, each with its own log in
+# build/release/. Built on Alpine, the command line is linked statically against musl and runs
+# on any distribution (a glibc build needs the builder's glibc or newer); the desktop app is
+# built on Ubuntu 22.04 (scripts/desktop-linux.Dockerfile), for glibc 2.35 and later. Each
+# build works from a copy of the repo, so the container never writes into this checkout, and
+# keeps its cargo registry and build output in Docker volumes per architecture, so a later
+# release rebuilds only what changed.
+#
+# LINUX_X86_64_HOST=user@host builds x86_64 there instead, natively: here it runs under
+# emulation, the slowest step. The host needs Docker (usable without sudo) and rsync; the same
+# images and commands run there, so the files come out the same.
+LOGS="$ROOT/build/release"
+SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=$HOME/.ssh/apparition-release-%C" -o ControlPersist=900)
+
+linux_build() {
+  local arch="$1"
+  local platform=linux/amd64 host="" src="$WORK/linux-src-$arch" out="$WORK/linux-$arch"
+  [[ "$arch" == arm64 ]] && platform=linux/arm64
+  [[ "$arch" == x86_64 ]] && host="${LINUX_X86_64_HOST:-}"
+  mkdir -p "$src/selfhost" "$src/scripts" "$out"
+  rsync -a --exclude target "$ROOT/core" "$ROOT/installer" "$ROOT/desktop" "$ROOT/release-signers" "$src/"
+  rsync -a "$ROOT/selfhost/anisette" "$src/selfhost/"
+  cp "$ROOT/scripts/desktop-linux.Dockerfile" "$src/scripts/"
+  # Where the source is on the machine that builds, and how to run a command there.
+  local dir="$src"
+  on() { "$@"; }
+  if [[ -n "$host" ]]; then
+    dir="$(ssh "${SSH_OPTS[@]}" "$host" 'printf %s "$HOME"')/apparition-release/linux-src-$arch"
+    ssh "${SSH_OPTS[@]}" "$host" "mkdir -p '$dir'"
+    rsync -a --delete -e "ssh ${SSH_OPTS[*]}" "$src/" "$host:$dir/"
+    on() { ssh "${SSH_OPTS[@]}" "$host" "$(printf '%q ' "$@")"; }
+  fi
+
+  echo "==> installer for Linux ($arch${host:+, on $host})"
+  on docker run --rm --platform "$platform" -v "apparition-cargo-$arch:/usr/local/cargo/registry" \
+    -v "apparition-installer-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
+    -v "$dir:/src" -w /src/installer -e CARGO_PROFILE_RELEASE_STRIP=true rust:1.97-alpine \
+    sh -c 'apk add -q musl-dev && cargo build -q --release && mkdir -p /src/bundles && cp /target/release/apparition /src/bundles/'
+
+  echo "==> desktop app for Linux ($arch${host:+, on $host})"
+  on docker build -q --platform "$platform" -t "apparition-desktop-linux:$arch" \
+    -f "$dir/scripts/desktop-linux.Dockerfile" "$dir/scripts" >/dev/null
+  # The target directory is a volume, not the mount: linuxdeploy copies files with their
+  # permissions, which the host mount refuses. Only the two bundles come out.
+  on docker run --rm --platform "$platform" -v "apparition-cargo-desktop-$arch:/usr/local/cargo/registry" \
+    -v "apparition-desktop-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
+    -v "$dir:/src" -w /src/desktop "apparition-desktop-linux:$arch" sh -c 'rm -rf /target/release/bundle &&
+      cargo tauri build --bundles deb,appimage >/tmp/log 2>&1 || { tail -30 /tmp/log; exit 1; }
+      cp /target/release/bundle/appimage/*.AppImage /target/release/bundle/deb/*.deb /src/bundles/'
+  if [[ -n "$host" ]]; then
+    rsync -a -e "ssh ${SSH_OPTS[*]}" "$host:$dir/bundles/" "$src/bundles/"
+  fi
+
+  file "$src/bundles/$bin" | grep -qE "statically linked|static-pie linked" \
+    || { echo "error: the Linux $arch installer isn't statically linked" >&2; return 1; }
+  cp "$src/bundles/$bin" "$out/"
+  cp "$src"/bundles/*.AppImage "$out/$app_name.AppImage"
+  cp "$src"/bundles/*.deb "$out/$app_name.deb"
+  readme "$out" "./$bin" "Run $app_name.AppImage (chmod +x it first) for a guided install, or install $app_name.deb on Debian or Ubuntu; it then stays in the tray as the companion. Both need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later)."
+  tar -C "$out" -czf "$OUT/Apparition-Installer-$VERSION-linux-$arch.tar.gz" "$bin" "$app_name.AppImage" "$app_name.deb" README.txt
+}
+
+LINUX_PIDS=()
+LINUX_ARCHS=()
+# A failure here leaves no Linux build running on its own.
+trap 'for pid in "${LINUX_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
+if [[ "$LINUX" == 1 && "$ONLY_APP" == 0 ]]; then
+  for arch in x86_64 arm64; do
+    ( set -e; linux_build "$arch" ) > "$LOGS/linux-$arch.log" 2>&1 &
+    LINUX_PIDS+=("$!")
+    LINUX_ARCHS+=("$arch")
+  done
+  echo "==> Linux x86_64${LINUX_X86_64_HOST:+ (on $LINUX_X86_64_HOST)} and arm64 building in the background (build/release/linux-<arch>.log)"
+fi
+
 # ------------------------------------------------------------------ the app
 xcodegen generate --quiet
 # One IPA per platform: <build-core.sh platform> <SDK> <name in the file name>.
@@ -118,25 +216,6 @@ done
 if [[ "$ONLY_APP" == 0 ]]; then
   # ---------------------------------------------------------------- the installer
   cd "$ROOT/installer"
-  bin=apparition
-  readme() {
-    cat > "$1/README.txt" <<EOF
-Apparition $VERSION ($COMMIT)
-
-Puts Apparition on your Apple devices (pair once, then install), and is the companion
-Apparition on them uses: the relay back to their own device, and an anisette server.
-
-$3
-
-Or from a terminal:
-
-  $2 pair        (with Settings > General > Remote Devices open on the headset)
-  $2 install --apple-id you@example.com      (add --anisette <url> on Windows)
-  $2 relay       (the companion, until Ctrl-C)
-
-Run it without arguments for every command. https://apparition.illixion.com
-EOF
-  }
 
   echo "==> installer for macOS (arm64 + x86_64)"
   for target in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -172,46 +251,20 @@ EOF
   readme "$WORK/windows" "$bin.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have)."
   (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin.exe" "$app_name.exe" README.txt)
 
-  if [[ "$LINUX" == 1 ]]; then
-    # In Docker, from a copy of the repo (core/, installer/, desktop/ and release-signers), so the
-    # container never writes into this checkout's target directories. Built on Alpine, so
-    # it's linked statically against musl and runs on any distribution: a glibc build needs
-    # the builder's glibc or newer (Debian trixie's 2.39 ruled out Ubuntu 22.04). The cargo
-    # registry is kept in a volume per architecture between runs.
-    for arch in x86_64 arm64; do
-      echo "==> installer for Linux ($arch, static, in Docker)"
-      platform=linux/amd64; [[ "$arch" == arm64 ]] && platform=linux/arm64
-      src="$WORK/linux-src-$arch"
-      mkdir -p "$src" "$WORK/linux-$arch"
-      mkdir -p "$src/selfhost"
-      rsync -a --exclude target "$ROOT/core" "$ROOT/installer" "$ROOT/release-signers" "$src/"
-      rsync -a "$ROOT/selfhost/anisette" "$src/selfhost/"
-      docker run --rm --platform "$platform" -v "apparition-cargo-$arch:/usr/local/cargo/registry" \
-        -v "$src:/src" -w /src/installer -e CARGO_PROFILE_RELEASE_STRIP=true rust:1.97-alpine \
-        sh -c 'apk add -q musl-dev && cargo build -q --release'
-      file "$src/installer/target/release/$bin" | grep -qE "statically linked|static-pie linked" \
-        || { echo "error: the Linux $arch installer isn't statically linked" >&2; exit 1; }
-      cp "$src/installer/target/release/$bin" "$WORK/linux-$arch/"
-
-      echo "==> desktop app for Linux ($arch, in Docker)"
-      rsync -a --exclude target "$ROOT/desktop" "$src/"
-      image="apparition-desktop-linux:$arch"
-      docker build -q --platform "$platform" -t "$image" -f "$ROOT/scripts/desktop-linux.Dockerfile" "$ROOT/scripts" >/dev/null
-      # The target directory is a volume, not the mount: linuxdeploy copies files with their
-      # permissions, which the host mount refuses. Only the two bundles come out.
-      mkdir -p "$src/bundles"
-      docker run --rm --platform "$platform" -v "apparition-cargo-desktop-$arch:/usr/local/cargo/registry" \
-        -v "apparition-desktop-target-$arch:/target" -e CARGO_TARGET_DIR=/target \
-        -v "$src:/src" -w /src/desktop "$image" sh -c 'rm -rf /target/release/bundle &&
-          cargo tauri build --bundles deb,appimage >/tmp/log 2>&1 || { tail -30 /tmp/log; exit 1; }
-          cp /target/release/bundle/appimage/*.AppImage /target/release/bundle/deb/*.deb /src/bundles/'
-      cp "$src"/bundles/*.AppImage "$WORK/linux-$arch/$app_name.AppImage"
-      cp "$src"/bundles/*.deb "$WORK/linux-$arch/$app_name.deb"
-      readme "$WORK/linux-$arch" "./$bin" "Run $app_name.AppImage (chmod +x it first) for a guided install, or install $app_name.deb on Debian or Ubuntu; it then stays in the tray as the companion. Both need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later)."
-      tar -C "$WORK/linux-$arch" -czf "$OUT/Apparition-Installer-$VERSION-linux-$arch.tar.gz" "$bin" "$app_name.AppImage" "$app_name.deb" README.txt
-    done
-  fi
 fi
+
+failed=0
+for i in "${!LINUX_PIDS[@]}"; do
+  if wait "${LINUX_PIDS[$i]}"; then
+    echo "==> Linux ${LINUX_ARCHS[$i]} done"
+  else
+    echo "error: the Linux ${LINUX_ARCHS[$i]} build failed; the end of build/release/linux-${LINUX_ARCHS[$i]}.log:" >&2
+    tail -30 "$LOGS/linux-${LINUX_ARCHS[$i]}.log" >&2
+    failed=1
+  fi
+done
+LINUX_PIDS=()
+[[ "$failed" == 0 ]] || exit 1
 
 rm -rf "$WORK"
 echo "==> built into $OUT:"
