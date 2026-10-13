@@ -134,7 +134,7 @@ Apparition (or any IPA) on the headset without Xcode, using the same Rust core, 
 companion (`apparition relay`, `apparition anisette serve|up|down`):
 
     apparition pair       # with Settings > General > Remote Devices open; type the PIN
-    apparition pair --usb # an iPhone or iPad on a cable; tap Trust on it if it asks
+    apparition pair --usb # an iPhone or iPad on a cable (or Wi-Fi sync); tap Trust if it asks
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969

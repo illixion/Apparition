@@ -297,24 +297,24 @@ struct PairStep: View {
             // computer pairs instead and hands Apparition its own record when it installs it.
             VStack(alignment: .leading, spacing: 8) {
                 Text("1. Open Settings > Remotes and Devices > Remote App and Devices on this Apple TV.")
-                Text("2. On a computer on the same network, run Apparition Installer: apparition-installer pair, then install. The Apple TV shows a code twice: once for the computer, once for Apparition.")
+                Text("2. On a computer on the same network, open the Apparition desktop app (or run apparition pair, then apparition install). The Apple TV shows a code twice: once for the computer, once for Apparition.")
                 Text("3. Come back here and confirm the identity.")
             }
             .foregroundStyle(.secondary)
             if !model.hasPairingFile {
-                Note(text: "Not paired yet. Install Apparition from a computer with Apparition Installer to pair it.", kind: .info)
+                Note(text: "Not paired yet. Install Apparition from a computer with the Apparition desktop app to pair it.", kind: .info)
             }
             #else
             // iPhone and iPad have no Remote Devices screen to pair from: a computer pairs over
             // the cable and hands Apparition its record when it installs it.
             VStack(alignment: .leading, spacing: 8) {
                 Text("1. Connect this \(ThisDevice.noun) to a computer with a cable and tap Trust if it asks.")
-                Text("2. On the computer, run Apparition Installer: apparition-installer pair --usb, then install. Installing Apparition gives it the pairing.")
+                Text("2. On the computer, open the Apparition desktop app and pair (or run apparition pair --usb, then apparition install). Installing Apparition gives it the pairing.")
                 Text("3. Confirm the identity here; after that the cable isn't needed.")
             }
             .foregroundStyle(.secondary)
             if !model.hasPairingFile {
-                Note(text: "Not paired yet. Install Apparition from a computer with Apparition Installer to pair it.", kind: .info)
+                Note(text: "Not paired yet. Install Apparition from a computer with the Apparition desktop app to pair it.", kind: .info)
             }
             #endif
 

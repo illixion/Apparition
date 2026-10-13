@@ -42,7 +42,7 @@ struct SigningFile {
     machine_name: String,
     /// PKCS#8 DER, base64, as isideload stores it.
     private_key: String,
-    /// Who made it, for the receiver to show ("Apparition Installer on <computer>").
+    /// Who made it, for the receiver to show ("Apparition on <computer>").
     from: String,
 }
 

@@ -102,7 +102,7 @@ pub async fn pair_usb(
         .iter()
         .filter(|d| d.udid == udid)
         .min_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb))
-        .ok_or_else(|| report!("{udid} isn't connected. Plug it in with a cable and unlock it."))?;
+        .ok_or_else(|| report!("{udid} isn't connected. Plug it in with a cable (or turn on its Wi-Fi sync in Finder or Apple Devices) and unlock it."))?;
     let provider = device.to_provider(idevice::usbmuxd::UsbmuxdAddr::default(), "apparition");
     let pairing_file = match provider.get_pairing_file().await {
         Ok(file) => file,
@@ -343,9 +343,10 @@ pub fn hostname() -> String {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         })
         .filter(|s| !s.is_empty());
-    match machine {
-        Some(machine) => format!("Apparition Installer on {machine}"),
-        None => "Apparition Installer".to_string(),
+    // Kept short: a headset's Remote Devices list shows it and can only be cleared whole.
+    match machine.as_deref().map(|m| m.strip_suffix(".local").unwrap_or(m)) {
+        Some(machine) => format!("Apparition on {machine}"),
+        None => "Apparition".to_string(),
     }
 }
 

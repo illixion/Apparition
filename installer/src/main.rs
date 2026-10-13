@@ -36,9 +36,10 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
   apparition pair --usb [<UDID>]
-      Pair with an iPhone or iPad over its cable (it has no PIN pairing screen). If it doesn't
-      trust this computer yet, it asks: unlock it, tap Trust and enter its passcode. Afterwards
-      it's reached over the network like a headset.
+      Pair with an iPhone or iPad (it has no PIN pairing screen) over its cable, or over
+      Wi-Fi if it already syncs with this computer over Wi-Fi. If it doesn't trust this
+      computer yet, it asks: unlock it, tap Trust and enter its passcode. Afterwards it's
+      reached over the network like a headset.
   apparition install [<app.ipa>] [--device <name or UDID>]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
           [--keep-extensions] [--no-handoff] [--release-site <url>]
@@ -251,7 +252,7 @@ async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
     let devices = api::usb_devices().await?;
     let udid = match (wanted, devices.as_slice()) {
         (Some(udid), _) => udid.to_string(),
-        (None, []) => return Err(fail("usbmuxd sees no device. Plug it in, unlock it and tap Trust")),
+        (None, []) => return Err(fail("usbmuxd sees no device. Plug it in with a cable, unlock it and tap Trust")),
         (None, [one]) => one.udid.clone(),
         (None, many) => {
             for (index, device) in many.iter().enumerate() {
