@@ -173,7 +173,15 @@ async fn trust(
             Ok(mut record) => {
                 record.udid = Some(udid.to_string());
                 let record = record.serialize().context("Can't write the pair record")?;
-                usbmuxd.save_pair_record(udid, record).await.context("usbmuxd didn't save the pair record")?;
+                if let Err(error) = usbmuxd.save_pair_record(udid, record).await {
+                    // Linux's usbmuxd saves the record but may answer with something other than
+                    // the result idevice expects: check that the record is there before failing.
+                    let mut check = idevice::usbmuxd::UsbmuxdConnection::default().await.context("Can't reach usbmuxd")?;
+                    if check.get_pair_record(udid).await.is_err() {
+                        return Err(report!(error).context("usbmuxd didn't save the pair record").into());
+                    }
+                    tracing::debug!("usbmuxd saved the pair record despite answering {error}");
+                }
                 return Ok(());
             }
             Err(IdeviceError::PairingDialogResponsePending | IdeviceError::PasswordProtected) => {
