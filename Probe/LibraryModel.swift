@@ -648,6 +648,7 @@ final class LibraryModel {
                 throw IDevice.ProbeError("HTTP \(code) downloading \(app.name)")
             }
         }
+        try Self.checkIsZip(temporary, name: app.name)
         try FileManager.default.moveItem(at: temporary, to: destination)
         // Keep one version per app.
         for other in (try? FileManager.default.contentsOfDirectory(atPath: AccountModel.appsDir.path)) ?? []
@@ -656,6 +657,22 @@ final class LibraryModel {
         }
         account.refreshDownloads()
         return file
+    }
+
+    /// An IPA is a zip: say what a source linked instead, rather than the signer's zip error.
+    private static func checkIsZip(_ file: URL, name: String) throws {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let head = (try? handle.read(upToCount: 512)) ?? Data()
+        if head.starts(with: [0x50, 0x4B]) { return }
+        let text = String(decoding: head, as: UTF8.self).lowercased()
+        if text.contains("manifestschemaversion") || text.contains("distributionpackage") {
+            throw IDevice.ProbeError("\(name)'s download is an EU App Marketplace (AltStore PAL) package manifest, not an IPA, so it can't be sideloaded.")
+        }
+        if text.contains("<html") || text.contains("<!doctype") {
+            throw IDevice.ProbeError("\(name)'s download is a web page, not an IPA: the source links somewhere that needs a browser.")
+        }
+        throw IDevice.ProbeError("\(name)'s download isn't an IPA (not a zip archive).")
     }
 
     private func upsert(_ record: InstalledApp) {

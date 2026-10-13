@@ -54,9 +54,11 @@ enum Sources {
             let latest = (app["versions"] as? [[String: Any]])?.first ?? app
             guard let version = latest["version"] as? String,
                   let download = latest["downloadURL"] as? String else { return nil }
-            // PAL apps carry a marketplaceID; the odd one that also ships an IPA stays installable.
-            let marketplace = app["marketplaceID"] != nil
-                && !(URL(string: download)?.path.lowercased().hasSuffix(".ipa") ?? false)
+            // PAL apps carry a marketplaceID (the odd one that also ships an IPA stays installable),
+            // or link a marketplace package (`…/adp`) or its manifest without one.
+            let path = URL(string: download)?.path.lowercased() ?? ""
+            let marketplace = (app["marketplaceID"] != nil && !path.hasSuffix(".ipa"))
+                || path.hasSuffix("/adp") || path.hasSuffix("/manifest.json")
             return App(id: bundle, name: name, developer: app["developerName"] as? String, version: version,
                        date: (latest["date"] ?? latest["versionDate"]) as? String, downloadURL: download,
                        size: latest["size"] as? Int, minOSVersion: latest["minOSVersion"] as? String,
