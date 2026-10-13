@@ -43,6 +43,13 @@ for the code Apple sends to your other devices. Since 12 October 2026 Apple chec
 "anisette" data that comes with a sign-in more strictly; see [Anisette](#anisette) for what that
 means and how Apparition handles it.
 
+A free Apple ID has two development certificates. When both are taken, Apparition lists them
+and revokes one only after you confirm. Apple doesn't always free the slot right away: after a
+revoke it can keep refusing a new certificate ("Maximum number of certificates reached") with
+only one listed, possibly because it counts a certificate that free accounts can't list. If so,
+try again later, or use the certificate you already have by sharing it from another device
+(Share Signing in Apparition's Settings).
+
 ## How it works
 
 Sources are AltStore/SideStore JSON, or `github:owner/repo` for apps published only as

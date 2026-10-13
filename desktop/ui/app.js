@@ -790,7 +790,9 @@ async function showSlots(box, slot, retry, sample) {
     if (certificates) {
       items = (sample ?? (await invoke("list_certificates"))).certificates ?? [];
       explain.textContent =
-        "A free Apple ID has room for two development certificates. Revoke one you no longer need, then Apparition installs again. Nothing is revoked until you confirm.";
+        items.length < 2
+          ? "Apple says both of this Apple ID's certificate slots are taken, but lists fewer. After a revoke, Apple can take a while to free the slot; try again later, or use the certificate you already have by choosing Share Signing in Apparition on your other device."
+          : "A free Apple ID has room for two development certificates. Revoke one you no longer need, then Apparition installs again. Nothing is revoked until you confirm.";
     } else {
       const ids = sample ?? (await invoke("list_app_ids"));
       items = ids.appIds ?? [];
