@@ -211,7 +211,8 @@ linux_build() {
 LINUX_PIDS=()
 LINUX_STARTED=()
 # A failure here leaves no Linux build running on its own.
-trap 'for pid in "${LINUX_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
+# (The ${…+…} form, because macOS's bash 3.2 calls an empty array unbound under set -u.)
+trap 'for pid in ${LINUX_PIDS[@]+"${LINUX_PIDS[@]}"}; do kill "$pid" 2>/dev/null || true; done' EXIT
 if has linux; then
   for arch in ${LINUX_ARCHS:-x86_64 arm64}; do
     ( set -e; linux_build "$arch" ) > "$LOGS/linux-$arch.log" 2>&1 &
