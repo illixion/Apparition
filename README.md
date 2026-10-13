@@ -52,6 +52,31 @@ only one listed, possibly because it counts a certificate that free accounts can
 try again later, or use the certificate you already have by sharing it from another device
 (Share Signing in Apparition's Settings).
 
+## Away from home, over Tailscale
+
+Apparition's companion works over [Tailscale](https://tailscale.com), so a computer left at
+home keeps signing and refreshing apps, and launching them with JIT, wherever the device is.
+JIT away from home is new: AltStore and SideStore need the same Wi-Fi as a computer, or
+LocalDevVPN, which doesn't leave room for Tailscale.
+
+1. Install Tailscale on the computer that runs the desktop app, and on the device (the
+   Tailscale app from the App Store), signed in to the same tailnet. Leave the desktop app
+   running on that computer.
+2. In Apparition on the device, open Setup > Companion and, under "Or type its address", enter
+   the computer's Tailscale address with port 49160 (`100.x.y.z:49160`, shown in Tailscale's
+   menu on the computer), then Use and Check. Bonjour doesn't cross Tailscale, so Find
+   companion only finds it at home.
+3. Under Anisette, choose Use Companion's Anisette: Apparition reaches it at the same Tailscale
+   address, so signing in works away from home too.
+4. Keep Tailscale connected on the device when a refresh or a Shortcuts automation runs.
+   Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion
+   replaces LocalDevVPN.
+
+Only encrypted traffic crosses the companion, and it only connects back to the device that
+asked. If a Windows or Linux companion doesn't answer over Tailscale while it does at home, its
+firewall is blocking the Tailscale network: allow TCP 49160 and 6969 there too (see How it
+works).
+
 ## How it works
 
 Sources are AltStore/SideStore JSON, or `github:owner/repo` for apps published only as
