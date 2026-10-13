@@ -1,14 +1,52 @@
 # Apparition
 
-An on-device sideloader for Apple Vision Pro: install apps from AltStore-format
-sources, sign them with your own (free) Apple ID, keep them refreshed, and
-launch them with debugger-prepared JIT, all from the headset.
+Apparition is a sideloader that runs on the device itself. Install apps from AltStore-format
+sources on Apple Vision Pro, iPhone, iPad or Apple TV, sign them with your own Apple ID (a free
+one works) or your own certificate, keep them refreshed, and launch them with JIT for emulators
+such as UTM. A computer is only needed the first time, to put Apparition on the device; after
+that it can stay in the menu bar or tray as Apparition's companion, or not be needed at all.
 
-Early spike stage. `Probe/` is spike 1: can an app pair with, and open a
-RemotePairing tunnel to, the device it runs on, with no computer involved?
+## What it does
 
-Spike 5 (sources and refresh) works on the headset. Sources are AltStore/SideStore JSON,
-or `github:owner/repo` for apps published only as release assets (UTM's visionOS build).
+- **Install apps** from AltStore and SideStore sources, from a GitHub project's releases
+  (`github:owner/repo`), or from an IPA you have.
+- **Sign** with a free Apple ID, which Apple limits to apps that last 7 days and two
+  certificates, or with a paid account's certificate and profile, which last a year and need no
+  sign-in.
+- **Refresh** apps before they expire, on the device: from the app, a Shortcuts automation or
+  in the background, through the companion or LocalDevVPN.
+- **Launch with JIT** for apps that need it (emulators), using the debugger the way Xcode does.
+- **Pair over Wi-Fi.** Vision Pro and Apple TV pair with the code they show in Settings; an
+  iPhone or iPad needs a cable once, unless it already syncs with your Mac over Wi-Fi.
+- **Share one certificate** between your devices and computers, sealed under five words, so a
+  free account's two certificates go further.
+
+## Getting started
+
+1. Download the desktop app for macOS, Windows or Linux from
+   [apparition.illixion.com](https://apparition.illixion.com) and open it.
+2. Pair the device: on Vision Pro, open Settings > General > Remote Devices and type the code it
+   shows; on an iPhone or iPad, plug it in and tap Trust (once).
+3. Sign in with your Apple ID, or choose your own certificate and profile, and install.
+   Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
+   signing it used.
+4. Leave the desktop app running if you like: as the companion, it keeps refreshing and JIT
+   working while the device is away from home (see How it works).
+
+The command line, `apparition`, does the same from a terminal; see [Installing Apparition from a
+computer](#installing-apparition-from-a-computer).
+
+**About Apple IDs.** Use a spare Apple ID for sideloading if you can. Apparition never stores
+the password unless you turn on Remember password on the device, where it stays in the Keychain,
+and it sends it only to Apple. The first sign-in from a computer or device Apple hasn't seen asks
+for the code Apple sends to your other devices. Since 12 October 2026 Apple checks the
+"anisette" data that comes with a sign-in more strictly; see [Anisette](#anisette) for what that
+means and how Apparition handles it.
+
+## How it works
+
+Sources are AltStore/SideStore JSON, or `github:owner/repo` for apps published only as
+release assets (UTM's visionOS build).
 Installed apps keep their IPA in Documents/apps, so a refresh re-signs and reinstalls
 without the network, and their data survives. With "Remember password" on, the password
 stays in this device's Keychain, and a refresh can sign in with nobody present (Apple
@@ -211,3 +249,9 @@ anisette server" next to the companion; nothing switches on its own.
         build-and-sign --no-mcp    # the lab app
 
 Licensed MIT.
+
+## History
+
+`Probe/` (the app) started as the first spike: could an
+app pair with, and open a RemotePairing tunnel to, the device it runs on, with no computer
+involved.
