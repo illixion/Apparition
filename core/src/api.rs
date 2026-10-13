@@ -684,10 +684,17 @@ mod desktop {
     impl Found {
         /// Prefers an IPv4 address: link-local IPv6 ones need a scope this doesn't track. A
         /// link-local IPv4 one (169.254.*, a cable's or AWDL's) is a last resort: it's gone
-        /// when the device is unplugged or moves.
+        /// when the device is unplugged or moves. So is an iPhone's own Personal Hotspot
+        /// address (172.20.10.0/28), which only answers while this computer uses the hotspot.
         pub fn address(&self) -> Option<IpAddr> {
-            let lan = |a: &&IpAddr| matches!(a, IpAddr::V4(v4) if !v4.is_link_local());
-            self.addresses.iter().find(lan).or_else(|| self.addresses.iter().find(|a| a.is_ipv4())).or_else(|| self.addresses.first()).copied()
+            let hotspot = |v4: &std::net::Ipv4Addr| matches!(v4.octets(), [172, 20, 10, last] if last < 16);
+            let lan = |a: &&IpAddr| matches!(a, IpAddr::V4(v4) if !v4.is_link_local() && !hotspot(v4));
+            let routable = |a: &&IpAddr| matches!(a, IpAddr::V4(v4) if !v4.is_link_local());
+            self.addresses.iter().find(lan)
+                .or_else(|| self.addresses.iter().find(routable))
+                .or_else(|| self.addresses.iter().find(|a| a.is_ipv4()))
+                .or_else(|| self.addresses.first())
+                .copied()
         }
     }
 
@@ -734,5 +741,23 @@ mod tests {
         assert_eq!(Slot::of_error("You already have the maximum number of certificates"), Some(Slot::Certificates));
         assert_eq!(Slot::of_error("Cannot create more than 10 App IDs"), Some(Slot::AppIds));
         assert_eq!(Slot::of_error("Device registration failed"), None);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn found_address_prefers_the_lan() {
+        let found = |addresses: &[&str]| super::Found {
+            name: String::new(),
+            ready_to_pair: false,
+            addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+            port: 0,
+        }
+        .address()
+        .map(|a| a.to_string());
+        let lan = found(&["fe80::1", "169.254.170.69", "172.20.10.1", "192.168.1.20"]);
+        assert_eq!(lan.as_deref(), Some("192.168.1.20"));
+        assert_eq!(found(&["169.254.170.69", "172.20.10.1"]).as_deref(), Some("172.20.10.1"));
+        assert_eq!(found(&["172.20.10.20"]).as_deref(), Some("172.20.10.20"));
+        assert_eq!(found(&["fe80::1", "169.254.170.69"]).as_deref(), Some("169.254.170.69"));
     }
 }
