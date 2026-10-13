@@ -56,20 +56,6 @@ struct SigningView: View {
             handlePicked(result, kind: kind)
         }
         #endif
-        .confirmationDialog("Remove \(pendingIdentity?.name ?? "this certificate")?",
-                            isPresented: Binding(get: { pendingIdentity != nil }, set: { if !$0 { pendingIdentity = nil } }),
-                            titleVisibility: .visible, presenting: pendingIdentity) { identity in
-            Button("Remove Certificate", role: .destructive) { remove(identity) }
-        } message: { identity in
-            Text(removeMessage(identity))
-        }
-        .confirmationDialog("Remove \(pendingProfile?.name ?? "this profile")?",
-                            isPresented: Binding(get: { pendingProfile != nil }, set: { if !$0 { pendingProfile = nil } }),
-                            titleVisibility: .visible, presenting: pendingProfile) { profile in
-            Button("Remove Profile", role: .destructive) { remove(profile) }
-        } message: { _ in
-            Text("Installed apps keep working until it expires; the next refresh needs another profile that fits.")
-        }
     }
 
     // MARK: Signer
@@ -144,6 +130,11 @@ struct SigningView: View {
             }
             Spacer()
             Button("Remove", role: .destructive) { pendingIdentity = identity }
+                .confirmation("Remove \(identity.name)?", item: $pendingIdentity, for: identity.id) { identity in
+                    Button("Remove Certificate", role: .destructive) { remove(identity) }
+                } message: { identity in
+                    Text(removeMessage(identity))
+                }
                 .buttonStyle(.bordered)
                 .disabled(working)
         }
@@ -210,6 +201,11 @@ struct SigningView: View {
             }
             Spacer()
             Button("Remove", role: .destructive) { pendingProfile = profile }
+                .confirmation("Remove \(profile.name)?", item: $pendingProfile, for: profile.id) { profile in
+                    Button("Remove Profile", role: .destructive) { remove(profile) }
+                } message: { _ in
+                    Text("Installed apps keep working until it expires; the next refresh needs another profile that fits.")
+                }
                 .buttonStyle(.bordered)
                 .disabled(working)
         }

@@ -48,15 +48,6 @@ struct AppLimitView: View {
                   !working else { return }
             await model.listApps(host: model.defaultTunnelHost, port: model.defaultTunnelPort)
         }
-        .confirmationDialog("Remove \(pendingRemoval.map(library.displayName(of:)) ?? "app")?",
-                            isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
-                            titleVisibility: .visible, presenting: pendingRemoval) { bundleId in
-            Button("Remove and Install \(limit.appName)", role: .destructive) {
-                Task { await library.removeForAppLimit(bundleId) }
-            }
-        } message: { _ in
-            Text("Its data on this \(ThisDevice.noun) is deleted too. \(limit.appName) installs right after.")
-        }
     }
 
     private func row(_ bundleId: String) -> some View {
@@ -81,6 +72,16 @@ struct AppLimitView: View {
                 Button("Remove", role: .destructive) { pendingRemoval = bundleId }
                     .buttonStyle(.bordered)
                     .disabled(working)
+                    // On the button, so iOS's popover points at it rather than the card.
+                    .confirmationDialog("Remove \(library.displayName(of: bundleId))?",
+                                        isPresented: Binding(get: { pendingRemoval == bundleId }, set: { if !$0 { pendingRemoval = nil } }),
+                                        titleVisibility: .visible) {
+                        Button("Remove and Install \(limit.appName)", role: .destructive) {
+                            Task { await library.removeForAppLimit(bundleId) }
+                        }
+                    } message: {
+                        Text("Its data on this \(ThisDevice.noun) is deleted too. \(limit.appName) installs right after.")
+                    }
             }
         }
         .focusRow()

@@ -251,6 +251,19 @@ extension View {
     }
 }
 
+extension View {
+    /// A confirmation dialog for one row's `item`, attached to the control that asks for it:
+    /// iOS shows the dialog as a popover pointing at the view it's attached to, so one dialog
+    /// on a whole list points at the middle of the list.
+    func confirmation<Item: Identifiable, Actions: View, Message: View>(
+        _ title: String, item: Binding<Item?>, for id: Item.ID,
+        @ViewBuilder actions: @escaping (Item) -> Actions, @ViewBuilder message: @escaping (Item) -> Message
+    ) -> some View {
+        confirmationDialog(title, isPresented: Binding(get: { item.wrappedValue?.id == id }, set: { if !$0 { item.wrappedValue = nil } }),
+                           titleVisibility: .visible, presenting: item.wrappedValue, actions: actions, message: message)
+    }
+}
+
 #if !os(tvOS)
 private struct SheetFrame: ViewModifier {
     let minWidth: CGFloat

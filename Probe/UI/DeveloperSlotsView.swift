@@ -50,20 +50,6 @@ struct DeveloperSlotsView: View {
             }
         }
         .task { await load() }
-        .confirmationDialog("Revoke \(pendingRevoke?.name ?? "this certificate")?",
-                            isPresented: Binding(get: { pendingRevoke != nil }, set: { if !$0 { pendingRevoke = nil } }),
-                            titleVisibility: .visible, presenting: pendingRevoke) { certificate in
-            Button("Revoke Certificate", role: .destructive) { revoke(certificate) }
-        } message: { certificate in
-            Text(revokeMessage(certificate))
-        }
-        .confirmationDialog("Delete \(pendingDelete?.identifier ?? "this App ID")?",
-                            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                            titleVisibility: .visible, presenting: pendingDelete) { appID in
-            Button("Delete App ID", role: .destructive) { delete(appID) }
-        } message: { appID in
-            Text(deleteMessage(appID))
-        }
     }
 
     private var list: some View {
@@ -141,6 +127,11 @@ struct DeveloperSlotsView: View {
             }
             Spacer()
             Button("Revoke", role: .destructive) { pendingRevoke = certificate }
+                .confirmation("Revoke \(certificate.name ?? "this certificate")?", item: $pendingRevoke, for: certificate.id) { certificate in
+                    Button("Revoke Certificate", role: .destructive) { revoke(certificate) }
+                } message: { certificate in
+                    Text(revokeMessage(certificate))
+                }
                 .buttonStyle(.bordered)
                 .disabled(certificate.serialNumber == nil || working != nil)
         }
@@ -229,6 +220,11 @@ struct DeveloperSlotsView: View {
             }
             Spacer()
             Button("Delete", role: .destructive) { pendingDelete = appID }
+                .confirmation("Delete \(appID.identifier)?", item: $pendingDelete, for: appID.id) { appID in
+                    Button("Delete App ID", role: .destructive) { delete(appID) }
+                } message: { appID in
+                    Text(deleteMessage(appID))
+                }
                 .buttonStyle(.bordered)
                 .disabled(working != nil)
         }

@@ -62,13 +62,6 @@ struct LibraryView: View {
                     .help("Re-sign and reinstall every app now, so each gets a fresh 7 days")
                 }
             }
-            .confirmationDialog("Remove \(pendingRemoval?.name ?? "app") from the library?",
-                                isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
-                                titleVisibility: .visible, presenting: pendingRemoval) { app in
-                Button("Remove", role: .destructive) { library.removeInstalled(app.id) }
-            } message: { _ in
-                Text("Apparition stops refreshing it and deletes its kept copy. The app stays on this \(ThisDevice.noun) until its profile expires; delete it from the \(ThisDevice.home) to remove it now.")
-            }
             .confirmationDialog("Update Apparition to \(library.availableUpdate?.version ?? "")?", isPresented: $confirmingUpdate, titleVisibility: .visible) {
                 Button("Download and Install") { Task { await library.updateSelf() } }
             } message: {
@@ -478,6 +471,12 @@ struct LibraryView: View {
                 .frame(width: 32, height: 32)
         }
         .menuStyle(.button)
+        // On the menu, so iOS's popover points at the row's button rather than the list.
+        .confirmation("Remove \(app.name) from the library?", item: $pendingRemoval, for: app.id) { app in
+            Button("Remove", role: .destructive) { library.removeInstalled(app.id) }
+        } message: { _ in
+            Text("Apparition stops refreshing it and deletes its kept copy. The app stays on this \(ThisDevice.noun) until its profile expires; delete it from the \(ThisDevice.home) to remove it now.")
+        }
         .buttonBorderShape(.circle)
         .help("More")
     }
