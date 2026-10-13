@@ -30,7 +30,16 @@ env:
 
 jobs:
   apple:
-    name: Apps, macOS and Windows
+    name: ${{ matrix.title }}
+    # One job per part of package-release.sh, side by side: built cold one after another they
+    # took over two hours, past a job's limit.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { part: app, title: "Apps (visionOS, iOS, tvOS)", targets: "aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos", brew: xcodegen }
+          - { part: macos, title: "macOS installer", targets: "aarch64-apple-darwin,x86_64-apple-darwin", brew: "" }
+          - { part: windows, title: "Windows installer", targets: "x86_64-pc-windows-gnu", brew: mingw-w64 }
     # The image with Xcode 27 (macos-26 has only Xcode 26).
     runs-on: xcode-27
     timeout-minutes: 90
@@ -42,10 +51,13 @@ jobs:
           path: Apparition
           fetch-depth: 0 # the build number is the commit count
       - uses: actions/checkout@v7
+        if: matrix.part == 'app'
         with: { repository: illixion/DebugTrace, path: DebugTrace }
       - uses: actions/checkout@v7
+        if: matrix.part == 'app'
         with: { repository: illixion/RAVESDK, path: RAVESDK }
       - name: Record the sibling packages' commits
+        if: matrix.part == 'app'
         run: |
           for repo in DebugTrace RAVESDK; do
             echo "$repo $(git -C "$repo" rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -58,22 +70,22 @@ jobs:
           xcodebuild -showsdks | grep -E 'xros|iphoneos|appletvos'
       - name: Tools
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal \
-            --target aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos,aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-gnu
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.targets }}"
           rustup default "$RUST_TOOLCHAIN"
-          brew install xcodegen mingw-w64
+          if [[ -n "${{ matrix.brew }}" ]]; then brew install ${{ matrix.brew }}; fi
       # Compiling the Tauri CLI takes about 9 minutes, so it's cached on its own and saved as
       # soon as it's built: a cache saved at the end of the job is lost whenever the build fails.
       - uses: actions/cache/restore@v6
+        if: matrix.part == 'macos'
         id: tauri-cli
         with:
           path: ~/.cargo/bin/cargo-tauri
           key: tauri-cli-2-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}
       - name: Tauri CLI
-        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        if: matrix.part == 'macos' && steps.tauri-cli.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version '^2' --locked
       - uses: actions/cache/save@v6
-        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        if: matrix.part == 'macos' && steps.tauri-cli.outputs.cache-hit != 'true'
         with:
           path: ~/.cargo/bin/cargo-tauri
           key: ${{ steps.tauri-cli.outputs.cache-primary-key }}
@@ -85,14 +97,15 @@ jobs:
             Apparition/core
             Apparition/installer
             Apparition/desktop
+          key: ${{ matrix.part }}
           cache-on-failure: true
           cache-bin: false
       - name: Build
         working-directory: Apparition
-        run: scripts/package-release.sh "${VERSION#v}" --parts app,macos,windows
+        run: scripts/package-release.sh "${VERSION#v}" --parts ${{ matrix.part }}
       - uses: actions/upload-artifact@v7
         with:
-          name: apple
+          name: apple-${{ matrix.part }}
           path: Apparition/build/release/*/*
           if-no-files-found: error
 
