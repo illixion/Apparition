@@ -5,8 +5,10 @@
 Apparition is a sideloader that runs on the device itself. Install apps from AltStore-format
 sources on Apple Vision Pro, iPhone, iPad or Apple TV, sign them with your own Apple ID (a free
 one works) or your own certificate, keep them refreshed, and launch them with JIT for emulators
-such as UTM. A computer is only needed the first time, to put Apparition on the device; after
-that it can stay in the menu bar or tray as Apparition's companion, or not be needed at all.
+such as UTM. A computer puts Apparition on the device the first time. After that, refreshing
+and JIT go either through the desktop app left running as Apparition's companion, which doesn't
+need to be on the same Wi-Fi (Tailscale works), or through LocalDevVPN on the device, with no
+computer at all.
 
 <p align="center">
   <img src="docs/images/iphone-sources.png" height="420" alt="Apparition on iPhone: sources and installed apps">
@@ -84,8 +86,8 @@ try again later, or use the certificate you already have by sharing it from anot
 
 Apparition's companion works over [Tailscale](https://tailscale.com), so a computer left at
 home keeps signing and refreshing apps, and launching them with JIT, wherever the device is.
-JIT away from home is new: AltStore and SideStore need the same Wi-Fi as a computer, or
-LocalDevVPN, which doesn't leave room for Tailscale.
+Doing this alongside Tailscale is the new part: AltStore needs its computer on the same Wi-Fi,
+and SideStore and StikDebug need LocalDevVPN, which takes the device's only VPN slot.
 
 1. Install Tailscale on the computer that runs the desktop app, and on the device (the
    Tailscale app from the App Store), signed in to the same tailnet. Leave the desktop app
