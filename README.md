@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/icon.png" width="128" alt="Apparition's icon: a ghost holding an app tile"></p>
+
 # Apparition
 
 Apparition is a sideloader that runs on the device itself. Install apps from AltStore-format
@@ -5,6 +7,11 @@ sources on Apple Vision Pro, iPhone, iPad or Apple TV, sign them with your own A
 one works) or your own certificate, keep them refreshed, and launch them with JIT for emulators
 such as UTM. A computer is only needed the first time, to put Apparition on the device; after
 that it can stay in the menu bar or tray as Apparition's companion, or not be needed at all.
+
+<p align="center">
+  <img src="docs/images/iphone-sources.png" height="420" alt="Apparition on iPhone: sources and installed apps">
+  <img src="docs/images/desktop.png" height="420" alt="The desktop app's welcome screen">
+</p>
 
 ## What it does
 
