@@ -138,6 +138,22 @@ final class LibraryModel {
 
     // MARK: Sources
 
+    /// A source from an `apparition://source?url=…` link, waiting for Browse to show it in Add
+    /// Source. Nothing is added until the person there taps Add.
+    var linkedSource: String?
+
+    /// The source an `apparition://source?url=<source>` link names (an https URL or
+    /// `github:owner/repo`), or nil for any other URL.
+    nonisolated static func sourceLink(_ url: URL) -> String? {
+        guard url.scheme?.lowercased() == "apparition", url.host()?.lowercased() == "source",
+              let value = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                  .queryItems?.first(where: { $0.name == "url" })?.value?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else { return nil }
+        return value
+    }
+
     func addSource(_ id: String, assetPattern: String?, prereleases: Bool) async {
         let id = id.trimmingCharacters(in: .whitespacesAndNewlines)
         if !sources.contains(where: { $0.id == id }) {

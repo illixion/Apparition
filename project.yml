@@ -46,6 +46,10 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # apparition://source?url=<source> opens Add Source with it filled in (RootView).
+        CFBundleURLTypes:
+          - CFBundleURLName: com.illixion.apparition
+            CFBundleURLSchemes: [apparition]
         # Opening or sharing a certificate (.p12) or provisioning profile hands it to
         # Apparition, which imports it (SigningStore.receive).
         CFBundleDocumentTypes:

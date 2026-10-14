@@ -68,7 +68,12 @@ struct RootView: View {
                 if phase == .active { Task { await library.signing.scanInbox() } }
             }
             .onOpenURL { url in
-                Task { await library.signing.receive(url) }
+                if let source = LibraryModel.sourceLink(url) {
+                    library.linkedSource = source
+                    tab = .browse
+                } else {
+                    Task { await library.signing.receive(url) }
+                }
             }
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)

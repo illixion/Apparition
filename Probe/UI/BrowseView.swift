@@ -10,6 +10,8 @@ struct BrowseView: View {
     let onSetup: () -> Void
 
     @State private var addingSource = false
+    /// What Add Source opens with: a source from an apparition://source link, or empty.
+    @State private var sourceToAdd = ""
     @State private var refreshing = false
     @State private var pendingRemoval: Sources.Source?
 
@@ -49,7 +51,16 @@ struct BrowseView: View {
                 }
             }
             .panel(isPresented: $addingSource) {
-                AddSourceSheet(library: library)
+                AddSourceSheet(library: library, initialURL: sourceToAdd)
+            }
+            .onChange(of: library.linkedSource, initial: true) { _, linked in
+                guard let linked else { return }
+                library.linkedSource = nil
+                sourceToAdd = linked
+                addingSource = true
+            }
+            .onChange(of: addingSource) { _, shown in
+                if !shown { sourceToAdd = "" }
             }
         }
     }
@@ -197,7 +208,12 @@ struct BrowseView: View {
 struct AddSourceSheet: View {
     let library: LibraryModel
     @Environment(\.dismiss) private var dismiss
-    @State private var url = ""
+    @State private var url: String
+
+    init(library: LibraryModel, initialURL: String = "") {
+        self.library = library
+        _url = State(initialValue: initialURL)
+    }
     @State private var assetPattern = ThisDevice.utmAssetPattern
     @State private var prereleases = true
     @State private var adding = false

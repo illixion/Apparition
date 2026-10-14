@@ -18,7 +18,9 @@ computer at all.
 ## What it does
 
 - **Install apps** from AltStore and SideStore sources, from a GitHub project's releases
-  (`github:owner/repo`), or from an IPA you have.
+  (`github:owner/repo`), or from an IPA you have. A link like
+  `apparition://source?url=https%3A%2F%2Fexample.com%2Fsource.json` opens Add Source with the
+  source filled in, ready to add, for a source's own "Add to Apparition" button.
 - **Sign** with a free Apple ID, which Apple limits to apps that last 7 days and two
   certificates, or with a paid account's certificate and profile, which last a year and need no
   sign-in.
