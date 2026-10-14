@@ -11,7 +11,6 @@ need to be on the same Wi-Fi (Tailscale works), or through LocalDevVPN on the de
 computer at all.
 
 <p align="center">
-  <img src="docs/images/iphone-sources.png" height="420" alt="Apparition on iPhone: sources and installed apps">
   <img src="docs/images/desktop.png" height="420" alt="The desktop app's welcome screen">
 </p>
 
