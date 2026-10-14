@@ -101,11 +101,11 @@
   <section class="step welcome">
     <div class="welcome-copy">
       <h1>Put Apparition on your Apple device.</h1>
-      <p class="lede">Apparition installs apps on your Vision Pro, iPhone or iPad and signs them right there, with your own Apple ID. This computer is needed once, to put Apparition itself on the device; after that it can keep running as Apparition's companion.</p>
+      <p class="lede">Apparition installs apps on your Vision Pro, iPhone, iPad or Apple TV and signs them right there, with your own Apple ID. This computer is needed once, to put Apparition itself on the device; after that it can keep running as Apparition's companion.</p>
       <h2 class="small">What you need</h2>
       <ul class="needs">
         <li><strong>The device and this computer on the same Wi&#8209;Fi.</strong></li>
-        <li><strong>To pair the first time:</strong> on Vision Pro, Settings &gt; General &gt; Remote Devices open; an iPhone or iPad plugged into this computer with a cable and unlocked (tap Trust if it asks).</li>
+        <li><strong>To pair the first time:</strong> Remote Devices open on Vision Pro, or Remote App and Devices on Apple TV; an iPhone or iPad on a cable to this computer, unlocked.</li>
         <li><strong>An Apple ID,</strong> free or paid, <strong>or your own developer certificate</strong> (.p12 and provisioning profiles).</li>
       </ul>
     </div>
@@ -125,7 +125,7 @@
 <template id="t-headset">
   <section class="step">
     <h1>Find your device</h1>
-    <p class="lede">For Vision Pro, put it on and open <strong>Settings &gt; General &gt; Remote Devices</strong>: it shows up here as ready to pair. A device this computer has paired with before needs nothing open.</p>
+    <p class="lede">For Vision Pro, put it on and open <strong>Settings &gt; General &gt; Remote Devices</strong>; for Apple TV, open <strong>Settings &gt; Remotes and Devices &gt; Remote App and Devices</strong>. It shows up here as ready to pair. A device this computer has paired with before needs nothing open.</p>
 
     <div class="group">
       <div class="group-head">
@@ -134,7 +134,7 @@
         <button type="button" class="button quiet small" data-role="search">Look again</button>
       </div>
       <ul class="choices" data-role="list" aria-label="Devices on this network"></ul>
-      <p class="empty" data-role="empty" hidden>Nothing found yet. Check that the headset is awake, on the same Wi-Fi as this computer, and showing Remote Devices.</p>
+      <p class="empty" data-role="empty" hidden>Nothing found yet. Check that the device is awake, on the same Wi-Fi as this computer, and showing its pairing screen: Remote Devices on Vision Pro, Remote App and Devices on Apple TV.</p>
       <p class="hint" data-role="mdns-hint" hidden></p>
     </div>
 
@@ -150,7 +150,7 @@
 
     <details class="manual">
       <summary>Enter its address instead</summary>
-      <p class="hint">On the headset, Settings &gt; Wi-Fi &gt; your network shows its IP address. The pairing port changes each time Remote Devices opens; another computer's <code>apparition-installer devices</code> shows it.</p>
+      <p class="hint">On the device, its Wi-Fi network in Settings shows its IP address. The pairing port changes each time its pairing screen opens; another computer's <code>apparition-installer devices</code> shows it.</p>
       <form class="row" data-role="manual">
         <label class="field">IP address<input name="address" required inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.20"></label>
         <label class="field narrow">Pairing port<input name="port" required inputmode="numeric" autocomplete="off" placeholder="51967"></label>
@@ -181,12 +181,12 @@
 
 <template id="t-pair">
   <section class="step">
-    <h1>Pair with <span data-role="name">the headset</span></h1>
-    <p class="lede">Pairing lets this computer install apps on the headset. It happens once: the pairing is kept for next time.</p>
+    <h1>Pair with <span data-role="name">the device</span></h1>
+    <p class="lede">Pairing lets this computer install apps on the device. It happens once: the pairing is kept for next time.</p>
     <ol class="howto">
-      <li>Keep <strong>Settings &gt; General &gt; Remote Devices</strong> open on the headset.</li>
-      <li>Select <strong>Start pairing</strong> below. The headset shows a code.</li>
-      <li>Type that code here.</li>
+      <li>Keep the pairing screen open: <strong>Settings &gt; General &gt; Remote Devices</strong> on Vision Pro, <strong>Settings &gt; Remotes and Devices &gt; Remote App and Devices</strong> on Apple TV.</li>
+      <li>Select <strong>Start pairing</strong> below. The device shows a code.</li>
+      <li>Type that code here. An Apple TV then shows a second code, for Apparition on it: type that one too.</li>
     </ol>
     <p class="status" data-role="status" hidden></p>
     <div class="actions">

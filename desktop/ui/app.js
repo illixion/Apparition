@@ -304,7 +304,7 @@ function confirmForget(/** @type {HTMLElement} */ li, /** @type {any} */ device,
     done();
     const hint = $(panel, "mdns-hint");
     hint.hidden = false;
-    hint.textContent = `Forgot ${device.name}. On a headset, also remove this computer from Remote Devices.`;
+    hint.textContent = `Forgot ${device.name}. On a Vision Pro or Apple TV, also remove this computer from its pairing screen in Settings.`;
   });
 }
 
@@ -313,7 +313,7 @@ function confirmForget(/** @type {HTMLElement} */ li, /** @type {any} */ device,
 function pair() {
   panel.append(template("t-pair"));
   const target = state.selected;
-  $(panel, "name").textContent = target?.name ?? "the headset";
+  $(panel, "name").textContent = target?.name ?? "the device";
   const start = /** @type {HTMLButtonElement} */ ($(panel, "start"));
   const back = /** @type {HTMLButtonElement} */ (panel.querySelector('[data-go="headset"]'));
   const status = $(panel, "status");
@@ -347,7 +347,7 @@ function pair() {
     setBusy(start, true);
     back.disabled = true;
     const usb = target?.kind === "usb";
-    setStatus(status, usb ? "Pairing over the cable, then looking for it on Wi-Fi…" : "Waiting for the headset to show its code…");
+    setStatus(status, usb ? "Pairing over the cable, then looking for it on Wi-Fi…" : "Waiting for the device to show its code…");
     // Over the cable, the device may first ask whether to trust this computer.
     const stop = usb ? await listen("pair-status", (/** @type {any} */ e) => setStatus(status, `${e.payload} Pairing continues once it's trusted…`)) : null;
     try {
@@ -374,10 +374,10 @@ function pair() {
 function pairingError(/** @type {any} */ error) {
   const message = messageOf(error);
   if (error?.cancelled) return message;
-  if (/srp|proof/i.test(message)) return `The code didn't match. Check the code the headset shows, and try again.\n\n${message}`;
+  if (/srp|proof/i.test(message)) return `The code didn't match. Check the code the device shows, and try again.\n\n${message}`;
   if (/trust|usbmuxd|lockdown|isn't connected/i.test(message)) return message;
   if (/refused|reset|unreachable|timed out|reach/i.test(message))
-    return `Couldn't reach the headset. Keep Remote Devices open on it (the pairing port changes when it reopens), and check both are on the same network.\n\n${message}`;
+    return `Couldn't reach the device. Keep its pairing screen open (the pairing port changes when it reopens), and check both are on the same network.\n\n${message}`;
   return message;
 }
 
@@ -440,11 +440,11 @@ function signing() {
           : !forDevice
             ? `isn't for ${state.device?.platform ?? "visionOS"}`
             : profile.includesDevice === false
-              ? `doesn't list ${state.device?.name ?? "this headset"}`
-              : `lists ${state.device?.name ?? "this headset"}`;
+              ? `doesn't list ${state.device?.name ?? "this device"}`
+              : `lists ${state.device?.name ?? "this device"}`;
         add(`${profile.name}: ${why}`, !fits);
       }
-      if (!usable) add("None of these profiles can sign for this headset. Add one that lists it.", true);
+      if (!usable) add("None of these profiles can sign for this device. Add one that lists it.", true);
     }
   };
 
@@ -564,7 +564,7 @@ function signing() {
   certForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!state.p12) return setStatus(status, "Choose your .p12 first.", "error");
-    if (!state.profiles.length) return setStatus(status, "Add at least one provisioning profile that lists the headset.", "error");
+    if (!state.profiles.length) return setStatus(status, "Add at least one provisioning profile that lists the device.", "error");
     const submit = /** @type {HTMLButtonElement} */ (certForm.querySelector('[type="submit"]'));
     const args = { p12: state.p12, password: certForm.password.value, profiles: state.profiles, udid: state.device?.udid ?? "" };
     certForm.password.value = "";
@@ -640,8 +640,8 @@ function install() {
     const local = state.what === "local" && state.localPath;
     panel.querySelector("h1").textContent = local ? `Install ${basename(state.localPath ?? "")}` : "Install Apparition";
     $(panel, "lede").textContent = local
-      ? `Signs this app for ${state.device?.name ?? "the headset"} and installs it.`
-      : `The latest official release, checked against Apparition's release signature before it's used, signed for ${state.device?.name ?? "the headset"}.`;
+      ? `Signs this app for ${state.device?.name ?? "the device"} and installs it.`
+      : `The latest official release, checked against Apparition's release signature before it's used, signed for ${state.device?.name ?? "the device"}.`;
     $(panel, "local-name").textContent = state.localPath ? basename(state.localPath) : "Any .ipa on this computer.";
     if (state.what === "local") advanced.open = true;
   };
@@ -870,7 +870,7 @@ function done() {
   const name = isApparition ? "Apparition" : result.label ?? result.bundleId;
   $(panel, "title").textContent = `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your device"}.`;
   $(panel, "lede").textContent = result.queued
-    ? `Sent in ${result.seconds?.toFixed(1)} s. It's an update of an app that's open on the headset: close it there to finish.`
+    ? `Sent in ${result.seconds?.toFixed(1)} s. It's an update of an app that's open on the device: close it there to finish.`
     : `Installed in ${result.seconds?.toFixed(1)} s.`;
 
   const next = $(panel, "next");
@@ -879,14 +879,14 @@ function done() {
     li.textContent = text;
     next.append(li);
   };
-  add(`Open ${name} from the headset's apps.`);
+  add(`Open ${name} from the device's apps.`);
   add(`If ${result.platform ?? "visionOS"} says the developer isn't trusted, trust it in Settings > General > VPN & Device Management.`);
   if (isApparition && result.handoff === "appleId")
     add(`Sign in to Apparition with ${result.appleId}. It finds the certificate this computer shared, so the two use one of the account's certificate slots.`);
   if (isApparition && result.handoff === "certificate")
     add("In Apparition, enter the .p12's password once: the certificate and profiles are waiting in its inbox.");
   if (isApparition && result.pairingHandedOver)
-    add(`Apparition got its own pairing with this ${result.platform === "iOS" ? "device" : "headset"}, so it can sign and install there.`);
+    add(`Apparition got its own pairing with this ${result.platform === "visionOS" ? "headset" : "device"}, so it can sign and install there.`);
   if (isApparition && state.signing?.mode === "appleId")
     add("Apps signed with a free Apple ID last 7 days. A daily Shortcuts automation with Apparition's Refresh Apps action keeps them signed.");
 
@@ -919,10 +919,17 @@ function openPrompt(prompt) {
   const title = /** @type {HTMLElement} */ (document.getElementById("prompt-title"));
   const text = /** @type {HTMLElement} */ (document.getElementById("prompt-text"));
   if (prompt.kind === "pin") {
-    title.textContent = prompt.again ? "The headset wants to pair again" : "Type the code from the headset";
-    text.textContent = prompt.again
-      ? "Open Settings > General > Remote Devices on the headset and type the code it shows."
-      : "Remote Devices on the headset now shows a code.";
+    if (prompt.again) {
+      title.textContent = "The device wants to pair again";
+      text.textContent =
+        "Open its pairing screen (Settings > General > Remote Devices on Vision Pro, Settings > Remotes and Devices > Remote App and Devices on Apple TV) and type the code it shows.";
+    } else if (prompt.second) {
+      title.textContent = "Type the second code";
+      text.textContent = "The device now shows another code. An Apple TV asks twice: this one is for Apparition on it.";
+    } else {
+      title.textContent = "Type the code from the device";
+      text.textContent = "The device's pairing screen now shows a code.";
+    }
     promptCode.maxLength = 6;
   } else {
     title.textContent = "Two-factor code";

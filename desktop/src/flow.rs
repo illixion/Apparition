@@ -267,15 +267,18 @@ pub fn forget_device(state: Shared<'_>, udid: String) -> Result<(), Failure> {
     Ok(state.store.forget(&udid)?)
 }
 
-/// Pairs with a device showing Settings > General > Remote Devices. The PIN is asked for
-/// with a `prompt` event of kind "pin", once the headset shows it.
+/// Pairs with a device showing its pairing screen (Remote Devices on Vision Pro, Remote App
+/// and Devices on Apple TV). The PIN is asked for with a `prompt` event of kind "pin", once the
+/// device shows it; later asks carry `second`, since an Apple TV shows a second PIN for
+/// Apparition's own record.
 #[tauri::command]
 pub async fn pair_device(app: AppHandle, state: Shared<'_>, address: String, port: u16) -> Result<DeviceView, Failure> {
     let address: IpAddr = address.trim().parse().map_err(|_| Failure::new(format!("{} isn't an IP address", address.trim())))?;
     let state = state.inner().clone();
     blocking(move || {
         let cancelled = AtomicBool::new(false);
-        let pin = || match state.ask(&app, json!({ "kind": "pin" })) {
+        let asked = AtomicBool::new(false);
+        let pin = || match state.ask(&app, json!({ "kind": "pin", "second": asked.swap(true, Ordering::Relaxed) })) {
             Answer::Pin { pin } => digits(&pin),
             _ => {
                 cancelled.store(true, Ordering::Relaxed);
@@ -593,7 +596,7 @@ fn stage(app: &AppHandle, name: &str, detail: Value) {
 pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions) -> Result<Value, Failure> {
     let state = state.inner().clone();
     blocking(move || {
-        let device = state.store.device(&options.udid).ok_or("That headset isn't paired any more. Pair it again.")?;
+        let device = state.store.device(&options.udid).ok_or("That device isn't paired any more. Pair it again.")?;
         let prepared = state.app.lock().unwrap().clone().ok_or("Choose what to install first.")?;
         let certificate = state.certificate.lock().unwrap().clone();
         if certificate.is_none() && state.session.lock().unwrap().is_none() {
@@ -681,7 +684,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
         });
         match result {
             Ok(value) => Ok(value),
-            Err(_) if cancelled.load(Ordering::Relaxed) => Err(Failure::cancelled("Cancelled: the headset wanted to pair again.")),
+            Err(_) if cancelled.load(Ordering::Relaxed) => Err(Failure::cancelled("Cancelled: the device wanted to pair again.")),
             Err(error) => Err(error.into()),
         }
     })
