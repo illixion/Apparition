@@ -1,6 +1,6 @@
 [package]
 name = "apparition-installer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Installs Apparition (or any IPA) onto an Apple Vision Pro from Windows, Linux or macOS: pairs over the network, signs with an Apple ID or your own certificate, installs"

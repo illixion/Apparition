@@ -1,6 +1,6 @@
 [package]
 name = "apparition-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Apparition as a desktop app: a guided way to put Apparition on your Apple devices from Windows, Linux or macOS, and the companion it uses from the tray"
