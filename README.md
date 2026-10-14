@@ -22,14 +22,20 @@ that it can stay in the menu bar or tray as Apparition's companion, or not be ne
   sign-in.
 - **Refresh** apps before they expire, on the device: from the app, a Shortcuts automation or
   in the background, through the companion or LocalDevVPN.
-- **Launch with JIT** for apps that need it (emulators), using the debugger the way Xcode does.
-  It speaks the JIT26 requests StikDebug defined, so apps built for them work as they are:
-  tested on Vision Pro with UTM (an Alpine VM) and ARMSX2, the PS2 emulator (GTA San Andreas,
-  [video](https://youtu.be/mNR0ik2QfEY)).
+- **JIT that works on current chips.** iOS 26 on A15 and M2 and later, and visionOS 27 on
+  Vision Pro, no longer let an app run code it generates just because a debugger attached once
+  and set `CS_DEBUGGED`. That old trick is what SideStore's JIT button still does, and why JIT
+  on Vision Pro looked impossible. **Launch with JIT** keeps the debugger attached and prepares
+  the memory the app asks for, on the device itself: ARMSX2's 305 MiB took about two seconds.
+  It speaks the JIT26 requests StikDebug defined (and UTM's own), so apps built for them work as
+  they are, at home or away from it through the companion. Tested on Vision Pro with UTM (an
+  Alpine VM) and ARMSX2, the PS2 emulator, running GTA San Andreas
+  ([video](https://youtu.be/mNR0ik2QfEY)).
 
   <img src="docs/images/gta-sa-vision-pro.png" width="480" alt="GTA San Andreas running in ARMSX2 on Apple Vision Pro, launched with JIT from Apparition">
-- **Pair over Wi-Fi.** Vision Pro and Apple TV pair with the code they show in Settings; an
-  iPhone or iPad needs a cable once, unless it already syncs with your Mac over Wi-Fi.
+- **Pair once, then work over Wi-Fi.** Vision Pro and Apple TV pair over Wi-Fi with the code
+  they show in Settings, no cable or Developer Strap. An iPhone or iPad pairs over a USB cable
+  the first time (it has no pairing code); after that it's reached over Wi-Fi.
 - **Share one certificate** between your devices and computers, sealed under five words, so a
   free account's two certificates go further.
 
@@ -39,12 +45,22 @@ that it can stay in the menu bar or tray as Apparition's companion, or not be ne
    [apparition.illixion.com](https://apparition.illixion.com) and open it. It isn't notarized,
    so on macOS move it to Applications and clear the download quarantine first:
    `xattr -dr com.apple.quarantine /Applications/Apparition.app`.
-2. Pair the device: on Vision Pro, open Settings > General > Remote Devices and type the code it
-   shows; on an iPhone or iPad, plug it in and tap Trust (once).
+2. Pair the device, on the same Wi-Fi as the computer:
+   - **Vision Pro:** open Settings > General > Remote Devices. The headset shows up in the
+     desktop app; pick it and type the code the headset shows.
+   - **Apple TV:** open Settings > Remotes and Devices > Remote App and Devices, and pair the
+     same way. The TV asks for a code twice: once for the computer, once for Apparition's own
+     pairing, which the desktop app hands over at install.
+   - **iPhone or iPad:** plug it into the computer with a USB cable and unlock it, then tap
+     Trust and enter its passcode if it asks. There's no code to type. You only need the cable
+     this once; if the device already syncs with your Mac over Wi-Fi, that works too.
 3. Sign in with your Apple ID, or choose your own certificate and profile, and install.
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
    signing it used.
-4. Leave the desktop app running if you like: as the companion, it keeps refreshing and JIT
+4. If the device won't open Apparition, it needs one of two settings. Turn on Developer Mode
+   under Settings > Privacy & Security, which restarts the device. Or, if it says the developer
+   isn't trusted, trust it under Settings > General > VPN & Device Management.
+5. Leave the desktop app running if you like: as the companion, it keeps refreshing and JIT
    working while the device is away from home (see How it works).
 
 The command line, `apparition`, does the same from a terminal; see [Installing Apparition from a
