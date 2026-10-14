@@ -89,6 +89,11 @@ home keeps signing and refreshing apps, and launching them with JIT, wherever th
 Doing this alongside Tailscale is the new part: AltStore needs its computer on the same Wi-Fi,
 and SideStore and StikDebug need LocalDevVPN, which takes the device's only VPN slot.
 
+New to Tailscale? It puts your devices on one private network wherever they are, free for
+personal use, with nothing to open on your router. The same network reaches a Mac's Screen
+Sharing or a game streaming PC from anywhere, for example with
+[Longwave](https://longwave.pro), a remote desktop app for Vision Pro, iPhone and iPad.
+
 1. Install Tailscale on the computer that runs the desktop app, and on the device (the
    Tailscale app from the App Store), signed in to the same tailnet. Leave the desktop app
    running on that computer.
