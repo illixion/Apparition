@@ -24,7 +24,10 @@ that it can stay in the menu bar or tray as Apparition's companion, or not be ne
   in the background, through the companion or LocalDevVPN.
 - **Launch with JIT** for apps that need it (emulators), using the debugger the way Xcode does.
   It speaks the JIT26 requests StikDebug defined, so apps built for them work as they are:
-  tested on Vision Pro with UTM (an Alpine VM) and ARMSX2, the PS2 emulator (GTA San Andreas).
+  tested on Vision Pro with UTM (an Alpine VM) and ARMSX2, the PS2 emulator (GTA San Andreas,
+  [video](https://youtu.be/mNR0ik2QfEY)).
+
+  <img src="docs/images/gta-sa-vision-pro.png" width="480" alt="GTA San Andreas running in ARMSX2 on Apple Vision Pro, launched with JIT from Apparition">
 - **Pair over Wi-Fi.** Vision Pro and Apple TV pair with the code they show in Settings; an
   iPhone or iPad needs a cable once, unless it already syncs with your Mac over Wi-Fi.
 - **Share one certificate** between your devices and computers, sealed under five words, so a
