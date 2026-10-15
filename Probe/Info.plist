@@ -98,6 +98,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Apparition pairs with this device's own developer services over the local network.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Apparition keeps running while it is an app's JIT debugger by keeping location updates on. It never reads, stores or sends your location.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>
@@ -109,7 +111,7 @@
 	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
-		<string>audio</string>
+		<string>location</string>
 		<string>fetch</string>
 		<string>processing</string>
 	</array>

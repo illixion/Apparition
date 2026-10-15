@@ -35,7 +35,9 @@ computer at all.
   they are, at home or away from it through the companion. An app can also ask for JIT for
   itself while it runs, with an `apparition://enable-jit?bundle-id=…&pid=…` link (the
   `stikdebug://` link works too, so Madeira's Enable JIT button finds Apparition); Apparition
-  then stays its debugger, awake in the background, until the app closes. From a computer,
+  then stays its debugger until the app closes. On iPhone and iPad it keeps running in the
+  background by keeping coarse location updates on, which it drops unread: allow location
+  while using the app when asked. From a computer,
   `apparition jit <bundle ID> [--attach]` does the same. Tested on Vision Pro with UTM (an
   Alpine VM) and ARMSX2, the PS2 emulator, running GTA San Andreas
   ([video](https://youtu.be/mNR0ik2QfEY)).

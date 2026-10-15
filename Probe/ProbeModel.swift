@@ -414,6 +414,7 @@ final class ProbeModel {
         }
         let target = tunnelTarget(host: host, port: port)
         jitSessions.insert(bundleId)
+        await keepAlive.prepare()
         keepAlive.update(active: true)
         defer {
             jitSessions.remove(bundleId)
