@@ -56,6 +56,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Sign for a paired device without reaching it and install nothing. With an Apple ID,
       says which capabilities (increased memory limit, extended virtual addressing) the app
       got; with a .p12, which profile signed it.
+  apparition jit <bundle ID> [--attach [<pid>]] [--device <name or UDID>] [--wait <seconds>]
+      Be the app's debugger from here, so it can use JIT: launch it (or with --attach, take
+      its running process) and serve its JIT requests until it closes or says it's done. The
+      app has to be development-signed (installed by Apparition is). --wait is how long to
+      wait for its first request before leaving it (default: no limit).
   apparition certificates --apple-id <email> [--anisette <url>]
   apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
@@ -118,6 +123,7 @@ async fn main() -> ExitCode {
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
         Some("sign") => sign(&args[1..]).await,
+        Some("jit") => jit(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("signing") => signing(&args[1..]),
         Some("certificates") => account_command(&args[1..], Slot::Certificates).await,
@@ -446,6 +452,53 @@ async fn sign(args: &[String]) -> Result<(), Error> {
     };
     let signed_path = report_signed(&signed)?;
     println!("Signed for {}, nothing installed: {}", device.name, signed_path.display());
+    Ok(())
+}
+
+async fn jit(args: &[String]) -> Result<(), Error> {
+    let usage = || fail("usage: apparition jit <bundle ID> [--attach [<pid>]] [--device <name or UDID>] [--wait <seconds>]");
+    let (mut bundle_id, mut attach, mut pid, mut device, mut wait) = (None, false, None, None, 0u32);
+    let mut args = args.iter().peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--attach" => {
+                attach = true;
+                if let Some(number) = args.peek().and_then(|a| a.parse::<u64>().ok()) {
+                    pid = Some(number);
+                    args.next();
+                }
+            }
+            "--device" => device = Some(args.next().ok_or_else(usage)?.clone()),
+            "--wait" => wait = args.next().and_then(|a| a.parse().ok()).ok_or_else(usage)?,
+            other if !other.starts_with('-') && bundle_id.is_none() => bundle_id = Some(other.to_string()),
+            _ => return Err(usage()),
+        }
+    }
+    let bundle_id = bundle_id.ok_or_else(usage)?;
+    let device = find_device(device.as_deref())?;
+    println!("Connecting to {}…", device.name);
+    let pin = || ask("The device wants to pair again. PIN: ");
+    let mut tunnel = store().connect(&device, pin).await?;
+    let target = if attach {
+        let pid = match pid {
+            Some(pid) => pid,
+            None => tunnel.running_pid(&bundle_id).await?.ok_or_else(|| fail(format!("{bundle_id} isn't running; open it first, or leave out --attach")))?,
+        };
+        println!("Attaching to {bundle_id} (pid {pid}). Leave this running while you use the app; Ctrl-C ends it.");
+        api::JitTarget::Attach { pid, bring_back: None }
+    } else {
+        println!("Launching {bundle_id}. Leave this running while you use the app; Ctrl-C ends it.");
+        api::JitTarget::Launch(&bundle_id)
+    };
+    let reply = tunnel.serve_jit(target, wait, &mut |line| println!("  {line}")).await?;
+    println!(
+        "Done ({}): {} MiB prepared over {} requests; {} faults and {} signals passed to the app.",
+        reply["ended"].as_str().unwrap_or("?"),
+        reply["preparedBytes"].as_u64().unwrap_or(0) >> 20,
+        reply["prepares"].as_u64().unwrap_or(0),
+        reply["faults"].as_u64().unwrap_or(0),
+        reply["signals"].as_u64().unwrap_or(0),
+    );
     Ok(())
 }
 

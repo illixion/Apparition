@@ -76,6 +76,15 @@
 				<string>apparition</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.illixion.apparition.enable-jit</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>stikdebug</string>
+				<string>stikjit</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
@@ -100,6 +109,7 @@
 	</dict>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>audio</string>
 		<string>fetch</string>
 		<string>processing</string>
 	</array>

@@ -154,6 +154,34 @@ final class LibraryModel {
         return value
     }
 
+    /// An app asking for JIT for its running process: `apparition://enable-jit?bundle-id=…&pid=…`,
+    /// or the same link under StikDebug's schemes (`stikdebug`, `stikjit`), which apps such as
+    /// Madeira open. Without a pid, the app's running process is used.
+    struct JITRequest: Identifiable, Equatable {
+        var id: String { "\(bundleId)|\(pid)" }
+        let bundleId: String
+        let pid: Int
+    }
+
+    nonisolated static func jitRequest(_ url: URL) -> JITRequest? {
+        guard let scheme = url.scheme?.lowercased(), ["apparition", "stikdebug", "stikjit"].contains(scheme),
+              url.host()?.lowercased() == "enable-jit" else { return nil }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ names: String...) -> String? {
+            items.first { item in names.contains { $0.caseInsensitiveCompare(item.name) == .orderedSame } }?
+                .value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let bundleId = value("bundle-id", "bundleId", "bundleID", "bundle_id"), !bundleId.isEmpty else { return nil }
+        let pid = value("pid").flatMap(Int.init) ?? 0
+        return JITRequest(bundleId: bundleId, pid: max(pid, 0))
+    }
+
+    /// An app Apparition installed asks without a question; any other app's request waits for
+    /// the person to allow it.
+    func isManaged(_ bundleId: String) -> Bool {
+        installed.contains { $0.installedBundleId == bundleId }
+    }
+
     func addSource(_ id: String, assetPattern: String?, prereleases: Bool) async {
         let id = id.trimmingCharacters(in: .whitespacesAndNewlines)
         if !sources.contains(where: { $0.id == id }) {

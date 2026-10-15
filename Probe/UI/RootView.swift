@@ -44,6 +44,8 @@ struct RootView: View {
     /// is missing (whether or not Setup was dismissed with Finish Later).
     @State private var tab: AppTab
     @Environment(\.scenePhase) private var scenePhase
+    /// An enable-jit link from an app Apparition didn't install, waiting to be allowed.
+    @State private var jitRequest: LibraryModel.JITRequest?
 
     init(model: ProbeModel, account: AccountModel, library: LibraryModel, companions: CompanionFinder) {
         self.model = model
@@ -68,16 +70,34 @@ struct RootView: View {
                 if phase == .active { Task { await library.signing.scanInbox() } }
             }
             .onOpenURL { url in
-                if let source = LibraryModel.sourceLink(url) {
+                if let request = LibraryModel.jitRequest(url) {
+                    if library.isManaged(request.bundleId) { attach(request) } else { jitRequest = request }
+                } else if let source = LibraryModel.sourceLink(url) {
                     library.linkedSource = source
                     tab = .browse
                 } else {
                     Task { await library.signing.receive(url) }
                 }
             }
+            .confirmationDialog("Enable JIT for \(jitRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
+                                isPresented: Binding(get: { jitRequest != nil }, set: { if !$0 { jitRequest = nil } }),
+                                titleVisibility: .visible, presenting: jitRequest) { request in
+                Button("Enable JIT") { attach(request) }
+                Button("Cancel", role: .cancel) {}
+            } message: { request in
+                Text("\(request.bundleId) asks Apparition to be its debugger, which lets it run code it makes. Apparition didn't install it.")
+            }
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }
+    }
+
+    /// Becomes the requesting app's debugger; the app comes back to the front once attached.
+    private func attach(_ request: LibraryModel.JITRequest) {
+        Task {
+            await model.attachJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort,
+                                  bundleId: request.bundleId, pid: request.pid)
+        }
     }
 
     #if os(visionOS)

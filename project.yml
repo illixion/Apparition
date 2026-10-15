@@ -47,9 +47,13 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         # apparition://source?url=<source> opens Add Source with it filled in (RootView).
+        # apparition://enable-jit?bundle-id=…&pid=… (and the same under StikDebug's schemes,
+        # which Madeira opens) makes Apparition the asking app's debugger (RootView).
         CFBundleURLTypes:
           - CFBundleURLName: com.illixion.apparition
             CFBundleURLSchemes: [apparition]
+          - CFBundleURLName: com.illixion.apparition.enable-jit
+            CFBundleURLSchemes: [stikdebug, stikjit]
         # Opening or sharing a certificate (.p12) or provisioning profile hands it to
         # Apparition, which imports it (SigningStore.receive).
         CFBundleDocumentTypes:
@@ -90,7 +94,9 @@ targets:
           UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations: {}
+        # audio: silence keeps Apparition running while it is an app's debugger (JITKeepAlive).
         UIBackgroundModes:
+          - audio
           - fetch
           - processing
         BGTaskSchedulerPermittedIdentifiers:
