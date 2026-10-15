@@ -14,6 +14,7 @@ set -euo pipefail
 #   build-and-sign --no-deploy      # Sign but don't install to device
 #   build-and-sign --sign-only      # Skip build, sign existing IPA
 #   build-and-sign --ipa path.ipa   # Sign a specific IPA (implies --sign-only)
+#   build-and-sign --profile FILE   # Sign the development build with this profile instead
 #   build-and-sign --platform iOS   # Build for a platform other than the conf's
 #   build-and-sign --device MyPhone # Install to a device other than the conf's
 #   build-and-sign --set KEY=VALUE  # Extra xcodebuild setting (repeatable)
@@ -199,6 +200,7 @@ while [[ $# -gt 0 ]]; do
         --device)        DEVICE_NAME="$2"; shift 2 ;;
         --set)           EXTRA_BUILD_SETTINGS+=("$2"); shift 2 ;;
         --ipa)           INPUT_IPA="$2"; SIGN_ONLY=true; shift 2 ;;
+        --profile)       FORCE_PROFILE="$2"; shift 2 ;;
         -h|--help)
             awk 'NR>3 { if (/^#/) { sub(/^# ?/, ""); print } else exit }' "$0"
             exit 0
@@ -206,6 +208,13 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# --profile FILE: sign the development build with this profile instead of the conf's (for
+# an IPA whose bundle ID the conf's profile doesn't cover). The conf and its certificate stay.
+if [[ -n "${FORCE_PROFILE:-}" ]]; then
+    [[ -f "$FORCE_PROFILE" ]] || { echo "ERROR: --profile $FORCE_PROFILE not found" >&2; exit 1; }
+    DEV_PROFILE_PATH="$FORCE_PROFILE"
+fi
 
 # MCP_DEFAULT=on (global.conf or a repo conf): deploys of development builds
 # launch as a debug session (--mcp) unless --mcp/--no-mcp says otherwise.
