@@ -127,6 +127,7 @@ final class LibraryModel {
             selfRecord = stored.selfRecord ?? SelfRecord()
         }
         finishPendingSelfRefresh()
+        probe.appName = { [weak self] bundleId in self?.displayName(of: bundleId) ?? bundleId }
     }
 
     private func save() {

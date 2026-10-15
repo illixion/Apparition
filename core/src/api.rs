@@ -20,7 +20,7 @@ use rootcause::prelude::*;
 use serde_json::Value;
 
 pub use crate::errors::describe;
-pub use crate::jit::Target as JitTarget;
+pub use crate::jit::{Target as JitTarget, stop as stop_jit};
 pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},

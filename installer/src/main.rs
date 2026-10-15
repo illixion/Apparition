@@ -479,17 +479,26 @@ async fn jit(args: &[String]) -> Result<(), Error> {
     println!("Connecting to {}…", device.name);
     let pin = || ask("The device wants to pair again. PIN: ");
     let mut tunnel = store().connect(&device, pin).await?;
+    // What a session is stopped by: its pid when attached (no bundle ID is passed then).
+    let mut key = bundle_id.clone();
     let target = if attach {
         let pid = match pid {
             Some(pid) => pid,
             None => tunnel.running_pid(&bundle_id).await?.ok_or_else(|| fail(format!("{bundle_id} isn't running; open it first, or leave out --attach")))?,
         };
-        println!("Attaching to {bundle_id} (pid {pid}). Leave this running while you use the app; Ctrl-C ends it.");
+        key = pid.to_string();
+        println!("Attaching to {bundle_id} (pid {pid}). Leave this running while you use the app; Ctrl-C detaches.");
         api::JitTarget::Attach { pid, bring_back: None }
     } else {
-        println!("Launching {bundle_id}. Leave this running while you use the app; Ctrl-C ends it.");
+        println!("Launching {bundle_id}. Leave this running while you use the app; Ctrl-C detaches.");
         api::JitTarget::Launch(&bundle_id)
     };
+    // Ctrl-C detaches cleanly, leaving the app running, rather than dropping the tunnel.
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            api::stop_jit(&key);
+        }
+    });
     let reply = tunnel.serve_jit(target, wait, &mut |line| println!("  {line}")).await?;
     println!(
         "Done ({}): {} MiB prepared over {} requests; {} faults and {} signals passed to the app.",
