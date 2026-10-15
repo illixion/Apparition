@@ -94,14 +94,16 @@ targets:
           UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations: {}
-        # audio: silence keeps Apparition running while it is an app's debugger (JITKeepAlive).
+        # location: coarse updates, dropped unread, keep Apparition running while it is an
+        # app's debugger (JITKeepAlive).
         UIBackgroundModes:
-          - audio
+          - location
           - fetch
           - processing
         BGTaskSchedulerPermittedIdentifiers:
           - com.illixion.apparition.refresh
           - com.illixion.apparition.refresh-processing
+        NSLocationWhenInUseUsageDescription: Apparition keeps running while it is an app's JIT debugger by keeping location updates on. It never reads, stores or sends your location.
         NSLocalNetworkUsageDescription: Apparition pairs with this device's own developer services over the local network.
         NSBonjourServices:
           - _remotepairing._tcp
