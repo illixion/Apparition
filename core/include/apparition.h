@@ -69,9 +69,15 @@ char *apparition_list_apps(struct AdapterHandle *adapter, struct RsdHandshakeHan
 char *apparition_uninstall(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                            const char *bundle_id);
 // Launches bundle_id suspended, attaches debugserver over the tunnel and serves the
-// brk #0x69 (UTM) and brk #0xf00d (JIT26) protocols, waiting up to wait_seconds.
+// brk #0x69 (UTM) and brk #0xf00d (JIT26) protocols. Waits up to wait_seconds (0: no limit)
+// for the first request; once the app has asked, serves it until it exits or detaches.
+// {ok, pid, events, preparedBytes, detached, ended}.
 char *apparition_launch_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                         const char *bundle_id, unsigned int wait_seconds);
+// The same for the running process pid (0: bundle_id's running process). With bundle_id,
+// that app is brought back to the front once attached. bundle_id may be null if pid isn't 0.
+char *apparition_attach_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                        unsigned long long pid, const char *bundle_id, unsigned int wait_seconds);
 
 // Opens the RemotePairing tunnel at device_host:device_port, or, when relay ("ip:port") is
 // non-null, through a companion (Apparition on a computer) that connects back to this device (device_host is

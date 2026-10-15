@@ -149,6 +149,16 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel, attaches the debugger to the running process `pid` of `bundleId` and
+    /// serves its JIT requests, bringing it back to the front.
+    static func attachJIT(target: Target, hostname: String, file: PairingFile,
+                          pin: PinCallback, context: UnsafeMutableRawPointer,
+                          pid: UInt64, bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            return AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds))
+        }
+    }
+
     /// Opens a tunnel and installs the signed app at `appPath` through it, as one IPA
     /// (apparition_install_ipa, reusing `sourceIPA`'s unchanged files), or file by file
     /// (apparition_install) when `asIPA` is off.

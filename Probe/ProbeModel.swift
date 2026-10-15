@@ -27,6 +27,7 @@ final class ProbeModel {
     }
 
     struct Attempt: Codable, Sendable {
+        var id = UUID()
         let action: String
         let host: String
         let port: Int
@@ -380,17 +381,51 @@ final class ProbeModel {
         deviceAppsFetchedAt = stored.fetchedAt
     }
 
+    /// Apps a debugger is serving right now (launchJIT, attachJIT), by bundle ID. A session
+    /// lasts as long as the app wants a debugger, which for Wine (Madeira) is the whole time it
+    /// runs, so it doesn't hold `busy`: installs and refreshes go on beside it.
+    private(set) var jitSessions: Set<String> = []
+    private let keepAlive = JITKeepAlive()
+
     func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int) async {
+        await serveJIT(host: host, port: port, bundleId: bundleId) { target, file, box in
+            try IDevice.launchJIT(target: target, hostname: Self.hostname, file: file,
+                                  pin: PinBox.callback, context: box,
+                                  bundleId: bundleId, waitSeconds: UInt32(waitSeconds))
+        }
+    }
+
+    /// Takes the running process `pid` of `bundleId` (an app that asked for JIT itself, through
+    /// an `enable-jit` link) and serves its JIT requests until it exits or detaches. The app is
+    /// brought back to the front once attached.
+    func attachJIT(host: String, port: Int, bundleId: String, pid: Int) async {
+        await serveJIT(host: host, port: port, bundleId: bundleId) { target, file, box in
+            try IDevice.attachJIT(target: target, hostname: Self.hostname, file: file,
+                                  pin: PinBox.callback, context: box,
+                                  pid: UInt64(max(pid, 0)), bundleId: bundleId, waitSeconds: 0)
+        }
+    }
+
+    private func serveJIT(host: String, port: Int, bundleId: String,
+                          _ body: @escaping @Sendable (IDevice.Target, IDevice.PairingFile, UnsafeMutableRawPointer) throws -> [String: Any]) async {
+        guard !jitSessions.contains(bundleId) else {
+            log.info("jit already serving this app")
+            return
+        }
         let target = tunnelTarget(host: host, port: port)
-        await run(action: "jit", host: host, port: port) { file, box in
-            let reply = try IDevice.launchJIT(target: target, hostname: Self.hostname, file: file,
-                                              pin: PinBox.callback, context: box,
-                                              bundleId: bundleId, waitSeconds: UInt32(waitSeconds))
+        jitSessions.insert(bundleId)
+        keepAlive.update(active: true)
+        defer {
+            jitSessions.remove(bundleId)
+            keepAlive.update(active: !jitSessions.isEmpty)
+        }
+        await run(action: "jit", host: host, port: port, exclusive: false) { file, box in
+            let reply = try body(target, file, box)
             guard reply["ok"] as? Bool == true else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "JIT launch failed")
             }
             let events = reply["events"] as? [String]
-            let detail = "pid \(reply["pid"] ?? "?"), prepared \(reply["preparedBytes"] ?? 0) bytes, detached \(reply["detached"] ?? false)"
+            let detail = "pid \(reply["pid"] ?? "?"), prepared \(reply["preparedBytes"] ?? 0) bytes, \(reply["ended"] ?? "ended")"
             return { attempt in
                 attempt.detail = detail
                 attempt.events = events
@@ -398,13 +433,18 @@ final class ProbeModel {
         }
     }
 
+    /// With `exclusive` (everything but a JIT session), refuses to start while another
+    /// exclusive action runs, and holds `busy` meanwhile.
     @discardableResult
-    private func run(action: String, host: String, port: Int,
+    private func run(action: String, host: String, port: Int, exclusive: Bool = true,
                      _ body: @escaping @Sendable (IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async -> String {
-        guard !busy else { return "busy" }
-        busy = true
-        defer { busy = false }
-        attempts.insert(Attempt(action: action, host: host, port: port, startedAt: DebugTime.iso(Date())), at: 0)
+        if exclusive {
+            guard !busy else { return "busy" }
+            busy = true
+        }
+        defer { if exclusive { busy = false } }
+        let attempt = Attempt(action: action, host: host, port: port, startedAt: DebugTime.iso(Date()))
+        attempts.insert(attempt, at: 0)
         log.info("\(action, privacy: .public) start")
 
         let url = pairingFileURL
@@ -414,40 +454,49 @@ final class ProbeModel {
                 let file = try FileManager.default.fileExists(atPath: url.path)
                     ? IDevice.PairingFile.load(Data(contentsOf: url))
                     : IDevice.PairingFile.generate(hostname: Self.hostname)
+                let before = try? file.serialized()
                 // A pair-setup updates the file in place, and a later step can still fail (a
                 // tunnel on the wrong port): persist it either way, or the new keys are lost
-                // while the device keeps the pairing.
+                // while the device keeps the pairing. Only when it changed: a JIT session
+                // runs beside other actions for hours, and mustn't put back an older file.
+                let save = {
+                    if let after = try? file.serialized(), after != before {
+                        try after.write(to: url, options: .completeFileProtection)
+                    }
+                }
                 let apply: @Sendable (inout Attempt) -> Void
                 do {
                     apply = try body(file, box)
                 } catch {
-                    try? file.serialized().write(to: url, options: .completeFileProtection)
+                    try? save()
                     throw error
                 }
-                try file.serialized().write(to: url, options: .completeFileProtection)
+                try save()
                 return apply
             }
         }.value
 
         pinRequested = false
         hasPairingFile = FileManager.default.fileExists(atPath: url.path)
-        attempts[0].finishedAt = DebugTime.iso(Date())
+        // Other attempts may have started since: find this one again.
+        guard let index = attempts.firstIndex(where: { $0.id == attempt.id }) else { return "unknown" }
+        attempts[index].finishedAt = DebugTime.iso(Date())
         switch outcome {
         case .success(let apply):
-            apply(&attempts[0])
-            attempts[0].outcome = "ok"
-            if let peer = attempts[0].peer {
+            apply(&attempts[index])
+            attempts[index].outcome = "ok"
+            if let peer = attempts[index].peer {
                 UserDefaults.standard.set(peer.udid, forKey: "pairedUDID")
                 UserDefaults.standard.set(peer.name, forKey: "pairedName")
             }
             log.info("\(action, privacy: .public) ok")
         case .failure(let error):
-            attempts[0].outcome = "error: \(error)"
+            attempts[index].outcome = "error: \(error)"
             // The app-limit error lists other apps' bundle IDs, which stay out of the log.
             let reason = AppLimit.blockingApps(in: "\(error)") == nil ? String(describing: error) : "free-profile app limit reached"
             log.error("\(action, privacy: .public) failed: \(reason, privacy: .public)")
         }
-        return attempts[0].outcome ?? "unknown"
+        return attempts[index].outcome ?? "unknown"
     }
 
     // MARK: Setup helpers (read by the UI)

@@ -28,6 +28,7 @@ pub mod claimed_platform;
 mod share;
 mod identity;
 mod ipa;
+mod jit;
 mod tunnel;
 #[cfg(all(feature = "anisette", unix))]
 pub mod anisette;
@@ -691,104 +692,11 @@ pub unsafe extern "C" fn apparition_uninstall(
     })())
 }
 
-// MARK: JIT launch
+// MARK: JIT
 
-const PAGE: u64 = 16 * 1024;
-const PC: u32 = 0x20;
-const X16: u32 = 16;
-
-/// Minimal gdb-remote client over the tunnel's debugproxy (no-ack mode, pipelined writes).
-struct Gdb {
-    proxy: idevice::debug_proxy::DebugProxyClient<Box<dyn idevice::ReadWrite>>,
-}
-
-impl Gdb {
-    fn frame(payload: &str) -> Vec<u8> {
-        let sum = payload.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
-        format!("${payload}#{sum:02x}").into_bytes()
-    }
-
-    async fn read(&mut self) -> Result<String, Report> {
-        loop {
-            let reply = self.proxy.read_response().await?.ok_or_else(|| report!("debugserver sent no packet"))?;
-            // Inferior output forwarded by debugserver; not a reply.
-            if reply.starts_with('O') && reply != "OK" {
-                continue;
-            }
-            return Ok(reply);
-        }
-    }
-
-    async fn request(&mut self, payload: &str) -> Result<String, Report> {
-        self.proxy.send_raw(&Self::frame(payload)).await?;
-        self.read().await
-    }
-
-    async fn pipeline(&mut self, payloads: &[String]) -> Result<Vec<String>, Report> {
-        let mut replies = Vec::with_capacity(payloads.len());
-        // Bounded batches keep the socket buffers from filling while nobody reads.
-        for batch in payloads.chunks(512) {
-            let bytes: Vec<u8> = batch.iter().flat_map(|p| Self::frame(p)).collect();
-            self.proxy.send_raw(&bytes).await?;
-            for _ in batch {
-                replies.push(self.read().await?);
-            }
-        }
-        Ok(replies)
-    }
-
-    async fn register(&mut self, number: u32, thread: u64) -> Result<u64, Report> {
-        let value = self.request(&format!("p{number:x};thread:{thread:x};")).await?;
-        let bytes: Vec<u8> = (0..value.len().min(16))
-            .step_by(2)
-            .filter_map(|i| u8::from_str_radix(&value[i..i + 2], 16).ok())
-            .collect();
-        if bytes.len() != 8 {
-            bail!("cannot read register {number}: {value}");
-        }
-        Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
-    }
-
-    async fn set_register(&mut self, number: u32, thread: u64, value: u64) -> Result<(), Report> {
-        let hex: String = value.to_le_bytes().iter().map(|b| format!("{b:02x}")).collect();
-        let reply = self.request(&format!("P{number:x}={hex};thread:{thread:x};")).await?;
-        if reply != "OK" {
-            bail!("cannot write register {number}: {reply}");
-        }
-        Ok(())
-    }
-
-    /// Writes one zero word into every 16 KiB page of [address, address + length): TXM only
-    /// lets a page execute after the debugger has written to it. Zeros match fresh memory.
-    async fn prepare(&mut self, address: u64, length: u64) -> Result<usize, Report> {
-        if address % PAGE != 0 || length == 0 || length > (2u64 << 30) {
-            bail!("refusing to prepare {length:#x} bytes at {address:#x}");
-        }
-        let writes: Vec<String> = (0..length.div_ceil(PAGE))
-            .map(|page| format!("M{:x},4:00000000", address + page * PAGE))
-            .collect();
-        let replies = self.pipeline(&writes).await?;
-        if let Some(bad) = replies.iter().find(|r| *r != "OK") {
-            bail!("memory write refused: {bad}");
-        }
-        Ok(writes.len())
-    }
-}
-
-fn stop_thread(reply: &str) -> Option<u64> {
-    let start = reply.find("thread:")? + 7;
-    let end = reply[start..].find(';')? + start;
-    u64::from_str_radix(&reply[start..end], 16).ok()
-}
-
-/// Launches `bundle_id` suspended over the tunnel, attaches debugserver, and serves the JIT
-/// protocols until the app no longer needs a debugger:
-/// - legacy `brk #0x69` (x0 = region, x1 = size; UTM's QEMU): prepare in place, then detach;
-/// - universal `brk #0xf00d` (x16 = 1 prepare x0/x1, x16 = 0 detach; StikDebug's JIT26). Its
-///   x16 = 2 (a script for StikDebug to run) and unknown commands are skipped.
-///
-/// Blocks for up to `wait_seconds` waiting for the first request (UTM asks when a VM
-/// starts). Returns `{ok, pid, events, preparedBytes, detached}`.
+/// Launches `bundle_id` suspended over the tunnel, attaches debugserver, and serves its JIT
+/// requests (see `jit`). Waits up to `wait_seconds` (0: no limit) for the first request (UTM
+/// asks when a VM starts). Returns `{ok, pid, events, preparedBytes, detached, ended}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_launch_jit(
     adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
@@ -803,159 +711,40 @@ pub unsafe extern "C" fn apparition_launch_jit(
         let bundle_id = unsafe { text(bundle_id) }?;
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        let started = std::time::Instant::now();
-        let mut events: Vec<String> = Vec::new();
-        let log = |events: &mut Vec<String>, line: String| {
-            tracing::info!("jit: {line}");
-            events.push(format!("{:>7.3}s {line}", started.elapsed().as_secs_f64()));
-        };
+        runtime().block_on(jit::serve(adapter, handshake, jit::Target::Launch(&bundle_id), wait_seconds, &mut |_| {}))
+    })())
+}
 
+/// Attaches debugserver to the running process `pid` (0: `bundle_id`'s running process) and
+/// serves its JIT requests, as `apparition_launch_jit` does. With `bundle_id`, that app is
+/// brought back to the front once attached: it asked from its own screen (Madeira's Enable
+/// JIT, through an `enable-jit` link), and opening Apparition left it. `bundle_id` may be null
+/// when `pid` is given. Returns the same reply.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_attach_jit(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    pid: u64,
+    bundle_id: *const c_char,
+    wait_seconds: u32,
+) -> *mut c_char {
+    reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = if bundle_id.is_null() { None } else { Some(unsafe { text(bundle_id) }?) };
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
         runtime().block_on(async {
-            use idevice::RsdService;
-            let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
-                .await
-                .context("appservice connect failed")?;
-            let launched = apps
-                .launch_application(bundle_id.as_str(), &[], true, true, None, None, None)
-                .await
-                .context("launch failed")?;
-            let pid = launched.pid;
-            log(&mut events, format!("launched suspended, pid {pid}"));
-
-            let proxy = idevice::debug_proxy::DebugProxyClient::connect_rsd(adapter, handshake)
-                .await
-                .context("debugproxy connect failed")?;
-            let mut gdb = Gdb { proxy };
-            gdb.proxy.send_raw(b"+").await?;
-            gdb.proxy.send_raw(&Gdb::frame("QStartNoAckMode")).await?;
-            let ack = gdb.proxy.read_response().await?;
-            gdb.proxy.set_ack_mode(false);
-            log(&mut events, format!("no-ack mode: {}", ack.unwrap_or_default()));
-            gdb.request("QThreadSuffixSupported").await?;
-            let attach = gdb.request(&format!("vAttach;{pid:x}")).await?;
-            log(&mut events, format!("attached: {}", &attach[..attach.len().min(24)]));
-
-            let mut prepared_bytes = 0u64;
-            let mut detached = false;
-            let mut pending: Option<String> = None;
-            let deadline = std::time::Duration::from_secs(wait_seconds as u64);
-            loop {
-                if started.elapsed() > deadline {
-                    log(&mut events, "timed out waiting for a JIT request; detaching".into());
-                    gdb.request("D").await.ok();
-                    detached = true;
-                    break;
-                }
-                let stop = match pending.take() {
-                    Some(stop) => stop,
-                    None => {
-                        // An app that never asks (UTM until a VM starts) never stops, so the
-                        // wait has to end while it runs: interrupt it, then detach.
-                        gdb.proxy.send_raw(&Gdb::frame("c")).await?;
-                        match tokio::time::timeout(deadline.saturating_sub(started.elapsed()), gdb.read()).await {
-                            Ok(stop) => stop?,
-                            Err(_) => {
-                                log(&mut events, "timed out waiting for a JIT request; detaching".into());
-                                gdb.proxy.send_raw(&[0x03]).await?;
-                                gdb.read().await?;
-                                gdb.request("D").await.ok();
-                                detached = true;
-                                break;
-                            }
-                        }
-                    }
-                };
-                if stop.starts_with('W') || stop.starts_with('X') {
-                    log(&mut events, format!("process exited: {stop}"));
-                    break;
-                }
-                let Some(thread) = stop_thread(&stop) else {
-                    log(&mut events, format!("unexpected stop reply: {}", &stop[..stop.len().min(60)]));
-                    continue;
-                };
-                let pc = gdb.register(PC, thread).await?;
-                let word = gdb.request(&format!("m{pc:x},4")).await?;
-                let instruction = u32::from_str_radix(&word, 16).map(u32::swap_bytes).ok();
-                let immediate = instruction.filter(|i| i & 0xffe0_001f == 0xd420_0000).map(|i| (i >> 5) & 0xffff);
-                match immediate {
-                    Some(0x69) => {
-                        let (address, length) = (gdb.register(0, thread).await?, gdb.register(1, thread).await?);
-                        let t = std::time::Instant::now();
-                        let pages = gdb.prepare(address, length).await?;
-                        prepared_bytes += length;
-                        log(&mut events, format!("brk #0x69: prepared {} MiB at {address:#x} ({pages} pages) in {:.3}s",
-                                                 length >> 20, t.elapsed().as_secs_f64()));
-                        gdb.set_register(PC, thread, pc + 4).await?;
-                        // QEMU makes one such request per VM; it needs no debugger afterwards.
-                        let reply = gdb.request("D").await?;
-                        log(&mut events, format!("detached: {reply}"));
-                        detached = true;
-                        break;
-                    }
-                    Some(0xf00d) => match gdb.register(X16, thread).await? {
-                        // Nothing to prepare (StikDebug's script answers this with nothing too).
-                        1 if gdb.register(0, thread).await? == 0 && gdb.register(1, thread).await? == 0 => {
-                            gdb.set_register(PC, thread, pc + 4).await?;
-                            log(&mut events, "brk #0xf00d prepare: nothing asked".into());
-                        }
-                        1 => {
-                            let (mut address, length) = (gdb.register(0, thread).await?, gdb.register(1, thread).await?);
-                            if address == 0 {
-                                let reply = gdb.request(&format!("_M{length:x},rx")).await?;
-                                address = u64::from_str_radix(&reply, 16).unwrap_or(0);
-                            }
-                            let t = std::time::Instant::now();
-                            let pages = if address != 0 { gdb.prepare(address, length).await? } else { 0 };
-                            prepared_bytes += length;
-                            gdb.set_register(0, thread, address).await?;
-                            gdb.set_register(PC, thread, pc + 4).await?;
-                            log(&mut events, format!("brk #0xf00d prepare: {} MiB at {address:#x} ({pages} pages) in {:.3}s",
-                                                     length >> 20, t.elapsed().as_secs_f64()));
-                        }
-                        // Experimental, Apparition only: copy x2 bytes from x1 to x0, which may be the
-                        // app's own signed __TEXT (debugserver writes through VM_PROT_COPY).
-                        // x0 = 0 on success. Used to test whether patched text runs after detach.
-                        // Not 2: that's StikDebug's "here is a script", handled below.
-                        0x4150 => {
-                            let (destination, source, length) =
-                                (gdb.register(0, thread).await?, gdb.register(1, thread).await?, gdb.register(2, thread).await?);
-                            let result = if length == 0 || length > 4096 {
-                                format!("refused length {length}")
-                            } else {
-                                let bytes = gdb.request(&format!("m{source:x},{length:x}")).await?;
-                                gdb.request(&format!("M{destination:x},{length:x}:{bytes}")).await?
-                            };
-                            gdb.set_register(0, thread, if result == "OK" { 0 } else { 1 }).await?;
-                            gdb.set_register(PC, thread, pc + 4).await?;
-                            log(&mut events, format!("brk #0xf00d write: {length} bytes to {destination:#x}: {result}"));
-                        }
-                        0 => {
-                            gdb.set_register(PC, thread, pc + 4).await?;
-                            let reply = gdb.request("D").await?;
-                            log(&mut events, format!("brk #0xf00d detach: {reply}"));
-                            detached = true;
-                            break;
-                        }
-                        // 2 hands StikDebug a script of breakpoint handlers to run, and anything
-                        // else is someone else's extension: skip it rather than end the session,
-                        // as StikDebug does with commands it doesn't know.
-                        other => {
-                            gdb.set_register(PC, thread, pc + 4).await?;
-                            log(&mut events, format!("brk #0xf00d: skipped command {other:#x}{}",
-                                                     if other == 2 { " (a StikDebug script; Apparition runs none)" } else { "" }));
-                        }
-                    },
-                    _ => {
-                        // Not ours: hand the signal back to the app and keep waiting.
-                        let signal = u8::from_str_radix(stop.get(1..3).unwrap_or("00"), 16).unwrap_or(0);
-                        log(&mut events, format!("unrelated stop (signal {signal}) at {pc:#x}"));
-                        if signal != 5 && signal != 0 {
-                            pending = Some(gdb.request(&format!("C{signal:02x}")).await?);
-                        }
-                    }
-                }
-            }
-            Ok(json!({"pid": pid, "events": events, "preparedBytes": prepared_bytes, "detached": detached}))
+            let pid = match (pid, &bundle_id) {
+                (0, Some(bundle_id)) => jit::running_pid(adapter, handshake, bundle_id)
+                    .await?
+                    .ok_or_else(|| report!("{bundle_id} isn't running"))?,
+                (0, None) => bail!("no process to attach to"),
+                (pid, _) => pid,
+            };
+            let target = jit::Target::Attach { pid, bring_back: bundle_id.as_deref() };
+            jit::serve(adapter, handshake, target, wait_seconds, &mut |_| {}).await
         })
     })())
 }

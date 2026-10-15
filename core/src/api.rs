@@ -20,6 +20,7 @@ use rootcause::prelude::*;
 use serde_json::Value;
 
 pub use crate::errors::describe;
+pub use crate::jit::Target as JitTarget;
 pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
@@ -270,6 +271,22 @@ impl Tunnel {
             let name = |key: &str| info.and_then(|i| i.get(key)).and_then(plist::Value::as_string);
             name("CFBundleDisplayName").or_else(|| name("CFBundleName")).unwrap_or(bundle_id).to_string()
         }))
+    }
+
+    /// The pid of `bundle_id`'s running process, if it runs.
+    pub async fn running_pid(&mut self, bundle_id: &str) -> Result<Option<u64>, Report> {
+        crate::jit::running_pid(&mut self.adapter, &mut self.handshake, bundle_id).await
+    }
+
+    /// Launches or attaches to an app and serves its JIT requests until it no longer needs a
+    /// debugger. See `crate::jit::serve`.
+    pub async fn serve_jit(
+        &mut self,
+        target: JitTarget<'_>,
+        wait_seconds: u32,
+        on_event: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<Value, Report> {
+        crate::jit::serve(&mut self.adapter, &mut self.handshake, target, wait_seconds, on_event).await
     }
 
     /// Packs and installs a signed app. See `apparition_install_ipa`.

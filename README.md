@@ -32,7 +32,11 @@ computer at all.
   on Vision Pro looked impossible. **Launch with JIT** keeps the debugger attached and prepares
   the memory the app asks for, on the device itself: ARMSX2's 305 MiB took about two seconds.
   It speaks the JIT26 requests StikDebug defined (and UTM's own), so apps built for them work as
-  they are, at home or away from it through the companion. Tested on Vision Pro with UTM (an
+  they are, at home or away from it through the companion. An app can also ask for JIT for
+  itself while it runs, with an `apparition://enable-jit?bundle-id=…&pid=…` link (the
+  `stikdebug://` link works too, so Madeira's Enable JIT button finds Apparition); Apparition
+  then stays its debugger, awake in the background, until the app closes. From a computer,
+  `apparition jit <bundle ID> [--attach]` does the same. Tested on Vision Pro with UTM (an
   Alpine VM) and ARMSX2, the PS2 emulator, running GTA San Andreas
   ([video](https://youtu.be/mNR0ik2QfEY)).
 
