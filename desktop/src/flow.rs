@@ -642,8 +642,9 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let existing = tunnel.installed_app(&bundle_id).await?;
             stage(&app, "installing", json!({ "device": info.name, "update": existing.is_some() }));
             let source = prepared.path.is_file().then_some(prepared.path.as_path());
-            // An update of an app that's open waits in installd until it closes.
-            let reply = tunnel.install(&signed_path, source, 20_000).await?;
+            // An update of an app that's open waits in installd until it closes, so only an
+            // update stops waiting after 20 s; a new install, however large, is waited for.
+            let reply = tunnel.install(&signed_path, source, if existing.is_some() { 20_000 } else { 0 }).await?;
 
             let mut handoff = Value::Null;
             let mut handoff_error = Value::Null;

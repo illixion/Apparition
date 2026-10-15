@@ -517,17 +517,23 @@ async fn sign_and_install(
     let signed_path = report_signed(&signed)?;
     let installed_id = api::bundle_id(&signed_path).ok_or_else(|| fail("the signed app has no bundle ID"))?;
 
-    // visionOS holds an update of an open app until it closes.
-    if let Some(name) = tunnel.installed_app(&installed_id).await? {
+    // installd holds an update of an open app until it closes.
+    let installed = tunnel.installed_app(&installed_id).await?;
+    if let Some(name) = &installed {
         println!("{name} is already on {}. If it's open there, close it so the update can finish.", info.name);
     }
     println!("Installing {installed_id} on {}…", info.name);
     let source = options.ipa.is_file().then_some(options.ipa.as_path());
-    // An update of an app that's running waits in installd until the app closes.
-    let reply = tunnel.install(&signed_path, source, 20_000).await?;
+    // Only an update can be held for an open app, so only an update stops waiting after 20 s;
+    // a new install, however large, is waited for.
+    let detach_after_ms = if installed.is_some() { 20_000 } else { 0 };
+    let reply = tunnel.install(&signed_path, source, detach_after_ms).await?;
     let seconds = reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0;
     if reply["queued"].as_bool() == Some(true) {
-        println!("Sent in {seconds:.1} s. It's an update of an app that is open on the headset: close it there to finish.");
+        println!(
+            "Sent in {seconds:.1} s, and {} is still installing it. If the app is open there, the update finishes when it's closed.",
+            info.name
+        );
     } else {
         println!("Installed in {seconds:.1} s.");
     }

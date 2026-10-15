@@ -870,7 +870,7 @@ function done() {
   const name = isApparition ? "Apparition" : result.label ?? result.bundleId;
   $(panel, "title").textContent = `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your device"}.`;
   $(panel, "lede").textContent = result.queued
-    ? `Sent in ${result.seconds?.toFixed(1)} s. It's an update of an app that's open on the device: close it there to finish.`
+    ? `Sent in ${result.seconds?.toFixed(1)} s, and ${result.deviceName ?? "the device"} is still installing it. If the app is open there, the update finishes when it's closed.`
     : `Installed in ${result.seconds?.toFixed(1)} s.`;
 
   const next = $(panel, "next");
