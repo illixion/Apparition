@@ -51,10 +51,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Signing in to Apple needs anisette data. Where this build has it (macOS, Linux), it makes
       its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
       and is required elsewhere.
-  apparition sign <app.ipa> --apple-id <email> [--anisette <url>] [--device <name or UDID>]
-          [--keep-extensions]
-      Sign for a paired device without reaching it, install nothing, and say which
-      capabilities (increased memory limit, extended virtual addressing) the app got.
+  apparition sign <app.ipa> [--device <name or UDID>] [--keep-extensions]
+          (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
+      Sign for a paired device without reaching it and install nothing. With an Apple ID,
+      says which capabilities (increased memory limit, extended virtual addressing) the app
+      got; with a .p12, which profile signed it.
   apparition certificates --apple-id <email> [--anisette <url>]
   apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
@@ -413,15 +414,36 @@ fn report_signed(signed: &serde_json::Value) -> Result<PathBuf, Error> {
     Ok(signed_path)
 }
 
-/// `sign`: signs with an Apple ID for a paired device without reaching it, and leaves the app
-/// signed on this computer. Shows what a free account's profile grants an app, from anywhere.
+/// `sign`: signs for a paired device without reaching it, with an Apple ID or a .p12 and
+/// profiles, and leaves the app signed on this computer. Shows what an app gets from a free
+/// account or from the profile chosen for it, from anywhere.
 async fn sign(args: &[String]) -> Result<(), Error> {
     let options = parse_install(args)?;
-    if options.apple_id.is_none() || options.ipa.as_os_str().is_empty() {
-        return Err(fail("sign needs an IPA and --apple-id"));
+    if options.ipa.as_os_str().is_empty() {
+        return Err(fail("sign needs an IPA"));
     }
     let device = find_device(options.device.as_deref())?;
-    let (signed, _) = sign_with_apple_id(&options, &device.udid, &device.name, !options.keep_extensions).await?;
+    let strip = !options.keep_extensions;
+    let signed = if let Some(p12) = &options.p12 {
+        // The key is decrypted into a scratch folder, removed again once signed.
+        let scratch = std::env::temp_dir().join(format!("apparition-sign-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch)?;
+        let result = (|| {
+            let password = ask_secret(&format!("Password for {}: ", p12.display()));
+            let identity = api::import_identity(&scratch, &std::fs::read(p12)?, password)?;
+            let id = identity["identity"]["id"].as_str().ok_or_else(|| fail("no certificate id"))?.to_string();
+            for profile in &options.profiles {
+                api::import_profile(&scratch, std::fs::read(profile)?, Some(&device.udid))?;
+            }
+            api::sign_offline(&scratch, options.ipa.clone(), &id, None, &device.udid, strip, None, device.platform())
+        })();
+        let _ = std::fs::remove_dir_all(&scratch);
+        let signed = result?;
+        println!("Signed with profile {} as {}.", signed["profileName"].as_str().unwrap_or("?"), signed["bundleId"].as_str().unwrap_or("?"));
+        signed
+    } else {
+        sign_with_apple_id(&options, &device.udid, &device.name, strip).await?.0
+    };
     let signed_path = report_signed(&signed)?;
     println!("Signed for {}, nothing installed: {}", device.name, signed_path.display());
     Ok(())

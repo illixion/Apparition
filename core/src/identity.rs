@@ -765,7 +765,8 @@ pub fn sign_offline(
 
         let mut app = Application::new(app_path)?;
         let original = app.main_bundle_id()?;
-        // Read before anything is re-signed.
+        // Read before anything is re-signed: what the app asks for, and what it had last time.
+        let asked = signed_entitlements(&app.bundle.bundle_dir);
         let previous = signed_entitlements(previous_app.unwrap_or(&app.bundle.bundle_dir));
 
         let main = match &chosen {
@@ -773,7 +774,7 @@ pub fn sign_offline(
                 .iter()
                 .find(|p| &p.uuid() == uuid)
                 .ok_or_else(|| report!("The chosen profile can't sign with this certificate on this headset"))?,
-            None => best_profile(&usable, &original).ok_or_else(|| report!("No usable profile"))?,
+            None => best_profile(&usable, &original, asked.as_ref()).ok_or_else(|| report!("No usable profile"))?,
         };
         let main_id = main.bundle_id_for(&original);
         if main_id != original {
@@ -796,7 +797,7 @@ pub fn sign_offline(
         let mut by_bundle: Vec<(String, &Profile, Option<Dictionary>)> = Vec::new();
         let mut stripped = Vec::new();
         for (dir, id) in extensions {
-            let profile = if main.covers(&id) { Some(main) } else { best_profile(&usable, &id).filter(|p| p.covers(&id)) };
+            let profile = if main.covers(&id) { Some(main) } else { best_profile(&usable, &id, None).filter(|p| p.covers(&id)) };
             match profile {
                 Some(profile) => by_bundle.push((id, profile, signed_entitlements(&dir))),
                 None if strip_extensions => {
@@ -963,20 +964,32 @@ fn rename_extensionkit(app: &Path, original: &str, renamed: &str) -> Result<Vec<
     Ok(extensions)
 }
 
-/// The profile to sign `bundle_id` with: an explicit App ID equal to it, then the wildcard
-/// with the longest prefix that covers it, then any explicit one (which renames the app),
-/// preferring debuggable profiles (JIT needs get-task-allow) and later expiry.
-fn best_profile<'a>(profiles: &'a [Profile], bundle_id: &str) -> Option<&'a Profile> {
+/// Entitlements a wildcard App ID can't have, so a paid team's apps get them only from an
+/// explicit App ID's profile, whichever app that ID was made for.
+const EXPLICIT_ONLY: &[&str] = &[
+    "com.apple.developer.kernel.increased-memory-limit",
+    "com.apple.developer.kernel.extended-virtual-addressing",
+    "com.apple.developer.kernel.increased-debugging-memory-limit",
+];
+
+/// The profile to sign `bundle_id` with: an explicit App ID equal to it; then the one granting
+/// most of the [`EXPLICIT_ONLY`] entitlements the app asks for (`asked`, from its signature),
+/// since a paid team's profile signs another app's bundle ID too; then the wildcard with the
+/// longest prefix that covers it, then any explicit one; preferring debuggable profiles (JIT
+/// needs get-task-allow) and later expiry.
+fn best_profile<'a>(profiles: &'a [Profile], bundle_id: &str, asked: Option<&Dictionary>) -> Option<&'a Profile> {
     profiles.iter().max_by_key(|p| {
         let pattern = p.app_id_pattern();
-        let rank = if pattern == bundle_id {
-            3_000
-        } else if p.covers(bundle_id) {
-            1_000 + pattern.len()
-        } else {
-            0
-        };
-        (rank, p.get_task_allow(), p.expires())
+        let exact = pattern == bundle_id;
+        let granted = asked.map_or(0, |asked| {
+            let profile = p.parsed.entitlements();
+            EXPLICIT_ONLY
+                .iter()
+                .filter(|key| asked.get(**key).and_then(Plist::as_boolean) == Some(true) && profile.contains_key(**key))
+                .count()
+        });
+        let covering = if p.covers(bundle_id) { 1_000 + pattern.len() } else { 0 };
+        (exact, granted, covering, p.get_task_allow(), p.expires())
     })
 }
 
