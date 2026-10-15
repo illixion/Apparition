@@ -18,7 +18,11 @@
 //! - a fault that keeps stopping at one place, undelivered, kills the app rather than parking
 //!   its thread.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use idevice::{RsdService, debug_proxy::DebugProxyClient, rsd::RsdHandshake, tcp::handle::AdapterHandle};
 use rootcause::prelude::*;
@@ -39,6 +43,46 @@ pub enum Target<'a> {
     /// Attach to the running process `pid`. With `bring_back`, that app is brought to the
     /// front again afterwards: it asked from its own screen, and opening Apparition left it.
     Attach { pid: u64, bring_back: Option<&'a str> },
+}
+
+/// Running sessions' stop signals, by bundle ID (or pid, when only that is known).
+static STOPS: Mutex<Option<HashMap<String, Arc<tokio::sync::Notify>>>> = Mutex::new(None);
+
+/// Asks the session serving `key` (a bundle ID, or a pid) to detach now, leaving the app
+/// running without a debugger. False when no session serves it.
+pub fn stop(key: &str) -> bool {
+    let stops = STOPS.lock().unwrap();
+    match stops.as_ref().and_then(|stops| stops.get(key)) {
+        Some(notify) => {
+            notify.notify_one();
+            true
+        }
+        None => false,
+    }
+}
+
+/// Holds a session's place in `STOPS` until it ends.
+struct Registration(Vec<String>);
+
+impl Registration {
+    fn new(keys: Vec<String>, notify: &Arc<tokio::sync::Notify>) -> Self {
+        let mut stops = STOPS.lock().unwrap();
+        let stops = stops.get_or_insert_with(HashMap::new);
+        for key in &keys {
+            stops.insert(key.clone(), notify.clone());
+        }
+        Registration(keys)
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        if let Some(stops) = STOPS.lock().unwrap().as_mut() {
+            for key in &self.0 {
+                stops.remove(key);
+            }
+        }
+    }
 }
 
 /// The pid of `bundle_id`'s running process, if it runs.
@@ -73,7 +117,7 @@ pub async fn serve(
     let started = Instant::now();
     let mut events = Events { lines: Vec::new(), dropped: 0, started, on_event };
 
-    let (pid, bring_back) = match target {
+    let (pid, bring_back, bundle_id) = match target {
         Target::Launch(bundle_id) => {
             let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
                 .await
@@ -83,10 +127,15 @@ pub async fn serve(
                 .await
                 .context("launch failed")?;
             events.log(format!("launched suspended, pid {}", launched.pid));
-            (launched.pid as u64, None)
+            (launched.pid as u64, None, Some(bundle_id))
         }
-        Target::Attach { pid, bring_back } => (pid, bring_back),
+        Target::Attach { pid, bring_back } => (pid, bring_back, bring_back),
     };
+    let stop_requested = Arc::new(tokio::sync::Notify::new());
+    let _registration = Registration::new(
+        std::iter::once(pid.to_string()).chain(bundle_id.map(str::to_string)).collect(),
+        &stop_requested,
+    );
 
     let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("debugproxy connect failed")?;
     let mut gdb = Gdb { proxy };
@@ -131,19 +180,32 @@ pub async fn serve(
         resume = "c".into();
         // An app that never asks (UTM until a VM starts) never stops, so the wait has to end
         // while it runs: interrupt it, then detach.
-        let stop = match deadline.filter(|_| !served) {
-            Some(deadline) => match tokio::time::timeout(deadline.saturating_sub(started.elapsed()), gdb.read()).await {
-                Ok(stop) => stop?,
-                Err(_) => {
-                    events.log("timed out waiting for a JIT request; detaching".into());
-                    gdb.proxy.send_raw(&[0x03]).await?;
-                    gdb.read().await?;
-                    gdb.request("D").await.ok();
-                    detached = true;
-                    break "timed out";
+        let left = deadline.filter(|_| !served).map(|deadline| deadline.saturating_sub(started.elapsed()));
+        let waited = tokio::select! {
+            stop = async {
+                match left {
+                    Some(left) => tokio::time::timeout(left, gdb.read()).await.ok(),
+                    None => Some(gdb.read().await),
                 }
-            },
-            None => gdb.read().await?,
+            } => stop.map(Some),
+            _ = stop_requested.notified() => Some(None),
+        };
+        let stop = match waited {
+            Some(Some(stop)) => stop?,
+            // Timed out, or asked to stop: interrupt the app, then leave it running.
+            reason => {
+                let ended = if reason.is_none() { "timed out" } else { "stopped" };
+                events.log(if reason.is_none() {
+                    "timed out waiting for a JIT request; detaching".into()
+                } else {
+                    "asked to stop; detaching".into()
+                });
+                gdb.proxy.send_raw(&[0x03]).await?;
+                gdb.read().await?;
+                gdb.request("D").await.ok();
+                detached = true;
+                break ended;
+            }
         };
         if stop.starts_with('W') || stop.starts_with('X') {
             events.log(format!("process exited: {stop}"));

@@ -74,6 +74,9 @@ char *apparition_uninstall(struct AdapterHandle *adapter, struct RsdHandshakeHan
 // {ok, pid, events, preparedBytes, detached, ended}.
 char *apparition_launch_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                         const char *bundle_id, unsigned int wait_seconds);
+// Asks the session serving key (a bundle ID or a pid) to detach now, leaving the app running;
+// its call then returns with ended "stopped". {ok, stopped}.
+char *apparition_jit_stop(const char *key);
 // The same for the running process pid (0: bundle_id's running process). With bundle_id,
 // that app is brought back to the front once attached. bundle_id may be null if pid isn't 0.
 char *apparition_attach_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,

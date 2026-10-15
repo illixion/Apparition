@@ -386,6 +386,16 @@ final class ProbeModel {
     /// runs, so it doesn't hold `busy`: installs and refreshes go on beside it.
     private(set) var jitSessions: Set<String> = []
     private let keepAlive = JITKeepAlive()
+    private let notice = JITSessionNotice()
+    /// What the user calls an app (LibraryModel.displayName), for the session notification.
+    var appName: (String) -> String = { $0 }
+
+    /// Ends the JIT session serving `bundleId` now: the debugger detaches and the app keeps
+    /// running without JIT. From the session notification's Stop, or the library.
+    func stopJIT(bundleId: String) {
+        let reply = AccountModel.call(apparition_jit_stop(bundleId))
+        log.info("jit stop asked: \(reply["stopped"] as? Bool == true ? "stopping" : "no session", privacy: .public)")
+    }
 
     func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int) async {
         await serveJIT(host: host, port: port, bundleId: bundleId) { target, file, box in
@@ -415,9 +425,13 @@ final class ProbeModel {
         let target = tunnelTarget(host: host, port: port)
         jitSessions.insert(bundleId)
         await keepAlive.prepare()
+        await notice.prepare()
+        notice.onStop = { [weak self] in self?.stopJIT(bundleId: $0) }
         keepAlive.update(active: true)
+        notice.show(bundleId: bundleId, name: appName(bundleId))
         defer {
             jitSessions.remove(bundleId)
+            notice.remove(bundleId: bundleId)
             keepAlive.update(active: !jitSessions.isEmpty)
         }
         await run(action: "jit", host: host, port: port, exclusive: false) { file, box in

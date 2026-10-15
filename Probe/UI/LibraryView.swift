@@ -405,7 +405,7 @@ struct LibraryView: View {
     private func jitNote() -> Note? {
         guard let attempt = model.latestAttempt("jit") else { return nil }
         switch attempt.outcome {
-        case nil: return Note(text: "Launched under the debugger, serving JIT. Leave Apparition open until the app has started what needs JIT.", kind: .info)
+        case nil: return Note(text: "Serving JIT until the app closes. Stop it here or from Apparition's notification.", kind: .info)
         case "ok": return Note(text: "JIT session finished: \(attempt.detail ?? "ok")", kind: .success)
         case let outcome?: return Note(text: "JIT launch failed: \(outcome)", kind: .error)
         }
@@ -420,7 +420,14 @@ struct LibraryView: View {
             }
             .disabled(library.busy || model.busy)
 
-            if let bundleId = app.installedBundleId {
+            if let bundleId = app.installedBundleId, model.jitSessions.contains(bundleId) {
+                Button(role: .destructive) {
+                    model.stopJIT(bundleId: bundleId)
+                } label: {
+                    Label("Stop JIT", systemImage: "stop.fill")
+                }
+                .help("Detaches the debugger: \(app.name) keeps running, without JIT")
+            } else if let bundleId = app.installedBundleId {
                 Button {
                     jitAppId = app.id
                     log.info("JIT launch from the library")

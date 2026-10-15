@@ -715,6 +715,17 @@ pub unsafe extern "C" fn apparition_launch_jit(
     })())
 }
 
+/// Asks the JIT session serving `key` (a bundle ID or a pid) to detach now, leaving the app
+/// running without a debugger; that session's call then returns with `ended: "stopped"`.
+/// Returns `{ok, stopped}` (false: no session served it).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_stop(key: *const c_char) -> *mut c_char {
+    reply((|| {
+        let key = unsafe { text(key) }?;
+        Ok(json!({ "stopped": jit::stop(&key) }))
+    })())
+}
+
 /// Attaches debugserver to the running process `pid` (0: `bundle_id`'s running process) and
 /// serves its JIT requests, as `apparition_launch_jit` does. With `bundle_id`, that app is
 /// brought back to the front once attached: it asked from its own screen (Madeira's Enable
