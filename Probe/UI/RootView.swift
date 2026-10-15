@@ -122,7 +122,7 @@ struct RootView: View {
             }
         }
         #if os(iOS)
-        .modifier(ActivityAccessory(active: activityText != nil) { activity })
+        .modifier(ActivityAccessory(active: activityText != nil || !model.jitSessions.isEmpty) { activity })
         #endif
     }
     #endif
@@ -147,23 +147,55 @@ struct RootView: View {
             }
     }
 
-    /// Long work (a refresh, a sign-in, a tunnel) shown past the tabs, so it's visible from any tab.
+    /// Long work (a refresh, a sign-in, a tunnel) shown past the tabs, so it's visible from any
+    /// tab, and the apps Apparition is debugging, each with a Stop.
     @ViewBuilder
     private var activity: some View {
-        if let text = activityText {
+        if activityText != nil || !model.jitSessions.isEmpty {
             #if os(visionOS)
             Divider().frame(height: 28)
             #endif
             HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                Text(text)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: 320, alignment: .leading)
+                if let text = activityText {
+                    ProgressView().controlSize(.small)
+                    Text(text)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: 320, alignment: .leading)
+                }
+                if !model.jitSessions.isEmpty {
+                    jitSessions
+                }
             }
             .padding(.horizontal, 8)
             .transition(.opacity)
+        }
+    }
+
+    /// "Debugging Madeira" and a Stop for it; with several apps, Stop asks which.
+    @ViewBuilder
+    private var jitSessions: some View {
+        let sessions = model.jitSessions.sorted()
+        Label(sessions.count == 1 ? "Debugging \(library.displayName(of: sessions[0]))" : "Debugging \(sessions.count) apps",
+              systemImage: "bolt.fill")
+            .font(.callout)
+            .lineLimit(1)
+            .accessibilityIdentifier("jitSession")
+        if sessions.count == 1 {
+            Button("Stop", role: .destructive) { model.stopJIT(bundleId: sessions[0]) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("stopJIT")
+        } else {
+            Menu("Stop") {
+                ForEach(sessions, id: \.self) { bundleId in
+                    Button(library.displayName(of: bundleId), role: .destructive) { model.stopJIT(bundleId: bundleId) }
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityIdentifier("stopJIT")
         }
     }
 
@@ -173,7 +205,6 @@ struct RootView: View {
         if model.busy {
             switch model.latestAttempt(model.attempts.first?.action ?? "")?.action {
             case "pair": return model.pinRequested ? "Waiting for the pairing code" : "Pairing…"
-            case "jit": return "Serving JIT"
             case "install": return "Installing…"
             default: return "Talking to the \(ThisDevice.noun)…"
             }
@@ -192,7 +223,15 @@ private struct ActivityAccessory<Accessory: View>: ViewModifier {
         if #available(iOS 26.1, *) {
             content.tabViewBottomAccessory(isEnabled: active) { accessory() }
         } else {
-            content
+            // No accessory before 26.1: a bar above the tab bar instead.
+            content.safeAreaInset(edge: .bottom) {
+                if active {
+                    accessory()
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                }
+            }
         }
     }
 }
