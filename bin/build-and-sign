@@ -151,6 +151,9 @@ if [[ ! -f "$GLOBAL_CONF" && -z "$CONF_FILE" ]]; then
     echo "       (looked in $PROJECT_ROOT/scripts/ and $PROJECT_ROOT/)" >&2
     exit 1
 fi
+# The conf's BUILD_BUNDLE_ID is a default for the repo's own build. Remember whether the
+# caller really set one, so an --ipa keeps its own bundle ID (see Step 4.5).
+ENV_BUILD_BUNDLE_ID="${BUILD_BUNDLE_ID:-}"
 [[ -f "$GLOBAL_CONF" ]] && source "$GLOBAL_CONF"
 [[ -n "$CONF_FILE" ]] && source "$CONF_FILE"
 
@@ -997,7 +1000,12 @@ fi
 # PRODUCT_BUNDLE_IDENTIFIER override would hit EVERY target (an app
 # extension would clone the app's ID → installd DuplicateIdentifier), so the
 # IDs are patched per-bundle here instead.
-if [[ -z "${BUILD_BUNDLE_ID:-}" ]]; then
+# An --ipa keeps the IPA's own bundle ID unless the caller set BUILD_BUNDLE_ID: the conf's
+# default is for the repo's build, and stamping it on another app replaced that app's
+# install with this one (Madeira over Apparition, 2026-10-15).
+if [[ -n "$INPUT_IPA" && -z "$ENV_BUILD_BUNDLE_ID" ]]; then
+    BUILD_BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw -o - "$APP_INFO_PLIST")
+elif [[ -z "${BUILD_BUNDLE_ID:-}" ]]; then
     BUILD_BUNDLE_ID=$(plutil -extract CFBundleIdentifier raw -o - "$APP_INFO_PLIST")
 fi
 if [[ -z "${HAS_DEBUGTRACE:-}" ]]; then
@@ -1032,7 +1040,10 @@ for appex_dir in "$APP_BUNDLE/PlugIns" "$APP_BUNDLE/Extensions"; do
     fi
 done
 EXTENSION_ID=""
-if [[ -n "$APPEX_BUNDLE" ]]; then
+if [[ -n "$APPEX_BUNDLE" && -n "$INPUT_IPA" && -z "$ENV_BUILD_BUNDLE_ID" && -z "${APPEX_BUNDLE_ID:-}" ]]; then
+    # An --ipa's extension keeps its own ID (it is not "<app>.broadcast" unless the IPA says so).
+    EXTENSION_ID=$(plutil -extract CFBundleIdentifier raw -o - "$APPEX_BUNDLE/Info.plist")
+elif [[ -n "$APPEX_BUNDLE" ]]; then
     EXTENSION_ID="${APPEX_BUNDLE_ID:-${BUILD_BUNDLE_ID}.broadcast}"
     plutil -replace CFBundleIdentifier -string "$EXTENSION_ID" "$APPEX_BUNDLE/Info.plist"
 fi
