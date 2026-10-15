@@ -51,6 +51,10 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Signing in to Apple needs anisette data. Where this build has it (macOS, Linux), it makes
       its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
       and is required elsewhere.
+  apparition sign <app.ipa> --apple-id <email> [--anisette <url>] [--device <name or UDID>]
+          [--keep-extensions]
+      Sign for a paired device without reaching it, install nothing, and say which
+      capabilities (increased memory limit, extended virtual addressing) the app got.
   apparition certificates --apple-id <email> [--anisette <url>]
   apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
@@ -112,6 +116,7 @@ async fn main() -> ExitCode {
         Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
+        Some("sign") => sign(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("signing") => signing(&args[1..]),
         Some("certificates") => account_command(&args[1..], Slot::Certificates).await,
@@ -362,6 +367,66 @@ fn two_factor(params: &TwoFactorCallbackParams) -> TwoFactorCallbackResponse {
     }
 }
 
+/// Signs `options.ipa` with the Apple ID for the device `udid` (registering it), freeing a full
+/// certificate or App ID slot if the person agrees. Returns the signing reply and the (email, team).
+async fn sign_with_apple_id(options: &Options, udid: &str, name: &str, strip: bool) -> Result<(serde_json::Value, (String, String)), Error> {
+    let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap_or(api::BUILTIN_ANISETTE)).await?;
+    println!("Signing for team {}…", session.team_id());
+    let signer = (session.email().to_string(), session.team_id().to_string());
+    let signed = match api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip).await {
+        Ok(signed) => signed,
+        // A full slot: offer to free one, then try once more.
+        Err(error) => match Slot::of_error(&error.to_string()) {
+            Some(slot) => {
+                println!("{}", slot.full_message());
+                if !manage(&mut session, slot).await? {
+                    return Err(error);
+                }
+                println!("Signing again…");
+                api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip).await?
+            }
+            None => return Err(error),
+        },
+    };
+    let mut signed = signed;
+    if let (Some(report), Some(path)) = (signed.get("capabilities").cloned(), signed["signedPath"].as_str().map(PathBuf::from)) {
+        signed["capabilities"]["refused"] = api::capability_refusals(&mut session, &path, &report).await.into();
+    }
+    Ok((signed, signer))
+}
+
+/// Prints what signing changed (extensions removed, capabilities) and returns the signed app.
+fn report_signed(signed: &serde_json::Value) -> Result<PathBuf, Error> {
+    let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| fail("signing returned no app"))?);
+    if let Some(stripped) = signed["strippedExtensions"].as_array().filter(|s| !s.is_empty()) {
+        println!("Removed extensions no profile covers: {stripped:?}");
+    }
+    if let Some(capabilities) = signed.get("capabilities") {
+        println!("Capabilities asked for: {}", capabilities["requested"]);
+        if let Some(refused) = capabilities["refused"].as_object().filter(|r| !r.is_empty()) {
+            for (capability, reason) in refused {
+                println!("  refused {capability}: {}", reason.as_str().unwrap_or_default());
+            }
+        }
+        println!("  signed with: {}", capabilities["signed"]);
+    }
+    Ok(signed_path)
+}
+
+/// `sign`: signs with an Apple ID for a paired device without reaching it, and leaves the app
+/// signed on this computer. Shows what a free account's profile grants an app, from anywhere.
+async fn sign(args: &[String]) -> Result<(), Error> {
+    let options = parse_install(args)?;
+    if options.apple_id.is_none() || options.ipa.as_os_str().is_empty() {
+        return Err(fail("sign needs an IPA and --apple-id"));
+    }
+    let device = find_device(options.device.as_deref())?;
+    let (signed, _) = sign_with_apple_id(&options, &device.udid, &device.name, !options.keep_extensions).await?;
+    let signed_path = report_signed(&signed)?;
+    println!("Signed for {}, nothing installed: {}", device.name, signed_path.display());
+    Ok(())
+}
+
 async fn install(args: &[String]) -> Result<(), Error> {
     let mut options = parse_install(args)?;
     let device = find_device(options.device.as_deref())?;
@@ -423,29 +488,11 @@ async fn sign_and_install(
         println!("Signing with {}…", identity["identity"]["name"].as_str().unwrap_or("your certificate"));
         api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None, api::Platform::of_product(&info.product_type))?
     } else {
-        let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap_or(api::BUILTIN_ANISETTE)).await?;
-        println!("Signing for team {}…", session.team_id());
-        apple_id = Some((session.email().to_string(), session.team_id().to_string()));
-        match api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await {
-            Ok(signed) => signed,
-            // A full slot: offer to free one, then try once more.
-            Err(error) => match Slot::of_error(&error.to_string()) {
-                Some(slot) => {
-                    println!("{}", slot.full_message());
-                    if !manage(&mut session, slot).await? {
-                        return Err(error);
-                    }
-                    println!("Signing again…");
-                    api::sign_with_apple_id(&mut session, options.ipa.clone(), &info.udid, &info.name, strip).await?
-                }
-                None => return Err(error),
-            },
-        }
+        let (signed, signer) = sign_with_apple_id(options, &info.udid, &info.name, strip).await?;
+        apple_id = Some(signer);
+        signed
     };
-    let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| fail("signing returned no app"))?);
-    if let Some(stripped) = signed["strippedExtensions"].as_array().filter(|s| !s.is_empty()) {
-        println!("Removed extensions no profile covers: {stripped:?}");
-    }
+    let signed_path = report_signed(&signed)?;
     let installed_id = api::bundle_id(&signed_path).ok_or_else(|| fail("the signed app has no bundle ID"))?;
 
     // visionOS holds an update of an open app until it closes.

@@ -22,7 +22,8 @@ computer at all.
   source filled in, ready to add, for a source's own "Add to Apparition" button.
 - **Sign** with a free Apple ID, which Apple limits to apps that last 7 days and two
   certificates, or with a paid account's certificate and profile, which last a year and need no
-  sign-in.
+  sign-in. An app that asks for the increased memory limit (UTM, emulators) gets it, with a
+  free account too; extended virtual addressing needs a paid account.
 - **Refresh** apps before they expire, on the device: from the app, a Shortcuts automation or
   in the background, through the companion or LocalDevVPN.
 - **JIT that works on current chips.** iOS 26 on A15 and M2 and later, and visionOS 27 on
@@ -203,6 +204,7 @@ companion (`apparition relay`, `apparition anisette serve|up|down`):
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969
+    apparition sign UTM.ipa --apple-id you@example.com   # sign only, for a paired device; nothing installed
     apparition relay      # the companion, with this computer's anisette (not on Windows); until Ctrl-C
 
 On Linux, `pair --usb` needs usbmuxd running. Nothing else there makes the device trust the

@@ -14,7 +14,7 @@ use std::{
 use isideload::{
     anisette::remote_v3::RemoteV3AnisetteProvider,
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
-    dev::{developer_session::DeveloperSession, devices::DevicesApi, teams::DeveloperTeam},
+    dev::{app_ids::AppIdsApi, developer_session::DeveloperSession, devices::DevicesApi, teams::DeveloperTeam},
     sideload::{SideloaderBuilder, TeamSelection, builder::MaxCertsBehavior, sideloader::Sideloader},
     util::{callbacks::MaxCertsCallbackBox, storage::SideloadingStorage},
 };
@@ -257,6 +257,13 @@ pub async fn sign_with_apple_id(
         (app_path, stripped) = extract_without_extensions(&app_path)?;
     }
     let team = session.team.clone();
+    // Entitlements the app asks for that only a capability on its App ID puts in the profile.
+    let asked = identity::app_entitlements(&app_path).unwrap_or_default();
+    let capabilities: Vec<String> = CAPABILITIES
+        .iter()
+        .filter(|(entitlement, _)| asked.get(entitlement).and_then(plist::Value::as_boolean) == Some(true))
+        .map(|(_, capability)| capability.to_string())
+        .collect();
     let dev = session.sideloader.get_dev_session();
     dev.ensure_device_registered(&team, device_name, udid, None)
         .await
@@ -269,10 +276,62 @@ pub async fn sign_with_apple_id(
 
     let (signed, _) = session
         .sideloader
-        .sign_app(app_path, Some(team), false, None::<fn(f32) -> std::future::Ready<()>>, None, Some(udid))
+        .sign_app(app_path, Some(team.clone()), &capabilities, None::<fn(f32) -> std::future::Ready<()>>, None, Some(udid))
         .await
         .context("Signing failed")?;
-    Ok(json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped}))
+    let mut result = json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped});
+    if !capabilities.is_empty() {
+        let signed_with: Vec<&str> = identity::app_entitlements(&signed)
+            .map(|e| CAPABILITIES.iter().filter(|(key, _)| e.contains_key(key)).map(|(key, _)| *key).collect())
+            .unwrap_or_default();
+        result["capabilities"] = json!({"requested": capabilities, "signed": signed_with});
+    }
+    Ok(result)
+}
+
+/// App entitlements that need a capability turned on for the App ID, and its portal ID.
+const CAPABILITIES: &[(&str, &str)] = &[
+    ("com.apple.developer.kernel.increased-memory-limit", "INCREASED_MEMORY_LIMIT"),
+    ("com.apple.developer.kernel.extended-virtual-addressing", "EXTENDED_VIRTUAL_ADDRESSING"),
+];
+
+/// Why each capability in `report` (`sign_with_apple_id`'s `capabilities`) didn't reach the
+/// signed app at `signed`: asks Apple for it again, alone, and keeps the reply, since signing only
+/// logs it. A free team gets "not eligible" for EXTENDED_VIRTUAL_ADDRESSING. Costs a request per
+/// capability missing, so it's for showing a person, not for every refresh.
+pub async fn capability_refusals(session: &mut Session, signed: &std::path::Path, report: &Value) -> serde_json::Map<String, Value> {
+    let signed_with: Vec<&str> = report["signed"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let missing: Vec<String> = report["requested"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|capability| CAPABILITIES.iter().any(|(key, id)| id == capability && !signed_with.contains(key)))
+        .map(str::to_string)
+        .collect();
+    let mut refused = serde_json::Map::new();
+    if missing.is_empty() {
+        return refused;
+    }
+    let team = session.team.clone();
+    let dev = session.sideloader.get_dev_session();
+    let app_id = async {
+        let bundle_id = api::bundle_id(signed).ok_or_else(|| report!("the signed app has no bundle ID"))?;
+        let ids = dev.list_app_ids(&team, None).await?;
+        ids.app_ids.into_iter().find(|id| id.identifier == bundle_id).ok_or_else(|| report!("no App ID {bundle_id}"))
+    }
+    .await;
+    for capability in missing {
+        let reason = match &app_id {
+            Ok(app_id) => match dev.enable_capabilities(&team, app_id, std::slice::from_ref(&capability)).await {
+                Ok(()) => "accepted, but the profile doesn't grant it".to_string(),
+                Err(error) => errors::describe(&error),
+            },
+            Err(error) => errors::describe(error),
+        };
+        refused.insert(capability, json!(reason));
+    }
+    refused
 }
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();

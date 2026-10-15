@@ -411,6 +411,27 @@ fn chain(certificate: &Certificate, profile: &ProvisioningProfile) -> Result<Vec
 /// The profile's entitlements made concrete for `bundle_id`: wildcard App IDs and keychain
 /// groups become the bundle's own, and any other wildcard (associated domains, iCloud
 /// containers a wildcard profile allows) is left out, since a signature can't claim it.
+/// The entitlements an app (an .app folder or an IPA) was last signed with, which for an app
+/// to sideload are the ones it asks for. None when unsigned or unreadable.
+pub(crate) fn app_entitlements(app: &Path) -> Option<Dictionary> {
+    if app.is_dir() {
+        return signed_entitlements(app);
+    }
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(app).ok()?).ok()?;
+    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let mut read = |name: &str| {
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut zip.by_name(name).ok()?, &mut data).ok()?;
+        Some(data)
+    };
+    // Payload/<name>.app/Info.plist, not an extension's or a framework's deeper down.
+    let info_name = names.iter().find(|n| n.starts_with("Payload/") && n.matches('/').count() == 2 && n.ends_with(".app/Info.plist"))?;
+    let info: Dictionary = plist::from_bytes(&read(info_name)?).ok()?;
+    let folder = info_name.strip_suffix("Info.plist")?;
+    let executable = read(&format!("{folder}{}", info.get("CFBundleExecutable")?.as_string()?))?;
+    plist::from_bytes(entitlements_xml(&executable)?).ok()
+}
+
 /// The entitlements an app was last signed with, from its main executable's code signature.
 /// None for an unsigned app or one this can't read.
 fn signed_entitlements(bundle_dir: &Path) -> Option<Dictionary> {
@@ -980,6 +1001,22 @@ mod tests {
         let entitlements = signed_entitlements(&app).expect("entitlements");
         println!("{entitlements:?}");
         assert!(entitlements.contains_key("application-identifier"));
+    }
+
+    /// `APPARITION_TEST_IPA=<an IPA>`: the entitlements its main app asks for, read straight from
+    /// the zip, match those of the same app unpacked.
+    #[test]
+    #[ignore]
+    fn reads_entitlements_from_ipa() {
+        let ipa = PathBuf::from(std::env::var("APPARITION_TEST_IPA").unwrap());
+        let from_zip = app_entitlements(&ipa).expect("entitlements from the IPA");
+        let dir = std::env::temp_dir().join(format!("apparition-ipa-test-{}", std::process::id()));
+        zip::ZipArchive::new(std::fs::File::open(&ipa).unwrap()).unwrap().extract(&dir).unwrap();
+        let app = std::fs::read_dir(dir.join("Payload")).unwrap().filter_map(Result::ok).map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "app")).unwrap();
+        let from_dir = app_entitlements(&app).expect("entitlements from the .app");
+        std::fs::remove_dir_all(&dir).ok();
+        println!("{:?}", from_zip.keys().collect::<Vec<_>>());
+        assert_eq!(from_zip, from_dir);
     }
 
     #[test]
