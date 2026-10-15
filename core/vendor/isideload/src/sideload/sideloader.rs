@@ -22,7 +22,7 @@ use apparition_signer::ProvisioningProfile;
 use idevice::provider::IdeviceProvider;
 use plist::Dictionary;
 use rootcause::{option_ext::OptionExt, prelude::*};
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct Sideloader<C: MaxCertsCallback> {
     team_selection: TeamSelection,
@@ -70,8 +70,9 @@ impl<C: MaxCertsCallback> Sideloader<C> {
         &mut self,
         app_path: PathBuf,
         team: Option<DeveloperTeam>,
-        // this will be replaced with proper entitlement handling later
-        increased_memory_limit: bool,
+        // Portal capability IDs (`INCREASED_MEMORY_LIMIT`, ...) to turn on for the main App ID.
+        // One Apple refuses doesn't stop the signing: its entitlement is left out of the profile.
+        capabilities: &[String],
         progress_callback: Option<F>,
         pairing_file: Option<&[u8]>,
         device_udid: Option<&str>,
@@ -149,10 +150,25 @@ impl<C: MaxCertsCallback> Sideloader<C> {
                 .assign_app_group(&team, &app_group, app_id, None)
                 .await?;
 
-            if increased_memory_limit {
-                self.dev_session
-                    .add_increased_memory_limit(&team, app_id)
-                    .await?;
+        }
+
+        if !capabilities.is_empty() {
+            // All in one request; if Apple refuses it, each on its own, so the rest still count.
+            if let Err(error) = self
+                .dev_session
+                .enable_capabilities(&team, &main_app_id, capabilities)
+                .await
+            {
+                warn!("{error}");
+                for capability in capabilities {
+                    if let Err(error) = self
+                        .dev_session
+                        .enable_capabilities(&team, &main_app_id, std::slice::from_ref(capability))
+                        .await
+                    {
+                        warn!("{error}");
+                    }
+                }
             }
         }
 
@@ -249,8 +265,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
         &mut self,
         device_provider: &impl IdeviceProvider,
         app_path: PathBuf,
-        // this is gross but will be replaced with proper entitlement handling later
-        increased_memory_limit: bool,
+        capabilities: &[String],
         progress_callback: Option<F>,
         pairing_file: Option<&[u8]>,
     ) -> Result<Option<SpecialApp>, Report>
@@ -269,7 +284,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
             .sign_app(
                 app_path,
                 Some(team),
-                increased_memory_limit,
+                capabilities,
                 progress_callback,
                 pairing_file,
                 Some(&device_info.udid),

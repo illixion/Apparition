@@ -4,7 +4,7 @@ From https://github.com/nab138/isideload at 0bee45d8cdb07ca24524a26f38fdda0dbb4e
 LICENSE alongside), used as core's `isideload` dependency by path. `readme` in Cargo.toml points
 at this folder's README.md instead of the repository's.
 
-Four changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Five changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -30,3 +30,12 @@ provisioned with another server) is provisioned again, once, instead of failing 
 The remote v3 provider reports that refusal as `SideloadError::AnisetteNotProvisioned`, and
 `AnisetteDataGenerator` then calls the new `AnisetteProvider::forget_provisioning` (a no-op by
 default) and provisions (src/anisette/mod.rs, src/anisette/remote_v3/mod.rs).
+
+A fifth change: `sign_app` and `install_app` take the portal capability IDs to turn on for the main
+App ID (`capabilities: &[String]`) instead of an `increased_memory_limit` flag, and
+`add_increased_memory_limit` became `AppIdsApi::enable_capabilities`. It sends them in one JSON:API
+PATCH to `v1/bundleIds/{id}`, which adds to the App ID's capabilities without removing the
+existing ones (App Groups stays), and its error carries Apple's `detail`. If Apple refuses the set,
+sign_app asks for each one alone, so a refused one (EXTENDED_VIRTUAL_ADDRESSING on a free team:
+"not … eligible for this feature") doesn't cost the others (src/dev/app_ids.rs,
+src/sideload/sideloader.rs).
