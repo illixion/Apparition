@@ -64,4 +64,41 @@ describe('bin/build-and-sign', () => {
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /No config found/);
   });
+  // The flag parser and the launch/MCP resolution, run on their own: from the
+  // flag defaults to the end of the MCP_DEFAULT block.
+  function resolveLaunch(args, { mcpDefault = 'on', platform = 'visionOS' } = {}) {
+    const src = fs.readFileSync(SCRIPT, 'utf8');
+    const part = src.slice(src.indexOf('\nNO_DEPLOY=false'), src.indexOf("# Xcode's incremental build cache."));
+    const script = `set -euo pipefail\nPLATFORM=${platform}\nMCP_DEFAULT=${mcpDefault}\nEXTRA_BUILD_SETTINGS=()\n${part}\n`
+      + 'echo "run=$RUN_APP log=$LOG_APP mcp=$MCP_SESSION"';
+    const r = spawnSync(BASH, ['-c', script, 'build-and-sign', ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return { out: r.stdout.trim(), err: r.stderr };
+  }
+
+  test('only --run (or --log) launches; MCP decides what kind of launch', { skip: bashMajor < 4 && 'needs bash 4+' }, () => {
+    const cases = [
+      [[], 'on', 'run=false log=false mcp=false'],
+      [['--mcp'], 'on', 'run=false log=false mcp=false'],
+      [['--mcp'], 'off', 'run=false log=false mcp=false'],
+      [['--run'], 'on', 'run=true log=true mcp=true'],
+      [['--run'], 'off', 'run=true log=false mcp=false'],
+      [['--run', '--mcp'], 'off', 'run=true log=true mcp=true'],
+      [['--mcp', '--run'], 'off', 'run=true log=true mcp=true'],
+      [['--run', '--no-mcp'], 'on', 'run=true log=false mcp=false'],
+      [['--no-mcp', '--run'], 'on', 'run=true log=false mcp=false'],
+      [['--log', '--no-mcp'], 'on', 'run=true log=true mcp=false'],
+      [['--run', '--distribution'], 'on', 'run=true log=false mcp=false'],
+    ];
+    for (const [args, mcpDefault, want] of cases) {
+      assert.equal(resolveLaunch(args, { mcpDefault }).out, want, `${args.join(' ') || '(none)'} with MCP_DEFAULT=${mcpDefault}`);
+    }
+    assert.equal(resolveLaunch(['--run'], { platform: 'macOS' }).out, 'run=true log=false mcp=false');
+  });
+
+  test('--mcp without --run says it only installs', { skip: bashMajor < 4 && 'needs bash 4+' }, () => {
+    assert.match(resolveLaunch(['--mcp']).err, /--mcp without --run installs only/);
+    assert.equal(resolveLaunch(['--run', '--mcp']).err, '');
+    assert.equal(resolveLaunch(['--mcp', '--no-deploy']).err, '');
+  });
 });

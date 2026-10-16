@@ -377,8 +377,10 @@ function resolveBuildSettings(rc, branch, platform) {
 // e.g. the headset builds from a feature branch but the phone from main — and
 // those can be deployed together in one batch.
 // `device`/`branch` (singular) are kept as an alias for a one-target batch.
-// launch = --run (the store launches after install); mcp = --mcp (build-and-sign
-// launches with the debug server, which implies launch); buildDebug = --debug
+// launch = launch after install, the only thing that launches; mcp = make that
+// launch a debug session (build-and-sign --run --mcp) instead of a bare one (the
+// store's own devicectl launch). mcp without launch installs only, like
+// build-and-sign --mcp without --run; buildDebug = --debug
 // (Debug configuration); inject = --inject (patchable build)
 function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, deploy }) {
   const rc = CONFIG.repos.find(r => r.name === repo);
@@ -395,7 +397,7 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDe
       // unreachable device can't fail the build; the run/launch step and the
       // install ledger are skipped too (nothing landed on the device)
       noDeploy: deploy === false,
-      mcp: !!mcp && deploy !== false,
+      mcp: !!launch && !!mcp && deploy !== false,
       run: !!launch && !mcp && deploy !== false,
       buildDebug: !!buildDebug,
       inject: !!inject,
@@ -471,9 +473,9 @@ async function executeBuild(job) {
 
     const buildArgs = [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
     if (job.noDeploy) buildArgs.push('--no-deploy');
-    // Always say which: build-and-sign may default to --mcp (MCP_DEFAULT=on), and
-    // an install-only or store-launched deploy must not become an MCP session.
-    if (job.mcp) buildArgs.push('--mcp');
+    // Always say which: build-and-sign may default to a debug session
+    // (MCP_DEFAULT=on), and a store-launched deploy must not become one.
+    if (job.mcp) buildArgs.push('--run', '--mcp');
     else if (!job.noDeploy) buildArgs.push('--no-mcp');
     if (job.buildDebug) buildArgs.push('--debug');
     if (job.inject) buildArgs.push('--inject');

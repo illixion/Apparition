@@ -222,6 +222,7 @@ before(async () => {
   const fake = path.join(TMP, 'build-and-sign');
   fs.writeFileSync(fake, `#!/bin/bash
 set -e
+echo "ARGS: $*"
 sleep "\${FAKE_BUILD_SECONDS:-2}"
 stamp=$(git rev-parse --short HEAD)
 git diff --quiet HEAD -- || stamp="$stamp-dirty"
@@ -352,5 +353,31 @@ describe('end to end', () => {
     const dl = new URL(v.downloadURL);
     const r = await get(`${dl.pathname}${dl.search}&hold=30`);
     assert.equal(r.status, 200);
+  });
+
+  test('a deploy launches only when Launch is on, and MCP picks the kind of launch', async () => {
+    const post = (p, body) => new Promise((resolve, reject) => {
+      const data = JSON.stringify(body);
+      const q = http.request(base + p, { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json', 'Content-Length': data.length } }, res => {
+        const chunks = []; res.on('data', c => chunks.push(c)); res.on('end', () => resolve(JSON.parse(Buffer.concat(chunks).toString())));
+      });
+      q.on('error', reject); q.end(data);
+    });
+    const argsOf = async (options) => {
+      const { jobs } = await post('/api/build', { repo: 'Fake', targets: [{ device: 'Phone', branch: 'current' }], ...options });
+      for (;;) {
+        const b = (await get('/api/state', { Cookie: cookie })).json.builds.find(x => x.id === jobs[0].id);
+        if (!['queued', 'running'].includes(b.status)) break;
+        await new Promise(r => setTimeout(r, 200));
+      }
+      const log = (await get(`/api/builds/${jobs[0].id}/log`, { Cookie: cookie })).json;
+      return log.chunk.match(/ARGS: (.*)/)[1].trim().split(/\s+/);
+    };
+    const mcpOnly = await argsOf({ mcp: true, run: false });
+    assert.ok(mcpOnly.includes('--no-mcp') && !mcpOnly.includes('--run'), mcpOnly.join(' '));
+    const debugLaunch = await argsOf({ mcp: true, run: true });
+    assert.ok(debugLaunch.includes('--run') && debugLaunch.includes('--mcp'), debugLaunch.join(' '));
+    const bareLaunch = await argsOf({ mcp: false, run: true });
+    assert.ok(bareLaunch.includes('--no-mcp') && !bareLaunch.includes('--run'), bareLaunch.join(' '));
   });
 });

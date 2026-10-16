@@ -580,10 +580,10 @@ function render() {
           ${branches.map(b=>`<option ${s.branch===b?'selected':''}>${esc(b)}</option>`).join('')}
         </select>
         <div class="opts" role="group" aria-label="Deploy options">
-          <label class="runcheck" title="--mcp: launch with the app's debug server, so the Debug tab and agents can attach. Includes launch">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="mcp" ${s.mcp?'checked':''}>MCP</label>
-          <label class="runcheck" title="--run: launch the app on the device once it is installed${s.mcp?' (already included by MCP)':''}">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''} ${s.mcp?'disabled':''}>Launch app</label>
+          <label class="runcheck" title="--run: launch the app on the device once it is installed. Unticked, it is installed and updates in the background">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''}>Launch app</label>
+          <label class="runcheck" title="--mcp: make the launch a debug session (console attached, session registered for agents)${s.launch?'':'. Applies only with Launch app'}">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="mcp" ${s.mcp?'checked':''} ${s.launch?'':'disabled'}>MCP</label>
           <label class="runcheck" title="--debug: build the Debug configuration instead of Release">
             <input type="checkbox" data-repo="${esc(r.name)}" data-k="buildDebug" ${s.buildDebug?'checked':''}>Debug build</label>
           <label class="runcheck" title="--inject: build so running code can be patched live (development builds only)">
@@ -601,7 +601,7 @@ function render() {
   $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
     <td class="muted">${b.id}</td><td>${esc(b.repo)}</td>
     <td class="mono">${esc(b.builtBranch||b.branch)}${b.commit?'@'+esc(b.commit):''}${b.version?' · v'+esc(b.version):''}</td>
-    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':b.run?' ▶':''}</td>
+    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':(b.run||b.mcp)?' ▶':''}</td>
     <td><span class="status ${b.status}">${b.status}</span></td>
     <td class="muted">${ago(b.startedAt||b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
     || '<tr><td colspan="7" class="muted">No builds yet</td></tr>';

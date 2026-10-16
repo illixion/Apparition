@@ -18,7 +18,9 @@ set -euo pipefail
 #   build-and-sign --platform iOS   # Build for a platform other than the conf's
 #   build-and-sign --device MyPhone # Install to a device other than the conf's
 #   build-and-sign --set KEY=VALUE  # Extra xcodebuild setting (repeatable)
-#   build-and-sign --run            # Launch the app on the device after install
+#   build-and-sign --run            # Launch the app on the device after install. Only
+#                                   # --run (or --log/--log-all) launches; without it
+#                                   # the app is installed and updated in the background
 #   build-and-sign --log            # --run, plus stream the app's console to
 #                                   # build/device-console.log in the background
 #                                   # (tail -f it; stop with the printed kill cmd).
@@ -26,13 +28,14 @@ set -euo pipefail
 #                                   # lines there, compact and redacted
 #   build-and-sign --log-all        # --log, but mirror the whole unified log
 #                                   # (Apple frameworks too) instead
-#   build-and-sign --mcp            # --log, plus start the app's debug server for
-#                                   # this launch and register it for the agents'
-#                                   # `apps` MCP server (DebugTrace/Tools/debugtrace-mcp).
-#                                   # MCP_DEFAULT=on in global.conf (or a repo conf)
-#                                   # makes it the default for every deploy of a
-#                                   # development build; --no-mcp skips it once
-#   build-and-sign --no-mcp         # Just install, even when MCP_DEFAULT=on
+#   build-and-sign --run --mcp      # Launch as a debug session: --log, plus the
+#                                   # debug server for this launch, registered for
+#                                   # the agents' `apps` MCP server
+#                                   # (DebugTrace/Tools/debugtrace-mcp). --mcp never
+#                                   # launches on its own. MCP_DEFAULT=on in global.conf
+#                                   # (or a repo conf) makes every --run of a
+#                                   # development build a debug session
+#   build-and-sign --run --no-mcp   # A bare launch, even when MCP_DEFAULT=on
 #   build-and-sign --inject         # Build so running code can be patched live
 #                                   # (testability + dynamic replacement) and keep
 #                                   # what the `inject` tool needs in build/inject/, and
@@ -192,7 +195,7 @@ while [[ $# -gt 0 ]]; do
         --run)           RUN_APP=true; shift ;;
         --log)           RUN_APP=true; LOG_APP=true; shift ;;
         --log-all)       RUN_APP=true; LOG_APP=true; LOG_ALL=true; shift ;;
-        --mcp)           RUN_APP=true; LOG_APP=true; MCP_SESSION=true; MCP_REQUEST=on; shift ;;
+        --mcp)           MCP_REQUEST=on; shift ;;
         --no-mcp)        MCP_REQUEST=off; shift ;;
         --inject)        INJECT=true; shift ;;
         --sign-dylib)    shift; SIGN_DYLIBS=("$@"); SIGN_ONLY=true; NO_DEPLOY=true; TARGET_NAME="${TARGET_NAME:-dylib}"; shift $# ;;
@@ -216,17 +219,21 @@ if [[ -n "${FORCE_PROFILE:-}" ]]; then
     DEV_PROFILE_PATH="$FORCE_PROFILE"
 fi
 
-# MCP_DEFAULT=on (global.conf or a repo conf): deploys of development builds
-# launch as a debug session (--mcp) unless --mcp/--no-mcp says otherwise.
-# Never for --distribution, --no-deploy or --sign-dylib, which launch nothing.
-if [[ "$MCP_REQUEST" == off ]]; then
-    MCP_SESSION=false
-elif [[ -z "$MCP_REQUEST" && "${MCP_DEFAULT:-off}" == on && "$USE_DIST" == false \
-      && "$NO_DEPLOY" == false && ${#SIGN_DYLIBS[@]} -eq 0 ]]; then
+# Launching is --run's alone (--log/--log-all include it). --mcp/--no-mcp and
+# MCP_DEFAULT only decide what a launch is: with --mcp, or MCP_DEFAULT=on and
+# no --no-mcp, a --run of a development build launches as a debug session
+# (console attached, session registered). Without --run nothing launches and
+# the app updates in the background, whatever the MCP setting; its debug
+# server still starts on the next launch (CommandToken, below), so a client
+# can attach then. Resolved after parsing, so flag order never matters.
+if [[ "$RUN_APP" == true && "$MCP_REQUEST" != off && "$USE_DIST" == false \
+      && ( "$MCP_REQUEST" == on || "${MCP_DEFAULT:-off}" == on ) ]]; then
     case "$PLATFORM" in
         [mM][aA][cC][oO][sS]|[oO][sS][xX]) ;;
-        *) RUN_APP=true; LOG_APP=true; MCP_SESSION=true ;;
+        *) LOG_APP=true; MCP_SESSION=true ;;
     esac
+elif [[ "$MCP_REQUEST" == on && "$RUN_APP" == false && "$NO_DEPLOY" == false ]]; then
+    echo "NOTE: --mcp without --run installs only; add --run to launch as a debug session" >&2
 fi
 
 # Xcode's incremental build cache. One per checkout, never shared between a
@@ -280,7 +287,7 @@ fi
 MACOS_BUILD=false
 if [[ "$EXPECTED_SDK" == "macosx" ]]; then
     MACOS_BUILD=true
-    if [[ "$RUN_APP" == true || "$LOG_APP" == true || "$MCP_SESSION" == true ]]; then
+    if [[ "$RUN_APP" == true || "$LOG_APP" == true || "$MCP_REQUEST" == on ]]; then
         echo "ERROR: macOS builds produce a .app for manual copying; --run/--log/--mcp are device-only options." >&2
         exit 1
     fi
