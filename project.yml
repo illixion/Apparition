@@ -94,9 +94,10 @@ targets:
           UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication
           UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations: {}
-        # location: coarse updates, dropped unread, keep Apparition running while it is an
-        # app's debugger (JITKeepAlive).
+        # While Apparition is an app's debugger (JITKeepAlive): location keeps it running on
+        # iOS (coarse updates, dropped unread), audio on visionOS (silence, mixed with others).
         UIBackgroundModes:
+          - audio
           - location
           - fetch
           - processing
