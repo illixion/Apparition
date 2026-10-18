@@ -1524,12 +1524,11 @@ if [[ "$RUN_APP" == true ]]; then
         # when DEBUGTRACE_STDERR=1: only the app's lines, debug included, one
         # compact line each, private values withheld and secrets redacted,
         # which suits an LLM far better than the whole unified log.
-        # --mcp adds DEBUGTRACE_SERVER=1, which starts the app's debug server for
-        # this launch only, and DEBUGTRACE_TOKEN, a fresh random bearer token
-        # for this session. It is never printed: it goes into the launch
-        # environment and the session record (mode 600), and
-        # debugtrace-mcp reads it from there. All of it is honoured in
-        # development-signed builds only.
+        # devicectl supports DEVICECTL_CHILD_* variables, avoiding an inline
+        # JSON argument. In particular, never put the MCP bearer token in argv:
+        # the signed DebugTraceCredential already carries the same per-build
+        # CommandToken used by debugtrace-mcp's session record.
+        unset DEVICECTL_CHILD_DEBUGTRACE_TOKEN
         MCP_TOKEN=""
         if [[ "$MCP_SESSION" == true ]]; then
             if [[ "${HAS_DEBUG_SERVER:-false}" != true ]]; then
@@ -1538,20 +1537,27 @@ if [[ "$RUN_APP" == true ]]; then
                 [[ "$MCP_REQUEST" == on ]] && echo "WARNING: --mcp: $BUILD_BUNDLE_ID doesn't link DebugTraceServer; launching with --log only" >&2
                 MCP_SESSION=false
             else
-                # The build's own token when it has one, so the session and
-                # an attach later agree; a fresh one for builds without.
-                MCP_TOKEN="${COMMAND_TOKEN:-$(openssl rand -hex 24)}"
+                # DebugTraceServer authenticates with the signed credential's
+                # CommandToken. That same per-build value is recorded below.
+                MCP_TOKEN="$COMMAND_TOKEN"
+                if [[ -z "$MCP_TOKEN" ]]; then
+                    echo "ERROR: --mcp: $BUILD_BUNDLE_ID has no signed DebugTrace CommandToken" >&2
+                    exit 1
+                fi
             fi
         fi
         if [[ "${HAS_DEBUGTRACE:-false}" == true && "$LOG_ALL" == false ]]; then
-            LAUNCH_ENV='{"DEBUGTRACE_STDERR":"1"'
+            export DEVICECTL_CHILD_DEBUGTRACE_STDERR=1
+            unset DEVICECTL_CHILD_OS_ACTIVITY_DT_MODE
         else
-            LAUNCH_ENV='{"OS_ACTIVITY_DT_MODE":"YES"'
+            unset DEVICECTL_CHILD_DEBUGTRACE_STDERR
+            export DEVICECTL_CHILD_OS_ACTIVITY_DT_MODE=YES
         fi
         if [[ "$MCP_SESSION" == true ]]; then
-            LAUNCH_ENV+=',"DEBUGTRACE_SERVER":"1","DEBUGTRACE_TOKEN":"'"$MCP_TOKEN"'"'
+            export DEVICECTL_CHILD_DEBUGTRACE_SERVER=1
+        else
+            unset DEVICECTL_CHILD_DEBUGTRACE_SERVER
         fi
-        LAUNCH_ENV+='}'
         # --console alone bridges only stdout/stderr — os_log/Logger output
         # never reaches it and the file stays near-empty for apps that log
         # through the unified log. OS_ACTIVITY_DT_MODE=YES makes libtrace
@@ -1560,7 +1566,6 @@ if [[ "$RUN_APP" == true ]]; then
         # os_log privacy: values not marked `privacy: .public` read
         # "<private>" — that's the app's annotation, not a capture bug.
         nohup xcrun devicectl device process launch --console --terminate-existing \
-            --environment-variables "$LAUNCH_ENV" \
             --device "$DEVICE_ID" "$BUILD_BUNDLE_ID" >>"$APP_LOG" 2>&1 &
         CONSOLE_PID=$!
         disown "$CONSOLE_PID"
@@ -1588,11 +1593,6 @@ if [[ "$RUN_APP" == true ]]; then
         LAUNCH_STATUS="log"
         if [[ "$MCP_SESSION" == true ]]; then
             find_debug_server
-            # The token must never reach the file an LLM reads. devicectl
-            # doesn't echo launch environments, but check rather than trust.
-            if /usr/bin/grep -qF "$MCP_TOKEN" "$APP_LOG" 2>/dev/null; then
-                echo "WARNING: the session token appeared in $APP_LOG; delete that file. The token dies with this app launch." >&2
-            fi
         fi
     else
         echo "==> Launching $BUILD_BUNDLE_ID..."
