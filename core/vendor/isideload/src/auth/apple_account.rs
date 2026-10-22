@@ -191,10 +191,30 @@ impl AppleAccount {
             warn!("Debug mode enabled: this is a security risk!");
         }
 
-        self.login_state = self
-            .login_inner(password)
-            .await
-            .context("Failed to log in to Apple ID")?;
+        // A GrandSlam HTTP 503 can occur partway through SRP. The proof is
+        // challenge-specific, so retry the *whole* negotiation, not the failed
+        // request. Never retry bad credentials or two-factor failures.
+        let mut transient_retries = 0;
+        self.login_state = loop {
+            match self.login_inner(password).await {
+                Ok(state) => break state,
+                Err(error) => {
+                    let transient = error.iter_reports().any(|cause| {
+                        cause
+                            .downcast_current_context::<reqwest::Error>()
+                            .and_then(reqwest::Error::status)
+                            == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE)
+                    });
+                    if !transient || transient_retries >= 2 {
+                        return Err(error.context("Failed to log in to Apple ID").into_dynamic());
+                    }
+                    transient_retries += 1;
+                    let delay = std::time::Duration::from_secs(7 * transient_retries);
+                    warn!("GrandSlam HTTP 503; restarting SRP negotiation (attempt {} of 3)", transient_retries + 1);
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        };
 
         debug!("Initial login successful");
 
