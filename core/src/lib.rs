@@ -192,10 +192,18 @@ pub async fn sign_in(
     let storage_path = data_dir.join("storage.json");
     let anisette_url = anisette_address(anisette_url, data_dir).await?;
     // Claim the platform the anisette was made on, or Apple refuses the sign-in (claimed_platform).
-    let served = claimed_platform::served_by(&anisette_url).await;
+    let identity = claimed_platform::inspect_server(&anisette_url).await?;
+    let served = identity.served;
+    // Do not mix provisioning state from an Android provider with a public macOS provider.
+    // Certificates and private keys continue to use the original storage.json.
+    let anisette_storage_path = if identity.public_mac {
+        data_dir.join("anisette-mac-ani-jkcoxson.json")
+    } else {
+        storage_path.clone()
+    };
     let anisette = claimed_platform::ClaimedPlatform::new(
-        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?,
-        served,
+        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(anisette_storage_path)), "0".to_string())?,
+        identity,
     );
     let two_factor = &two_factor;
     let callback = |params: TwoFactorCallbackParams| {

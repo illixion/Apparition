@@ -96,6 +96,11 @@ struct SettingsView: View {
                 .autocorrectionDisabled()
                 .font(.body.monospaced())
                 .textFieldTapTarget()
+            if account.anisetteURL != "https://mac-ani.jkcoxson.com" {
+                Button("Use public macOS Anisette (jkcoxson)") {
+                    account.anisetteURL = "https://mac-ani.jkcoxson.com"
+                }
+            }
             ForEach(companions.found.filter { $0.anisetteURL != nil && $0.anisetteURL != account.anisetteURL }) { companion in
                 Button("Use \(companion.name)'s anisette server") { account.anisetteURL = companion.anisetteURL ?? "" }
             }

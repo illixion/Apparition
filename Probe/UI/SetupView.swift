@@ -479,6 +479,14 @@ struct AnisetteStep: View {
                 .roundedFieldStyle()
                 .frame(maxWidth: 480)
 
+            if account.anisetteURL != "https://mac-ani.jkcoxson.com" {
+                Button("Use public macOS Anisette (jkcoxson)") {
+                    account.anisetteURL = "https://mac-ani.jkcoxson.com"
+                }
+                .buttonStyle(.bordered)
+                .focusRow()
+            }
+
             Disclosure("Host your own") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Apparition on your Mac can offer its own (no Docker needed), and on any computer it can run one with your Docker: choose it in its Companion tab, then Find Companion above and use it.")
