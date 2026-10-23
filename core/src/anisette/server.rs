@@ -154,13 +154,24 @@ impl Drop for Scratch {
 async fn client_info(State(shared): State<Arc<Shared>>) -> Json<Value> {
     use crate::claimed_platform::{Served, USER_AGENT};
     let served = if shared.native { Served::Mac } else { Served::Android };
-    Json(json!({ "client_info": served.client_info(), "user_agent": USER_AGENT, "apparition_anisette": served.name() }))
+    Json(json!({
+        "client_info": served.client_info(),
+        "user_agent": USER_AGENT,
+        "apparition_anisette": served.name(),
+        "apparition_anisette_protocol": "v3",
+        "apparition_resync_supported": false,
+    }))
 }
 
 #[derive(Deserialize)]
 struct HeadersRequest {
     identifier: String,
     adi_pb: String,
+    // isideload 0.5.0 sends a server intermediate value to request anisette
+    // resynchronisation after GrandSlam hsc=434. The bundled Android ADI
+    // adapter cannot apply this yet, so do not return an ordinary OTP.
+    #[serde(default)]
+    sim: Option<String>,
 }
 
 async fn get_headers(State(shared): State<Arc<Shared>>, Json(request): Json<HeadersRequest>) -> Json<Value> {
@@ -172,6 +183,9 @@ async fn get_headers(State(shared): State<Arc<Shared>>, Json(request): Json<Head
 }
 
 async fn headers_for(shared: &Arc<Shared>, request: HeadersRequest) -> Result<Value, Report> {
+    if request.sim.is_some() {
+        bail!("Apple requires anisette resynchronisation (hsc=434), which this Android ADI server cannot perform; existing provisioning was preserved");
+    }
     // This Mac's own headers, whatever the identity: the client's identifier and adi.pb still
     // give its X-Mme-Device-Id and X-Apple-I-MD-LU, which Apple takes alongside them.
     #[cfg(target_os = "macos")]
@@ -330,6 +344,19 @@ mod tests {
             assert!(headers.get(name).is_some_and(|value| value.len() > 8), "{name} missing or empty");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn v3_05_header_request_accepts_legacy_and_resync_fields() {
+        let legacy: HeadersRequest = serde_json::from_value(json!({
+            "identifier": "AAAAAAAAAAAAAAAAAAAAAA==", "adi_pb": "AA=="
+        })).unwrap();
+        assert!(legacy.sim.is_none());
+        let resync: HeadersRequest = serde_json::from_value(json!({
+            "identifier": "AAAAAAAAAAAAAAAAAAAAAA==", "adi_pb": "AA==",
+            "sim": "AQID", "device_id": "some-device", "md_lu": "some-local-user"
+        })).unwrap();
+        assert!(resync.sim.is_some());
     }
 
     #[test]
