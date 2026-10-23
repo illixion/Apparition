@@ -184,7 +184,9 @@ async fn get_headers(State(shared): State<Arc<Shared>>, Json(request): Json<Head
 
 async fn headers_for(shared: &Arc<Shared>, request: HeadersRequest) -> Result<Value, Report> {
     if request.sim.is_some() {
-        bail!("Apple requires anisette resynchronisation (hsc=434), which this Android ADI server cannot perform; existing provisioning was preserved");
+        // Do not mention "provisioning" in the protocol error: the remote v3
+        // adapter on some clients treats that word as a request to reprovision.
+        bail!("Apple requested anisette resync (hsc=434); this backend cannot perform it; existing ADI state is unchanged");
     }
     // This Mac's own headers, whatever the identity: the client's identifier and adi.pb still
     // give its X-Mme-Device-Id and X-Apple-I-MD-LU, which Apple takes alongside them.
