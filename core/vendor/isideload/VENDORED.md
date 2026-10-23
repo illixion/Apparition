@@ -1,4 +1,4 @@
-# isideload 0.4.4, vendored
+# isideload 0.5.0, vendored (rebased from 0.4.4 + Apparition patches)
 
 From https://github.com/nab138/isideload at 0bee45d8cdb07ca24524a26f38fdda0dbb4e04b3 (MIT,
 LICENSE alongside), used as core's `isideload` dependency by path. `readme` in Cargo.toml points
@@ -39,3 +39,18 @@ existing ones (App Groups stays), and its error carries Apple's `detail`. If App
 sign_app asks for each one alone, so a refused one (EXTENDED_VIRTUAL_ADDRESSING on a free team:
 "not … eligible for this feature") doesn't cost the others (src/dev/app_ids.rs,
 src/sideload/sideloader.rs).
+
+October 22, 2026 update: applied the changes from the published isideload 0.5.0 crate,
+including anisette resync (hsc=434), remote v3 provision retry and the new
+extension behavior configuration. Preserved local Rust signing implementation, tvOS app/extension provisioning,
+Android 2FA fallback and Apple Root CA G3. The native Android ADI server requires
+a separate backend implementation to support the optional `sim` resync request.
+
+The upstream 0.5.0 `hsc=409` interactive prompt is retained for a verified macOS
+claim, while Android identity follows the app-token-error fallback. Unknown GSA
+status logging is also redacted.
+
+October 23, 2026 tvOS test: for a verified macOS anisette claim, restored the
+upstream 0.5.0 `hsc=409` trusted-device verification flow. Android maintains the
+Apparition Android app-token fallback. The public Mac endpoint is allowlisted
+separately in core/src/claimed_platform.rs, with its own anisette state file.

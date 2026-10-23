@@ -3,18 +3,21 @@ use crate::{
         app_groups::AppGroupsApi,
         app_ids::{AppIdsApi, Profile},
         developer_session::DeveloperSession,
-        device_type::DeveloperDeviceType,
         devices::DevicesApi,
         teams::{DeveloperTeam, TeamsApi},
     },
     sideload::{
         TeamSelection,
         application::{Application, SpecialApp},
-        builder::MaxCertsBehavior,
+        builder::{ExtensionsBehavior, ExtensionsBehaviorSelection, MaxCertsBehavior},
         cert_identity::CertificateIdentity,
         sign,
     },
-    util::{callbacks::MaxCertsCallback, device::IdeviceInfo, storage::SideloadingStorage},
+    util::{
+        callbacks::{ExtensionsBehaviorCallback, MaxCertsCallback},
+        device::IdeviceInfo,
+        storage::SideloadingStorage,
+    },
 };
 
 use std::path::PathBuf;
@@ -25,19 +28,19 @@ use plist::Dictionary;
 use rootcause::{option_ext::OptionExt, prelude::*};
 use tracing::{info, warn};
 
-pub struct Sideloader<C: MaxCertsCallback> {
+pub struct Sideloader<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> {
     team_selection: TeamSelection,
     storage: Box<dyn SideloadingStorage>,
     dev_session: DeveloperSession,
     machine_name: String,
     apple_email: String,
     max_certs_behavior: MaxCertsBehavior<C>,
-    //extensions_behavior: ExtensionsBehavior,
+    extensions_behavior: ExtensionsBehaviorSelection<E>,
     delete_app_after_install: bool,
     team: Option<DeveloperTeam>,
 }
 
-impl<C: MaxCertsCallback> Sideloader<C> {
+impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
     /// Construct a new `Sideloader` instance with the provided configuration
     ///
     /// See [`crate::sideload::SideloaderBuilder`] for more details and a more convenient way to construct a `Sideloader`.
@@ -48,7 +51,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
         max_certs_behavior: MaxCertsBehavior<C>,
         machine_name: String,
         storage: Box<dyn SideloadingStorage>,
-        //extensions_behavior: ExtensionsBehavior,
+        extensions_behavior: ExtensionsBehaviorSelection<E>,
         delete_app_after_install: bool,
     ) -> Self {
         Sideloader {
@@ -58,7 +61,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
             machine_name,
             apple_email,
             max_certs_behavior,
-            //extensions_behavior,
+            extensions_behavior,
             delete_app_after_install,
             team: None,
         }
@@ -102,10 +105,20 @@ impl<C: MaxCertsCallback> Sideloader<C> {
         }
 
         let mut app = Application::new(app_path)?;
-        // When signing on macOS, choose the provisioning platform from the
-        // target app rather than the operating system of this installer.
-        let profile_platform = if cfg!(target_os = "tvos") || targets_tvos(&app.bundle.app_info) {
-            Some(DeveloperDeviceType::Tvos)
+        // This Rust binary may run on macOS while signing a tvOS app. Select
+        // the profile's sub-platform from the target bundle, not the host OS.
+        // tvOS apps declare device family 3 (and/or AppleTVOS as a supported
+        // platform). A tvOS-native build also always targets tvOS.
+        let tvos_family = app.bundle.app_info
+            .get("UIDeviceFamily")
+            .and_then(plist::Value::as_array)
+            .is_some_and(|families| families.iter().any(|v| v.as_unsigned_integer() == Some(3)));
+        let tvos_platform = app.bundle.app_info
+            .get("CFBundleSupportedPlatforms")
+            .and_then(plist::Value::as_array)
+            .is_some_and(|platforms| platforms.iter().any(|v| v.as_string() == Some("AppleTVOS")));
+        let requested_profile_platform = if cfg!(target_os = "tvos") || tvos_family || tvos_platform {
+            Some(crate::dev::device_type::DeveloperDeviceType::Tvos)
         } else {
             None
         };
@@ -115,11 +128,13 @@ impl<C: MaxCertsCallback> Sideloader<C> {
         let main_app_name = app.main_app_name()?;
         let main_app_id_str = format!("{}.{}", main_bundle_id, team.team_id);
         app.update_bundle_id(&main_bundle_id, &main_app_id_str)?;
+
+        let extensions_behavior = self
+            .extensions_behavior
+            .behavior(app.bundle.app_extensions())
+            .await?;
         let mut app_ids = app
-            .register_app_ids(
-                /*&self.extensions_behavior, */ &mut self.dev_session,
-                &team,
-            )
+            .register_app_ids(&extensions_behavior, &mut self.dev_session, &team)
             .await?;
         let main_app_id = match app_ids
             .iter()
@@ -198,30 +213,36 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
         let main_provisioning_profile = self
             .dev_session
-            .download_team_provisioning_profile(&team, &main_app_id, profile_platform.clone())
+            .download_team_provisioning_profile(&team, &main_app_id, requested_profile_platform.clone())
             .await?;
 
         let mut provisioning_profiles: Vec<(String, Profile, Dictionary)> = Vec::new();
 
-        for id in app_ids
-            .into_iter()
-            .filter(|id| id.identifier != main_app_id.identifier)
-        {
-            let bundle_id = id.identifier.clone();
-
-            let profile = self
-                .dev_session
-                .download_team_provisioning_profile(&team, &id, profile_platform.clone())
-                .await
-                .context(format!(
-                    "Failed to download provisioning profile for {}",
-                    bundle_id
-                ))?;
-
-            let parsed_profile = ProvisioningProfile::parse(profile.encoded_profile.as_ref())?;
-            let entitlements = parsed_profile.entitlements().clone();
-
-            provisioning_profiles.push((bundle_id, profile, entitlements));
+        match extensions_behavior {
+            ExtensionsBehavior::ReuseMain => {
+                let main_entitlements =
+                    ProvisioningProfile::parse(main_provisioning_profile.encoded_profile.as_ref())?
+                        .entitlements()
+                        .clone();
+                for ext in app.bundle.app_extensions() {
+                    provisioning_profiles.push((
+                        ext.bundle_identifier().unwrap_or_default().to_string(),
+                        main_provisioning_profile.clone(),
+                        main_entitlements.clone(),
+                    ));
+                }
+            }
+            ExtensionsBehavior::RegisterAll => {
+                for id in app_ids.into_iter().filter(|id| id.identifier != main_app_id.identifier) {
+                    let bundle_id = id.identifier.clone();
+                    let profile = self.dev_session.download_team_provisioning_profile(
+                        &team, &id, requested_profile_platform.clone()
+                    ).await.context(format!("Failed to download provisioning profile for {}", bundle_id))?;
+                    let parsed_profile = ProvisioningProfile::parse(profile.encoded_profile.as_ref())?;
+                    let entitlements = parsed_profile.entitlements().clone();
+                    provisioning_profiles.push((bundle_id, profile, entitlements));
+                }
+            }
         }
 
         if let Some(callback) = &progress_callback {
@@ -363,54 +384,5 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
     pub fn get_email(&self) -> &str {
         &self.apple_email
-    }
-}
-
-/// A TV app needs a tvOS profile even when it is signed from a Mac.
-fn targets_tvos(info: &Dictionary) -> bool {
-    info.get("UIDeviceFamily")
-        .and_then(plist::Value::as_array)
-        .is_some_and(|families| families.iter().any(|v| v.as_unsigned_integer() == Some(3)))
-        || info
-            .get("CFBundleSupportedPlatforms")
-            .and_then(plist::Value::as_array)
-            .is_some_and(|platforms| platforms.iter().any(|v| v.as_string() == Some("AppleTVOS")))
-}
-
-#[cfg(test)]
-mod profile_platform_tests {
-    use super::*;
-
-    #[test]
-    fn device_family_3_is_tvos() {
-        let mut info = Dictionary::new();
-        info.insert(
-            "UIDeviceFamily".into(),
-            plist::Value::Array(vec![plist::Value::Integer(3.into())]),
-        );
-        assert!(targets_tvos(&info));
-    }
-
-    #[test]
-    fn apple_tv_platform_is_tvos() {
-        let mut info = Dictionary::new();
-        info.insert(
-            "CFBundleSupportedPlatforms".into(),
-            plist::Value::Array(vec![plist::Value::String("AppleTVOS".into())]),
-        );
-        assert!(targets_tvos(&info));
-    }
-
-    #[test]
-    fn iphone_and_ipad_do_not_need_tvos_profiles() {
-        let mut info = Dictionary::new();
-        info.insert(
-            "UIDeviceFamily".into(),
-            plist::Value::Array(vec![
-                plist::Value::Integer(1.into()),
-                plist::Value::Integer(2.into()),
-            ]),
-        );
-        assert!(!targets_tvos(&info));
     }
 }
