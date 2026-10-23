@@ -22,6 +22,8 @@ const APPLE_ROOT_G3: &[u8] = include_bytes!("../assets/AppleRootCA-G3.cer");
 use crate::{SideloadError, anisette::AnisetteClientInfo, util::plist::PlistDataExtract};
 
 const URL_BAG: &str = "https://gsa.apple.com/grandslam/GsService2/lookup";
+const URL_BAG_CLIENT_INFO: &str =
+    "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
 
 pub struct GrandSlam {
     pub client: reqwest_middleware::ClientWithMiddleware,
@@ -53,9 +55,14 @@ impl GrandSlam {
     /// Fetch the URL bag from GrandSlam and cache it
     pub async fn fetch_url_bag(
         client: &reqwest_middleware::ClientWithMiddleware,
-        base_headers: HeaderMap,
+        mut base_headers: HeaderMap,
     ) -> Result<Dictionary, Report> {
         debug!("Fetching URL bag from GrandSlam");
+        // Sending the android client info gets us the wrong url bag, so we lie for this request
+        base_headers.insert(
+            "X-Mme-Client-Info",
+            HeaderValue::from_str(URL_BAG_CLIENT_INFO)?,
+        );
         let resp = client
             .get(URL_BAG)
             .headers(base_headers)
@@ -259,7 +266,9 @@ impl GrandSlam {
             .http1_title_case_headers()
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)
-            // .pool_max_idle_per_host(0)
+            // Apple GSA can return 503 for a reused keep-alive socket during SRP login.
+            // Disable idle pooling so each proof request uses a fresh connection.
+            .pool_max_idle_per_host(0)
             .build()?;
         #[cfg(feature = "wasm")]
         let client = ClientBuilder::new().build()?;

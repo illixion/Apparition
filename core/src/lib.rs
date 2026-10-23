@@ -16,7 +16,7 @@ use isideload::{
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
     dev::{app_ids::AppIdsApi, developer_session::DeveloperSession, devices::DevicesApi, teams::DeveloperTeam},
     sideload::{SideloaderBuilder, TeamSelection, builder::MaxCertsBehavior, sideloader::Sideloader},
-    util::{callbacks::MaxCertsCallbackBox, storage::SideloadingStorage},
+    util::{callbacks::{MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox}, storage::SideloadingStorage},
 };
 use rootcause::prelude::*;
 
@@ -49,7 +49,7 @@ pub struct Session {
     team: DeveloperTeam,
     /// Where its storage.json (anisette state, the certificate key) lives.
     data_dir: PathBuf,
-    sideloader: Sideloader<MaxCertsCallbackBox>,
+    sideloader: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox>,
 }
 
 impl Session {
@@ -177,6 +177,45 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
     }
 }
 
+/// Android anisette can complete the password exchange but be denied an Xcode token until
+/// the code Apple already pushed to a trusted device has been checked with validateCode.
+/// Apple reports either -22411 (known) or -80046 for that *specific token request*.
+/// Only offer the interactive verification for Android; macOS and unrelated errors must fail.
+fn needs_android_token_verification(served: claimed_platform::Served, details: &str) -> bool {
+    if served != claimed_platform::Served::Android {
+        return false;
+    }
+    details.contains("-22411")
+        || (details.contains("-80046")
+            && details.contains("Failed to get xcode token from Apple account")
+            && details.contains("GrandSlam error during app token request"))
+}
+
+#[cfg(test)]
+mod android_token_verification_tests {
+    use super::{claimed_platform::Served, needs_android_token_verification};
+
+    const TOKEN_80046: &str = "Failed to get xcode token from Apple account: GrandSlam error during app token request: Auth error -80046: This action cannot be completed at this time";
+
+    #[test]
+    fn android_xcode_token_80046_prompts_for_pushed_code() {
+        assert!(needs_android_token_verification(Served::Android, TOKEN_80046));
+    }
+
+    #[test]
+    fn existing_android_22411_behavior_is_preserved() {
+        assert!(needs_android_token_verification(Served::Android, "GrandSlam auth error -22411"));
+    }
+
+    #[test]
+    fn mac_os_and_unrelated_android_errors_do_not_trigger_fallback() {
+        assert!(!needs_android_token_verification(Served::Mac, TOKEN_80046));
+        assert!(!needs_android_token_verification(Served::Android, "Auth error -80045"));
+        assert!(!needs_android_token_verification(Served::Android, "Apple ID login: Auth error -80046"));
+        assert!(!needs_android_token_verification(Served::Android, "Failed to get xcode token from Apple account: Auth error -80046"));
+    }
+}
+
 /// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, or the built-in
 /// provider for [`BUILTIN_ANISETTE`]; state kept in `<data_dir>/storage.json`) and opens a
 /// developer session. `two_factor` answers 2FA.
@@ -192,10 +231,18 @@ pub async fn sign_in(
     let storage_path = data_dir.join("storage.json");
     let anisette_url = anisette_address(anisette_url, data_dir).await?;
     // Claim the platform the anisette was made on, or Apple refuses the sign-in (claimed_platform).
-    let served = claimed_platform::served_by(&anisette_url).await;
+    let identity = claimed_platform::inspect_server(&anisette_url).await?;
+    let served = identity.served;
+    // A new anisette host must not reuse the Android ADI provisioning identity.
+    // Persist public Mac provisioning separately without changing existing certificate keys.
+    let anisette_storage_path = if identity.public_mac {
+        data_dir.join("anisette-mac-ani-jkcoxson.json")
+    } else {
+        storage_path.clone()
+    };
     let anisette = claimed_platform::ClaimedPlatform::new(
-        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?,
-        served,
+        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(anisette_storage_path)), "0".to_string())?,
+        identity,
     );
     let two_factor = &two_factor;
     let callback = |params: TwoFactorCallbackParams| {
@@ -214,10 +261,10 @@ pub async fn sign_in(
 
     let session = match DeveloperSession::from_account(&mut account).await {
         Ok(session) => session,
-        // Claiming Android, a sign-in Apple doesn't trust yet gets no 2FA step and no Xcode
-        // token (-22411) until the code it pushes to the trusted devices is checked: sign in
-        // again, which pushes one, and check it (vendor/isideload, code_after_login).
-        Err(error) if served == claimed_platform::Served::Android && format!("{error:?}").contains("-22411") => {
+        // For an untrusted Android anisette identity, Apple may push a code while refusing
+        // the Xcode token (-22411 or -80046). Ask for that existing code via validateCode,
+        // then sign in again. Do not retry other authentication or platform failures.
+        Err(error) if needs_android_token_verification(served, &format!("{error:?}")) => {
             account.code_after_login = true;
             account.login(&password, callback).await.map_err(refused)?;
             DeveloperSession::from_account(&mut account).await.context("Failed to open a developer session")?
@@ -225,7 +272,7 @@ pub async fn sign_in(
         Err(error) => return Err(error.context("Failed to open a developer session").into_dynamic()),
     };
     drop(password);
-    let mut sideloader: Sideloader<MaxCertsCallbackBox> = SideloaderBuilder::new(session, email.to_string())
+    let mut sideloader: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox> = SideloaderBuilder::new(session, email.to_string())
         .team_selection(TeamSelection::First)
         // Never revoke someone's existing certificates on our own: report instead.
         .max_certs_behavior(MaxCertsBehavior::Error)
@@ -275,11 +322,17 @@ pub async fn sign_with_apple_id(
         .map(|d| json!({"name": d.name, "udid": d.device_number, "status": d.status}))
         .collect();
 
+    // Keep diagnostics non-sensitive: no Apple IDs, device identifiers, tokens or
+    // provisioning payloads are included in an error shown on the Apple TV.
+    let legacy_device_count = devices.len();
+    let target_seen_by_legacy_api = devices.iter().any(|d| d.device_number == udid);
     let (signed, _) = session
         .sideloader
         .sign_app(app_path, Some(team.clone()), &capabilities, None::<fn(f32) -> std::future::Ready<()>>, None, Some(udid))
         .await
-        .context("Signing failed")?;
+        .context(format!(
+            "Signing failed (legacy developer device list: {legacy_device_count}; target Apple TV present: {target_seen_by_legacy_api})"
+        ))?;
     let mut result = json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped});
     if !capabilities.is_empty() {
         let signed_with: Vec<&str> = identity::app_entitlements(&signed)

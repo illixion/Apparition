@@ -157,15 +157,25 @@ pub trait AppIdsApi {
         app_id: &AppId,
         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
     ) -> Result<Profile, Report> {
-        let body = plist!(dict {
+        // The platform of the requested profile is independent of this
+        // program's platform: a macOS installer can sign an Apple TV app.
+        let requested_platform = device_type.into();
+        let target_tvos = cfg!(target_os = "tvos")
+            || matches!(requested_platform, Some(DeveloperDeviceType::Tvos));
+        let mut body = plist!(dict {
             "teamId": &team.team_id,
             "appIdId": &app_id.app_id_id,
         });
+        // Apple's legacy iOS URL selects a real tvOS profile via subPlatform.
+        // https://github.com/trollzem/torch (vendor/impactor-tvos.patch)
+        if target_tvos {
+            body.insert("subPlatform".to_string(), plist::Value::String("tvOS".to_string()));
+        }
 
         let response: Profile = self
             .developer_session()
             .send_dev_request(
-                &dev_url("downloadTeamProvisioningProfile", device_type),
+                &dev_url("downloadTeamProvisioningProfile", Some(DeveloperDeviceType::Ios)),
                 body,
                 "provisioningProfile",
             )
