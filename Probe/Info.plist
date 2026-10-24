@@ -95,6 +95,7 @@
 		<string>_remotepairing._tcp</string>
 		<string>_remotepairing-manual-pairing._tcp</string>
 		<string>_apparition._tcp</string>
+		<string>_apparition-key._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Apparition pairs with this device's own developer services over the local network.</string>

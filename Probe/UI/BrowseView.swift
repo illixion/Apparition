@@ -79,11 +79,15 @@ struct BrowseView: View {
                 Section {
                     AppLimitView(model: model, library: library, limit: limit)
                 }
+            } else if let choice = library.certificateChoice {
+                Section {
+                    SharedCertificateView(account: account, library: library, choice: choice)
+                }
             } else if let status = library.status, status.contains("error"), !library.statusIsInline {
                 Section {
                     Note(text: status, kind: .error)
                     if DeveloperSlots.isSlotError(status) {
-                        ManageSlotsButton(account: account, library: library, onSignIn: onSetup)
+                        SlotErrorActions(account: account, library: library, error: status, onSetup: onSetup)
                     }
                 }
             }

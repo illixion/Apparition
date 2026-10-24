@@ -110,6 +110,7 @@ targets:
           - _remotepairing._tcp
           - _remotepairing-manual-pairing._tcp
           - _apparition._tcp
+          - _apparition-key._tcp
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition

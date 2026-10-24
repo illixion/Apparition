@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var confirmSignOut = false
     @State private var checking = false
     @State private var sharingSigning = false
+    @State private var receivingSigning = false
 
     var body: some View {
         NavigationStack {
@@ -139,7 +140,6 @@ struct SettingsView: View {
             } label: {
                 Label("Certificates & App IDs", systemImage: "person.badge.key")
             }
-            #if !os(tvOS)
             if let email = account.email ?? account.lastAppleID {
                 Button {
                     sharingSigning = true
@@ -150,7 +150,14 @@ struct SettingsView: View {
                     ShareSigningSheet(signing: library.signing, email: email, teamId: account.team?.id) { sharingSigning = false }
                 }
             }
-            #endif
+            Button {
+                receivingSigning = true
+            } label: {
+                Label("Get Signing from Another Device…", systemImage: "square.and.arrow.down")
+            }
+            .panel(isPresented: $receivingSigning) {
+                ReceiveSigningSheet(signing: library.signing, email: account.email ?? account.lastAppleID) { _ in receivingSigning = false }
+            }
             Toggle(isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 })) {
                 Text("Remember password")
                 Text(Keychain.hasPassword ? "A password is stored on this \(ThisDevice.noun)." : "Takes effect at the next sign-in.")
@@ -158,7 +165,7 @@ struct SettingsView: View {
         } header: {
             Text("Apple ID")
         } footer: {
-            Text("A remembered password stays in this \(ThisDevice.noun)'s Keychain, never synced or sent anywhere but Apple, so refreshes can sign in on their own. Turning it off deletes it.")
+            Text("Your devices and computers share one certificate: Share Signing hands this \(ThisDevice.noun)'s to another, and Get Signing takes another's, so a free Apple ID's two are never used up one per device. A remembered password stays in this \(ThisDevice.noun)'s Keychain, never synced or sent anywhere but Apple, so refreshes can sign in on their own. Turning it off deletes it.")
         }
     }
 

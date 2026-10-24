@@ -54,6 +54,12 @@ enum DeveloperSlots {
         return ["limit", "maximum", "more than", "9401"].contains { lower.contains($0) }
     }
 
+    /// Whether a slot error is the certificates' (7460), where another Apparition's key would do.
+    static func isCertificateSlotError(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return lower.contains("7460") || lower.contains("maximum number of certificates")
+    }
+
     static func certificates() async throws -> [Certificate] {
         struct Reply: Decodable { let certificates: [Certificate] }
         return try await decode(Reply.self) { apparition_list_certificates() }.certificates

@@ -1,11 +1,12 @@
 //! The account's development certificates and App IDs, so the user can see what uses up a
 //! free account's slots and get them back.
 //!
-//! A free account has room for two development certificates and ten App IDs a week. Every
-//! installation of a sideloader makes its own certificate (its private key never leaves the
-//! device that made it), so a reinstall, a second device or another tool (Xcode, SideStore)
-//! can use both up, and signing then fails with Apple's error 7460. Nothing here revokes or
-//! deletes on its own: the app asks the user first.
+//! A free account has room for two development certificates and ten App IDs a week. A
+//! sideloader makes a certificate per installation, for a private key it keeps, so a reinstall,
+//! a second device or another tool (Xcode, SideStore) can use both up, and signing then fails
+//! with Apple's error 7460. Apparition installs share one instead (share.rs, nearby.rs), and
+//! signing stops before making a second while another Apparition has one (`check_certificate`
+//! in lib.rs). Nothing here revokes or deletes on its own: the app asks the user first.
 
 use std::ffi::c_char;
 
@@ -17,6 +18,13 @@ use crate::{SESSION, Session, reply, runtime, text};
 
 /// The machine name this app's certificates are made under (see `apparition_login`).
 pub const MACHINE_NAME: &str = "Apparition";
+
+/// The public key (PKCS#1 DER) a certificate (DER) carries, as `share::stored_public_key` gives it.
+pub(crate) fn public_key(certificate: &[u8]) -> Option<Vec<u8>> {
+    use x509_cert::der::Decode;
+    let certificate = x509_cert::Certificate::from_der(certificate).ok()?;
+    certificate.tbs_certificate.subject_public_key_info.subject_public_key.as_bytes().map(<[u8]>::to_vec)
+}
 
 fn date(value: &Option<plist::Date>) -> Value {
     value.as_ref().map(|date| Value::String(date.to_xml_format())).unwrap_or(Value::Null)
@@ -58,12 +66,6 @@ pub async fn list_certificates(session: &mut Session) -> Result<Value, Report> {
     }
     // The certificate whose key this install holds: the one it signs with.
     let ours = crate::share::stored_public_key(&session.data_dir, &session.email);
-    let public_key = |der: &[u8]| {
-        use x509_cert::der::Decode;
-        x509_cert::Certificate::from_der(der)
-            .ok()
-            .and_then(|c| c.tbs_certificate.subject_public_key_info.subject_public_key.as_bytes().map(<[u8]>::to_vec))
-    };
     let list: Vec<Value> = certs
         .iter()
         .map(|cert| {

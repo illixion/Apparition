@@ -65,18 +65,29 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
   apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
       one you choose (after you confirm). Revoking a certificate stops the apps signed with
-      it until they are signed again.
-  apparition signing share --apple-id <email>
-      Seal this computer's certificate key for the Apple ID into a .apparitionkey file
-      here, and print the five words that open it. AirDrop or send the file to a device and
-      open it in Apparition (or `signing import` it on another computer), so both sign with
-      one certificate instead of using another of the account's two.
+      it until they are signed again: share Apparition's instead (`signing`, below).
+
+  Sharing one certificate between your devices and computers. A free account holds two, so
+  each Apparition signs with the same one rather than making its own: once one has signed,
+  hand its key to the others. Signing stops and asks before it would make a second.
+  apparition signing receive
+      Wait for the key from Apparition on a nearby device or computer: there, choose Share
+      Signing in Settings and pick this computer under Nearby. Both screens show a six-digit
+      code; check that they match on each.
+  apparition signing send --apple-id <email> [--to <address>:<port>]
+      Hand this computer's key to Apparition on a nearby device (Settings > Get Signing from
+      Another Device there) or computer (`signing receive`), found over mDNS or at the
+      address it shows.
   apparition signing hand-off --apple-id <email> [--device <name>] [--bundle-id <id>]
-      Put this computer's certificate key for the Apple ID in Apparition's Files inbox on a
-      paired device, as installing Apparition does, for an Apparition installed another way.
+      Put this computer's key in Apparition's Files inbox on a paired device, as installing
+      Apparition does, for an Apparition installed another way.
+  apparition signing share --apple-id <email>
+      For devices that aren't on this network: seal the key into a .apparitionkey file here
+      and print the five words that open it. Send the file any way you like and open it in
+      Apparition (or `signing import` it on another computer).
   apparition signing import <file>
-      Use the certificate key in a .apparitionkey from another device (asks its five words) or
-      a .apparitionsigning file, for that Apple ID's signing here.
+      Use the key in a .apparitionkey from another device (asks its five words) or a
+      .apparitionsigning file, for that Apple ID's signing here.
   apparition forget <name or UDID>
       Forget a paired device (remove the computer from its Remote Devices list too).
   apparition relay [--port <port>] [--no-mdns] [--anisette builtin|local|none]
@@ -194,6 +205,26 @@ async fn signing(args: &[String]) -> Result<(), Error> {
             }
             Ok(())
         }
+        Some("receive") => {
+            if args.len() > 1 {
+                return Err(fail("usage: apparition signing receive"));
+            }
+            receive_signing(None).await
+        }
+        Some("send") => {
+            let usage = || fail("usage: apparition signing send --apple-id <email> [--to <address>:<port>]");
+            let (mut email, mut to) = (None, None);
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                let value = rest.next().ok_or_else(usage)?;
+                match arg.as_str() {
+                    "--apple-id" => email = Some(value),
+                    "--to" => to = Some(value.parse::<SocketAddr>().map_err(|_| fail(format!("{value} isn't an address and port, like 192.168.1.20:52144")))?),
+                    _ => return Err(usage()),
+                }
+            }
+            send_signing(&data_dir, email.ok_or_else(usage)?, to).await
+        }
         Some("hand-off") => {
             let usage = || fail("usage: apparition signing hand-off --apple-id <email> [--device <name>] [--bundle-id <id>]");
             let (mut email, mut wanted, mut bundle_id) = (None, None, None);
@@ -224,8 +255,84 @@ async fn signing(args: &[String]) -> Result<(), Error> {
             println!("Put {email}'s certificate key in {bundle_id}'s inbox on {}: Apparition there now signs with this computer's certificate.", device.name);
             Ok(())
         }
-        _ => Err(fail("usage: apparition signing share --apple-id <email> | signing hand-off --apple-id <email> | signing import <file>")),
+        _ => Err(fail("usage: apparition signing receive | send --apple-id <email> | hand-off --apple-id <email> | share --apple-id <email> | import <file>")),
     }
+}
+
+/// Asks whether the other device shows the code too (both screens show it; the person checks).
+fn compare_codes() -> api::nearby::Compare {
+    std::sync::Arc::new(|code: &str, peer: &str| {
+        println!();
+        println!("    {} {}", &code[..3.min(code.len())], &code[3.min(code.len())..]);
+        println!();
+        let answer = ask(&format!("Does {peer} show this code too? Type `yes` if it does: "));
+        answer.eq_ignore_ascii_case("yes") || answer.eq_ignore_ascii_case("y")
+    })
+}
+
+/// Waits for Apparition on another device or computer to hand over its certificate key, and
+/// imports it. `email`: the Apple ID it's wanted for, for the instructions.
+async fn receive_signing(email: Option<&str>) -> Result<(), Error> {
+    let name = api::hostname();
+    let email_flag = email.unwrap_or("<your Apple ID>");
+    let imported = api::nearby::receive(store().apple_id_dir(), &name, |listening| {
+        println!("Waiting for the certificate key as \"{name}\". On the device or computer that already signs with this Apple ID:");
+        println!("  Apparition on a device: Settings > Share Signing with Another Device, then choose \"{name}\" under Nearby.");
+        let address = listening.address.map(|ip| format!("{ip}:{}", listening.port));
+        if let Some(address) = &address {
+            // On macOS a command line multicasts only with its terminal's Local Network access.
+            println!("    Not listed there? Type {address} in the address field under Nearby.");
+        }
+        let to = address.map(|address| format!(" --to {address}")).unwrap_or_default();
+        println!("  Another computer: apparition signing send --apple-id {email_flag}{to}");
+        if !listening.advertised {
+            println!("  (mDNS isn't working here, so this computer won't be listed: type the address there.)");
+        }
+        println!("Both screens then show a six-digit code. Ctrl-C stops waiting.");
+    }, compare_codes(), std::future::pending())
+    .await?
+    .ok_or_else(|| fail("Stopped waiting."))?;
+    println!(
+        "Signing with {} here now uses the same certificate as {}.",
+        imported["appleId"].as_str().unwrap_or("that Apple ID"),
+        imported["from"].as_str().unwrap_or("the other device")
+    );
+    Ok(())
+}
+
+/// Hands this computer's certificate key for `email` to a nearby Apparition that's waiting for it.
+async fn send_signing(data_dir: &Path, email: &str, to: Option<SocketAddr>) -> Result<(), Error> {
+    let name = api::hostname();
+    let payload = api::export_apple_id_key(data_dir, email, None, &name)?;
+    let to = match to {
+        Some(to) => to,
+        None => {
+            println!("Looking for Apparition waiting for a key on this network…");
+            let found: Vec<api::nearby::Found> = api::nearby::browse(5).await?.into_iter().filter(|found| found.name != name).collect();
+            let chosen = match found.as_slice() {
+                [] => {
+                    let mut message = "No Apparition is waiting for a key on this network. On the device that needs it, open Settings > Get Signing from Another Device (or Get It from Another Device where signing stopped), then try again, or pass the address it shows with --to.".to_string();
+                    if cfg!(target_os = "macos") {
+                        message += " On macOS a command line can only browse the network when its terminal has Local Network access (System Settings > Privacy & Security > Local Network); --to works either way.";
+                    }
+                    return Err(fail(message));
+                }
+                [one] => one,
+                several => {
+                    for (index, found) in several.iter().enumerate() {
+                        println!("  {}. {}", index + 1, found.name);
+                    }
+                    let index: usize = ask("Send to which one (number)? ").parse().map_err(|_| fail("Not sent."))?;
+                    several.get(index.wrapping_sub(1)).ok_or_else(|| fail("Not sent."))?
+                }
+            };
+            println!("Sending to {}…", chosen.name);
+            chosen.address().ok_or_else(|| fail(format!("{} has no address", chosen.name)))?
+        }
+    };
+    let peer = api::nearby::send(to, &name, payload, compare_codes()).await?;
+    println!("{peer} now signs with this computer's certificate for {email}.");
+    Ok(())
 }
 
 // MARK: Discovery
@@ -415,11 +522,19 @@ async fn sign_with_apple_id(options: &Options, udid: &str, name: &str, strip: bo
     let signer = (session.email().to_string(), session.team_id().to_string());
     let signed = match api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip, platform).await {
         Ok(signed) => signed,
+        // Another Apparition's certificate is there: get its key, or make one here if they say so.
+        Err(error) if api::is_shared_certificate(&error) => {
+            if !share_or_make(&mut session).await? {
+                return Err(error);
+            }
+            println!("Signing again…");
+            api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip, platform).await?
+        }
         // A full slot: offer to free one, then try once more.
         Err(error) => match Slot::of_error(&error.to_string()) {
             Some(slot) => {
                 println!("{}", slot.full_message());
-                if !manage(&mut session, slot).await? {
+                if !free_slot(&mut session, slot).await? {
                     return Err(error);
                 }
                 println!("Signing again…");
@@ -695,6 +810,48 @@ async fn account_command(args: &[String], slot: Slot) -> Result<(), Error> {
     Ok(())
 }
 
+/// Signing stopped before making a second Apparition certificate: get the first one's key over
+/// the network, or make one here. True when signing should go again.
+async fn share_or_make(session: &mut api::Session) -> Result<bool, Error> {
+    let email = session.email().to_string();
+    println!("Apparition on another device or computer already has a certificate for {email}, which this computer could sign with too.");
+    println!("A free account holds only two, so rather than make another here, get that one's key:");
+    println!("  1. Receive it now over this network (on the other device: Settings > Share Signing with Another Device > Nearby).");
+    println!("  2. Make a new certificate here instead. It takes the account's other slot, and the other device keeps its own.");
+    println!("  (Not on this network? There: Share Signing > Key File, then `apparition signing import <file>` here.)");
+    match ask("1, 2, or Return to stop: ").as_str() {
+        "1" => {
+            receive_signing(Some(&email)).await?;
+            Ok(true)
+        }
+        "2" => {
+            session.allow_new_certificate();
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// A full slot: for certificates, get another Apparition's key (which needs no slot) or revoke
+/// one; for App IDs, delete one. True when signing should go again.
+async fn free_slot(session: &mut api::Session, slot: Slot) -> Result<bool, Error> {
+    if slot == Slot::Certificates {
+        println!("Revoking a certificate stops every app signed with it. If one of them is Apparition's on another device, sign with that one instead:");
+        println!("  1. Receive its key now over this network (on that device: Settings > Share Signing with Another Device > Nearby).");
+        println!("  2. Choose a certificate to revoke.");
+        match ask("1, 2, or Return to stop: ").as_str() {
+            "1" => {
+                let email = session.email().to_string();
+                receive_signing(Some(&email)).await?;
+                return Ok(true);
+            }
+            "2" => {}
+            _ => return Ok(false),
+        }
+    }
+    manage(session, slot).await
+}
+
 /// Lists the slot's items and frees one the user picks and confirms. True when one was freed.
 async fn manage(session: &mut api::Session, slot: Slot) -> Result<bool, Error> {
     match slot {
@@ -729,13 +886,16 @@ async fn revoke_one(session: &mut api::Session) -> Result<bool, Error> {
             if notes.is_empty() { String::new() } else { format!(" [{}]", notes.join(", ")) },
         );
     }
+    if certificates.iter().any(|cert| cert["madeByApparition"].as_bool() == Some(true) && cert["inUseHere"].as_bool() != Some(true)) {
+        println!("Rather than revoke Apparition's, share it: run `apparition signing receive` here, and on that device choose Settings > Share Signing with Another Device > Nearby.");
+    }
     let Some(cert) = choose(&certificates, "Revoke which one (number, or Return to keep them all)? ") else {
         return Ok(false);
     };
     let warning = if cert["inUseHere"].as_bool() == Some(true) {
         "This computer signs with it: apps it installed stop opening until installed again."
     } else if cert["madeByApparition"].as_bool() == Some(true) {
-        "Apps that device signed with it stop opening until it signs them again (it makes a new certificate then, which needs a free slot)."
+        "Apps that device signed with it stop opening until it signs them again, with a new certificate that needs a free slot. Sharing its key (`apparition signing receive`) keeps them working."
     } else {
         "Apps signed with it (by Xcode or another tool) stop opening until signed again; that tool makes a new one when it next signs."
     };

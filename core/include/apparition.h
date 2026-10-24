@@ -4,6 +4,7 @@
 #define APPARITION_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct AdapterHandle;
 struct RsdHandshakeHandle;
@@ -21,6 +22,10 @@ char *apparition_session(void);
 char *apparition_logout(void);
 char *apparition_sign(const char *app_path, const char *udid, const char *device_name,
                   bool strip_extensions);
+// Signing with the Apple ID stops with code "sharedCertificate" rather than make a certificate
+// while Apparition on another device has one on the account: its key, shared, costs no slot.
+// This lets the next signing with email make one anyway. {ok}.
+char *apparition_allow_new_certificate(const char *email);
 // Offline signing with an imported certificate and profiles (core/src/identity.rs). data_dir is
 // the same directory apparition_login takes; udid may be NULL where noted.
 // {ok, identities: [...], profiles: [...]}; udid (nullable) fills each profile's includesDevice.
@@ -44,6 +49,23 @@ char *apparition_signing_file_from(const char *path);
 // the five words to show, which open it.
 char *apparition_export_signing_share(const char *data_dir, const char *email, const char *team_id,
                                       const char *from, const char *out_dir);
+
+// Handing the certificate key to a nearby Apparition, checked by a six-digit code both screens
+// show (core/src/nearby.rs). The app moves the messages: each is JSON text, framed on the wire by
+// its length (4 bytes, little-endian, at most 16 KiB). Every reply but end's is
+// {ok, send: [message], state, code, peer, result, reason}: send each message in order; state is
+// waiting, compare (show code and ask whether the other device shows it), confirmed, done
+// (result: the import, for a receiver) or cancelled (reason says why). An error ends the exchange.
+// The sender connects; begin's first message goes out once connected. team_id may be NULL.
+char *apparition_nearby_send_begin(const char *data_dir, const char *email, const char *team_id,
+                                   const char *name);
+// The receiver listens. A key the person accepts is imported into data_dir and ends the session,
+// as apparition_import_signing_file does.
+char *apparition_nearby_receive_begin(const char *data_dir, const char *name);
+char *apparition_nearby_handle(uint64_t handle, const char *message);
+// The person's answer: whether the other device shows the same code.
+char *apparition_nearby_confirm(uint64_t handle, bool matches);
+void apparition_nearby_end(uint64_t handle);
 
 // Experiment: signs app_path with the free profile of an App ID the team already has, keeping the
 // app's bundle ID (or bundle_id, may be NULL). Needs the session. Returns {ok, signedPath, bundleId,

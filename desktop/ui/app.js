@@ -44,7 +44,7 @@ const $ = (root, role) => root.querySelector(`[data-role="${role}"]`);
 /** @param {string} id @returns {DocumentFragment} */
 const template = (id) => /** @type {HTMLTemplateElement} */ (document.getElementById(id)).content.cloneNode(true);
 
-/** The message of a failed command: a Failure ({message, slot, cancelled}) or a string. */
+/** The message of a failed command: a Failure ({message, slot, sharedCertificate, cancelled}) or a string. */
 function messageOf(/** @type {any} */ error) {
   if (typeof error === "string") return error;
   return error?.message ?? String(error);
@@ -68,7 +68,49 @@ const day = (/** @type {string|null|undefined} */ iso) => (iso ? new Date(iso).t
 const megabytes = (/** @type {number} */ bytes) =>
   bytes < 1e6 ? `${Math.max(1, Math.round(bytes / 1e3))} KB` : `${(bytes / 1e6).toFixed(bytes > 1e8 ? 0 : 1)} MB`;
 
+/**
+ * Waits for Apparition on a nearby device or computer to send this computer its certificate key
+ * (Share Signing there); the code comparison comes up as a prompt. `root` holds the
+ * nearby-receive button, nearby-stop, nearby-hint and nearby-status. Resolves with the import
+ * ({appleId, from, replaced}), or null when stopped or failed.
+ * @param {ParentNode} root
+ */
+async function receiveNearby(root) {
+  const button = /** @type {HTMLButtonElement} */ ($(root, "nearby-receive"));
+  const stop = $(root, "nearby-stop");
+  const hint = $(root, "nearby-hint");
+  const status = $(root, "nearby-status");
+  setBusy(button, true);
+  stop.hidden = false;
+  setStatus(status, "");
+  const unlisten = await listen("nearby-listening", (/** @type {any} */ e) => {
+    const { name, address, port, advertised } = e.payload;
+    let text = `Waiting as “${name}”. In Apparition on the device that already signs with this Apple ID, choose Settings > Share Signing with Another Device, then “${name}” under Nearby. Both screens then show a six-digit code.`;
+    if (address) text += advertised ? ` Not listed there? Type ${address}:${port}.` : ` This computer couldn't advertise itself, so type ${address}:${port} there.`;
+    hint.hidden = false;
+    hint.textContent = text;
+  });
+  const onStop = () => invoke("nearby_stop");
+  stop.addEventListener("click", onStop);
+  try {
+    const imported = await invoke("nearby_receive");
+    if (imported) setStatus(status, `Done: signing as ${imported.appleId} here uses the same certificate as ${imported.from}.`, "good");
+    return imported ?? null;
+  } catch (error) {
+    setStatus(status, messageOf(error), "error");
+    return null;
+  } finally {
+    unlisten();
+    stop.removeEventListener("click", onStop);
+    setBusy(button, false);
+    stop.hidden = true;
+    hint.hidden = true;
+  }
+}
+
 function go(/** @type {string} */ step) {
+  // A wait for another device's key belongs to the step that started it.
+  invoke("nearby_stop").catch(() => {});
   state.step = step;
   render();
   panel.scrollTop = 0;
@@ -422,6 +464,7 @@ function signing() {
       if (warn) li.className = "warn";
       list.append(li);
     };
+    $(panel, "nearby-send").hidden = state.signing.mode !== "appleId";
     if (state.signing.mode === "appleId") {
       title.textContent = `Signed in as ${state.signing.email}`;
       const team = state.signing.team?.name ? `${state.signing.team.name} (${state.signing.teamId})` : state.signing.teamId;
@@ -498,7 +541,11 @@ function signing() {
     }
   });
 
-  // Another device's certificate key, before signing in
+  // Another device's certificate key, before signing in: over the network, or as a file
+  $(keyForm, "nearby-receive").addEventListener("click", async () => {
+    const imported = await receiveNearby(keyForm);
+    if (imported && !appleForm.email.value) appleForm.email.value = imported.appleId;
+  });
   /** @type {string|null} */ let keyPath = null;
   /** @type {string|null} */ let keyFrom = null;
   const keyStatus = $(keyForm, "key-status");
@@ -589,6 +636,50 @@ function signing() {
     if (state.signing?.mode === "appleId") await invoke("sign_out");
     state.signing = null;
     draw();
+  });
+
+  // This computer's certificate key, to a nearby Apparition waiting for it
+  const nearbyList = $(panel, "nearby-list");
+  const nearbyStatus = $(panel, "nearby-send-status");
+  const send = async (/** @type {string} */ address, /** @type {string} */ name) => {
+    setStatus(nearbyStatus, `Connecting to ${name}…`);
+    try {
+      const peer = await invoke("nearby_send", { address });
+      setStatus(nearbyStatus, `${peer} now signs with this computer's certificate.`, "good");
+    } catch (error) {
+      setStatus(nearbyStatus, messageOf(error), error?.cancelled ? "" : "error");
+    }
+  };
+  $(panel, "nearby-find").addEventListener("click", async () => {
+    const find = /** @type {HTMLButtonElement} */ ($(panel, "nearby-find"));
+    setBusy(find, true);
+    setStatus(nearbyStatus, "Looking for Apparition waiting for a key…");
+    try {
+      const found = await invoke("nearby_browse");
+      nearbyList.replaceChildren();
+      for (const receiver of found) {
+        const li = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "button quiet";
+        button.textContent = `Send to ${receiver.name}`;
+        button.disabled = !receiver.address;
+        button.addEventListener("click", () => send(receiver.address, receiver.name));
+        li.append(button);
+        nearbyList.append(li);
+      }
+      nearbyList.hidden = !found.length;
+      $(panel, "nearby-address-row").hidden = false;
+      setStatus(nearbyStatus, found.length ? "" : "None found. On the other device, open Get Signing from Another Device first, or type the address it shows.");
+    } catch (error) {
+      setStatus(nearbyStatus, messageOf(error), "error");
+    } finally {
+      setBusy(find, false);
+    }
+  });
+  $(panel, "nearby-send-address").addEventListener("click", () => {
+    const address = /** @type {HTMLInputElement} */ ($(panel, "nearby-address")).value.trim();
+    if (address) send(address, address);
   });
 
   draw();
@@ -746,7 +837,8 @@ function install() {
       if (active) active.dataset.state = "failed";
       meter.hidden = true;
       setStatus(status, installError(error), error?.cancelled ? "" : "error");
-      if (error?.slot && state.signing?.mode === "appleId") showSlots(slots, error.slot, run);
+      if (error?.sharedCertificate && state.signing?.mode === "appleId") showShared(slots, run);
+      else if (error?.slot && state.signing?.mode === "appleId") showSlots(slots, error.slot, run);
       start.textContent = "Try again";
       advanced.hidden = false;
     } finally {
@@ -760,11 +852,38 @@ function install() {
 
 function installError(/** @type {any} */ error) {
   const message = messageOf(error);
+  if (error?.sharedCertificate) return "Signing stopped before making a second certificate: Apparition on another device already has one for this Apple ID.";
   if (error?.slot === "certificates") return `The Apple ID has no room for another development certificate.\n\n${message}`;
   if (error?.slot === "appIds") return `The Apple ID can't make another App ID right now.\n\n${message}`;
   if (/reach|refused|reset|timed out|unreachable/i.test(message))
     return `Couldn't reach ${state.device?.name ?? "the device"}. Check that it's awake and on the same network as this computer.\n\n${message}`;
   return message;
+}
+
+/**
+ * Signing stopped rather than make a second certificate: receive the other Apparition's key, or
+ * make one here anyway, then `retry`.
+ * @param {HTMLElement} box @param {() => void} retry
+ */
+function showShared(box, retry) {
+  box.replaceChildren(template("t-shared"));
+  box.hidden = false;
+  $(box, "nearby-receive").addEventListener("click", async () => {
+    if (await receiveNearby(box)) {
+      box.hidden = true;
+      retry();
+    }
+  });
+  $(box, "new").addEventListener("click", async () => {
+    try {
+      await invoke("allow_new_certificate");
+      box.hidden = true;
+      retry();
+    } catch (error) {
+      setStatus($(box, "nearby-status"), messageOf(error), "error");
+    }
+  });
+  box.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 /**
@@ -779,6 +898,15 @@ async function showSlots(box, slot, retry, sample) {
   box.hidden = false;
   $(box, "title").textContent = certificates ? "Free a certificate slot" : "Free an App ID";
   $(box, "word").textContent = word;
+  if (certificates) {
+    $(box, "share").hidden = false;
+    $(box, "nearby-receive").addEventListener("click", async () => {
+      if (await receiveNearby(box)) {
+        box.hidden = true;
+        retry();
+      }
+    });
+  }
   const button = /** @type {HTMLButtonElement} */ ($(box, "do"));
   button.textContent = certificates ? "Revoke certificate" : "Delete App ID";
   const typed = /** @type {HTMLInputElement} */ ($(box, "typed"));
@@ -835,7 +963,7 @@ async function showSlots(box, slot, retry, sample) {
         ? item.inUseHere
           ? "This computer signs with it: apps it installed stop opening until they're installed again."
           : item.madeByApparition
-            ? "Apps that device signed with it stop opening until it signs them again (it makes a new certificate then, which needs a free slot)."
+            ? "Apps that device signed with it stop opening until it signs them again, with a new certificate that needs a free slot. Receiving its key (above) keeps them working instead."
             : "Apps signed with it (by Xcode or another tool) stop opening until signed again; that tool makes a new one when it next signs."
         : "Apps using it keep working until their profile expires. A free account may refuse until the ID expires, and a deleted ID can still count against this week's ten.";
       typed.focus();
@@ -918,7 +1046,19 @@ function openPrompt(prompt) {
   promptError.hidden = true;
   const title = /** @type {HTMLElement} */ (document.getElementById("prompt-title"));
   const text = /** @type {HTMLElement} */ (document.getElementById("prompt-text"));
-  if (prompt.kind === "pin") {
+  const shown = /** @type {HTMLElement} */ (document.getElementById("prompt-show"));
+  const submit = /** @type {HTMLElement} */ (document.getElementById("prompt-submit"));
+  const cancel = /** @type {HTMLElement} */ (document.getElementById("prompt-cancel"));
+  const comparing = prompt.kind === "nearbyCode";
+  shown.hidden = !comparing;
+  promptCode.hidden = comparing;
+  submit.textContent = comparing ? "It matches" : "Continue";
+  cancel.textContent = comparing ? "It's different" : "Cancel";
+  if (comparing) {
+    title.textContent = `Does ${prompt.peer} show this code?`;
+    text.textContent = "Check the six digits on both screens. A different code means something else on the network answered: nothing is handed over unless both of you confirm.";
+    shown.textContent = `${prompt.code.slice(0, 3)} ${prompt.code.slice(3)}`;
+  } else if (prompt.kind === "pin") {
     if (prompt.again) {
       title.textContent = "The device wants to pair again";
       text.textContent =
@@ -956,7 +1096,8 @@ function openPrompt(prompt) {
     promptSms.append(resend);
   }
   if (!dialog.open) dialog.showModal();
-  promptCode.focus();
+  if (comparing) submit.focus();
+  else promptCode.focus();
 }
 
 function answer(/** @type {any} */ reply) {
@@ -967,6 +1108,7 @@ function answer(/** @type {any} */ reply) {
 
 promptForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (promptKind === "nearbyCode") return answer({ kind: "match", matches: true });
   const code = promptCode.value.replace(/\D/g, "");
   if (!code) return promptCode.focus();
   answer(promptKind === "pin" ? { kind: "pin", pin: code } : { kind: "code", code });

@@ -72,6 +72,7 @@ final class SigningStore {
 
     init() {
         load()
+        nearbyReceiver.onImported = { [weak self] in self?.onAppleIDKeyImported?() }
     }
 
     func load() {
@@ -178,6 +179,10 @@ final class SigningStore {
     private(set) var pendingKeys: [IncomingKey] = []
     /// After a shared Apple ID certificate key is imported: the core ended the session.
     var onAppleIDKeyImported: (() -> Void)?
+    /// Handing the Apple ID's certificate key to, or getting it from, Apparition on a nearby
+    /// device or computer, checked by a six-digit code (NearbySigning.swift).
+    let nearbyReceiver = NearbyReceiver()
+    let nearbySender = NearbySender()
     private(set) var incomingResults: [IncomingResult] = []
 
     /// Documents/Signing, which Files shows as Apparition > Signing. Anything put there is
@@ -274,7 +279,7 @@ final class SigningStore {
         onAppleIDKeyImported?()
         var text = "Apps signed with \(imported.appleId) now use the same certificate as \(imported.from)"
         if imported.replaced {
-            text += ". This \(ThisDevice.noun)'s own certificate for it stays on the account until you revoke it in Certificates & App IDs"
+            text += ". If this \(ThisDevice.noun) had a certificate of its own, it stays on the account until you revoke it in Certificates & App IDs"
         }
         report(url, text, ok: true)
     }

@@ -1,3 +1,4 @@
+import CryptoKit
 import DebugTrace
 import Foundation
 
@@ -15,8 +16,39 @@ enum ExperimentEndpoints {
         var signedEntitlements: [String]? = nil
     }
 
+    struct SetAsideReply: Encodable {
+        let moved: Int
+    }
+
     static func register(probe: ProbeModel, account: AccountModel) {
         DebugSurface.shared.register([
+            // A fresh install has no certificate key: signing then stops before making a second
+            // certificate while Apparition elsewhere has one (core's check_certificate).
+            .command("experimentSetAsideSigningKey",
+                     "Experiment: move the Apple ID's certificate key aside in storage.json, as a fresh install has none, and end the session. restore puts it back",
+                     parameters: [.boolean("restore", "Put the key back", default: false)], destructive: true) { args in
+                guard let email = account.email ?? account.lastAppleID else {
+                    throw DebugError.failedPrecondition("No Apple ID", hint: "Sign in first")
+                }
+                let restore = args.bool("restore") ?? false
+                let url = AccountModel.dataDir.appendingPathComponent("storage.json")
+                var values = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: String] ?? [:]
+                let names = Set([email, email.lowercased()].map { address in
+                    SHA256.hash(data: Data(address.utf8)).map { String(format: "%02x", $0) }.joined() + "/key"
+                })
+                var moved = 0
+                for name in names {
+                    let (from, to) = restore ? (name + ".setAside", name) : (name, name + ".setAside")
+                    if let value = values.removeValue(forKey: from) {
+                        values[to] = value
+                        moved += 1
+                    }
+                }
+                try JSONSerialization.data(withJSONObject: values).write(to: url)
+                _ = AccountModel.call(apparition_logout())
+                account.refreshSession()
+                return SetAsideReply(moved: moved)
+            },
             .command("experimentReuseProfile",
                      "Experiment: sign a downloaded IPA with an existing App ID's free profile (no App ID registered), keeping its own bundle ID or bundleId, and install it. Waits for the install",
                      parameters: [

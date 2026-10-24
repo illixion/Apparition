@@ -81,6 +81,9 @@ struct LibraryView: View {
             if let limit = library.appLimit, !library.busy {
                 Card { AppLimitView(model: model, library: library, limit: limit) }
             }
+            if let choice = library.certificateChoice, !library.busy {
+                Card { SharedCertificateView(account: account, library: library, choice: choice) }
+            }
             if library.installed.isEmpty && otherApps.isEmpty && model.deviceAppsFetchedAt == nil {
                 if let me = library.selfApp { selfCard(me) }
                 emptyState
@@ -390,7 +393,9 @@ struct LibraryView: View {
             Note(text: error, kind: .error)
                 .lineLimit(4)
             if DeveloperSlots.isSlotError(error) {
-                ManageSlotsButton(account: account, library: library, onSignIn: onSetup)
+                SlotErrorActions(account: account, library: library, error: error, onSetup: onSetup) {
+                    Task { await library.refresh(appId: app.id) }
+                }
             }
         } else if let signed = Date.iso(app.signedAt) {
             Note(text: "Refreshed \(signed.relativeToNow)" + (app.signedWith.map { " with \($0)" } ?? ""), kind: .success)

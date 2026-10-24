@@ -738,6 +738,13 @@ details[open] > summary { margin-bottom: .85rem; }
   min-height: 3.6rem;
 }
 .prompt .error { color: var(--danger); font-size: .9rem; }
+.prompt .shown-code {
+  font: 600 2.6rem/1 var(--display);
+  letter-spacing: .25em;
+  text-align: center;
+  padding: .4rem 0;
+}
+.nearby-send { display: flex; flex-direction: column; gap: .6rem; margin-top: 1rem; }
 .sms { display: flex; flex-direction: column; gap: .4rem; align-items: flex-start; font-size: .9rem; }
 
 /* Narrow windows */

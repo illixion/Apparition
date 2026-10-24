@@ -26,6 +26,7 @@ pub(crate) mod account;
 pub mod errors;
 pub mod claimed_platform;
 mod share;
+mod nearby;
 mod identity;
 mod ipa;
 mod jit;
@@ -50,6 +51,11 @@ pub struct Session {
     /// Where its storage.json (anisette state, the certificate key) lives.
     data_dir: PathBuf,
     sideloader: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox>,
+    /// The next signing may make a certificate although Apparition elsewhere has one
+    /// (`check_certificate`).
+    allow_new_certificate: bool,
+    /// When `check_certificate` last found the account's certificate for this install's key.
+    certificate_checked: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -59,6 +65,122 @@ impl Session {
 
     pub fn team_id(&self) -> &str {
         &self.team.team_id
+    }
+
+    /// Lets the next signing make a certificate here, although Apparition on another device has
+    /// one on the account (it stopped with [`SharedCertificate`] otherwise).
+    pub fn allow_new_certificate(&mut self) {
+        self.allow_new_certificate = true;
+    }
+}
+
+/// Signing stopped before making a certificate: Apparition on another device or computer already
+/// has one on the account, and this install has no key for it. Handing that install's key over
+/// (share.rs, nearby.rs) lets both sign with one certificate, where a new one would take the
+/// account's other slot of two. `Session::allow_new_certificate` (or
+/// `apparition_allow_new_certificate`) makes one anyway.
+#[derive(Debug)]
+pub struct SharedCertificate;
+
+impl std::fmt::Display for SharedCertificate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Apparition on another device or computer already has a certificate for this Apple ID. Get its key from there, so both sign with that one, or make a new certificate here (a free account has room for two)."
+        )
+    }
+}
+
+impl std::error::Error for SharedCertificate {}
+
+/// Whether `error` is signing stopping at [`SharedCertificate`].
+pub fn is_shared_certificate(error: &Report) -> bool {
+    error.iter_reports().any(|cause| cause.downcast_current_context::<SharedCertificate>().is_some())
+}
+
+/// The code of the developer services error behind `error` (7460: no room for a certificate).
+fn developer_code(error: &Report) -> Option<i64> {
+    error.iter_reports().find_map(|cause| match cause.downcast_current_context::<isideload::SideloadError>()? {
+        isideload::SideloadError::DeveloperError(code, _) => Some(*code),
+        _ => None,
+    })
+}
+
+/// Apple IDs (lower case) whose next signing may make a certificate: what the app chose with
+/// `apparition_allow_new_certificate`, kept across its sessions.
+static NEW_CERTIFICATE_ALLOWED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// How long a found certificate is trusted to still be there: a refresh of every app signs many
+/// times in a row, while one revoked from another device should be noticed.
+const CERTIFICATE_RECHECK: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Before signing with the Apple ID: stops with [`SharedCertificate`] where isideload would make
+/// a certificate (no key here, or one that matches none of the account's) while the account
+/// already has one Apparition made. isideload otherwise makes one on its own, so whichever
+/// install signed first decided, and a third device found no room (7460). The first certificate,
+/// with none of Apparition's on the account, is made as before.
+async fn check_certificate(session: &mut Session) -> Result<(), Report> {
+    if session.certificate_checked.is_some_and(|at| at.elapsed() < CERTIFICATE_RECHECK) {
+        return Ok(());
+    }
+    share::adopt_key(&session.data_dir, &session.email);
+    let ours = share::stored_public_key(&session.data_dir, &session.email);
+    let team = session.team.clone();
+    let certificates = match isideload::dev::certificates::CertificatesApi::list_ios_certs(session.sideloader.get_dev_session(), &team).await {
+        Ok(certificates) => certificates,
+        // isideload lists them again and reports what's wrong.
+        Err(error) => {
+            tracing::warn!("couldn't list the certificates before signing: {}", errors::describe(&error));
+            return Ok(());
+        }
+    };
+    let apparition: Vec<Vec<u8>> = certificates
+        .iter()
+        .filter(|cert| cert.machine_name.as_deref() == Some(account::MACHINE_NAME))
+        .filter_map(|cert| account::public_key(cert.cert_content.as_ref()?.as_ref()))
+        .collect();
+    let check = certificate_check(ours.as_deref(), &apparition, || {
+        let lower = session.email.to_lowercase();
+        let mut allowed = NEW_CERTIFICATE_ALLOWED.lock().unwrap();
+        let chosen = allowed.contains(&lower);
+        allowed.retain(|email| *email != lower);
+        std::mem::take(&mut session.allow_new_certificate) || chosen
+    });
+    match check {
+        CertificateCheck::Ours => session.certificate_checked = Some(std::time::Instant::now()),
+        CertificateCheck::First => {}
+        CertificateCheck::Chosen => tracing::info!("making a certificate though Apparition elsewhere has one, as chosen"),
+        CertificateCheck::Shared => {
+            tracing::info!("not making a certificate: Apparition elsewhere has one ({} on the account)", apparition.len());
+            return Err(report!(SharedCertificate).into_dynamic());
+        }
+    }
+    Ok(())
+}
+
+/// What `check_certificate` makes of this install's key and the public keys of the account's
+/// certificates Apparition made.
+#[derive(Debug, PartialEq, Eq)]
+enum CertificateCheck {
+    /// One of them is this install's: signing uses it.
+    Ours,
+    /// Apparition has none: signing makes the first.
+    First,
+    /// Signing makes another, as the person chose (`chosen` is asked only then, and uses up the choice).
+    Chosen,
+    /// Stop and ask: getting the key from the install that has it costs no slot.
+    Shared,
+}
+
+fn certificate_check(ours: Option<&[u8]>, apparition: &[Vec<u8>], chosen: impl FnOnce() -> bool) -> CertificateCheck {
+    if ours.is_some_and(|ours| apparition.iter().any(|key| key == ours)) {
+        CertificateCheck::Ours
+    } else if apparition.is_empty() {
+        CertificateCheck::First
+    } else if chosen() {
+        CertificateCheck::Chosen
+    } else {
+        CertificateCheck::Shared
     }
 }
 
@@ -77,6 +199,7 @@ pub async fn sign_with_existing_profile(
         dev::app_ids::AppIdsApi,
         sideload::cert_identity::CertificateIdentity,
     };
+    check_certificate(session).await?;
     let team = session.team.clone();
     let storage = FileStorage::open(session.data_dir.join("storage.json"));
     let dev = session.sideloader.get_dev_session();
@@ -266,7 +389,15 @@ pub async fn sign_in(
         "team": team_info(&team),
         "teams": teams.iter().map(team_info).collect::<Vec<_>>(),
     });
-    Ok((Session { email: email.to_string(), team, data_dir: data_dir.to_path_buf(), sideloader }, result))
+    let session = Session {
+        email: email.to_string(),
+        team,
+        data_dir: data_dir.to_path_buf(),
+        sideloader,
+        allow_new_certificate: false,
+        certificate_checked: None,
+    };
+    Ok((session, result))
 }
 
 /// Registers the device on the session's team (tolerating "already registered"), then signs
@@ -303,11 +434,21 @@ pub async fn sign_with_apple_id(
         .map(|d| json!({"name": d.name, "udid": d.device_number, "status": d.status}))
         .collect();
 
-    let (signed, _) = session
+    // isideload stores a new key before asking Apple for its certificate: one Apple refused for
+    // want of room (7460) would sit there unused, and an import later say it replaced one.
+    check_certificate(session).await?;
+    let had_key = share::stored_public_key(&session.data_dir, &session.email).is_some();
+    let signed = session
         .sideloader
         .sign_app(app_path, Some(team.clone()), &capabilities, None::<fn(f32) -> std::future::Ready<()>>, None, Some(udid))
-        .await
-        .context("Signing failed")?;
+        .await;
+    if let Err(error) = &signed
+        && !had_key
+        && developer_code(error) == Some(7460)
+    {
+        share::forget_key(&session.data_dir, &session.email);
+    }
+    let (signed, _) = signed.context("Signing failed")?;
     let mut result = json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped});
     if !capabilities.is_empty() {
         let signed_with: Vec<&str> = identity::app_entitlements(&signed)
@@ -376,24 +517,34 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 }
 
 /// A key-value store in one JSON file. Holds the anisette state and the signing identity.
+///
+/// Reads and writes go through to the file, so instances opened at different times agree: the
+/// anisette provider's, the session's, and an import's (a key shared from another device is then
+/// what the next signing uses, without signing in again).
 struct FileStorage {
     path: PathBuf,
+    /// What the file held when last read, for when it can't be read.
     values: Mutex<HashMap<String, String>>,
 }
 
 impl FileStorage {
     fn open(path: PathBuf) -> Self {
-        let values = std::fs::read(&path)
-            .ok()
-            .and_then(|data| serde_json::from_slice(&data).ok())
-            .unwrap_or_default();
-        Self { path, values: Mutex::new(values) }
+        let storage = Self { path, values: Mutex::default() };
+        drop(storage.current());
+        storage
     }
-}
 
-impl FileStorage {
+    /// The values now on disk (or the last ones read, if the file can't be read), locked.
+    fn current(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+        let mut values = self.values.lock().unwrap();
+        if let Some(on_disk) = std::fs::read(&self.path).ok().and_then(|data| serde_json::from_slice(&data).ok()) {
+            *values = on_disk;
+        }
+        values
+    }
+
     fn get(&self, key: &str) -> Option<String> {
-        self.values.lock().unwrap().get(key).cloned()
+        self.current().get(key).cloned()
     }
 
     fn put(&self, key: &str, value: &str) -> Result<(), Report> {
@@ -402,15 +553,9 @@ impl FileStorage {
 }
 
 impl SideloadingStorage for FileStorage {
-    /// Merges into what's on disk: another instance (the anisette provider's, an imported
-    /// shared key) may have written since this one was opened.
+    /// Writes `key` into what's on disk now (an empty value removes it).
     fn store(&self, key: &str, value: &str) -> Result<(), Report> {
-        let mut values = self.values.lock().unwrap();
-        if let Some(on_disk) = std::fs::read(&self.path).ok().and_then(|d| serde_json::from_slice::<HashMap<String, String>>(&d).ok()) {
-            for (name, stored) in on_disk {
-                values.entry(name).or_insert(stored);
-            }
-        }
+        let mut values = self.current();
         if value.is_empty() {
             values.remove(key);
         } else {
@@ -421,7 +566,7 @@ impl SideloadingStorage for FileStorage {
     }
 
     fn retrieve(&self, key: &str) -> Result<Option<String>, Report> {
-        Ok(self.values.lock().unwrap().get(key).cloned())
+        Ok(self.get(key))
     }
 }
 
@@ -488,6 +633,8 @@ fn reply(result: Result<Value, Report>) -> *mut c_char {
                     "code": "securityKeysRequired",
                     "error": "This Apple ID uses security keys for two-factor authentication, which Apparition can't answer on the headset. Use an Apple ID without security keys.",
                 })
+            } else if is_shared_certificate(&error) {
+                json!({"ok": false, "code": "sharedCertificate", "error": text})
             } else {
                 json!({"ok": false, "error": text})
             }
@@ -574,6 +721,20 @@ pub extern "C" fn apparition_session() -> *mut c_char {
 pub extern "C" fn apparition_logout() -> *mut c_char {
     *SESSION.lock().unwrap() = None;
     reply(Ok(json!({})))
+}
+
+/// Lets the next signing with `email` make a certificate, although Apparition on another device
+/// has one on the account (signing stopped with code `sharedCertificate`). Returns `{ok}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_allow_new_certificate(email: *const c_char) -> *mut c_char {
+    reply((|| {
+        let email = unsafe { text(email) }?.to_lowercase();
+        let mut allowed = NEW_CERTIFICATE_ALLOWED.lock().unwrap();
+        if !allowed.contains(&email) {
+            allowed.push(email);
+        }
+        Ok(json!({}))
+    })())
 }
 
 /// Registers the device on the team (tolerating "already registered"), then signs the
@@ -814,6 +975,44 @@ mod builtin_anisette_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signing_stops_before_a_second_apparition_certificate() {
+        let (mine, other) = (vec![1u8, 2, 3], vec![4u8, 5, 6]);
+        let never = || panic!("asked for a choice it didn't need");
+        assert_eq!(certificate_check(Some(&mine), &[other.clone(), mine.clone()], never), CertificateCheck::Ours);
+        assert_eq!(certificate_check(None, &[], never), CertificateCheck::First);
+        assert_eq!(certificate_check(Some(&mine), &[], never), CertificateCheck::First);
+        // No key here, or one whose certificate was revoked: the other install's key would do.
+        assert_eq!(certificate_check(None, &[other.clone()], || false), CertificateCheck::Shared);
+        assert_eq!(certificate_check(Some(&mine), &[other.clone()], || false), CertificateCheck::Shared);
+        assert_eq!(certificate_check(None, &[other], || true), CertificateCheck::Chosen);
+        let error: Result<(), Report> = Err(report!(SharedCertificate).into_dynamic());
+        let error = error.context("Signing failed").unwrap_err().into_dynamic();
+        assert!(is_shared_certificate(&error));
+        assert!(!is_shared_certificate(&report!("something else")));
+    }
+
+    #[test]
+    fn storage_instances_see_each_others_writes() {
+        let dir = std::env::temp_dir().join(format!("apparition-storage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("storage.json");
+        // The session's, opened at sign-in, and an import's, opened later.
+        let session = FileStorage::open(path.clone());
+        session.put("anisette/state", "one").unwrap();
+        let import = FileStorage::open(path.clone());
+        import.put("someone/key", "shared").unwrap();
+        assert_eq!(session.retrieve("someone/key").unwrap().as_deref(), Some("shared"));
+        // A write from the session keeps the import's key.
+        session.put("anisette/state", "two").unwrap();
+        assert_eq!(FileStorage::open(path.clone()).get("someone/key").as_deref(), Some("shared"));
+        import.put("someone/key", "").unwrap();
+        assert_eq!(session.get("someone/key"), None);
+        assert_eq!(session.get("anisette/state").as_deref(), Some("two"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn auth_code_is_found_under_the_contexts() {

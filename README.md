@@ -46,8 +46,10 @@ computer at all.
 - **Pair once, then work over Wi-Fi.** Vision Pro and Apple TV pair over Wi-Fi with the code
   they show in Settings, no cable or Developer Strap. An iPhone or iPad pairs over a USB cable
   the first time (it has no pairing code); after that it's reached over Wi-Fi.
-- **Share one certificate** between your devices and computers, sealed under five words, so a
-  free account's two certificates go further.
+- **Share one certificate** between your devices and computers, so a free account's two
+  certificates never run out one per device: nearby over the network, checked by a six-digit
+  code both screens show, or as a file sealed under five words. Signing stops and asks before
+  it would make a second.
 
 ## Getting started
 
@@ -83,12 +85,16 @@ for the code Apple sends to your other devices. Since 12 October 2026 Apple chec
 "anisette" data that comes with a sign-in more strictly; see [Anisette](#anisette) for what that
 means and how Apparition handles it.
 
-A free Apple ID has two development certificates. When both are taken, Apparition lists them
-and revokes one only after you confirm. Apple doesn't always free the slot right away: after a
-revoke it can keep refusing a new certificate ("Maximum number of certificates reached") with
-only one listed, possibly because it counts a certificate that free accounts can't list. If so,
-try again later, or use the certificate you already have by sharing it from another device
-(Share Signing in Apparition's Settings).
+A free Apple ID has two development certificates. Every Apparition can sign with the same one
+once it has that one's key, so the way to stay under two is to share it rather than revoke
+(see [Sharing one certificate](#sharing-one-certificate)). Signing doesn't make a second
+certificate while Apparition elsewhere has one: it stops and offers to get that one's key, or
+to make one anyway. When both slots are taken, Apparition offers to receive another
+Apparition's key first, then lists the certificates and revokes one only after you confirm.
+Apple doesn't always free the slot right away: after a revoke it can keep refusing a new
+certificate ("Maximum number of certificates reached") with only one listed, possibly because it
+counts a certificate that free accounts can't list. If so, try again later, or share the
+certificate you already have from another device.
 
 ## Away from home, over Tailscale
 
@@ -228,19 +234,37 @@ account's two certificates instead of one each. For an Apparition installed some
 `apparition signing hand-off --apple-id <email> [--device <name>]` puts the key in its inbox on
 its own.
 
-Between devices, and from a device back to a computer, the key goes sealed: Settings > Share
-Signing in Apparition (or `apparition signing share --apple-id <email>`) writes a
-`.apparitionkey` file and shows five words. Send the file any way (AirDrop, Messages, a USB
-stick), open it in Apparition on the other device, or on a computer in the desktop app's
-signing step or with `apparition signing import`, and type the words. The words make the key
-with Argon2id (64 MiB, four passes) and the file is ChaCha20-Poly1305, so the file alone is
-useless. The words come from the [EFF's short wordlist
-2.0](https://www.eff.org/dice) (CC BY 3.0 US, in `core/assets/`), where each word is known by
-its first three letters, so case, spacing and a mistyped ending don't matter. Apple TV has no
-share sheet; it gets the key from a computer over the cable or network.
+#### Sharing one certificate
+
+Between devices, and from a device back to a computer, the key goes one of two ways.
+
+**Nearby**, on the same network. On the device that needs it, Settings > Get Signing from
+Another Device (or Get It from Another Device where signing stopped) waits for it; so do
+`apparition signing receive` and the desktop app's Receive from a Nearby Device. On the one
+that has it, Settings > Share Signing with Another Device lists what's waiting under Nearby;
+on a computer, `apparition signing send --apple-id <email>` or the desktop app's Send to a
+Nearby Device. Both screens show a six-digit code, and each person confirms that the two match.
+It's numeric comparison, as Bluetooth pairing does it (core/src/nearby.rs): the sender commits
+to its X25519 key before it sees the receiver's, so something in between would get two
+different codes, all but one time in a million, and the key, sealed with ChaCha20-Poly1305
+under the agreed key, goes only to a device whose person confirmed. Where Bonjour can't reach
+(Tailscale, or a command line on macOS whose terminal has no Local Network access), type the
+address the receiving screen shows (`--to <address>:<port>`). This is the way on Apple TV, which
+has no AirDrop.
+
+**As a file**, for a device on another network. Share Signing > Make a Key File in Apparition
+(or `apparition signing share --apple-id <email>`) writes a `.apparitionkey` file and shows
+five words. Send the file any way (AirDrop, Messages, a USB stick), open it in Apparition on
+the other device, or on a computer in the desktop app's signing step or with `apparition
+signing import`, and type the words. The words make the key with Argon2id (64 MiB, four
+passes) and the file is ChaCha20-Poly1305, so the file alone is useless. The words come from
+the [EFF's short wordlist 2.0](https://www.eff.org/dice) (CC BY 3.0 US, in `core/assets/`),
+where each word is known by its first three letters, so case, spacing and a mistyped ending
+don't matter.
 
 An update of an app that is open on the headset finishes when it's closed. It never revokes a
-certificate: an Apple ID with no free certificate slot fails with Apple's error instead.
+certificate on its own: with no free slot it offers to receive another Apparition's key, then to
+revoke one you choose.
 
     cd installer && cargo build --release                                   # this machine
     cargo build --release --target x86_64-pc-windows-gnu                    # Windows, from macOS with mingw-w64

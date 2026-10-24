@@ -29,6 +29,27 @@ pub(crate) fn stored_public_key(data_dir: &Path, email: &str) -> Option<Vec<u8>>
     Some(key.to_public_key().to_pkcs1_der().ok()?.as_bytes().to_vec())
 }
 
+/// isideload keeps the key under the Apple ID as typed at sign-in; an imported one is stored
+/// under the sender's spelling and in lower case. Copies a lower-case one to `email`'s spelling
+/// when that has none, so "John@iCloud.com" here finds a key sent for "john@icloud.com".
+pub(crate) fn adopt_key(data_dir: &Path, email: &str) {
+    let storage = FileStorage::open(data_dir.join("storage.json"));
+    if storage.get(&key_name(email)).is_none()
+        && let Some(key) = storage.get(&key_name(&email.to_lowercase()))
+    {
+        let _ = storage.put(&key_name(email), &key);
+    }
+}
+
+/// Removes the key kept for `email`, as typed and in lower case: one Apple made no certificate for.
+pub(crate) fn forget_key(data_dir: &Path, email: &str) {
+    let storage = FileStorage::open(data_dir.join("storage.json"));
+    for name in [key_name(email), key_name(&email.to_lowercase())] {
+        let _ = storage.put(&name, "");
+    }
+    tracing::info!("removed a certificate key Apple made no certificate for");
+}
+
 const FORMAT: &str = "apparition-signing";
 
 #[derive(Serialize, Deserialize)]
@@ -385,6 +406,14 @@ mod tests {
         assert_eq!(storage.get(&key_name("Someone@Example.com")).as_deref(), Some(encoded.as_str()));
         assert_eq!(storage.get(&key_name("someone@example.com")).as_deref(), Some(encoded.as_str()));
         assert!(import_signing_file(&to, b"{}").is_err());
+
+        // Signing in as "SOMEONE@example.com" finds the key imported for another spelling.
+        assert!(stored_public_key(&to, "SOMEONE@example.com").is_none());
+        adopt_key(&to, "SOMEONE@example.com");
+        assert_eq!(stored_public_key(&to, "SOMEONE@example.com"), stored_public_key(&to, "someone@example.com"));
+        forget_key(&to, "Someone@Example.com");
+        assert!(stored_public_key(&to, "Someone@Example.com").is_none());
+        assert!(stored_public_key(&to, "someone@example.com").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

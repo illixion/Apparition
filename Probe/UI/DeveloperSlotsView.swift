@@ -3,7 +3,9 @@ import SwiftUI
 
 /// The signed-in account's development certificates and App IDs, and freeing them. A free
 /// account has two certificate slots and ten new App IDs a week; when they're used up, signing
-/// fails (error 7460 for certificates) until the user revokes or deletes one here.
+/// fails (error 7460 for certificates) until the user revokes or deletes one here. For
+/// certificates the better way comes first: Apparition installs share one (Share Signing, Get
+/// Signing), so revoking is for what other tools made or what nobody uses.
 struct DeveloperSlotsView: View {
     let account: AccountModel
     let library: LibraryModel
@@ -18,6 +20,8 @@ struct DeveloperSlotsView: View {
     @State private var actionError: String?
     @State private var pendingRevoke: DeveloperSlots.Certificate?
     @State private var pendingDelete: DeveloperSlots.AppID?
+    @State private var sharing = false
+    @State private var receiving = false
 
     var body: some View {
         Group {
@@ -86,6 +90,7 @@ struct DeveloperSlotsView: View {
                 ForEach(certificates) { certificate in
                     certificateRow(certificate)
                 }
+                sharingRow(certificates)
             } else {
                 loadingRow
             }
@@ -98,7 +103,39 @@ struct DeveloperSlotsView: View {
                 }
             }
         } footer: {
-            Text("A free Apple ID can hold two development certificates, across every platform and tool (Xcode, SideStore, another Apparition). Each one's private key stays on the device that made it, so Apparition can only sign with the one it made here. If signing fails with \"maximum number of certificates\" (error 7460), revoke one you no longer use.")
+            Text("A free Apple ID can hold two development certificates, across every platform and tool (Xcode, SideStore, Apparition). A certificate signs only where its private key is, so Apparition hands its key between your devices and computers, and they all sign with one: Share Signing sends this \(ThisDevice.noun)'s, Get Signing takes another's. If signing fails with \"maximum number of certificates\" (error 7460), get Apparition's key from the device that has it before revoking anything; revoke only what you no longer use.")
+        }
+    }
+
+    /// Sharing instead of making (or revoking) one: give this install's key to the others, or
+    /// take another Apparition's when this one has none on the account.
+    @ViewBuilder
+    private func sharingRow(_ certificates: [DeveloperSlots.Certificate]) -> some View {
+        let email = account.email ?? account.lastAppleID
+        if certificates.contains(where: { $0.inUseHere == true }), let email {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Your other devices and computers can sign with this \(ThisDevice.noun)'s certificate too, rather than each making its own.")
+                    .foregroundStyle(.secondary)
+                Button("Share Signing with Another Device…") { sharing = true }
+                    .buttonStyle(.bordered)
+            }
+            .focusRow()
+            .panel(isPresented: $sharing) {
+                ShareSigningSheet(signing: library.signing, email: email, teamId: account.team?.id) { sharing = false }
+            }
+        } else if certificates.contains(where: { $0.madeByApparition }) {
+            VStack(alignment: .leading, spacing: 10) {
+                Note(text: "Apparition on another device or computer has a certificate here. Get its key and this \(ThisDevice.noun) signs with it too, with no new certificate and nothing revoked.", kind: .info)
+                Button("Get Signing from Another Device…") { receiving = true }
+                    .buttonStyle(.borderedProminent)
+            }
+            .focusRow()
+            .panel(isPresented: $receiving) {
+                ReceiveSigningSheet(signing: library.signing, email: email) { imported in
+                    receiving = false
+                    if imported { Task { await load() } }
+                }
+            }
         }
     }
 
@@ -151,9 +188,9 @@ struct DeveloperSlotsView: View {
     private func revokeMessage(_ certificate: DeveloperSlots.Certificate) -> String {
         var text = "Apps signed with this certificate stop opening until they're signed again. Apparition makes a new certificate at the next install or refresh, and refreshing re-signs your library apps with it."
         if certificate.inUseHere == true {
-            text += " It's the one this \(ThisDevice.noun) signs with, so your library apps stop opening until you refresh them."
+            text += " It's the one this \(ThisDevice.noun) signs with, so your library apps stop opening until you refresh them, and so do those of any device or computer you shared it with."
         } else if certificate.madeByApparition {
-            text += " This \(ThisDevice.noun) doesn't sign with it: Apparition on another device or computer probably does, and its apps stop opening too."
+            text += " This \(ThisDevice.noun) doesn't sign with it: Apparition on another device or computer probably does, and its apps stop opening too. Rather than revoke it, get its key from that device (Get Signing from Another Device), and both sign with it."
         } else {
             text += " It wasn't made by Apparition, so the tool that made it (\(certificate.machineName ?? "Xcode or another sideloader")) will need to make a new one too."
         }

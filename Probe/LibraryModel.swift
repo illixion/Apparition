@@ -88,6 +88,10 @@ final class LibraryModel {
     /// Set when the last install hit installd's free-profile app limit; cleared by the next
     /// install that gets past it, fails otherwise, or is dismissed.
     private(set) var appLimit: AppLimit?
+    /// Set when signing stopped rather than make a second certificate, because Apparition on
+    /// another device has the Apple ID's (core's check_certificate). The Library and Browse offer
+    /// to get its key or make one anyway, then run the install again.
+    private(set) var certificateChoice: CertificateChoice?
     /// The last install error of each source app, by bundle ID, shown under that app's row so
     /// it's in view where Install was tapped.
     private(set) var installErrors: [String: String] = [:]
@@ -233,7 +237,7 @@ final class LibraryModel {
         installErrors[app.id] = nil
         defer {
             let failed = "install \(app.name): error: "
-            if appLimit == nil, let status, status.hasPrefix(failed) {
+            if appLimit == nil, certificateChoice == nil, let status, status.hasPrefix(failed) {
                 installErrors[app.id] = String(status.dropFirst(failed.count))
             }
         }
@@ -368,6 +372,36 @@ final class LibraryModel {
         await retry(limit.retry)
     }
 
+    // MARK: Another Apparition's certificate
+
+    struct CertificateChoice: Sendable, Equatable {
+        /// The app that wasn't signed, as the user knows it.
+        let appName: String
+        let retry: AppLimit.Retry
+    }
+
+    nonisolated static let sharedCertificateMessage = "Apparition on another device already has this Apple ID's certificate: get its key from there (Settings > Get Signing from Another Device), or make a new certificate here"
+
+    func dismissCertificateChoice() {
+        certificateChoice = nil
+    }
+
+    /// Runs the signing that stopped again, once the other device's key is here.
+    func retryAfterCertificateChoice() async {
+        guard let choice = certificateChoice, !busy else { return }
+        certificateChoice = nil
+        await retry(choice.retry)
+    }
+
+    /// Lets the core make a certificate of this install's own, then runs the signing again.
+    func makeNewCertificate() async {
+        guard let choice = certificateChoice, !busy, let email = account.email ?? account.lastAppleID else { return }
+        _ = await Task.detached { AccountModel.call(apparition_allow_new_certificate(email)) }.value
+        log.notice("making a new certificate, as chosen")
+        certificateChoice = nil
+        await retry(choice.retry)
+    }
+
     private func retry(_ retry: AppLimit.Retry) async {
         switch retry {
         case .app(let id): await refresh(appId: id)
@@ -441,8 +475,13 @@ final class LibraryModel {
             signed = await SigningStore.signFile(path, identityId: signer, udid: udid, stripExtensions: record.stripExtensions)
         }
         guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
+            if signed["code"] as? String == "sharedCertificate" {
+                certificateChoice = CertificateChoice(appName: record.name, retry: .app(id: record.id))
+                return fail(&record, Self.sharedCertificateMessage, logged: "stopped before making a second certificate")
+            }
             return fail(&record, "sign failed: \(signed["error"] as? String ?? "unknown")")
         }
+        if signer == SigningStore.appleID { certificateChoice = nil }
         let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
         let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           sourceIPA: path)
@@ -589,8 +628,13 @@ final class LibraryModel {
                                         previousApp: update == nil ? nil : Bundle.main.bundleURL.path)
         }
         guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
+            if signed["code"] as? String == "sharedCertificate" {
+                certificateChoice = CertificateChoice(appName: "Apparition", retry: update == nil ? .selfRefresh : .selfUpdate)
+                return selfFail(Self.sharedCertificateMessage, logged: "stopped before making a second certificate")
+            }
             return selfFail("sign failed: \(signed["error"] as? String ?? "unknown")")
         }
+        if signer == SigningStore.appleID { certificateChoice = nil }
         let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
         guard main?.bundleId == me.bundleId, main?.profileTeam == team else {
             return selfFail("signing gave \(main?.bundleId ?? "?") (team \(main?.profileTeam ?? "?")), not \(me.bundleId) (team \(team)), which would install a second copy; not installed")

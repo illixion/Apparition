@@ -232,7 +232,14 @@
 
     <form class="form key-import" data-role="key-import" hidden autocomplete="off">
       <h2 class="small">Signing with this Apple ID on another device already?</h2>
-      <p class="hint">A free Apple ID has two certificates. Use the one your other device signs with, rather than making another here: in Apparition there, choose Share Signing in Settings, send the file here, and type the five words it shows.</p>
+      <p class="hint">A free Apple ID holds two certificates. Use the one your other device signs with, rather than making another here.</p>
+      <div class="row">
+        <button type="button" class="button quiet" data-role="nearby-receive">Receive from a Nearby Device</button>
+        <button type="button" class="link" data-role="nearby-stop" hidden>Stop waiting</button>
+      </div>
+      <p class="hint" data-role="nearby-hint" hidden></p>
+      <p class="status" data-role="nearby-status" hidden></p>
+      <p class="hint">Not on this network? In Apparition there, choose Share Signing in Settings, then Make a Key File; send the file here and type the five words it shows.</p>
       <div class="file-row">
         <button type="button" class="button quiet" data-role="pick-key">Choose key file…</button>
         <span class="file-name" data-role="key-name">No key file chosen</span>
@@ -260,6 +267,16 @@
       <p class="signed-title" data-role="signed-title"></p>
       <ul class="signed-list" data-role="signed-list"></ul>
       <button type="button" class="link" data-role="change">Use something else</button>
+      <div class="nearby-send" data-role="nearby-send" hidden>
+        <p class="hint">Your other devices and computers can sign with this computer's certificate too, rather than each making its own. In Apparition there, choose Settings > Get Signing from Another Device, then send it from here.</p>
+        <div class="row"><button type="button" class="button quiet" data-role="nearby-find">Send to a Nearby Device</button></div>
+        <ul class="choices" data-role="nearby-list" hidden></ul>
+        <div class="row" data-role="nearby-address-row" hidden>
+          <label class="field">Not listed? The address it shows<input name="nearbyAddress" data-role="nearby-address" autocomplete="off" spellcheck="false" placeholder="192.168.1.20:52144"></label>
+          <button type="button" class="button quiet" data-role="nearby-send-address">Send</button>
+        </div>
+        <p class="status" data-role="nearby-send-status" hidden></p>
+      </div>
     </div>
 
     <p class="status" data-role="status" hidden></p>
@@ -317,6 +334,15 @@
 <template id="t-slots">
   <div class="slots-inner">
     <h2 class="small" data-role="title"></h2>
+    <div class="slots-inner" data-role="share" hidden>
+      <p class="hint">Revoking a certificate stops the apps it signed. If one of these is Apparition's on another device, get its key instead, and this computer signs with that one.</p>
+      <div class="row">
+        <button type="button" class="button primary" data-role="nearby-receive">Receive from a Nearby Device</button>
+        <button type="button" class="link" data-role="nearby-stop" hidden>Stop waiting</button>
+      </div>
+      <p class="hint" data-role="nearby-hint" hidden></p>
+      <p class="status" data-role="nearby-status" hidden></p>
+    </div>
     <p class="hint" data-role="explain"></p>
     <ul class="choices" data-role="list"></ul>
     <div class="confirm" data-role="confirm" hidden>
@@ -327,6 +353,22 @@
         <button type="button" class="button quiet" data-role="keep">Keep them all</button>
       </div>
     </div>
+  </div>
+</template>
+
+<template id="t-shared">
+  <div class="slots-inner">
+    <h2 class="small">Use your other Apparition's certificate</h2>
+    <p class="hint">Apparition on another device or computer already has a certificate for this Apple ID. Get its key, and this computer signs with the same one: a free Apple ID holds only two, and making one past that means revoking one, which stops the apps it signed.</p>
+    <div class="row">
+      <button type="button" class="button primary" data-role="nearby-receive">Receive from a Nearby Device</button>
+      <button type="button" class="link" data-role="nearby-stop" hidden>Stop waiting</button>
+    </div>
+    <p class="hint" data-role="nearby-hint" hidden></p>
+    <p class="status" data-role="nearby-status" hidden></p>
+    <p class="hint">Not on this network? In Apparition there, choose Share Signing in Settings, then Make a Key File; go Back and open the file under the Apple ID sign-in.</p>
+    <div class="row"><button type="button" class="button quiet" data-role="new">Make a New Certificate Here</button></div>
+    <p class="hint">Only if no device has Apparition's key any more (Apparition was deleted there, say). It takes the account's other slot, and the other device keeps its own.</p>
   </div>
 </template>
 
@@ -361,6 +403,7 @@
     <h2 id="prompt-title"></h2>
     <p class="hint" id="prompt-text"></p>
     <p class="error" id="prompt-error" hidden></p>
+    <p class="shown-code" id="prompt-show" hidden></p>
     <input id="prompt-code" class="code" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="8" aria-labelledby="prompt-title">
     <div id="prompt-sms" class="sms" hidden></div>
     <div class="row end">

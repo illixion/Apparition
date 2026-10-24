@@ -3,7 +3,7 @@
 //! holding up anything else.
 
 use std::{
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -41,6 +41,8 @@ pub struct State {
     certificate: Mutex<Option<Certificate>>,
     app: Mutex<Option<Prepared>>,
     prompt: Mutex<Option<mpsc::Sender<Answer>>>,
+    /// Ends `nearby_receive`'s wait.
+    nearby_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 #[derive(Clone)]
@@ -65,6 +67,7 @@ impl State {
             certificate: Mutex::new(None),
             app: Mutex::new(None),
             prompt: Mutex::new(None),
+            nearby_stop: Mutex::new(None),
         }
     }
 
@@ -94,29 +97,31 @@ impl State {
 type Shared<'a> = tauri::State<'a, Arc<State>>;
 
 /// An error as the page gets it. `slot` says a free account's limit was hit, so the page can
-/// offer to free one.
+/// offer to free one; `shared_certificate`, that signing stopped rather than make a second
+/// certificate while Apparition elsewhere has one, so it can offer to get that one's key.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Failure {
     message: String,
     slot: Option<Slot>,
+    shared_certificate: bool,
     cancelled: bool,
 }
 
 impl Failure {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         let message = message.into();
-        Self { slot: Slot::of_error(&message), message, cancelled: false }
+        Self { slot: Slot::of_error(&message), message, shared_certificate: false, cancelled: false }
     }
 
     fn cancelled(message: &str) -> Self {
-        Self { message: message.into(), slot: None, cancelled: true }
+        Self { message: message.into(), slot: None, shared_certificate: false, cancelled: true }
     }
 }
 
 impl From<Report> for Failure {
     fn from(error: Report) -> Self {
-        Self::new(api::describe(&error))
+        Self { shared_certificate: api::is_shared_certificate(&error), ..Self::new(api::describe(&error)) }
     }
 }
 
@@ -149,6 +154,8 @@ pub enum Answer {
     Code { code: String },
     Sms { id: u32 },
     Resend,
+    /// Whether the other device shows the same code (nearby signing).
+    Match { matches: bool },
     Cancel,
 }
 
@@ -452,6 +459,92 @@ pub async fn import_signing_key(state: Shared<'_>, path: String, words: Option<S
         Ok(imported)
     })
     .await
+}
+
+// MARK: The certificate key to or from Apparition close by
+
+/// Asks the page whether the other device shows `code` (a `prompt` of kind "nearbyCode").
+fn nearby_compare(state: Arc<State>, app: AppHandle) -> api::nearby::Compare {
+    Arc::new(move |code: &str, peer: &str| {
+        matches!(state.ask(&app, json!({ "kind": "nearbyCode", "code": code, "peer": peer })), Answer::Match { matches: true })
+    })
+}
+
+/// Waits for Apparition on a nearby device or computer to send this computer its certificate
+/// key (Share Signing there), asks the page to compare the code, and imports the key. Where it
+/// listens arrives first, as a `nearby-listening` event. A signed-in session keeps going and
+/// signs with the key next. Returns `{appleId, from, replaced}`, or null once stopped.
+#[tauri::command]
+pub async fn nearby_receive(app: AppHandle, state: Shared<'_>) -> Result<Option<Value>, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        *state.nearby_stop.lock().unwrap() = Some(stop);
+        let name = api::hostname();
+        let listening = |at: &api::nearby::Listening| {
+            let payload = json!({ "name": name, "address": at.address.map(|a| a.to_string()), "port": at.port, "advertised": at.advertised });
+            let _ = app.emit("nearby-listening", payload);
+        };
+        let waiting = api::nearby::receive(state.store.apple_id_dir(), &name, listening, nearby_compare(state.clone(), app.clone()), async {
+            let _ = stopped.await;
+        });
+        let result = block_on(waiting);
+        *state.nearby_stop.lock().unwrap() = None;
+        Ok(result?)
+    })
+    .await
+}
+
+/// Stops `nearby_receive` waiting, answering its code prompt "different" if one is open. Does
+/// nothing when it isn't waiting.
+#[tauri::command]
+pub fn nearby_stop(state: Shared<'_>) {
+    let Some(stop) = state.nearby_stop.lock().unwrap().take() else { return };
+    let _ = stop.send(());
+    if let Some(sender) = state.prompt.lock().unwrap().take() {
+        let _ = sender.send(Answer::Cancel);
+    }
+}
+
+/// Receivers waiting nearby (Get Signing in Apparition on a device, `apparition signing
+/// receive`): `[{name, address}]`, address being "ip:port".
+#[tauri::command]
+pub async fn nearby_browse() -> Result<Vec<Value>, Failure> {
+    blocking(|| {
+        let found = block_on(api::nearby::browse(4))?;
+        Ok(found
+            .iter()
+            .filter(|found| found.name != api::hostname())
+            .map(|found| json!({ "name": found.name, "address": found.address().map(|a| a.to_string()) }))
+            .collect())
+    })
+    .await
+}
+
+/// Hands the signed-in Apple ID's certificate key to the receiver at `address` ("ip:port"),
+/// asking the page to compare the code. Returns the receiver's name once it has the key.
+#[tauri::command]
+pub async fn nearby_send(app: AppHandle, state: Shared<'_>, address: String) -> Result<String, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let to: SocketAddr = address
+            .trim()
+            .parse()
+            .map_err(|_| Failure::new(format!("{} isn't an address and port, like 192.168.1.20:52144", address.trim())))?;
+        let email = state.session.lock().unwrap().as_ref().map(|s| s.email().to_string()).ok_or("Sign in with the Apple ID whose certificate to share first.")?;
+        let name = api::hostname();
+        let payload = api::export_apple_id_key(&state.store.apple_id_dir(), &email, None, &name)?;
+        Ok(block_on(api::nearby::send(to, &name, payload, nearby_compare(state.clone(), app)))?)
+    })
+    .await
+}
+
+/// Lets the next signing make a certificate here, although Apparition elsewhere has one (the
+/// install stopped with `sharedCertificate`).
+#[tauri::command]
+pub fn allow_new_certificate(state: Shared<'_>) -> Result<(), Failure> {
+    state.session.lock().unwrap().as_mut().ok_or("Sign in with your Apple ID first.")?.allow_new_certificate();
+    Ok(())
 }
 
 /// A file picker for "ipa", "p12", "key" or "profile" (several at once). Empty when cancelled.
