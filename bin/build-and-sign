@@ -883,7 +883,10 @@ print(bs.get("PROJECT_DIR", ""))
     # where an incremental build without --inject kept it.
     rm -f "$APP_PATH/Frameworks/DebugTraceInject.dylib"
     if [[ "$MACOS_BUILD" == true ]]; then
-        MACOS_APP_PATH="$BUILD_DIR/${TARGET_NAME}-macOS.app"
+        # Named after the product, not TARGET_NAME: a target's product name can
+        # differ (OneirosDesktop builds Oneiros.app), and the appstore zips this
+        # copy under its name minus "-macOS".
+        MACOS_APP_PATH="$BUILD_DIR/$(basename "$APP_PATH" .app)-macOS.app"
         rm -rf "$MACOS_APP_PATH"
         cp -R "$APP_PATH" "$MACOS_APP_PATH"
         APP_PATH="$MACOS_APP_PATH"

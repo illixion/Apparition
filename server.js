@@ -116,8 +116,63 @@ const gitCache = new Map(); // path -> {at, info}
 function safeSlug(s) {
   return s.replace(/[^A-Za-z0-9._-]+/g, '-');
 }
-function clonePath(repoPath, branch) {
+// A clone lives in a slot laid out like the checkout's parent directory, so the
+// relative package references the apps make (`../../RAVESDK`) resolve: the slot
+// data/build-clones/<repo>/<branch>/ holds the clone as <Repo>/ and, beside it, a
+// symlink to each package outside the repo that it builds against, transitively.
+// The links point at the real checkouts, which is what a build in the main
+// checkout uses too. Before this a clone resolved `../DebugTrace` inside
+// data/build-clones/<repo>/, so no clone of a RAVE app could build.
+function cloneSlot(repoPath, branch) {
   return path.join(CLONE_DIR, safeSlug(path.basename(repoPath)), safeSlug(branch));
+}
+function clonePath(repoPath, branch) {
+  return path.join(cloneSlot(repoPath, branch), path.basename(repoPath));
+}
+const MANIFEST_SKIP = new Set(['.build', 'build', 'DerivedData', 'node_modules']);
+// Local package directories that the Xcode projects and SwiftPM manifests under
+// `top` reference by relative path, resolved to absolute paths.
+function localPackageRefs(top) {
+  const out = [];
+  const read = fp => { try { return fs.readFileSync(fp, 'utf8'); } catch { return ''; } };
+  (function walk(dir, depth) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const fp = path.join(dir, e.name);
+      if (e.name === 'Package.swift') {
+        for (const m of read(fp).matchAll(/\.package\(\s*(?:name:\s*"[^"]*"\s*,\s*)?path:\s*"([^"]+)"/g)) out.push(path.resolve(dir, m[1]));
+      } else if (e.name.endsWith('.xcodeproj')) {
+        for (const m of read(path.join(fp, 'project.pbxproj')).matchAll(/isa = XCLocalSwiftPackageReference;\s*relativePath = "?([^";\n]+)"?;/g)) out.push(path.resolve(dir, m[1]));
+      } else if (depth < 4 && !e.name.startsWith('.') && !MANIFEST_SKIP.has(e.name) && (e.isDirectory() || e.isSymbolicLink())) {
+        walk(fp, depth + 1);
+      }
+    }
+  })(top, 0);
+  return out;
+}
+// The names in `parent` (the real checkout's parent directory) of the packages a
+// clone at `clone` builds against, transitively: ['DebugTrace', 'RAVESDK', ...].
+// The clone's own references resolve inside its slot; a package's own, inside
+// `parent`. Anything outside that layout can't be mirrored and is left alone.
+function siblingPackages(clone, parent) {
+  const names = new Set();
+  const seen = new Set([path.basename(clone)]);
+  const queue = [{ dir: clone, base: path.dirname(clone) }];
+  while (queue.length) {
+    const { dir, base } = queue.pop();
+    for (const ref of localPackageRefs(dir)) {
+      const rel = path.relative(base, ref);
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
+      const top = rel.split(path.sep)[0];
+      if (seen.has(top)) continue;
+      seen.add(top);
+      if (!fs.existsSync(path.join(parent, top))) continue;
+      names.add(top);
+      queue.push({ dir: path.join(parent, top), base: parent });
+    }
+  }
+  return [...names].sort();
 }
 // `cp -c` shares the data blocks but still creates an inode per file, so cost
 // scales with file count: RegentChat's checkout is 357k files (a 27 GB Rust
@@ -148,9 +203,11 @@ async function cloneTree(src, dst, excludes, copy, rel = '') {
 // `rev` pins the clone to one commit of `branch` instead of its tip (AltSource
 // builds build exactly the commit a client was offered).
 async function ensureBuildClone(repoPath, branch, excludes = [], rev = null) {
+  const slot = cloneSlot(repoPath, branch);
   const dst = clonePath(repoPath, branch);
-  fs.rmSync(dst, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  // rmSync removes the package symlinks, never what they point at
+  fs.rmSync(slot, { recursive: true, force: true });
+  fs.mkdirSync(slot, { recursive: true });
   await cloneTree(repoPath, dst, excludes, async (from, to) => {
     const clone = await run('cp', ['-cR', from, to], { timeout: 300000 });
     if (clone.code !== 0) throw new Error(`cp -cR clone of ${from} failed: ${clone.stderr.trim()}`);
@@ -175,6 +232,9 @@ async function ensureBuildClone(repoPath, branch, excludes = [], rev = null) {
   if (reset.code !== 0) throw new Error(`git reset ${rev || branch} in clone failed: ${reset.stderr.trim()}`);
   const clean = await run('git', ['-C', dst, 'clean', '-fd']);
   if (clean.code !== 0) throw new Error(`git clean in clone failed: ${clean.stderr.trim()}`);
+  for (const name of siblingPackages(dst, path.dirname(repoPath))) {
+    fs.symlinkSync(path.join(path.dirname(repoPath), name), path.join(slot, name));
+  }
   return dst;
 }
 // A clone is disposable, but it is a whole copy of the repo (a clonefile copy is
@@ -385,6 +445,7 @@ function resolveBuildSettings(rc, branch, platform) {
 function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, deploy }) {
   const rc = CONFIG.repos.find(r => r.name === repo);
   if (!rc) throw new Error(`unknown repo: ${repo}`);
+  if (!rc.platforms?.length) throw new Error(`${repo} has no device platforms to deploy to`);
   const targetList = (targets && targets.length) ? targets : [{ device: device || rc.platforms[0].device, branch }];
   const jobs = targetList.map(t => {
     const pc = rc.platforms.find(p => p.device === t.device) || rc.platforms[0];
@@ -437,6 +498,42 @@ function enqueueAltSourceBuild(app, commit) {
   return job;
 }
 
+// A Mac app's download build: like an AltSource build, exactly `commit` from a
+// clean build clone, signed and never deployed (build-and-sign forces
+// --no-deploy for macOS anyway). It has no device; the zip is the result.
+function enqueueMacBuild(app, commit, branch) {
+  const job = {
+    id: state.nextBuildId++, batchId: null,
+    repo: app.repo, branch, rev: commit, macApp: app.slug,
+    platform: app.platform, device: null, bundleId: app.bundleId,
+    noDeploy: true, mcp: false, run: false, buildDebug: false, inject: false,
+    status: 'queued', queuedAt: Date.now(),
+  };
+  state.builds.push(job);
+  if (state.builds.length > 200) state.builds = state.builds.slice(-200);
+  getRepoQueue(app.repo).queue.push(job.id);
+  saveState();
+  pump(app.repo);
+  return job;
+}
+
+// The signed .app a macOS build left behind: the path build-and-sign's report
+// names ("App path:"), else the newest build/*-macOS.app. Only paths inside the
+// build directory count.
+function builtMacApp(buildCwd, logText) {
+  const buildDir = path.join(buildCwd, 'build');
+  const named = [...String(logText || '').matchAll(/^\s*App path:\s+(.+?)\s*$/gm)].pop()?.[1];
+  if (named) {
+    const fp = path.resolve(buildCwd, named);
+    if (fp.startsWith(buildDir + path.sep) && fs.existsSync(path.join(fp, 'Contents', 'Info.plist'))) return fp;
+  }
+  try {
+    return fs.readdirSync(buildDir).filter(f => f.endsWith('-macOS.app'))
+      .map(f => ({ fp: path.join(buildDir, f), m: fs.statSync(path.join(buildDir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m)[0]?.fp || null;
+  } catch { return null; }
+}
+
 async function executeBuild(job) {
   if (job.status === 'cancelled') return;
   const rc = CONFIG.repos.find(r => r.name === job.repo);
@@ -454,19 +551,19 @@ async function executeBuild(job) {
   try {
     const orig = (await run('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
     let buildCwd = repoPath;
-    if (job.altSource || (job.branch !== 'current' && job.branch !== orig)) {
-      log(job.altSource
-        ? `==> AltSource build of ${job.branch}@${job.rev} in a clean build clone\n`
+    if (job.altSource || job.macApp || (job.branch !== 'current' && job.branch !== orig)) {
+      log(job.altSource ? `==> AltSource build of ${job.branch}@${job.rev} in a clean build clone\n`
+        : job.macApp ? `==> Mac download build of ${job.branch}@${job.rev} in a clean build clone\n`
         : `==> Using dedicated build clone for ${job.branch} (main checkout stays on ${orig})\n`);
       cloneDir = clonePath(repoPath, job.branch);
-      activeClones.add(cloneDir);
+      activeClones.add(path.dirname(cloneDir));
       buildCwd = await ensureBuildClone(repoPath, job.branch, normalizeExcludes(rc.cloneExclude), job.rev || null);
     }
     const head = (await run('git', ['-C', buildCwd, 'log', '-1', '--format=%h %s'])).stdout.trim();
     job.commit = head.split(' ')[0];
     job.builtBranch = job.branch === 'current' ? orig : job.branch;
     job.buildSettings = resolveBuildSettings(rc, job.builtBranch, job.platform);
-    log(`==> Building ${job.repo} [${job.builtBranch}@${job.commit}] platform=${job.platform} → ${job.device}\n`);
+    log(`==> Building ${job.repo} [${job.builtBranch}@${job.commit}] platform=${job.platform} → ${job.macApp ? '.app.zip' : job.device}\n`);
     if (job.buildSettings.length) log(`    build settings: ${job.buildSettings.join('  ')}\n`);
     log('\n');
     gitCache.delete(buildCwd);
@@ -512,6 +609,20 @@ async function executeBuild(job) {
         });
       });
     });
+
+    // A Mac app is done once its zip is kept. Nothing below applies: there is
+    // no IPA (a clone's build/ may still hold another platform's, which must not
+    // be published as this one), no device and no install ledger.
+    if (job.macApp) {
+      const appPath = builtMacApp(buildCwd, liveLogs.get(job.id));
+      if (!appPath) throw new Error('no signed .app found after the build');
+      const entry = await macBuilds.record(job.macApp, job.rev, job.builtBranch, appPath);
+      job.version = entry.version;
+      job.buildNo = entry.buildNo;
+      job.status = 'success';
+      log(`\n==> Store: ${entry.bundle} ${entry.version} (${job.builtBranch}@${job.commit}, ${(entry.size / 1048576).toFixed(1)} MB zipped) ready to download\n`);
+      return;
+    }
 
     // read the version actually installed from the SIGNED IPA (the staging
     // build/Payload copy predates the git-hash CFBundleVersion stamp)
@@ -597,7 +708,7 @@ async function executeBuild(job) {
     log(`\n==> Store: build ${job.status}: ${job.error}\n`);
   } finally {
     if (cloneDir) {
-      activeClones.delete(cloneDir);
+      activeClones.delete(path.dirname(cloneDir));
       try { dropCloneDerivedData(cloneDir, job.inject && job.status === 'success'); } catch { /* best effort */ }
       reapBuildClones();
     }
@@ -684,7 +795,7 @@ async function backfillOta() {
     const dirs = [path.join(rc.path, 'build')];
     try {
       const cloneRoot = path.join(CLONE_DIR, safeSlug(path.basename(rc.path)));
-      for (const b of fs.readdirSync(cloneRoot)) dirs.push(path.join(cloneRoot, b, 'build'));
+      for (const b of fs.readdirSync(cloneRoot)) dirs.push(path.join(cloneRoot, b, path.basename(rc.path), 'build'));
     } catch { /* no clones */ }
     const ipas = [];
     for (const dir of dirs) {
@@ -867,6 +978,75 @@ async function serveAltSourceIpa(req, res, url, slug, commit) {
   if (r.entry) return sendIpa(res, altSource.file(r.entry), `${r.entry.name || slug}-${r.entry.buildNo || commit}`);
   sendText(res, r.status || 500, r.error || 'no IPA');
 }
+
+// ---------- Mac apps (a signed .app.zip per repo `macApps` entry, built on download) ----------
+// See lib/macapps.js. `/mac/<slug>/<commit>.app.zip` serves or builds that commit,
+// long-polling like the AltSource IPA; `/mac/<slug>/latest.app.zip?branch=` resolves
+// the branch head and redirects there. Both take the session, or a signed link from
+// GET /api/mac/<slug>/link for a Mac that has no session (curl on another machine).
+const { createMacBuilds, macApps } = require('./lib/macapps');
+const MAC_LINK_TTL_DAYS = 7;
+const macBuilds = createMacBuilds({
+  dir: path.join(DATA_DIR, 'macapps'),
+  apps: () => macApps(CONFIG),
+  enqueue: enqueueMacBuild,
+  job: id => state.builds.find(b => b.id === id),
+  waitFor: waitForBuild,
+  log: m => console.log(m),
+});
+// The branch a Mac download builds: one the repo offers, or the one its main
+// checkout has out ('current'); anything else is refused.
+async function macBranch(app, wanted) {
+  const rc = CONFIG.repos.find(r => r.name === app.repo);
+  const b = wanted || app.branch;
+  if (b === 'current') {
+    const out = (await run('git', ['-C', app.path, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim();
+    if (!out || out === 'HEAD') throw Object.assign(new Error(`${app.repo}'s checkout has no branch checked out; pick one`), { status: 409 });
+    return out;
+  }
+  if (b === app.branch || (rc?.branches || []).includes(b)) return b;
+  throw Object.assign(new Error(`${app.repo} does not offer branch ${b}`), { status: 400 });
+}
+const macZipUrl = (slug, commit, branch) => `/mac/${slug}/${commit}.app.zip?branch=${encodeURIComponent(branch)}`;
+// A link for a Mac with no session: `latest` follows the branch, so it stays
+// good for MAC_LINK_TTL_DAYS. The branch is part of what is signed.
+function signedMacLatest(req, slug, branch) {
+  const signed = `/mac/${slug}/latest.app.zip?branch=${encodeURIComponent(branch)}`;
+  return `${requestBase(req)}${signed}&t=${auth.signPath(signed, MAC_LINK_TTL_DAYS * 86400)}`;
+}
+function sendMacZip(res, fp, entry) {
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': fs.statSync(fp).size,
+    'Content-Disposition': `attachment; filename="${safeSlug(`${entry.bundle.replace(/\.app$/, '')}-${entry.buildNo || entry.commit}`)}.app.zip"`,
+    'Cache-Control': 'no-store' });
+  fs.createReadStream(fp).pipe(res);
+}
+async function serveMacZip(req, res, url, slug, commit) {
+  const app = macBuilds.appBySlug(slug);
+  if (!app) return sendText(res, 404, 'unknown Mac app');
+  let branch;
+  try { branch = await macBranch(app, url.searchParams.get('branch')); } catch (e) { return sendText(res, e.status || 400, e.message); }
+  const hold = Math.min(Math.max(Number(url.searchParams.get('hold')) || 50, 1), 3600);
+  let r = macBuilds.request(slug, commit, branch);
+  if (r.jobId != null) {
+    let timer;
+    await Promise.race([
+      waitForBuild(r.jobId),
+      new Promise(resolve => { timer = setTimeout(resolve, hold * 1000); }),
+      new Promise(resolve => res.once('close', resolve)),
+    ]);
+    clearTimeout(timer);
+    if (res.destroyed || res.writableEnded) return; // client left; the build carries on
+    r = macBuilds.outcome(slug, commit, r.jobId);
+    if (r.jobId != null) {
+      const next = new URLSearchParams(url.searchParams);
+      next.set('w', String((Number(url.searchParams.get('w')) || 0) + 1));
+      return sendText(res, 307, `still building (build ${r.jobId}); follow the redirect to keep waiting`,
+        { Location: `${url.pathname}?${next}`, 'Retry-After': '1' });
+    }
+  }
+  if (r.entry) return sendMacZip(res, macBuilds.file(r.entry), r.entry);
+  sendText(res, r.status || 500, r.error || 'no app');
+}
 function storeIconFile() {
   return brandIconFile() || path.join(ROOT, 'public', 'apple-touch-icon.png');
 }
@@ -1033,7 +1213,9 @@ function traceKey(keyId) {
 
 // The appstore repo name for a bundle id, when config.json knows it.
 function repoForBundle(bundleId) {
-  for (const r of CONFIG.repos) if ((r.platforms || []).some(p => p.bundleId === bundleId)) return r.name;
+  for (const r of CONFIG.repos) {
+    if ([...(r.platforms || []), ...(r.macApps || [])].some(p => p?.bundleId === bundleId)) return r.name;
+  }
   return null;
 }
 
@@ -1226,6 +1408,7 @@ async function stateBundle() {
     name: r.name, branches: r.branches, platforms: r.platforms,
     deviceBranches: r.deviceBranches || {},
     deployDefaults: deployDefaults(r),
+    macApps: macBuilds.list(r.name),
     git: await gitInfo(r.path).catch(e => ({ error: String(e) })),
   })));
   return {
@@ -1363,6 +1546,12 @@ const server = http.createServer(async (req, res) => {
     // installd can't send the cookie, so OTA files also accept a signed ?t=.
     const otaFile = req.method === 'GET' && /^\/ota\/[A-Za-z0-9._-]+(\/manifest\.plist|\.ipa)$/.test(url.pathname)
       && auth.verifyPath(url.pathname, url.searchParams.get('t'));
+    // Mac downloads take a signed link too, for a Mac without a session. A
+    // `latest` link's signature covers its branch.
+    const macPath = req.method === 'GET' && url.pathname.match(/^\/mac\/([A-Za-z0-9._-]+)\/(latest|[0-9a-f]{4,40})\.app\.zip$/);
+    const macSigned = !!macPath && url.searchParams.has('t') && auth.verifyPath(macPath[2] === 'latest'
+      ? `${url.pathname}?branch=${encodeURIComponent(url.searchParams.get('branch') || '')}` : url.pathname, url.searchParams.get('t'));
+    if (macPath && url.searchParams.has('t') && !macSigned && !signedIn(req)) return sendText(res, 403, 'link expired or not signed');
 
     // AltSource: clients have no cookie. The feed takes its lasting token, its
     // links their own signatures; all of it is gone while the mode is off.
@@ -1403,7 +1592,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 404, { error: 'not found' });
     }
 
-    if (!traceUpload && !otaFile && !signedIn(req)) {
+    if (!traceUpload && !otaFile && !macSigned && !signedIn(req)) {
       if (url.pathname.startsWith('/api/')) return json(res, 401, { error: 'sign in first', login: '/login' });
       res.writeHead(302, { Location: `/login?next=${encodeURIComponent(url.pathname + url.search)}` });
       return res.end();
@@ -1446,6 +1635,44 @@ const server = http.createServer(async (req, res) => {
       const entry = otaEntryBySlug(om[1]);
       if (!entry) return json(res, 404, { error: 'unknown ipa' });
       return json(res, 200, { manifestUrl: signedOtaUrl(req, `/ota/${entry.slug}/manifest.plist`) });
+    }
+
+    if (macPath) {
+      const [, slug, which] = macPath;
+      if (which !== 'latest') return serveMacZip(req, res, url, slug, which);
+      const app = macBuilds.appBySlug(slug);
+      if (!app) return sendText(res, 404, 'unknown Mac app');
+      const branch = await macBranch(app, url.searchParams.get('branch')).catch(e => e);
+      if (branch instanceof Error) return sendText(res, branch.status || 400, branch.message);
+      const head = await branchHead({ path: app.path, branch });
+      let loc = macZipUrl(slug, head.commit, branch);
+      if (url.searchParams.has('hold')) loc += `&hold=${encodeURIComponent(url.searchParams.get('hold'))}`;
+      if (macSigned) loc += `&t=${auth.signPath(`/mac/${slug}/${head.commit}.app.zip`, MAC_LINK_TTL_DAYS * 86400)}`;
+      res.writeHead(302, { Location: loc, 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    // The page's download button: the zip's URL when that commit is built,
+    // else the build it started (or joined) for the page to wait on.
+    om = url.pathname.match(/^\/api\/mac\/([A-Za-z0-9._-]+)\/(build|link)$/);
+    if (om) {
+      const app = macBuilds.appBySlug(om[1]);
+      if (!app) return json(res, 404, { error: 'unknown Mac app' });
+      const body = om[2] === 'build' && req.method === 'POST' ? await readBody(req).catch(() => ({})) : null;
+      const wanted = body ? body.branch : url.searchParams.get('branch');
+      const branch = await macBranch(app, typeof wanted === 'string' && wanted ? wanted : null).catch(e => e);
+      if (branch instanceof Error) return json(res, branch.status || 400, { error: branch.message });
+      if (om[2] === 'link' && req.method === 'GET') {
+        const link = signedMacLatest(req, app.slug, branch);
+        const zip = `${app.name.replace(/[^A-Za-z0-9._-]+/g, '')}.app.zip`;
+        return json(res, 200, { url: link, days: MAC_LINK_TTL_DAYS,
+          curl: `curl -fL --max-redirs 100 -o '${zip}' '${link}&hold=600' && ditto -x -k '${zip}' .` });
+      }
+      if (!body) return json(res, 405, { error: 'POST to build' });
+      const head = await branchHead({ path: app.path, branch });
+      const r = macBuilds.request(app.slug, head.commit, branch);
+      if (r.entry) return json(res, 200, { ready: true, url: macZipUrl(app.slug, r.entry.commit, branch), entry: r.entry, branch });
+      if (r.jobId != null) return json(res, 200, { ready: false, jobId: r.jobId, commit: head.commit, branch });
+      return json(res, r.status || 500, { error: r.error });
     }
 
     if (url.pathname === '/api/altsource' && req.method === 'GET') {
@@ -1594,4 +1821,4 @@ if (require.main === module) {
 
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
-  deployDefaults, staleClones, normalizeExcludes, cloneTree, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };
+  deployDefaults, staleClones, normalizeExcludes, cloneTree, siblingPackages, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };

@@ -28,6 +28,12 @@
           "bundleId": "com.example.myapp",
           "device": "Vision Pro"
         }
+      ],
+      "macApps": [
+        {
+          "name": "MyApp for Mac",
+          "bundleId": "com.example.myapp.mac"
+        }
       ]
     }
   ]

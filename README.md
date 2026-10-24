@@ -143,6 +143,37 @@ or `{ branch, platforms: ["iOS"], description, subtitle, iconURL, developerName,
 `platforms` limits which of the repo's rows reach the sources. Within one source a bundle id is
 listed once, so of two rows with the same platform and bundle id (two iPhones), the first wins.
 
+## Mac apps (.app.zip downloads)
+
+A repo can list Mac apps next to its device platforms. Each gets a row on its card with a
+**⤓ .app.zip** button that downloads a signed `.app` of the selected branch, built on demand:
+
+```json
+"macApps": [
+  { "name": "MyApp for Mac", "bundleId": "com.example.myapp.mac" },
+  { "name": "MyApp Helper", "platform": "macOS-helper", "bundleId": "com.example.myapp.helper" }
+]
+```
+
+- `platform` (default `macOS`) reaches build-and-sign as `PLATFORM`, like a device row's. A repo
+  with several Mac apps gives each its own alias and maps it in its `build-signing.conf` to a
+  scheme, target and bundle id (`macOS-helper` → `PLATFORM=macOS`, `SCHEME_NAME=MyAppHelper`), the
+  same way an `iPad` row maps back to the iOS build. `branch` picks the default branch (else
+  `main`/`master`, else the first offered); the card's branch menu picks another.
+- A repo with only Mac apps sets `"platforms": []` and gets no Deploy button.
+- A download builds the branch's committed head, never uncommitted edits, from a clean build
+  clone in the repo's queue, signed with the development certificate (macOS needs no profile).
+  The zip is kept per commit (the newest three per app), so the next download of the same commit
+  starts at once. The build is refused if the app it produced has another bundle id than the
+  row's, which catches a conf alias that fell through to the wrong scheme.
+- `/mac/<slug>/<commit>.app.zip` serves or builds one commit, long-polling like the AltSource IPA
+  (`?hold=` up to 3600 s); `/mac/<slug>/latest.app.zip?branch=` redirects to the branch head's.
+  Both need the session or a signed link. The **curl** button copies a command with a link signed
+  for a week, for a Mac that isn't signed in.
+- Downloaded from a browser, the app is quarantined and Gatekeeper blocks its first open, since it
+  is not notarized: allow it in System Settings › Privacy & Security › Open Anyway, or run
+  `xattr -dr com.apple.quarantine` on it. curl doesn't quarantine what it downloads.
+
 ## Tests
 
 ```sh
@@ -165,7 +196,7 @@ node server.js set-password     # asks twice, stores an scrypt hash in config.js
 With a password set, the page, the API and `/ota` need a sign-in. The session cookie is
 `HttpOnly` and `SameSite=Strict`, sessions last 30 idle days and end when the password changes,
 and five wrong passwords lock sign-in for a minute. Requests from another site are refused.
-Two things work without a session, each with its own check:
+These work without a session, each with its own check:
 
 - `POST /api/traces`, which apps use to upload traces. Only traces signed by a key in this
   Mac's ledger are kept.
@@ -175,6 +206,9 @@ Two things work without a session, each with its own check:
   derived from `data/secret`; delete that file to rotate it, which also signs every OTA link out),
   and the download and icon links inside it carry their own signatures. Anyone holding the source
   URL can start builds of the listed commits.
+- Mac app downloads, through a link the signed-in page hands out (the curl button). The
+  signature covers the app and branch and lasts a week; anyone holding it can start builds of
+  that branch's head.
 
 Without a password, everything is open to whoever can reach the port, and the page says so.
 The server listens on `127.0.0.1`; the intended way to reach it from devices is `tailscale serve`

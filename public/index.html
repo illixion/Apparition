@@ -92,6 +92,17 @@
   .runcheck:has(input:disabled) { opacity: .45; cursor: default; }
   .opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; }
   .cardfoot .spacer { flex: 1 1 auto; }
+  .macapps { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .macapp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 9px 6px 8px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; }
+  .macapp.building { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  .macapp .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
+  .macapp .dot.ok { background: var(--ok); }
+  .macapp .dot.warn { background: var(--warn); }
+  .macapp .macname { font-size: .82rem; font-weight: 600; }
+  .macapp .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
+  .macapp .macbuilt { font-size: .72rem; color: var(--dim2); font-family: var(--mono); flex: 1 1 auto; }
+  .macapp button { padding: 4px 9px; font-size: .76rem; }
 
   /* ---- build pane ---- */
   #buildpane { position: fixed; left: 0; right: 0; bottom: 0; background: #07090c;
@@ -509,6 +520,7 @@ const logOffsets = {};      // build id -> log offset
 const logTexts = {};        // build id -> text fetched so far
 const sel = {};             // repo -> {branch, run, chosen:Set<device>}
 let pendingOta = null;      // {id, key, name} — auto-launch the itms install when this build succeeds
+let pendingMac = null;      // {id, slug, branch, name} — download the .app.zip when this build succeeds
 
 function ago(t){ if(!t) return '—'; const s=(Date.now()-t)/1000;
   if(s<60) return Math.round(s)+'s ago'; if(s<3600) return Math.round(s/60)+'m ago';
@@ -535,8 +547,8 @@ function render() {
     const g = r.git||{};
     const s = sel[r.name] = sel[r.name] || { branch: 'current', chosen: new Set(), ...r.deployDefaults };
     const branches = ['current', ...r.branches.filter(b=>b!=='current')];
-    const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name);
-    const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name).map(b=>b.device));
+    const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name && !b.macApp);
+    const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name && !b.macApp).map(b=>b.device));
     const busy = !!runningBuild || queuedIds.size > 0;
 
     const chips = r.platforms.map(p=>{
@@ -567,19 +579,46 @@ function render() {
       </label>`;
     }).join('');
 
+    // Mac apps download as a signed .app.zip of the selected branch's committed
+    // head, built on demand. Only the checked-out branch's head is known here,
+    // so only that branch can say whether the last build is current.
+    const macBranch = s.branch === 'current' ? g.branch : s.branch;
+    const macs = (r.macApps || []).map(m => {
+      const last = m.built.find(e => e.branch === macBranch) || m.built[0];
+      const knownHead = macBranch === g.branch && g.commit;
+      const fresh = last && knownHead && last.branch === macBranch && (last.commit.startsWith(g.commit) || g.commit.startsWith(last.commit));
+      const dot = fresh ? 'ok' : last && knownHead ? 'warn' : '';
+      const building = m.building.length > 0;
+      const info = last
+        ? `${last.branch}@${last.commit} · ${(last.size/1048576).toFixed(1)} MB · ${ago(last.at)}${fresh ? '' : knownHead ? ` · head ${g.commit} builds on download` : ''}`
+        : 'not built yet: the first download builds it';
+      const title = `${m.bundleId} · PLATFORM=${m.platform}\nBuilds the committed head of the selected branch (never uncommitted changes), signed with the development certificate.\n`
+        + `Opened from a browser download, macOS blocks it once: System Settings › Privacy & Security › Open Anyway (or xattr -dr com.apple.quarantine on the .app).`;
+      return `<div class="macapp ${building?'building':''}" title="${esc(title)}">
+        <span class="dot ${dot}"></span>
+        <span class="macname">${esc(m.name)}</span>
+        <span class="platname">${esc(m.platform)}</span>
+        <span class="macbuilt">${esc(info)}</span>
+        <button class="ghost" data-maclink="${esc(m.slug)}" data-repo="${esc(r.name)}" title="Copy a curl command that downloads the head of ${esc(macBranch)} on another Mac (signed link, no sign-in, no quarantine prompt; good for a week)">curl</button>
+        <button data-macdl="${esc(m.slug)}" data-repo="${esc(r.name)}" ${building?'disabled':''}>${building ? 'Building…' : '⤓ .app.zip'}</button>
+      </div>`;
+    }).join('');
+
     const chosenCount = s.chosen.size;
+    const hasDevices = r.platforms.length > 0;
     return `<div class="card">
       <div class="cardhead">
         <span class="reponame">${esc(r.name)}</span>
         <span class="refline">${esc(g.branch)}@<code>${esc(g.commit)}</code>${g.dirty?' <span class="dirty">●dirty</span>':''}</span>
         <span class="subject">${esc(g.subject||'')}</span>
       </div>
-      <div class="chips">${chips}</div>
+      ${hasDevices ? `<div class="chips">${chips}</div>` : ''}
+      ${macs ? `<div class="macapps">${macs}</div>` : ''}
       <div class="cardfoot">
         <select class="branchsel" data-repo="${esc(r.name)}" data-k="branch">
           ${branches.map(b=>`<option ${s.branch===b?'selected':''}>${esc(b)}</option>`).join('')}
         </select>
-        <div class="opts" role="group" aria-label="Deploy options">
+        ${hasDevices ? `<div class="opts" role="group" aria-label="Deploy options">
           <label class="runcheck" title="--run: launch the app on the device once it is installed. Unticked, it is installed and updates in the background">
             <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''}>Launch app</label>
           <label class="runcheck" title="--mcp: make the launch a debug session (console attached, session registered for agents)${s.launch?'':'. Applies only with Launch app'}">
@@ -592,7 +631,7 @@ function render() {
         <span class="spacer"></span>
         <button class="primary" data-deploy="${esc(r.name)}" ${busy||chosenCount===0?'disabled':''}>
           ${busy ? 'Deploying…' : chosenCount>1 ? `Deploy → ${chosenCount} devices` : 'Deploy'}
-        </button>
+        </button>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -601,7 +640,7 @@ function render() {
   $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
     <td class="muted">${b.id}</td><td>${esc(b.repo)}</td>
     <td class="mono">${esc(b.builtBranch||b.branch)}${b.commit?'@'+esc(b.commit):''}${b.version?' · v'+esc(b.version):''}</td>
-    <td class="muted">${b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':(b.run||b.mcp)?' ▶':''}</td>
+    <td class="muted">${b.macApp?'⤓ .app.zip':b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':(b.run||b.mcp)?' ▶':''}</td>
     <td><span class="status ${b.status}">${b.status}</span></td>
     <td class="muted">${ago(b.startedAt||b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
     || '<tr><td colspan="7" class="muted">No builds yet</td></tr>';
@@ -613,13 +652,13 @@ function render() {
     if (!b) return '';
     const running = (S.running||[]).includes(id);
     return `<div class="tab ${paneBuild===id?'active':''}" data-tab="${id}">
-      <span class="status-dot" style="background:${running?'var(--info)':'var(--dim2)'}"></span>#${b.id} ${esc(b.repo)} ${esc(b.device)}</div>`;
+      <span class="status-dot" style="background:${running?'var(--info)':'var(--dim2)'}"></span>#${b.id} ${esc(b.repo)} ${esc(b.device || b.platform)}</div>`;
   }).join('');
 
   if (paneBuild != null) {
     const b = S.builds.find(x=>x.id===paneBuild);
     if (b) {
-      $('#paneTitle').textContent = `#${b.id} ${b.repo} (${b.builtBranch||b.branch}) ${b.device} · ${b.platform}`;
+      $('#paneTitle').textContent = `#${b.id} ${b.repo} (${b.builtBranch||b.branch}) ${b.macApp ? '.app.zip' : b.device} · ${b.platform}`;
       $('#paneStatus').textContent = b.status;
       $('#paneStatus').className = 'status '+b.status;
       $('#cancelBtn').style.display = (b.status==='running'||b.status==='queued') ? '' : 'none';
@@ -635,7 +674,7 @@ async function api(p, opts){
   if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash); throw new Error('signed out'); }
   return r.json();
 }
-async function poll(){ try { S = await api('/api/state'); render(); checkPendingOta(); } catch{} }
+async function poll(){ try { S = await api('/api/state'); render(); checkPendingOta(); checkPendingMac(); } catch{} }
 
 // "Build for OTA" second half: once the --no-deploy build lands, navigate to
 // the itms-services URL so the OS starts the install without another tap
@@ -652,6 +691,30 @@ function checkPendingOta(){
   api(`/api/ota/${encodeURIComponent(ota.slug)}/link`).then(({ manifestUrl }) => {
     location.href = 'itms-services://?action=download-manifest&url=' + encodeURIComponent(manifestUrl);
   }).catch(e => toast(`Couldn't get the install link: ${e.message}`));
+}
+
+// A Mac app's .app.zip: downloads straight away when the branch head is built,
+// else starts (or joins) its build and downloads once that lands.
+async function requestMacZip(slug, branch, name){
+  const r = await api(`/api/mac/${encodeURIComponent(slug)}/build`, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({branch})});
+  if (r.error) { toast(`${name}: ${r.error}`); return; }
+  if (r.ready) {
+    location.href = r.url;
+    toast(`Downloading ${name} (${r.branch}@${r.entry.commit}). The first open is blocked once: System Settings › Privacy & Security › Open Anyway.`);
+    return;
+  }
+  pendingMac = { id: r.jobId, slug, branch, name };
+  toast(`Building ${name} from ${r.branch}@${r.commit}; the download starts when it's done. Keep this page open.`);
+  await poll(); openPane(r.jobId);
+}
+function checkPendingMac(){
+  if (!pendingMac) return;
+  const b = S.builds.find(x=>x.id===pendingMac.id);
+  if (!b || b.status==='running' || b.status==='queued') return;
+  const p = pendingMac; pendingMac = null;
+  if (b.status !== 'success') { toast(`Build of ${p.name} ${b.status}: nothing to download. See the build log.`); return; }
+  requestMacZip(p.slug, p.branch, p.name);
 }
 
 async function pollLog(){
@@ -710,6 +773,18 @@ document.addEventListener('click', async e=>{
     pendingOta = { id: job.id, key: pc.bundleId + '|' + pc.platform, name: repoName };
     toast(`Building ${repoName} for OTA — install onto ${device} starts automatically when the build finishes. Keep this page open.`);
     await poll(); openPane(job.id);
+    return;
+  }
+
+  const macBtn = t.closest?.('[data-macdl], [data-maclink]');
+  if (macBtn) {
+    const repo = S.repos.find(r=>r.name===macBtn.dataset.repo);
+    const slug = macBtn.dataset.macdl || macBtn.dataset.maclink;
+    const m = repo.macApps.find(x=>x.slug===slug);
+    const branch = sel[repo.name].branch;
+    if (macBtn.dataset.macdl) { await requestMacZip(slug, branch, m.name); return; }
+    const r = await api(`/api/mac/${encodeURIComponent(slug)}/link?branch=${encodeURIComponent(branch)}`);
+    if (r.error) toast(`${m.name}: ${r.error}`); else copyText(r.curl, `curl command for ${m.name}`);
     return;
   }
 

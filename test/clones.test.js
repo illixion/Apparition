@@ -1,8 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-require('./helpers'); // sets the env first
-const { staleClones } = require('../server');
+const { TMP } = require('./helpers'); // sets the env first
+const { staleClones, siblingPackages } = require('../server');
 
 const DAY = 86400000;
 const now = 100 * DAY;
@@ -50,4 +50,22 @@ test('a clone leaves out the excluded paths and copies everything else whole', a
     fs.rmSync(src, { recursive: true, force: true });
     fs.rmSync(path.dirname(dst), { recursive: true, force: true });
   }
+});
+
+test('a clone links the packages outside the repo it builds against, transitively', () => {
+  const projects = fs.mkdtempSync(path.join(TMP, 'projects-'));
+  const write = (rel, text) => { fs.mkdirSync(path.dirname(path.join(projects, rel)), { recursive: true }); fs.writeFileSync(path.join(projects, rel), text); };
+  // the app's project references a sibling package and one of its own
+  write('App/App/App.xcodeproj/project.pbxproj', `isa = XCLocalSwiftPackageReference;\n\t\t\trelativePath = ../../SDK;\n
+    isa = XCLocalSwiftPackageReference;\n\t\t\trelativePath = "../Packages/Local";`);
+  write('App/Packages/Local/Package.swift', '.package(path: "../../../Trace")');
+  // SDK pulls in Trace; Missing has no checkout; build/ is never scanned
+  write('SDK/Package.swift', '.package(name: "Trace", path: "../Trace"), .package(path: "../Missing")');
+  write('Trace/Package.swift', '');
+  write('App/build/Stale/Package.swift', '.package(path: "../../../Other")');
+  fs.mkdirSync(path.join(projects, 'Other'));
+  // the clone sits in a slot elsewhere, so its own references resolve there
+  const slot = fs.mkdtempSync(path.join(TMP, 'slot-'));
+  fs.cpSync(path.join(projects, 'App'), path.join(slot, 'App'), { recursive: true });
+  assert.deepEqual(siblingPackages(path.join(slot, 'App'), projects), ['SDK', 'Trace']);
 });
