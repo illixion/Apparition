@@ -71,6 +71,9 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       here, and print the five words that open it. AirDrop or send the file to a device and
       open it in Apparition (or `signing import` it on another computer), so both sign with
       one certificate instead of using another of the account's two.
+  apparition signing hand-off --apple-id <email> [--device <name>] [--bundle-id <id>]
+      Put this computer's certificate key for the Apple ID in Apparition's Files inbox on a
+      paired device, as installing Apparition does, for an Apparition installed another way.
   apparition signing import <file>
       Use the certificate key in a .apparitionkey from another device (asks its five words) or
       a .apparitionsigning file, for that Apple ID's signing here.
@@ -125,7 +128,7 @@ async fn main() -> ExitCode {
         Some("sign") => sign(&args[1..]).await,
         Some("jit") => jit(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
-        Some("signing") => signing(&args[1..]),
+        Some("signing") => signing(&args[1..]).await,
         Some("certificates") => account_command(&args[1..], Slot::Certificates).await,
         Some("app-ids") => account_command(&args[1..], Slot::AppIds).await,
         Some("relay") => relay(&args[1..]).await,
@@ -155,7 +158,7 @@ fn fail(message: impl Into<String>) -> Error {
 
 // MARK: Sharing the Apple ID's certificate key
 
-fn signing(args: &[String]) -> Result<(), Error> {
+async fn signing(args: &[String]) -> Result<(), Error> {
     let data_dir = store().apple_id_dir();
     match args.first().map(String::as_str) {
         Some("share") => {
@@ -191,7 +194,37 @@ fn signing(args: &[String]) -> Result<(), Error> {
             }
             Ok(())
         }
-        _ => Err(fail("usage: apparition signing share --apple-id <email> | signing import <file>")),
+        Some("hand-off") => {
+            let usage = || fail("usage: apparition signing hand-off --apple-id <email> [--device <name>] [--bundle-id <id>]");
+            let (mut email, mut wanted, mut bundle_id) = (None, None, None);
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                let value = rest.next().ok_or_else(usage)?;
+                match arg.as_str() {
+                    "--apple-id" => email = Some(value),
+                    "--device" => wanted = Some(value),
+                    "--bundle-id" => bundle_id = Some(value.clone()),
+                    _ => return Err(usage()),
+                }
+            }
+            let email = email.ok_or_else(usage)?;
+            let device = find_device(wanted.map(String::as_str))?;
+            println!("Connecting to {}…", device.name);
+            let pin = || ask("The device wants to pair again. PIN: ");
+            let mut tunnel = store().connect(&device, pin).await?;
+            let bundle_id = match bundle_id {
+                Some(id) => id,
+                None => match tunnel.installed_like(APPARITION_ID).await?.as_slice() {
+                    [one] => one.clone(),
+                    [] => return Err(fail(format!("Apparition isn't installed on {}", device.name))),
+                    several => return Err(fail(format!("several Apparitions on {}: choose one with --bundle-id ({})", device.name, several.join(", ")))),
+                },
+            };
+            tunnel.hand_off_signing(&bundle_id, Handoff::AppleId { data_dir: &data_dir, email, team_id: None }).await?;
+            println!("Put {email}'s certificate key in {bundle_id}'s inbox on {}: Apparition there now signs with this computer's certificate.", device.name);
+            Ok(())
+        }
+        _ => Err(fail("usage: apparition signing share --apple-id <email> | signing hand-off --apple-id <email> | signing import <file>")),
     }
 }
 
@@ -621,7 +654,7 @@ async fn handoff(
     let Some(p12) = &options.p12 else {
         let Some((email, team)) = apple_id else { return Ok(()) };
         let data_dir = store().apple_id_dir();
-        tunnel.hand_off_signing(installed_id, Handoff::AppleId { data_dir: &data_dir, email, team_id: team }).await?;
+        tunnel.hand_off_signing(installed_id, Handoff::AppleId { data_dir: &data_dir, email, team_id: Some(team) }).await?;
         println!("Shared this computer's certificate with Apparition: sign in there with {email} and it signs with the same one.");
         return Ok(());
     };

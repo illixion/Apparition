@@ -273,6 +273,19 @@ impl Tunnel {
         }))
     }
 
+    /// The user apps installed whose bundle ID is `id` or starts with `id.`, sorted.
+    pub async fn installed_like(&mut self, id: &str) -> Result<Vec<String>, Report> {
+        let mut installer =
+            idevice::installation_proxy::InstallationProxyClient::connect_rsd(&mut self.adapter, &mut self.handshake)
+                .await
+                .context("installation_proxy connect failed")?;
+        let apps = installer.get_apps(Some("User"), None).await?;
+        let prefix = format!("{id}.");
+        let mut found: Vec<String> = apps.keys().filter(|app| *app == id || app.starts_with(&prefix)).cloned().collect();
+        found.sort();
+        Ok(found)
+    }
+
     /// The pid of `bundle_id`'s running process, if it runs.
     pub async fn running_pid(&mut self, bundle_id: &str) -> Result<Option<u64>, Report> {
         crate::jit::running_pid(&mut self.adapter, &mut self.handshake, bundle_id).await
@@ -437,7 +450,7 @@ pub async fn download_apparition_for(
 pub enum Handoff<'a> {
     /// The Apple ID's certificate key, from `<data_dir>/storage.json`: Apparition then signs
     /// with the same certificate, so the two use one of a free account's two.
-    AppleId { data_dir: &'a Path, email: &'a str, team_id: &'a str },
+    AppleId { data_dir: &'a Path, email: &'a str, team_id: Option<&'a str> },
     /// The .p12 and profiles, as files; Apparition asks for the .p12's password once.
     Certificate { p12: &'a Path, profiles: &'a [std::path::PathBuf] },
 }
@@ -450,7 +463,7 @@ impl Tunnel {
         };
         let files = match handoff {
             Handoff::AppleId { data_dir, email, team_id } => {
-                let file = export_apple_id_key(data_dir, email, Some(team_id), &hostname())?;
+                let file = export_apple_id_key(data_dir, email, team_id, &hostname())?;
                 vec![("apple-id.apparitionsigning".to_string(), file)]
             }
             Handoff::Certificate { p12, profiles } => {

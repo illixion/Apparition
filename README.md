@@ -224,7 +224,9 @@ Apple ID, and installs. Installing Apparition also hands it what signed it, thro
 inbox: the .p12 and profiles (it asks for the .p12's password once), or the Apple ID's
 certificate key as a `.apparitionsigning` file. With the key, Apparition signs with the same
 certificate as the computer once signed in to the same Apple ID, so the two use one of a free
-account's two certificates instead of one each.
+account's two certificates instead of one each. For an Apparition installed some other way,
+`apparition signing hand-off --apple-id <email> [--device <name>]` puts the key in its inbox on
+its own.
 
 Between devices, and from a device back to a computer, the key goes sealed: Settings > Share
 Signing in Apparition (or `apparition signing share --apple-id <email>`) writes a

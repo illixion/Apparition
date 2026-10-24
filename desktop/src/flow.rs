@@ -659,7 +659,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 let apple_id_dir = state.store.apple_id_dir();
                 let (kind, what) = match (&certificate, &apple_id) {
                     (Some(cert), _) => ("certificate", Handoff::Certificate { p12: &cert.p12, profiles: &cert.profiles }),
-                    (None, Some((email, team_id))) => ("appleId", Handoff::AppleId { data_dir: &apple_id_dir, email, team_id }),
+                    (None, Some((email, team_id))) => ("appleId", Handoff::AppleId { data_dir: &apple_id_dir, email, team_id: Some(team_id) }),
                     (None, None) => unreachable!("signed with neither"),
                 };
                 // The app is installed either way; a failed handoff is reported, not fatal.
