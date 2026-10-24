@@ -38,6 +38,11 @@ struct LibraryView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     RAVEScreenHeading("Library")
+                    #if os(tvOS)
+                    // tvOS's toolbar squeezes its title ("Ref…h All") and is far from the focus: here it's the first thing.
+                    refreshAllButton
+                        .padding(.bottom, 24)
+                    #endif
                     content
                 }
                 .padding(32)
@@ -50,18 +55,11 @@ struct LibraryView: View {
                 await model.listApps(host: model.defaultTunnelHost, port: model.defaultTunnelPort)
             }
             .raveScreenTitle("Library")
+            #if !os(tvOS)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        Task { await library.refresh(force: true, trigger: "button") }
-                    } label: {
-                        Label("Refresh All", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(library.busy || model.busy || library.installed.isEmpty)
-                    .help("Re-sign and reinstall every app now, so each gets a fresh 7 days")
-                }
+                ToolbarItem(placement: .primaryAction) { refreshAllButton }
             }
+            #endif
             .confirmationDialog("Update Apparition to \(library.availableUpdate?.version ?? "")?", isPresented: $confirmingUpdate, titleVisibility: .visible) {
                 Button("Download and Install") { Task { await library.updateSelf() } }
             } message: {
@@ -73,6 +71,17 @@ struct LibraryView: View {
                 Text("Apparition signs itself again with \(library.signing.signerName(library.selfSigner)) and hands the update to \(ThisDevice.os), keeping its data. The update applies when you close Apparition, like an App Store update.")
             }
         }
+    }
+
+    private var refreshAllButton: some View {
+        Button {
+            Task { await library.refresh(force: true, trigger: "button") }
+        } label: {
+            Label("Refresh All", systemImage: "arrow.triangle.2.circlepath")
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(library.busy || model.busy || library.installed.isEmpty)
+        .help("Re-sign and reinstall every app now, so each gets a fresh 7 days")
     }
 
     @ViewBuilder
