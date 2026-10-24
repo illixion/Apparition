@@ -101,6 +101,12 @@ struct RootView: View {
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }
+            // A sign-in started away from Setup (an install, a refresh) asks for its 2FA code here,
+            // unless the screen it started from shows the prompt itself. Closing the sheet cancels it.
+            .panel(isPresented: Binding(get: { account.twoFactor != nil && account.twoFactorHosts == 0 },
+                                        set: { if !$0, account.twoFactor != nil { account.answerTwoFactor("abort") } })) {
+                TwoFactorSheet(account: account)
+            }
             #if !APPARITION_RELEASE
             .onChange(of: DebugScreens.shared.tab) { _, wanted in
                 guard let wanted else { return }

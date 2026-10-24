@@ -25,19 +25,25 @@ struct DeveloperSlotsView: View {
 
     var body: some View {
         Group {
-            if account.team == nil && !loading {
-                ContentUnavailableView {
-                    Label("Not Signed In", systemImage: "person.crop.circle.badge.questionmark")
-                } description: {
-                    Text("Sign in with your Apple ID to see the certificates and App IDs it uses.")
-                } actions: {
-                    Button("Sign In…", action: onSignIn)
-                        .buttonStyle(.borderedProminent)
+            if let request = account.twoFactor {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        RAVEScreenHeading("Certificates & App IDs")
+                        Text("Apple wants to confirm it's you before Apparition lists the certificates.")
+                            .foregroundStyle(.secondary)
+                        TwoFactorPrompt(account: account, request: request)
+                    }
+                    .padding(24)
+                    .frame(maxWidth: 720, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                 }
+            } else if account.team == nil && !loading {
+                notSignedIn
             } else {
                 list
             }
         }
+        .hostsTwoFactorPrompt(account)
         .raveScreenTitle("Certificates & App IDs")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -54,6 +60,36 @@ struct DeveloperSlotsView: View {
             }
         }
         .task { await load() }
+    }
+
+    /// No session: sign in here with the remembered password, which asks for a 2FA code on this
+    /// screen if Apple wants one, or in Setup without one.
+    private var notSignedIn: some View {
+        let remembered = account.rememberPassword && Keychain.hasPassword
+        return ContentUnavailableView {
+            Label("Not Signed In", systemImage: "person.crop.circle.badge.questionmark")
+        } description: {
+            if account.autoSignInPaused {
+                Text("Apple asked for a two-factor code when Apparition last signed in on its own. Sign in to enter one and see the certificates and App IDs your Apple ID uses.")
+            } else if let error = account.lastError {
+                Text(error)
+            } else {
+                Text("Sign in with your Apple ID to see the certificates and App IDs it uses.")
+            }
+        } actions: {
+            if remembered {
+                Button("Sign In") {
+                    Task {
+                        if await account.signInWithRememberedPassword(byPerson: true) { await load() }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(account.busy)
+            } else {
+                Button("Sign In…", action: onSignIn)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
     }
 
     private var list: some View {
@@ -304,8 +340,10 @@ struct DeveloperSlotsView: View {
         guard !loading else { return }
         loading = true
         defer { loading = false }
-        // A remembered password signs in quietly, as a refresh would.
-        if account.team == nil, !(await account.signInSilently()) { return }
+        // A remembered password signs in as a refresh would; Apple's 2FA step, if it asks for
+        // one, shows on this screen (or the sign-in waits for the person, if they already
+        // left a code unentered).
+        if account.team == nil, !(await account.signInWithRememberedPassword()) { return }
         do {
             certificates = try await DeveloperSlots.certificates()
             certificateError = nil

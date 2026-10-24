@@ -1,6 +1,7 @@
 import DebugTrace
 import Foundation
 import Observation
+import UIKit
 
 private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "Account")
 
@@ -78,8 +79,19 @@ final class AccountModel {
     private(set) var downloads: [String] = []
     private(set) var signs: [SignResult] = []
     private(set) var downloadProgress: String?
+    /// Sign-ins with the remembered password wait for the person: one reached Apple's 2FA step
+    /// and the code went unentered. Kept across launches, so each launch's first refresh doesn't
+    /// make Apple push another code. Cleared by any sign-in that succeeds.
+    private(set) var autoSignInPaused = UserDefaults.standard.bool(forKey: AccountModel.autoSignInPausedKey) {
+        didSet { UserDefaults.standard.set(autoSignInPaused, forKey: Self.autoSignInPausedKey) }
+    }
+    /// Views on screen that show a 2FA request themselves (`hostsTwoFactorPrompt`); while there
+    /// are none, RootView shows it in a sheet.
+    var twoFactorHosts = 0
 
+    private static let autoSignInPausedKey = "autoSignInPaused"
     private let twoFactorBox = PinBox()
+    private var rememberedSignIn: Task<Bool, Never>?
 
     nonisolated static var dataDir: URL {
         AppFolders.support
@@ -101,36 +113,83 @@ final class AccountModel {
 
     // MARK: Sign-in
 
+    /// The person signs in with what they typed. Apple's 2FA step shows as a prompt (`twoFactor`).
     func signIn(email: String, password: String) async {
         guard !busy else { return }
         guard !anisetteURL.isEmpty else {
             lastError = "Enter an anisette server URL first (or self-host one: selfhost/anisette in the Apparition repo)."
             return
         }
+        _ = await login(email: email, password: password, attended: true)
+    }
+
+    /// Opens a session with the remembered password, for work that needs one (signing, the
+    /// certificates screen). With someone at the app, Apple's 2FA step shows as a prompt. With
+    /// nobody there it can't be answered, so the attempt stops at it and automatic sign-ins pause
+    /// (`autoSignInPaused`): each sign-in that reaches 2FA makes Apple push a code to the trusted
+    /// devices, which nobody would be asked for. `byPerson`: the person asked just now (a Sign In
+    /// button), which also resumes paused sign-ins. Callers arriving while one runs share it.
+    func signInWithRememberedPassword(byPerson: Bool = false) async -> Bool {
+        if team != nil { return true }
+        if let running = rememberedSignIn { return await running.value }
+        guard !busy, byPerson || !autoSignInPaused, rememberPassword, !anisetteURL.isEmpty,
+              let email = lastAppleID, let password = Keychain.load(account: email) else { return false }
+        let attended = byPerson || Self.personIsHere
+        let attempt = Task { await login(email: email, password: password, attended: attended) }
+        rememberedSignIn = attempt
+        defer { rememberedSignIn = nil }
+        return await attempt.value
+    }
+
+    /// Why work that needs a session couldn't open one, for a refresh's or install's result.
+    var notSignedInReason: String {
+        if autoSignInPaused {
+            return "not signed in: Apple asked for a two-factor code, so sign in again to continue"
+        }
+        if rememberPassword, Keychain.hasPassword, let lastError {
+            return "sign-in failed: \(lastError)"
+        }
+        return "not signed in (sign in, or turn on Remember password for unattended refreshes)"
+    }
+
+    /// Signs in and opens the developer session. `attended`: someone is at the app, so Apple's 2FA
+    /// step shows as a prompt; otherwise the sign-in stops there. A 2FA step left unanswered either
+    /// way pauses automatic sign-ins until one succeeds.
+    private func login(email: String, password: String, attended: Bool) async -> Bool {
         busy = true
         lastError = nil
         defer { busy = false; twoFactor = nil }
-        log.info("sign-in start")
+        log.info("sign-in start (\(attended ? "attended" : "unattended", privacy: .public))")
 
         let anisette = anisetteURL
         let dataDir = Self.dataDir.path
-        let box = Unmanaged.passUnretained(twoFactorBox).toOpaque()
-        twoFactorBox.onRequestJSON = { [weak self] json in
-            let request = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
-            Task { @MainActor in
-                let numbers = (request?["numbers"] as? [[String: Any]] ?? []).compactMap { entry in
-                    (entry["id"] as? Int).map { TwoFactorRequest.PhoneNumber(id: $0, number: entry["number"] as? String ?? "") }
+        let asked = TwoFactorAsked()
+        let reply: [String: Any]
+        if attended {
+            let box = Unmanaged.passUnretained(twoFactorBox).toOpaque()
+            twoFactorBox.onRequestJSON = { [weak self] json in
+                asked.set()
+                let request = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+                Task { @MainActor in
+                    let numbers = (request?["numbers"] as? [[String: Any]] ?? []).compactMap { entry in
+                        (entry["id"] as? Int).map { TwoFactorRequest.PhoneNumber(id: $0, number: entry["number"] as? String ?? "") }
+                    }
+                    self?.twoFactor = TwoFactorRequest(sms: request?["sms"] as? Bool ?? false,
+                                                       unknown: request?["unknown"] as? Bool ?? false,
+                                                       lastError: request?["lastError"] as? String,
+                                                       numbers: numbers,
+                                                       selectedNumberId: request?["selectedNumberId"] as? Int)
                 }
-                self?.twoFactor = TwoFactorRequest(sms: request?["sms"] as? Bool ?? false,
-                                                   unknown: request?["unknown"] as? Bool ?? false,
-                                                   lastError: request?["lastError"] as? String,
-                                                   numbers: numbers,
-                                                   selectedNumberId: request?["selectedNumberId"] as? Int)
             }
+            reply = await Task.detached {
+                Self.call(apparition_login(email, password, anisette, dataDir, AccountModel.twoFactorCallback, box))
+            }.value
+        } else {
+            let context = Unmanaged.passUnretained(asked).toOpaque()
+            reply = await Task.detached {
+                Self.call(apparition_login(email, password, anisette, dataDir, AccountModel.unattendedTwoFactorCallback, context))
+            }.value
         }
-        let reply = await Task.detached {
-            Self.call(apparition_login(email, password, anisette, dataDir, AccountModel.twoFactorCallback, box))
-        }.value
 
         if reply["ok"] as? Bool == true {
             UserDefaults.standard.set(email, forKey: "appleID")
@@ -138,37 +197,22 @@ final class AccountModel {
             self.email = reply["email"] as? String
             team = Self.team(reply["team"])
             teams = (reply["teams"] as? [Any] ?? []).compactMap(Self.team)
+            autoSignInPaused = false
             log.info("sign-in ok, \(self.teams.count, privacy: .public) teams")
+            return true
+        }
+        let error = reply["error"] as? String ?? "unknown error"
+        log.error("sign-in failed: \(error, privacy: .private)")
+        if asked.value {
+            autoSignInPaused = true
+            lastError = attended
+                ? "The two-factor code wasn't entered. Sign in again when you're ready; refreshes wait until then."
+                : "Apple asked for a two-factor code, which nobody was here to enter. Sign in again to continue; refreshes wait until then."
+            log.notice("automatic sign-ins paused: a 2FA step went unanswered")
         } else {
-            lastError = reply["error"] as? String ?? "unknown error"
-            log.error("sign-in failed: \(self.lastError ?? "", privacy: .private)")
+            lastError = error
         }
-    }
-
-    /// Signs in with the Keychain password, for refreshes with nobody present. A 2FA prompt
-    /// can't be answered here, so it aborts; Apple skips 2FA for a device it already trusts.
-    func signInSilently() async -> Bool {
-        if team != nil { return true }
-        guard !busy, rememberPassword, !anisetteURL.isEmpty, let email = UserDefaults.standard.string(forKey: "appleID"),
-              let password = Keychain.load(account: email) else { return false }
-        busy = true
-        defer { busy = false }
-        log.info("silent sign-in start")
-        let anisette = anisetteURL
-        let dataDir = Self.dataDir.path
-        let reply = await Task.detached {
-            Self.call(apparition_login(email, password, anisette, dataDir, AccountModel.twoFactorCallback, nil))
-        }.value
-        guard reply["ok"] as? Bool == true else {
-            lastError = reply["error"] as? String ?? "unknown error"
-            log.error("silent sign-in failed: \(self.lastError ?? "", privacy: .private)")
-            return false
-        }
-        self.email = reply["email"] as? String
-        team = Self.team(reply["team"])
-        teams = (reply["teams"] as? [Any] ?? []).compactMap(Self.team)
-        log.info("silent sign-in ok")
-        return true
+        return false
     }
 
     /// `code:123456`, `devices`, `sms:<id>`, `resend` or `abort`.
@@ -182,6 +226,17 @@ final class AccountModel {
         let box = Unmanaged<PinBox>.fromOpaque(context).takeUnretainedValue()
         box.onRequestJSON?(params.map { String(cString: $0) } ?? "{}")
         return box.waitForPin()
+    }
+
+    /// With nobody to ask: notes that Apple asked for a code, and gives none, which stops the sign-in.
+    nonisolated static let unattendedTwoFactorCallback: apparition_two_factor_fn = { context, _ in
+        if let context { Unmanaged<TwoFactorAsked>.fromOpaque(context).takeUnretainedValue().set() }
+        return nil
+    }
+
+    /// Whether someone is looking at the app, and so could answer a 2FA prompt.
+    private static var personIsHere: Bool {
+        UIApplication.shared.applicationState == .active
     }
 
     // MARK: Apps
@@ -253,6 +308,7 @@ final class AccountModel {
         team = nil
         teams = []
         lastError = nil
+        autoSignInPaused = false
         Keychain.delete()
         UserDefaults.standard.removeObject(forKey: "appleID")
         log.info("signed out")
@@ -261,13 +317,14 @@ final class AccountModel {
     /// The Apple ID last signed in with (not a secret; the field starts from it).
     var lastAppleID: String? { UserDefaults.standard.string(forKey: "appleID") }
 
+    /// Reads the core's session again. An imported certificate key leaves it open (the next
+    /// signing uses the key), so this only catches up with a session ended elsewhere.
     func refreshSession() {
         let reply = Self.call(apparition_session())
         if reply["signedIn"] as? Bool == true {
             email = reply["email"] as? String
             team = Self.team(reply["team"])
         } else {
-            // The core ended the session (an imported certificate key): sign in again when next needed.
             team = nil
         }
     }
@@ -363,5 +420,20 @@ enum Keychain {
     static var hasPassword: Bool {
         guard let account = UserDefaults.standard.string(forKey: "appleID") else { return false }
         return load(account: account) != nil
+    }
+}
+
+/// Whether a sign-in reached Apple's 2FA step; set on the core's thread, read after the sign-in.
+final class TwoFactorAsked: @unchecked Sendable {
+    private let lock = NSLock()
+    private var asked = false
+
+    func set() {
+        lock.lock(); asked = true; lock.unlock()
+    }
+
+    var value: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return asked
     }
 }

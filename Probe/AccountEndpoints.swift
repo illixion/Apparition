@@ -14,6 +14,8 @@ enum AccountEndpoints {
         let lastError: String?
         let twoFactorPending: Bool
         let twoFactorSMS: Bool?
+        /// Remembered-password sign-ins wait for the person: a 2FA code went unentered.
+        let autoSignInPaused: Bool
         let downloads: [String]
         let downloadProgress: String?
         let pairedUDID: String?
@@ -25,6 +27,7 @@ enum AccountEndpoints {
         State(busy: model.busy, signedIn: model.team != nil, team: model.team, teams: model.teams,
               anisetteURL: model.anisetteURL, lastError: model.lastError,
               twoFactorPending: model.twoFactor != nil, twoFactorSMS: model.twoFactor?.sms,
+              autoSignInPaused: model.autoSignInPaused,
               downloads: model.downloads, downloadProgress: model.downloadProgress,
               pairedUDID: UserDefaults.standard.string(forKey: "pairedUDID"),
               pairedName: UserDefaults.standard.string(forKey: "pairedName"),

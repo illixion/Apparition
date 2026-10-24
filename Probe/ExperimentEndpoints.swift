@@ -70,7 +70,7 @@ enum ExperimentEndpoints {
                         AccountModel.call(apparition_sign_offline_keeping_id(dataDir, path, identity, profileAppId, bundleId, minimal))
                     }.value
                 } else {
-                    guard await account.signInSilently() else {
+                    guard await account.signInWithRememberedPassword() else {
                         throw DebugError.failedPrecondition("Not signed in", hint: "Sign in on the headset with Remember password on")
                     }
                     reply = await Task.detached {

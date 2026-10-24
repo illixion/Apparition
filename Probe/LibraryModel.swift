@@ -469,8 +469,8 @@ final class LibraryModel {
         let signer = signing.signer(for: record)
         let signed: [String: Any]
         if signer == SigningStore.appleID {
-            guard await account.signInSilently() else {
-                return fail(&record, "not signed in (sign in, or turn on Remember password for unattended refreshes)")
+            guard await account.signInWithRememberedPassword() else {
+                return fail(&record, account.notSignedInReason)
             }
             signed = await AccountModel.signFile(path, udid: udid, deviceName: name, stripExtensions: record.stripExtensions)
         } else {
@@ -598,8 +598,8 @@ final class LibraryModel {
         let signer = selfSigner
         var signingId: String?
         if signer == SigningStore.appleID {
-            guard await account.signInSilently() else {
-                return selfFail("not signed in (sign in, or turn on Remember password for unattended refreshes)")
+            guard await account.signInWithRememberedPassword() else {
+                return selfFail(account.notSignedInReason)
             }
             guard account.team?.id == team else {
                 return selfFail("Apparition was installed by team \(team), but the Apple ID signs for team \(account.team?.id ?? "?"), so it would install as a second copy. Sign in with the Apple ID that installed it, or import the certificate that signed it.")

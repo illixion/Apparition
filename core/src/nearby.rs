@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::{SESSION, reply, text};
+use crate::{reply, text};
 
 const VERSION: u32 = 1;
 /// The largest message either side takes: a signing file is about 3 KB.
@@ -421,17 +421,14 @@ pub unsafe extern "C" fn apparition_nearby_send_begin(data_dir: *const c_char, e
 }
 
 /// Starts waiting for a nearby sender's key, as `name`. A key the person accepts is imported into
-/// `<data_dir>/storage.json` and ends the signed-in session, as `apparition_import_signing_file`
-/// does. Returns `{ok, handle}`.
+/// `<data_dir>/storage.json`, as `apparition_import_signing_file` does; a signed-in session
+/// stays and signs with it. Returns `{ok, handle}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_nearby_receive_begin(data_dir: *const c_char, name: *const c_char) -> *mut c_char {
     reply((|| {
         let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
         let name = unsafe { text(name) }?;
-        let import: Import = Box::new(move |file: &[u8]| {
-            *SESSION.lock().unwrap() = None;
-            crate::share::import_signing_file(&data_dir, file)
-        });
+        let import: Import = Box::new(move |file: &[u8]| crate::share::import_signing_file(&data_dir, file));
         let receiver = Receiver::new(&name, import)?;
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         EXCHANGES.lock().unwrap().insert(handle, Exchange::Receiver(receiver));

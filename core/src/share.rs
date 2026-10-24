@@ -19,7 +19,7 @@ use rsa::{RsaPrivateKey, pkcs8::DecodePrivateKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{FileStorage, SESSION, account::MACHINE_NAME, reply, text};
+use crate::{FileStorage, account::MACHINE_NAME, reply, text};
 
 /// The public half (PKCS#1 DER) of the certificate key this install keeps for `email`.
 pub(crate) fn stored_public_key(data_dir: &Path, email: &str) -> Option<Vec<u8>> {
@@ -122,6 +122,7 @@ pub fn import_signing_file(data_dir: &Path, data: &[u8]) -> Result<Value, Report
     for name in &names {
         storage.put(name, &file.private_key)?;
     }
+    crate::key_imported();
     tracing::info!("imported a shared Apple ID certificate key");
     Ok(json!({
         "kind": file.kind,
@@ -332,20 +333,16 @@ pub fn import_any_signing_file(data_dir: &Path, data: &[u8], passphrase: Option<
 }
 
 /// Imports a signing file, plain (`.apparitionsigning`) or sealed (`.apparitionkey`, with the
-/// words typed for it in `passphrase`, which may be null for a plain one). Ends the
-/// signed-in session first, so its copy of the storage can't write the old key back; the
-/// next signing signs in again (silently, with a remembered password). Returns `{ok, kind,
-/// appleId, ...}`.
+/// words typed for it in `passphrase`, which may be null for a plain one). A signed-in
+/// session stays: its next signing uses the imported key (`key_imported`). Wrong words throw
+/// and change nothing. Returns `{ok, kind, appleId, ...}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_import_signing_file(data_dir: *const c_char, path: *const c_char, passphrase: *const c_char) -> *mut c_char {
     reply((|| {
         let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
         let data = std::fs::read(unsafe { text(path) }?)?;
         let passphrase = unsafe { crate::identity::optional(passphrase) }?;
-        // Open it before ending the session, so wrong words change nothing.
-        let plain = unseal(data, passphrase.as_deref())?;
-        *SESSION.lock().unwrap() = None;
-        import_signing_file(&data_dir, &plain)
+        import_any_signing_file(&data_dir, &data, passphrase.as_deref())
     })())
 }
 
@@ -400,8 +397,11 @@ mod tests {
 
         assert!(export_apple_id_key(&from, "other@example.com", None, "test").is_err());
         let file = export_apple_id_key(&from, "Someone@Example.com", Some("TEAM123456"), "test").unwrap();
+        let generation = crate::KEY_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
         let imported = import_signing_file(&to, &file).unwrap();
         assert_eq!(imported["replaced"], false);
+        // A session's next signing checks the account again, for the new key.
+        assert!(crate::KEY_GENERATION.load(std::sync::atomic::Ordering::Relaxed) > generation);
         let storage = FileStorage::open(to.join("storage.json"));
         assert_eq!(storage.get(&key_name("Someone@Example.com")).as_deref(), Some(encoded.as_str()));
         assert_eq!(storage.get(&key_name("someone@example.com")).as_deref(), Some(encoded.as_str()));

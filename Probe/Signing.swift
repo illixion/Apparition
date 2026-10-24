@@ -177,7 +177,8 @@ final class SigningStore {
 
     private(set) var pendingCertificates: [IncomingCertificate] = []
     private(set) var pendingKeys: [IncomingKey] = []
-    /// After a shared Apple ID certificate key is imported: the core ended the session.
+    /// After a shared Apple ID certificate key is imported. The core's session stays open and
+    /// signs with it next.
     var onAppleIDKeyImported: (() -> Void)?
     /// Handing the Apple ID's certificate key to, or getting it from, Apparition on a nearby
     /// device or computer, checked by a six-digit code (NearbySigning.swift).

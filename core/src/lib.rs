@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString, c_char, c_void},
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}},
 };
 
 use isideload::{
@@ -55,8 +55,9 @@ pub struct Session {
     /// The next signing may make a certificate although Apparition elsewhere has one
     /// (`check_certificate`).
     allow_new_certificate: bool,
-    /// When `check_certificate` last found the account's certificate for this install's key.
-    certificate_checked: Option<std::time::Instant>,
+    /// When `check_certificate` last found the account's certificate for this install's key, and
+    /// which key that was (`KEY_GENERATION` then).
+    certificate_checked: Option<(std::time::Instant, u64)>,
 }
 
 impl Session {
@@ -115,13 +116,25 @@ static NEW_CERTIFICATE_ALLOWED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// times in a row, while one revoked from another device should be noticed.
 const CERTIFICATE_RECHECK: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Counts the certificate keys imported in this process, so a session checks the account again
+/// after one arrives. The session itself carries on: isideload reads the key from storage.json at
+/// each signing, and FileStorage reads through to the file, so it signs with the new key without
+/// signing in again (which can make Apple push a 2FA code nobody asked for).
+static KEY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// A certificate key was imported (share::import_signing_file).
+pub(crate) fn key_imported() {
+    KEY_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Before signing with the Apple ID: stops with [`SharedCertificate`] where isideload would make
 /// a certificate (no key here, or one that matches none of the account's) while the account
 /// already has one Apparition made. isideload otherwise makes one on its own, so whichever
 /// install signed first decided, and a third device found no room (7460). The first certificate,
 /// with none of Apparition's on the account, is made as before.
 async fn check_certificate(session: &mut Session) -> Result<(), Report> {
-    if session.certificate_checked.is_some_and(|at| at.elapsed() < CERTIFICATE_RECHECK) {
+    let generation = KEY_GENERATION.load(Ordering::Relaxed);
+    if session.certificate_checked.is_some_and(|(at, key)| key == generation && at.elapsed() < CERTIFICATE_RECHECK) {
         return Ok(());
     }
     share::adopt_key(&session.data_dir, &session.email);
@@ -148,7 +161,7 @@ async fn check_certificate(session: &mut Session) -> Result<(), Report> {
         std::mem::take(&mut session.allow_new_certificate) || chosen
     });
     match check {
-        CertificateCheck::Ours => session.certificate_checked = Some(std::time::Instant::now()),
+        CertificateCheck::Ours => session.certificate_checked = Some((std::time::Instant::now(), generation)),
         CertificateCheck::First => {}
         CertificateCheck::Chosen => tracing::info!("making a certificate though Apparition elsewhere has one, as chosen"),
         CertificateCheck::Shared => {

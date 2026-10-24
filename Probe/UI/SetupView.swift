@@ -17,8 +17,9 @@ struct SetupStatus {
         companion = model.relay != nil
         paired = model.hasPairingFile && pairedUDID != nil
         anisette = !account.anisetteURL.isEmpty
-        // Signed in now, or able to sign in unattended with the remembered password.
-        self.account = account.team != nil || (account.rememberPassword && Keychain.hasPassword)
+        // Signed in now, or able to sign in unattended with the remembered password (not while
+        // that waits for the person, after a 2FA code went unentered).
+        self.account = account.team != nil || (account.rememberPassword && Keychain.hasPassword && !account.autoSignInPaused)
     }
 
     var doneCount: Int { [companion, paired, anisette, account].filter { $0 }.count }
@@ -505,7 +506,6 @@ struct AppleIDStep: View {
 
     @State private var email = ""
     @State private var password = ""
-    @State private var code = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -513,12 +513,21 @@ struct AppleIDStep: View {
                 Note(text: "Signed in\(account.email.map { " as \($0)" } ?? ""), team \(team.name ?? team.id).", kind: .success)
             } else {
                 if account.rememberPassword && Keychain.hasPassword {
-                    Note(text: "Your password is remembered on this \(ThisDevice.noun), so refreshes sign in on their own. Sign in now to check it.", kind: .success)
+                    if account.autoSignInPaused {
+                        Note(text: "Refreshes are waiting for you: Apple asked for a two-factor code when Apparition last signed in on its own. Sign in with the remembered password to enter one.", kind: .warning)
+                        Button("Sign In with Remembered Password") {
+                            Task { await account.signInWithRememberedPassword(byPerson: true) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(account.busy || account.anisetteURL.isEmpty)
+                    } else {
+                        Note(text: "Your password is remembered on this \(ThisDevice.noun), so refreshes sign in on their own. Sign in now to check it.", kind: .success)
+                    }
                 }
                 form
             }
             if let request = account.twoFactor {
-                twoFactor(request)
+                TwoFactorPrompt(account: account, request: request)
             }
             if account.busy && account.twoFactor == nil {
                 HStack(spacing: 12) {
@@ -532,6 +541,7 @@ struct AppleIDStep: View {
             Note(text: "Apple IDs protected with security keys can't sign in here: Apple then asks for the key, which Apparition can't answer on the \(ThisDevice.noun). Use an Apple ID without security keys (a free one works).")
         }
         .onAppear { if email.isEmpty { email = account.lastAppleID ?? "" } }
+        .hostsTwoFactorPrompt(account)
     }
 
     private var form: some View {
@@ -571,48 +581,5 @@ struct AppleIDStep: View {
         let (address, secret) = (email.trimmingCharacters(in: .whitespaces), password)
         password = ""
         Task { await account.signIn(email: address, password: secret) }
-    }
-
-    private func twoFactor(_ request: AccountModel.TwoFactorRequest) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(request.sms ? "Enter the code Apple texted you" : "Enter the code shown on your other Apple devices")
-                .font(.headline)
-            if let error = request.lastError {
-                Note(text: error, kind: .error)
-            }
-            HStack(alignment: .top, spacing: 16) {
-                DigitCodeField(title: "000000", code: $code) { digits in
-                    account.answerTwoFactor("code:" + digits)
-                    code = ""
-                }
-                Button("Verify") {
-                    account.answerTwoFactor("code:" + code)
-                    code = ""
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(code.count != 6)
-            }
-            .focusRow()
-            HStack(spacing: 12) {
-                if request.sms {
-                    Button("Text Again") { account.answerTwoFactor("resend") }
-                    Button("Use My Devices") { account.answerTwoFactor("devices") }
-                } else {
-                    Button("Send to Devices Again") { account.answerTwoFactor("devices") }
-                }
-                if !request.numbers.isEmpty {
-                    Menu("Text a Code To…") {
-                        ForEach(request.numbers) { number in
-                            Button(number.number) { account.answerTwoFactor("sms:\(number.id)") }
-                        }
-                    }
-                }
-                Button("Cancel", role: .cancel) { account.answerTwoFactor("abort") }
-            }
-            .focusRow()
-            .buttonStyle(.bordered)
-        }
-        .padding(18)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }

@@ -446,17 +446,15 @@ pub async fn signing_key_from(path: String) -> Result<Option<String>, Failure> {
 }
 
 /// Imports the Apple ID's certificate key from another device's key file (with the five words
-/// it showed, for a sealed one), so this computer signs with the same certificate. Ends a
-/// signed-in session, whose copy of the storage would otherwise keep the old key. Returns
+/// it showed, for a sealed one), so this computer signs with the same certificate. A signed-in
+/// session stays and signs with it: the storage reads through to the file. Returns
 /// `{appleId, from, replaced}`.
 #[tauri::command]
 pub async fn import_signing_key(state: Shared<'_>, path: String, words: Option<String>) -> Result<Value, Failure> {
     let state = state.inner().clone();
     blocking(move || {
         let data = std::fs::read(&path)?;
-        let imported = api::import_any_signing_file(&state.store.apple_id_dir(), &data, words.as_deref())?;
-        *state.session.lock().unwrap() = None;
-        Ok(imported)
+        Ok(api::import_any_signing_file(&state.store.apple_id_dir(), &data, words.as_deref())?)
     })
     .await
 }
