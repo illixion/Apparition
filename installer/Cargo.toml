@@ -29,6 +29,22 @@ idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a
 [profile.dev.package.argon2]
 opt-level = 3
 
+# Hashing and inflating an app to sign it, likewise: a 780 MB IPA took minutes to seal.
+[profile.dev.package.ring]
+opt-level = 3
+
+[profile.dev.package.sha1]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.zlib-rs]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 
