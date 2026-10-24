@@ -14,7 +14,7 @@ get working end up here.
 | [UTM](#utm) | Vision Pro | Works, with JIT |
 | [ARMSX2](#armsx2) (PS2) | Vision Pro | Works, with JIT |
 | [Madeira](#madeira) (Windows apps) | Vision Pro | Works; its Enable JIT button finds Apparition |
-| [PPSSPP](#ppsspp) (PSP) | Vision Pro, iPhone | JIT works with a build that asks for it the JIT26 way |
+| [PPSSPP](#ppsspp) (PSP) | Vision Pro, iPhone | Runs without JIT. JIT only worked in a patched build we made; there's no published one |
 | [Kodi](#kodi) | Vision Pro | Works, from its `.deb` (Apparition 0.3.2 and later) |
 | [Provenance](#provenance) | Apple TV | The alpha runs; the stable 3.3.0 crashes at launch |
 
@@ -47,12 +47,16 @@ Vision Pro the prompt opens in its own window (0.3.1 and later).
 
 ## PPSSPP
 
-PlayStation Portable emulator. An unmodified PPSSPP has no JIT on devices that enforce
+PlayStation Portable emulator. A stock PPSSPP runs, but without JIT on devices that enforce
 [the iOS 26 rules](../README.md) (A15 and M2 and later, and Vision Pro): it falls back to its
-interpreter. A build that asks the debugger for its code memory with the JIT26 request
-(`brk #0xf00d`) works: we ran PPSSPP's own CPU test through the JIT after Apparition prepared
-the memory and let go. We tested a build patched for that, on a Vision Pro and an iPhone 15
-Pro Max; stock builds need that support upstream first.
+interpreter, which is slow.
+
+JIT needs PPSSPP to ask the debugger for its code memory with the JIT26 request
+(`brk #0xf00d`), which it doesn't. We got it working in a build we patched ourselves: Apparition
+prepared the memory and let go, and PPSSPP's own CPU test then ran through the JIT and matched
+its expected output, on a Vision Pro and an iPhone 15 Pro Max. That patch isn't in PPSSPP and
+nobody publishes a build with it, so for now you can't get PPSSPP with JIT from Apparition or
+anywhere else. Other emulators that already speak the request (ARMSX2, UTM) don't have this problem.
 
 ## Kodi
 
