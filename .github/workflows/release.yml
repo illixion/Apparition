@@ -9,6 +9,11 @@
 #
 # Run it by hand (Actions > Release build > Run workflow) or by pushing a v<version> tag. The
 # version must already be committed in project.yml, installer/Cargo.toml and desktop/Cargo.toml.
+#
+# A fix that only touches the Apple apps needs only the IPAs: run it by hand with `parts` set to
+# "app" (the others are skipped, and project.yml is then the only version that must be bumped).
+# The release site lists such a release as the latest, and keeps offering the installers of the
+# last release that has them. A tag push always builds every part.
 
 name: Release build
 
@@ -18,6 +23,9 @@ on:
       version:
         description: "Version (major.minor.patch), as committed"
         required: true
+      parts:
+        description: "What to build: all, or a comma-separated list of app, macos, windows, linux"
+        default: all
   push:
     tags: ["v*.*.*"]
 
@@ -29,17 +37,44 @@ env:
   RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
+  # Which parts to build: every one for a tag push or `all`, else the ones `parts` lists. Each
+  # job below takes its matrix from here and is skipped when its matrix is empty.
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      apple: ${{ steps.plan.outputs.apple }}
+      linux: ${{ steps.plan.outputs.linux }}
+    steps:
+      - id: plan
+        env:
+          PARTS: ${{ inputs.parts }}
+        run: |
+          [[ -z "$PARTS" || "$PARTS" == all ]] && PARTS=app,macos,windows,linux
+          wanted() { [[ ",${PARTS// /}," == *",$1,"* ]]; }
+          for part in ${PARTS//,/ }; do
+            case "$part" in app|macos|windows|linux) ;; *) echo "::error::no part called $part (app, macos, windows, linux)"; exit 1 ;; esac
+          done
+          apple='[]'
+          wanted app && apple=$(jq -c '. + [{part: "app", title: "Apps (visionOS, iOS, tvOS)", targets: "aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos", brew: "xcodegen"}]' <<< "$apple")
+          wanted macos && apple=$(jq -c '. + [{part: "macos", title: "macOS installer", targets: "aarch64-apple-darwin,x86_64-apple-darwin", brew: ""}]' <<< "$apple")
+          wanted windows && apple=$(jq -c '. + [{part: "windows", title: "Windows installer", targets: "x86_64-pc-windows-gnu", brew: "mingw-w64"}]' <<< "$apple")
+          linux='[]'
+          wanted linux && linux='[{"arch":"x86_64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]'
+          echo "apple=$apple" >> "$GITHUB_OUTPUT"
+          echo "linux=$linux" >> "$GITHUB_OUTPUT"
+          echo "Building: $PARTS" | tee -a "$GITHUB_STEP_SUMMARY"
+
   apple:
     name: ${{ matrix.title }}
+    needs: plan
+    if: needs.plan.outputs.apple != '[]'
     # One job per part of package-release.sh, side by side: built cold one after another they
     # took over two hours, past a job's limit.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { part: app, title: "Apps (visionOS, iOS, tvOS)", targets: "aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos", brew: xcodegen }
-          - { part: macos, title: "macOS installer", targets: "aarch64-apple-darwin,x86_64-apple-darwin", brew: "" }
-          - { part: windows, title: "Windows installer", targets: "x86_64-pc-windows-gnu", brew: mingw-w64 }
+        include: ${{ fromJSON(needs.plan.outputs.apple) }}
     # The image with Xcode 27 (macos-26 has only Xcode 26).
     runs-on: xcode-27
     timeout-minutes: 90
@@ -111,13 +146,13 @@ jobs:
 
   linux:
     name: Linux ${{ matrix.arch }}
+    needs: plan
+    if: needs.plan.outputs.linux != '[]'
     strategy:
       # One architecture failing shouldn't cancel the other: both results are worth seeing.
       fail-fast: false
       matrix:
-        include:
-          - { arch: x86_64, runner: ubuntu-24.04 }
-          - { arch: arm64, runner: ubuntu-24.04-arm }
+        include: ${{ fromJSON(needs.plan.outputs.linux) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -168,7 +203,9 @@ jobs:
 
   attest:
     name: Attest
-    needs: [apple, linux]
+    # Parts that weren't asked for are skipped, which would skip this too without the condition.
+    needs: [plan, apple, linux]
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
