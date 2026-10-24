@@ -44,8 +44,9 @@ struct RootView: View {
     /// is missing (whether or not Setup was dismissed with Finish Later).
     @State private var tab: AppTab
     @Environment(\.scenePhase) private var scenePhase
-    /// An enable-jit link from an app Apparition didn't install, waiting to be allowed.
-    @State private var jitRequest: LibraryModel.JITRequest?
+    #if os(visionOS)
+    @Environment(\.openWindow) private var openWindow
+    #endif
 
     init(model: ProbeModel, account: AccountModel, library: LibraryModel, companions: CompanionFinder) {
         self.model = model
@@ -71,7 +72,14 @@ struct RootView: View {
             }
             .onOpenURL { url in
                 if let request = LibraryModel.jitRequest(url) {
-                    if library.isManaged(request.bundleId) { attach(request) } else { jitRequest = request }
+                    if library.isManaged(request.bundleId) {
+                        attach(request)
+                    } else {
+                        library.pendingJITRequest = request
+                        #if os(visionOS)
+                        openWindow(id: JITRequestWindow.windowID)
+                        #endif
+                    }
                 } else if let source = LibraryModel.sourceLink(url) {
                     library.linkedSource = source
                     tab = .browse
@@ -79,14 +87,17 @@ struct RootView: View {
                     Task { await library.signing.receive(url) }
                 }
             }
-            .confirmationDialog("Enable JIT for \(jitRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
-                                isPresented: Binding(get: { jitRequest != nil }, set: { if !$0 { jitRequest = nil } }),
-                                titleVisibility: .visible, presenting: jitRequest) { request in
+            #if !os(visionOS)
+            // visionOS asks in JITRequestWindow: a dialog there can land out of reach.
+            .confirmationDialog("Enable JIT for \(library.pendingJITRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
+                                isPresented: Binding(get: { library.pendingJITRequest != nil }, set: { if !$0 { library.pendingJITRequest = nil } }),
+                                titleVisibility: .visible, presenting: library.pendingJITRequest) { request in
                 Button("Enable JIT") { attach(request) }
                 Button("Cancel", role: .cancel) {}
             } message: { request in
-                Text("\(request.bundleId) asks Apparition to be its debugger, which lets it run code it makes. Apparition didn't install it.")
+                Text(LibraryModel.JITRequest.message(request))
             }
+            #endif
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }
@@ -125,12 +136,8 @@ struct RootView: View {
     }
     #endif
 
-    /// Becomes the requesting app's debugger; the app comes back to the front once attached.
     private func attach(_ request: LibraryModel.JITRequest) {
-        Task {
-            await model.attachJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort,
-                                  bundleId: request.bundleId, pid: request.pid)
-        }
+        Task { await model.attachJIT(request) }
     }
 
     #if os(visionOS)

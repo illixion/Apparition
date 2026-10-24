@@ -168,6 +168,9 @@ final class LibraryModel {
         let pid: Int
     }
 
+    /// An enable-jit link from an app Apparition didn't install, waiting to be allowed.
+    var pendingJITRequest: JITRequest?
+
     nonisolated static func jitRequest(_ url: URL) -> JITRequest? {
         guard let scheme = url.scheme?.lowercased(), ["apparition", "stikdebug", "stikjit"].contains(scheme),
               url.host()?.lowercased() == "enable-jit" else { return nil }

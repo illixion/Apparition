@@ -55,6 +55,7 @@ struct ApparitionApp: App {
         #endif
         #if os(visionOS)
         DebugApprovalWindow()
+        JITRequestWindow(model: model, library: library)
         #endif
     }
 }
