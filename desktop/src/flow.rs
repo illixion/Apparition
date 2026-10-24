@@ -633,7 +633,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                     let mut guard = state.session.lock().unwrap();
                     let session = guard.as_mut().ok_or_else(|| rootcause::report!("Sign in with your Apple ID first"))?;
                     apple_id = Some((session.email().to_string(), session.team_id().to_string()));
-                    api::sign_with_apple_id(session, prepared.path.clone(), &info.udid, &info.name, strip).await?
+                    api::sign_with_apple_id(session, prepared.path.clone(), &info.udid, &info.name, strip, api::Platform::of_product(&info.product_type)).await?
                 }
             };
             let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| rootcause::report!("Signing returned no app"))?);

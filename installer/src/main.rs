@@ -376,11 +376,11 @@ fn two_factor(params: &TwoFactorCallbackParams) -> TwoFactorCallbackResponse {
 
 /// Signs `options.ipa` with the Apple ID for the device `udid` (registering it), freeing a full
 /// certificate or App ID slot if the person agrees. Returns the signing reply and the (email, team).
-async fn sign_with_apple_id(options: &Options, udid: &str, name: &str, strip: bool) -> Result<(serde_json::Value, (String, String)), Error> {
+async fn sign_with_apple_id(options: &Options, udid: &str, name: &str, strip: bool, platform: api::Platform) -> Result<(serde_json::Value, (String, String)), Error> {
     let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap_or(api::BUILTIN_ANISETTE)).await?;
     println!("Signing for team {}…", session.team_id());
     let signer = (session.email().to_string(), session.team_id().to_string());
-    let signed = match api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip).await {
+    let signed = match api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip, platform).await {
         Ok(signed) => signed,
         // A full slot: offer to free one, then try once more.
         Err(error) => match Slot::of_error(&error.to_string()) {
@@ -390,7 +390,7 @@ async fn sign_with_apple_id(options: &Options, udid: &str, name: &str, strip: bo
                     return Err(error);
                 }
                 println!("Signing again…");
-                api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip).await?
+                api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip, platform).await?
             }
             None => return Err(error),
         },
@@ -448,7 +448,7 @@ async fn sign(args: &[String]) -> Result<(), Error> {
         println!("Signed with profile {} as {}.", signed["profileName"].as_str().unwrap_or("?"), signed["bundleId"].as_str().unwrap_or("?"));
         signed
     } else {
-        sign_with_apple_id(&options, &device.udid, &device.name, strip).await?.0
+        sign_with_apple_id(&options, &device.udid, &device.name, strip, device.platform()).await?.0
     };
     let signed_path = report_signed(&signed)?;
     println!("Signed for {}, nothing installed: {}", device.name, signed_path.display());
@@ -572,7 +572,7 @@ async fn sign_and_install(
         println!("Signing with {}…", identity["identity"]["name"].as_str().unwrap_or("your certificate"));
         api::sign_offline(scratch, options.ipa.clone(), &id, None, &info.udid, strip, None, api::Platform::of_product(&info.product_type))?
     } else {
-        let (signed, signer) = sign_with_apple_id(options, &info.udid, &info.name, strip).await?;
+        let (signed, signer) = sign_with_apple_id(options, &info.udid, &info.name, strip, api::Platform::of_product(&info.product_type)).await?;
         apple_id = Some(signer);
         signed
     };

@@ -252,7 +252,9 @@ pub async fn sign_with_apple_id(
     udid: &str,
     device_name: &str,
     strip_extensions: bool,
+    platform: identity::Platform,
 ) -> Result<Value, Report> {
+    identity::check_app_platform(&app_path, platform)?;
     let mut app_path = app_path;
     let mut stripped = Vec::new();
     if strip_extensions {
@@ -564,7 +566,7 @@ pub unsafe extern "C" fn apparition_sign(
         let device_name = unsafe { text(device_name) }?;
         let mut guard = SESSION.lock().unwrap();
         let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
-        runtime().block_on(sign_with_apple_id(session, app_path, &udid, &device_name, strip_extensions))
+        runtime().block_on(sign_with_apple_id(session, app_path, &udid, &device_name, strip_extensions, identity::Platform::THIS))
     })())
 }
 

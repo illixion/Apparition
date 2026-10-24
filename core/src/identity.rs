@@ -150,6 +150,40 @@ impl Platform {
         }
     }
 
+    /// The device platforms an app's Info.plist says it's built for: CFBundleSupportedPlatforms,
+    /// which every built app has, else UIDeviceFamily. Empty when it says neither.
+    fn of_app(info: &Dictionary) -> Vec<Platform> {
+        let list = |key| info.get(key).and_then(plist::Value::as_array).cloned().unwrap_or_default();
+        let mut found: Vec<Platform> = list("CFBundleSupportedPlatforms")
+            .iter()
+            .filter_map(|name| match name.as_string()? {
+                "iPhoneOS" => Some(Platform::IOS),
+                "AppleTVOS" => Some(Platform::TvOS),
+                "XROS" => Some(Platform::VisionOS),
+                _ => None, // the simulators', Mac Catalyst's
+            })
+            .collect();
+        if found.is_empty() {
+            found = list("UIDeviceFamily")
+                .iter()
+                .filter_map(|family| match family.as_unsigned_integer()? {
+                    1 | 2 => Some(Platform::IOS),
+                    3 => Some(Platform::TvOS),
+                    7 => Some(Platform::VisionOS),
+                    _ => None,
+                })
+                .collect();
+        }
+        found.dedup();
+        found
+    }
+
+    /// Whether a device of this platform runs an app built for `built`: Apple Vision Pro also
+    /// runs iPhone and iPad apps.
+    fn runs(self, built: Platform) -> bool {
+        self == built || (self == Platform::VisionOS && built == Platform::IOS)
+    }
+
     fn device_noun(self) -> &'static str {
         match self {
             Platform::VisionOS => "headset",
@@ -424,12 +458,44 @@ pub(crate) fn app_entitlements(app: &Path) -> Option<Dictionary> {
         std::io::Read::read_to_end(&mut zip.by_name(name).ok()?, &mut data).ok()?;
         Some(data)
     };
-    // Payload/<name>.app/Info.plist, not an extension's or a framework's deeper down.
-    let info_name = names.iter().find(|n| n.starts_with("Payload/") && n.matches('/').count() == 2 && n.ends_with(".app/Info.plist"))?;
+    let info_name = main_info_plist(&names)?;
     let info: Dictionary = plist::from_bytes(&read(info_name)?).ok()?;
     let folder = info_name.strip_suffix("Info.plist")?;
     let executable = read(&format!("{folder}{}", info.get("CFBundleExecutable")?.as_string()?))?;
     plist::from_bytes(entitlements_xml(&executable)?).ok()
+}
+
+/// Payload/<name>.app/Info.plist in an IPA, not an extension's or a framework's deeper down.
+fn main_info_plist(names: &[String]) -> Option<&String> {
+    names.iter().find(|n| n.starts_with("Payload/") && n.matches('/').count() == 2 && n.ends_with(".app/Info.plist"))
+}
+
+/// The main app's Info.plist, from an .app folder or an IPA.
+fn app_info(app: &Path) -> Option<Dictionary> {
+    if app.is_dir() {
+        return plist::from_file(app.join("Info.plist")).ok();
+    }
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(app).ok()?).ok()?;
+    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut zip.by_name(main_info_plist(&names)?).ok()?, &mut data).ok()?;
+    plist::from_bytes(&data).ok()
+}
+
+/// Refuses an app built only for other devices than `platform`'s, before signing it spends one of
+/// a free team's App IDs on something that can't install. An app that doesn't say is let through.
+pub fn check_app_platform(app: &Path, platform: Platform) -> Result<(), Report> {
+    let built = app_info(app).map(|info| Platform::of_app(&info)).unwrap_or_default();
+    if built.is_empty() || built.iter().any(|&b| platform.runs(b)) {
+        return Ok(());
+    }
+    let names: Vec<&str> = built.iter().map(|b| b.os_name()).collect();
+    bail!(
+        "This app is built for {}, not {}: look for its {} version, often a separate IPA",
+        names.join(" and "),
+        platform.os_name(),
+        platform.os_name()
+    )
 }
 
 /// The entitlements an app was last signed with, from its main executable's code signature.
@@ -744,6 +810,7 @@ pub fn sign_offline(
     previous_app: Option<&Path>,
     platform: Platform,
 ) -> Result<Value, Report> {
+        check_app_platform(&app_path, platform)?;
         let identity = Identity::load(data_dir, identity_id)?;
         if not_after(&identity.certificate) < SystemTime::now() {
             bail!("The certificate expired on {}; import a new one", iso(not_after(&identity.certificate)));
@@ -1033,6 +1100,37 @@ mod tests {
     }
 
     #[test]
+    fn app_platforms_and_where_they_run() {
+        let info = |key: &str, values: Vec<plist::Value>| Dictionary::from_iter([(key.to_string(), plist::Value::Array(values))]);
+        let names = |names: &[&str]| names.iter().map(|n| plist::Value::String(n.to_string())).collect();
+        let families = |families: &[u64]| families.iter().map(|&f| plist::Value::Integer(f.into())).collect();
+        assert_eq!(Platform::of_app(&info("CFBundleSupportedPlatforms", names(&["AppleTVOS"]))), [Platform::TvOS]);
+        assert_eq!(Platform::of_app(&info("CFBundleSupportedPlatforms", names(&["iPhoneOS"]))), [Platform::IOS]);
+        assert_eq!(Platform::of_app(&info("CFBundleSupportedPlatforms", names(&["XRSimulator"]))), []);
+        assert_eq!(Platform::of_app(&info("UIDeviceFamily", families(&[1, 2]))), [Platform::IOS]);
+        assert_eq!(Platform::of_app(&info("UIDeviceFamily", families(&[3]))), [Platform::TvOS]);
+        assert!(Platform::VisionOS.runs(Platform::IOS));
+        assert!(!Platform::TvOS.runs(Platform::IOS));
+        assert!(!Platform::IOS.runs(Platform::VisionOS));
+    }
+
+    #[test]
+    fn an_app_for_other_devices_is_refused_before_signing() {
+        let dir = std::env::temp_dir().join(format!("apparition-platform-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let info = Dictionary::from_iter([(
+            "CFBundleSupportedPlatforms".to_string(),
+            plist::Value::Array(vec![plist::Value::String("iPhoneOS".into())]),
+        )]);
+        plist::to_file_xml(dir.join("Info.plist"), &info).unwrap();
+        let refused = check_app_platform(&dir, Platform::TvOS).unwrap_err().to_string();
+        assert!(refused.contains("built for iOS, not tvOS"), "{refused}");
+        assert!(check_app_platform(&dir, Platform::VisionOS).is_ok());
+        assert!(check_app_platform(&dir.join("missing"), Platform::TvOS).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn wildcard_bundle_ids() {
         for (pattern, original, expected, covered) in [
             ("*", "com.utmapp.UTM", "com.utmapp.UTM", true),
@@ -1057,6 +1155,16 @@ mod tests {
 #[cfg(test)]
 mod local {
     use super::*;
+
+    /// `APPARITION_TVOS_IPA=<a tvOS app's .ipa> cargo test --lib tvos_ipa_platform -- --ignored`
+    #[test]
+    #[ignore]
+    fn tvos_ipa_platform() {
+        let ipa = PathBuf::from(std::env::var("APPARITION_TVOS_IPA").unwrap());
+        assert_eq!(Platform::of_app(&app_info(&ipa).unwrap()), [Platform::TvOS]);
+        assert!(check_app_platform(&ipa, Platform::TvOS).is_ok());
+        assert!(check_app_platform(&ipa, Platform::VisionOS).is_err());
+    }
 
     /// `APPARITION_PROFILES=<dir> cargo test --lib profiles_parse -- --ignored --nocapture`
     #[test]
