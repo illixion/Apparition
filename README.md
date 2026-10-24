@@ -363,8 +363,7 @@ anisette server" next to the companion; nothing switches on its own.
     scripts/build-core.sh visionos-sim   # adds the visionOS simulator (rustup target add aarch64-apple-visionos-sim)
     xcodegen                   # generates Apparition.xcodeproj from project.yml
     build-and-sign             # or open Apparition.xcodeproj and Run
-    SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab BUILD_BUNDLE_ID=com.illixion.apparition.lab \
-        build-and-sign --no-mcp    # the lab app
+    PLATFORM=iPad build-and-sign --no-mcp    # the lab app on iPad (PLATFORM=iOS for iPhone)
 
 Licensed MIT. Signing (`core/signer`) builds on [apple-codesign](https://github.com/indygreg/apple-platform-rs)
 (MPL-2.0), used unmodified from crates.io.
