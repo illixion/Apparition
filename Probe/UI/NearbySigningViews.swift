@@ -24,15 +24,18 @@ struct NearbyCompareSection: View {
     var body: some View {
         Section {
             NearbyCodeView(code: code)
-            Button("It Matches") { confirm(true) }
-                .buttonStyle(.borderedProminent)
-            Button("It's Different", role: .destructive) { confirm(false) }
+            HStack(spacing: 16) {
+                Button("It Matches") { confirm(true) }
+                    .buttonStyle(.borderedProminent)
+                Button("It's Different", role: .destructive) { confirm(false) }
+                    .buttonStyle(.bordered)
+            }
+            .focusRow()
         } header: {
             Text("Does \(peer) show this code?")
         } footer: {
             Text("Check the digits on both screens. A different code means something else on the network answered: choose It's Different and nothing is handed over.")
         }
-        .focusRow()
     }
 }
 
