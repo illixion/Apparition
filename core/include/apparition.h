@@ -20,6 +20,10 @@ char *apparition_login(const char *email, const char *password, const char *anis
 char *apparition_session(void);
 // Forgets the signed-in session in this process. Returns {ok}.
 char *apparition_logout(void);
+// Repacks the app in a .deb package (Kodi and many older apps are published that way) as an IPA at
+// out_path (core/src/package.rs). Reads the whole package; takes about as long as downloading it.
+// {ok, app, files, bytes, others}.
+char *apparition_convert_package(const char *package_path, const char *out_path);
 char *apparition_sign(const char *app_path, const char *udid, const char *device_name,
                   bool strip_extensions);
 // Signing with the Apple ID stops with code "sharedCertificate" rather than make a certificate

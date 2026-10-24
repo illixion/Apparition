@@ -15,7 +15,7 @@ use std::{
 
 use apparition_core::{
     api::{self, APPARITION_ID, DeviceStore, Handoff, PairedDevice, Slot, TwoFactorCallbackParams, TwoFactorCallbackResponse},
-    release,
+    package, release,
 };
 use rootcause::Report;
 use serde::{Deserialize, Serialize};
@@ -553,7 +553,7 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
     blocking(move || {
         let dialog = app.dialog().file();
         let paths = match kind.as_str() {
-            "ipa" => dialog.set_title("Choose an app").add_filter("iOS and visionOS apps", &["ipa"]).blocking_pick_file().into_iter().collect(),
+            "ipa" => dialog.set_title("Choose an app").add_filter("iOS and visionOS apps", &["ipa", "deb"]).blocking_pick_file().into_iter().collect(),
             "p12" => dialog
                 .set_title("Choose your certificate")
                 .add_filter("Certificate with its key", &["p12", "pfx"])
@@ -649,17 +649,36 @@ pub async fn prepare_latest(app: AppHandle, state: Shared<'_>, udid: String) -> 
     .await
 }
 
-/// Uses a local IPA instead of the official release.
+/// Uses a local IPA instead of the official release. A `.deb` package (how Kodi and many other
+/// apps are published) is repacked as an IPA first. Returns `{name, size, converted}`: the
+/// chosen file, the IPA's size, and the app's name when the file was a package.
 #[tauri::command]
-pub fn prepare_local(state: Shared<'_>, path: String) -> Result<Value, Failure> {
-    let path = PathBuf::from(path);
-    if !path.is_file() || !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ipa")) {
-        return Err("Choose an .ipa file.".into());
-    }
-    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let size = std::fs::metadata(&path)?.len();
-    *state.app.lock().unwrap() = Some(Prepared { path });
-    Ok(json!({ "name": name, "size": size }))
+pub async fn prepare_local(state: Shared<'_>, path: String) -> Result<Value, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let path = PathBuf::from(path);
+        if !path.is_file() {
+            return Err("Choose an .ipa or .deb file.".into());
+        }
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let (ipa, converted) = match package::format(&path)? {
+            package::Format::Zip => (path, None),
+            package::Format::Deb => {
+                let scratch = std::env::temp_dir().join("apparition-converted");
+                let _ = std::fs::remove_dir_all(&scratch);
+                std::fs::create_dir_all(&scratch)?;
+                let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "app".into());
+                let out = scratch.join(format!("{stem}.ipa"));
+                let done = package::convert(&path, &out)?;
+                (out, Some(done.app))
+            }
+            package::Format::Unknown => return Err(Failure::new(format!("{name} isn't an .ipa or a .deb package."))),
+        };
+        let size = std::fs::metadata(&ipa)?.len();
+        *state.app.lock().unwrap() = Some(Prepared { path: ipa });
+        Ok(json!({ "name": name, "size": size, "converted": converted }))
+    })
+    .await
 }
 
 // MARK: Install

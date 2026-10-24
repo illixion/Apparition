@@ -29,6 +29,7 @@ mod share;
 mod nearby;
 mod identity;
 mod ipa;
+pub mod package;
 mod jit;
 mod tunnel;
 #[cfg(all(feature = "anisette", unix))]

@@ -733,7 +733,7 @@ function install() {
     $(panel, "lede").textContent = local
       ? `Signs this app for ${state.device?.name ?? "the device"} and installs it.`
       : `The latest official release, checked against Apparition's release signature before it's used, signed for ${state.device?.name ?? "the device"}.`;
-    $(panel, "local-name").textContent = state.localPath ? basename(state.localPath) : "Any .ipa on this computer.";
+    $(panel, "local-name").textContent = state.localPath ? basename(state.localPath) : "An .ipa, or a .deb such as Kodi's, on this computer.";
     if (state.what === "local") advanced.open = true;
   };
   what.forEach((w) =>
@@ -812,7 +812,7 @@ function install() {
         } else {
           const local = await invoke("prepare_local", { path: key });
           mark("release", "skipped", "Your own file");
-          mark("download", "skipped", `${local.name}, ${megabytes(local.size)}`);
+          mark("download", "skipped", local.converted ? `${local.converted} from ${local.name}, ${megabytes(local.size)}` : `${local.name}, ${megabytes(local.size)}`);
         }
         state.prepared = key;
       } else if (key === "latest") {

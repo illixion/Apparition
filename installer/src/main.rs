@@ -40,18 +40,19 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Wi-Fi if it already syncs with this computer over Wi-Fi. If it doesn't trust this
       computer yet, it asks: unlock it, tap Trust and enter its passcode. Afterwards it's
       reached over the network like a headset.
-  apparition install [<app.ipa>] [--device <name or UDID>]
+  apparition install [<app.ipa or .deb>] [--device <name or UDID>]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
           [--keep-extensions] [--no-handoff] [--release-site <url>]
       Sign and install. Without an IPA, installs the latest Apparition from
-      apparition.illixion.com, checked against its release signature first. With an Apple
+      apparition.illixion.com, checked against its release signature first. A .deb package
+      (how Kodi is published) is unpacked first: the app inside is what gets installed. With an Apple
       ID, a free account's apps last 7 days; with your own certificate, as long as its
       profile. Installing Apparition also puts the certificate in its Files inbox
       (--no-handoff skips that).
       Signing in to Apple needs anisette data. Where this build has it (macOS, Linux), it makes
       its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
       and is required elsewhere.
-  apparition sign <app.ipa> [--device <name or UDID>] [--keep-extensions]
+  apparition sign <app.ipa or .deb> [--device <name or UDID>] [--keep-extensions]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
       Sign for a paired device without reaching it and install nothing. With an Apple ID,
       says which capabilities (increased memory limit, extended virtual addressing) the app
@@ -496,6 +497,27 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
     }
 }
 
+/// A `.deb` package (how Kodi and many other apps are published) becomes an IPA in `scratch`;
+/// an IPA stays as it is.
+fn unpack_package(options: &mut Options, scratch: &Path) -> Result<(), Error> {
+    if options.ipa.as_os_str().is_empty() {
+        return Ok(());
+    }
+    if apparition_core::package::format(&options.ipa).map_err(|e| fail(format!("{}: {e}", options.ipa.display())))? != apparition_core::package::Format::Deb {
+        return Ok(());
+    }
+    println!("Unpacking the app from {}…", options.ipa.display());
+    let out = scratch.join("package").join(format!("{}.ipa", options.ipa.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "app".into())));
+    std::fs::create_dir_all(out.parent().unwrap())?;
+    let converted = apparition_core::package::convert(&options.ipa, &out)?;
+    println!("  {} ({} files).", converted.app, converted.files);
+    if !converted.others.is_empty() {
+        println!("  The package also holds {}, left out.", converted.others.join(", "));
+    }
+    options.ipa = out;
+    Ok(())
+}
+
 /// Asked during Apple ID sign-in when 2FA is needed.
 fn two_factor(params: &TwoFactorCallbackParams) -> TwoFactorCallbackResponse {
     if let Some(error) = &params.last_error {
@@ -572,10 +594,24 @@ fn report_signed(signed: &serde_json::Value) -> Result<PathBuf, Error> {
 /// profiles, and leaves the app signed on this computer. Shows what an app gets from a free
 /// account or from the profile chosen for it, from anywhere.
 async fn sign(args: &[String]) -> Result<(), Error> {
-    let options = parse_install(args)?;
+    let mut options = parse_install(args)?;
     if options.ipa.as_os_str().is_empty() {
         return Err(fail("sign needs an IPA"));
     }
+    // A package is unpacked into a scratch folder. The signed app can end up beside what it was
+    // signed from, and is what this command leaves behind, so the folder stays unless it failed.
+    let unpacked = std::env::temp_dir().join(format!("apparition-unpacked-{}", std::process::id()));
+    let result = match unpack_package(&mut options, &unpacked) {
+        Ok(()) => sign_unpacked(&options).await,
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&unpacked);
+    }
+    result
+}
+
+async fn sign_unpacked(options: &Options) -> Result<(), Error> {
     let device = find_device(options.device.as_deref())?;
     let strip = !options.keep_extensions;
     let signed = if let Some(p12) = &options.p12 {
@@ -693,6 +729,7 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
     if options.ipa.as_os_str().is_empty() {
         options.ipa = latest_apparition(&options.release_site, &scratch.join("download"), device.platform()).await?;
     }
+    unpack_package(options, scratch)?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The headset wants to pair again. PIN: ");
     let mut tunnel = store().connect(device, pin).await?;
