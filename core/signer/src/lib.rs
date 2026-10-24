@@ -148,6 +148,8 @@ struct Nested {
 struct Contents {
     bundles: Vec<Nested>,
     machos: Vec<String>,
+    /// Mach-O files with no code to sign: object files, core dumps, dSYM companions.
+    unsignable: Vec<String>,
 }
 
 /// Signs the app (or other bundle) at `path` in place, nested bundles and code included.
@@ -191,6 +193,10 @@ pub fn sign_bundle(path: impl Into<PathBuf>, settings: &BundleSigningSettings<'_
         }
     }
     signing.set_team_id(&settings.team_id);
+    // apple-codesign fails on these (an object file has no __LINKEDIT); sealed as plain files.
+    for path in &contents.unsignable {
+        signing.add_path_exclusion(&glob_escape(path)).map_err(|e| error("excluding a file that can't be signed", e))?;
+    }
 
     // Every scope gets its entitlements and flags explicitly: apple-codesign otherwise keeps
     // what an already signed binary had, and a re-signed app must claim only what its profiles
@@ -283,27 +289,67 @@ fn walk(root: &Path, dir: &Path, contents: &mut Contents) -> Result<()> {
                 contents.bundles.push(Nested { relative: relative(root, &path), identifier: identifier.to_string(), executable });
             }
             walk(root, &path, contents)?;
-        } else if kind.is_file() && is_macho(&path) {
-            contents.machos.push(relative(root, &path));
+        } else if kind.is_file()
+            && let Some(file_type) = macho_file_type(&path)
+        {
+            let relative = relative(root, &path);
+            if matches!(file_type, MH_OBJECT | MH_CORE | MH_DSYM) {
+                contents.unsignable.push(relative);
+            } else {
+                contents.machos.push(relative);
+            }
         }
     }
     Ok(())
 }
 
-fn is_macho(path: &Path) -> bool {
-    use std::io::Read;
-    let mut header = [0u8; 8];
-    let Ok(mut file) = std::fs::File::open(path) else { return false };
-    if file.read_exact(&mut header).is_err() {
-        return false;
-    }
-    match u32::from_be_bytes(header[..4].try_into().unwrap()) {
-        0xfeed_face | 0xfeed_facf | 0xcefa_edfe | 0xcffa_edfe => true,
+// Mach-O file types (mach-o/loader.h) that hold no code.
+const MH_OBJECT: u32 = 0x1;
+const MH_CORE: u32 = 0x4;
+const MH_DSYM: u32 = 0xa;
+
+/// The file type of a Mach-O file (of its first slice, if fat), or `None` if it isn't one.
+fn macho_file_type(path: &Path) -> Option<u32> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0u8; 24];
+    file.read_exact(&mut header[..16]).ok()?;
+    let be = |bytes: &[u8]| u32::from_be_bytes(bytes.try_into().unwrap());
+    match be(&header[..4]) {
+        0xfeed_face | 0xfeed_facf => Some(be(&header[12..16])),
+        0xcefa_edfe | 0xcffa_edfe => Some(u32::from_le_bytes(header[12..16].try_into().unwrap())),
         // Fat, but Java class files share the magic: they have a version where the arch
         // count would be, and no real fat binary has that many slices.
-        0xcafe_babe | 0xcafe_babf => u32::from_be_bytes(header[4..].try_into().unwrap()) < 32,
-        _ => false,
+        magic @ (0xcafe_babe | 0xcafe_babf) => {
+            if be(&header[4..8]) >= 32 {
+                return None;
+            }
+            // Unknown (so signed) if the first slice can't be read.
+            let unknown = Some(0);
+            // The first slice's offset follows its cputype and cpusubtype, 64 bits wide in fat64.
+            let Ok(()) = file.read_exact(&mut header[16..24]) else { return unknown };
+            let offset = if magic == 0xcafe_babe { u64::from(be(&header[16..20])) } else { u64::from_be_bytes(header[16..24].try_into().unwrap()) };
+            let mut slice = [0u8; 16];
+            let Ok(_) = file.seek(SeekFrom::Start(offset)) else { return unknown };
+            let Ok(()) = file.read_exact(&mut slice) else { return unknown };
+            match be(&slice[..4]) {
+                0xfeed_face | 0xfeed_facf => Some(be(&slice[12..16])),
+                0xcefa_edfe | 0xcffa_edfe => Some(u32::from_le_bytes(slice[12..16].try_into().unwrap())),
+                _ => unknown,
+            }
+        }
+        _ => None,
     }
+}
+
+/// `path` as a glob that matches only itself.
+fn glob_escape(path: &str) -> String {
+    path.chars()
+        .map(|c| match c {
+            '*' | '?' | '[' => format!("[{c}]"),
+            _ => c.to_string(),
+        })
+        .collect()
 }
 
 fn write(path: &Path, data: &[u8]) -> Result<()> {
@@ -330,19 +376,78 @@ mod tests {
         assert!(first_a < xml[first_a..].find("<key>z</key>").unwrap() + first_a);
     }
 
+    /// A Mach-O header: 64-bit little-endian arm64 with the given file type.
+    fn thin(file_type: u32) -> Vec<u8> {
+        let mut bytes = vec![0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0, 0, 0x01, 0, 0, 0, 0];
+        bytes.extend(file_type.to_le_bytes());
+        bytes.extend([0; 16]);
+        bytes
+    }
+
     #[test]
     fn recognises_macho() {
         let dir = std::env::temp_dir().join(format!("apparition-signer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let mut fat = vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        fat.extend(32u32.to_be_bytes());
+        fat.extend([0; 12]);
+        fat.extend(thin(MH_OBJECT));
         for (name, bytes, expected) in [
-            ("thin", vec![0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0], true),
-            ("fat", vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2], true),
-            ("class", vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52], false),
-            ("text", b"hello world".to_vec(), false),
+            ("thin", thin(2), Some(2)),
+            ("dylib", thin(6), Some(6)),
+            ("object", thin(MH_OBJECT), Some(MH_OBJECT)),
+            ("fat", fat, Some(MH_OBJECT)),
+            ("fat-unreadable", vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0, 0, 0, 0], Some(0)),
+            ("class", vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52, 0, 0, 0, 0, 0, 0, 0, 0], None),
+            ("text", b"hello world, hello world".to_vec(), None),
         ] {
             std::fs::write(dir.join(name), bytes).unwrap();
-            assert_eq!(is_macho(&dir.join(name)), expected, "{name}");
+            assert_eq!(macho_file_type(&dir.join(name)), expected, "{name}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn globs_match_only_their_path() {
+        let path = "Frameworks/lib [x]/a*b?.o";
+        let pattern = glob_escape(path);
+        assert_eq!(pattern, "Frameworks/lib [[]x]/a[*]b[?].o");
+        let mut settings = apple_codesign::SigningSettings::default();
+        settings.add_path_exclusion(&pattern).unwrap();
+        assert!(settings.path_exclusion_pattern_matches(path));
+        assert!(!settings.path_exclusion_pattern_matches("Frameworks/lib x/aXbY.o"));
+    }
+
+    /// An app carrying an object file (Kodi's CPython ships python.o) signs, the object sealed as a plain file.
+    #[test]
+    fn signs_an_app_holding_an_object_file() {
+        let root = std::env::temp_dir().join(format!("apparition-signer-obj-{}", std::process::id()));
+        let app = root.join("Test.app");
+        std::fs::create_dir_all(app.join("Frameworks/config")).unwrap();
+        let mut info = Dictionary::new();
+        info.insert("CFBundleIdentifier".into(), Value::String("com.example.test".into()));
+        info.insert("CFBundleExecutable".into(), Value::String("Test".into()));
+        plist::to_file_xml(app.join("Info.plist"), &Value::Dictionary(info)).unwrap();
+        // The only segment is unnamed and there is no __LINKEDIT, as in a compiler's .o.
+        let mut object = thin(MH_OBJECT);
+        object.truncate(16);
+        // One load command of 72 bytes, no flags, then the reserved word.
+        object.extend([1, 0, 0, 0, 72, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        object.extend([0x19, 0, 0, 0, 72, 0, 0, 0]);
+        object.extend([0; 16]);
+        object.extend([0; 8]);
+        object.extend(8u64.to_le_bytes());
+        object.extend(104u64.to_le_bytes());
+        object.extend(8u64.to_le_bytes());
+        object.extend([7, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        object.extend([0; 8]);
+        std::fs::write(app.join("Frameworks/config/python.o"), object).unwrap();
+
+        let settings = BundleSigningSettings::new("TEAMID1234", Dictionary::new(), None);
+        let result = sign_bundle(&app, &settings);
+        let sealed = std::fs::read_to_string(app.join("_CodeSignature/CodeResources")).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&root);
+        result.unwrap();
+        assert!(sealed.contains("Frameworks/config/python.o"));
     }
 }
