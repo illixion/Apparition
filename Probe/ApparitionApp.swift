@@ -34,6 +34,7 @@ struct ApparitionApp: App {
         DeveloperSlotsEndpoints.register()
         #if !APPARITION_RELEASE
         ExperimentEndpoints.register(probe: model, account: account)
+        DebugScreens.register()
         VaultEndpoints.register()
         #endif
         ShortcutActions.register(probe: model, account: account, library: library)

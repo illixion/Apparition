@@ -90,7 +90,40 @@ struct RootView: View {
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }
+            #if !APPARITION_RELEASE
+            .onChange(of: DebugScreens.shared.tab) { _, wanted in
+                guard let wanted else { return }
+                tab = wanted
+                DebugScreens.shared.tab = nil
+            }
+            .panel(isPresented: Binding(get: { DebugScreens.shared.panel != nil }, set: { if !$0 { DebugScreens.shared.panel = nil } })) {
+                debugPanel
+            }
+            #endif
     }
+
+    #if !APPARITION_RELEASE
+    /// What `showScreen` asked for, as the buttons that open it present it.
+    @ViewBuilder
+    private var debugPanel: some View {
+        let close = { DebugScreens.shared.panel = nil }
+        switch DebugScreens.shared.panel {
+        case .getSigning:
+            ReceiveSigningSheet(signing: library.signing, email: account.email ?? account.lastAppleID) { _ in close() }
+        case .shareSigning:
+            ShareSigningSheet(signing: library.signing, email: account.email ?? account.lastAppleID ?? "", teamId: account.team?.id, onDone: close)
+        case .certificates:
+            NavigationStack {
+                DeveloperSlotsView(account: account, library: library, onSignIn: close)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Done", action: close) }
+                    }
+            }
+        case nil:
+            EmptyView()
+        }
+    }
+    #endif
 
     /// Becomes the requesting app's debugger; the app comes back to the front once attached.
     private func attach(_ request: LibraryModel.JITRequest) {
