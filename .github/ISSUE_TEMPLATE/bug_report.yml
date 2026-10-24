@@ -1,0 +1,86 @@
+name: 🐞 Bug
+description: Apparition, the desktop app or the command line does something wrong
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+- type: markdown
+  attributes:
+    value: |
+      For an app that won't install or run, use **App support** instead: it asks for what that needs.
+      Never paste your Apple ID password, a certificate's password or a signing key. A 2FA code is fine to leave out too.
+- type: checkboxes
+  attributes:
+    label: Is there an existing issue for this?
+    description: Please search to see if an issue already exists for the bug you encountered.
+    options:
+    - label: I have searched the existing issues
+      required: true
+- type: dropdown
+  attributes:
+    label: Where does it happen?
+    options:
+    - Apparition on Apple Vision Pro
+    - Apparition on iPhone or iPad
+    - Apparition on Apple TV
+    - Desktop app (macOS)
+    - Desktop app (Windows)
+    - Desktop app (Linux)
+    - Command line (apparition)
+    - Companion
+    - Not sure
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Current Behavior
+    description: A concise description of what you're experiencing. Include the exact error text if there is one.
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Expected Behavior
+    description: A concise description of what you expected to happen.
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Steps To Reproduce
+    description: Steps to reproduce the behavior.
+    placeholder: |
+      1. Open Library...
+      2. Tap Install on...
+      3. See error...
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Environment
+    description: |
+      Apparition's version is at the bottom of **Settings** in the app. For the desktop app and the command line it's the version of the download (the number in the file name).
+      The device's OS version is in Settings > General > About.
+    value: |
+        - Apparition version:
+        - Device and OS version:
+        - Computer and OS (desktop app or command line):
+        - Signing with (free Apple ID / paid Apple ID / own certificate):
+        - Reaching the device through (companion / LocalDevVPN / Tailscale / USB / not sure):
+        - Anisette (built in / a server you run / not sure):
+    render: markdown
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Logs and screenshots
+    description: |
+      Anything Apparition printed or showed: the error on screen, the desktop app's progress list, or the command line's output.
+
+      Tip: You can attach images or log files by clicking this area to highlight it and then dragging files in.
+    render: text
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Anything else?
+    description: Links? References? Anything that will give us more context about the issue you are encountering!
+  validations:
+    required: false

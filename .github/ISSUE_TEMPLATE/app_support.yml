@@ -1,0 +1,83 @@
+name: 📦 App support
+description: An app won't install, won't run, or needs something Apparition doesn't do yet
+title: "[App]: "
+labels: ["app-support", "triage"]
+body:
+- type: markdown
+  attributes:
+    value: |
+      Apparition signs any IPA (and any `.deb` package that holds an app), but an app can still fail on its own terms: an entitlement a free account can't have, JIT it asks for in a way Apparition doesn't answer yet, or a build made for other devices.
+      The [list of apps we've tested](https://github.com/illixion/Apparition/blob/main/docs/SUPPORTED_APPS.md) says what we know. Never paste your Apple ID password or a signing key.
+- type: checkboxes
+  attributes:
+    label: Before you file
+    options:
+    - label: I looked at the list of tested apps and this app, or one like it, isn't explained there
+      required: true
+    - label: I searched the existing issues
+      required: true
+- type: input
+  attributes:
+    label: App and version
+    description: Its name, and the version or release you used.
+    placeholder: "Kodi 21.3"
+  validations:
+    required: true
+- type: input
+  attributes:
+    label: Where you got it
+    description: A link to the source, GitHub project or download. For a file you already had, say where it came from.
+    placeholder: "github:utmapp/UTM, https://example.com/source.json, or a .ipa/.deb link"
+  validations:
+    required: true
+- type: dropdown
+  attributes:
+    label: What do you need?
+    options:
+    - It won't sign or install
+    - It installs but crashes or won't open
+    - It runs but something doesn't work (JIT, memory, a missing feature)
+    - Please make it work and list it as supported
+    - Something else
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: What happens
+    description: The exact error text Apparition showed, or what the app does. Say when it stops (downloading, signing, installing, opening).
+  validations:
+    required: true
+- type: dropdown
+  attributes:
+    label: Does it work anywhere else?
+    description: Another sideloading tool, Xcode, or a jailbreak, on the same device.
+    options:
+    - I haven't tried
+    - Yes, with another sideloading tool
+    - Yes, from Xcode or the App Store
+    - No, it fails there too
+  validations:
+    required: false
+- type: textarea
+  attributes:
+    label: Environment
+    description: |
+      Apparition's version is at the bottom of **Settings** in the app. For the desktop app and the command line it's the version of the download (the number in the file name).
+    value: |
+        - Apparition version:
+        - Device and OS version:
+        - Installing from (the app / desktop app / command line):
+        - Signing with (free Apple ID / paid Apple ID / own certificate):
+    render: markdown
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Logs and screenshots
+    description: |
+      The app's own log or crash report if it has one, and what Apparition showed.
+
+      Tip: You can attach images or log files by clicking this area to highlight it and then dragging files in.
+    render: text
+  validations:
+    required: false

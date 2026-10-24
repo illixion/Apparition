@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📋 Apps we've tested
+    url: https://github.com/illixion/Apparition/blob/main/docs/SUPPORTED_APPS.md
+    about: What installs and runs, with what caveats, before you file an app issue
