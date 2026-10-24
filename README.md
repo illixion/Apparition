@@ -294,9 +294,12 @@ and IP address, never the Apple ID or password, which go straight to Apple.
 to be**, and refuses the sign-in (`-80045`, "This action cannot be completed at this time")
 when it doesn't. isideload, like most sideloaders, claimed a Mac while sending the Android
 libraries' anisette. Apparition claims Android for that anisette (`core/src/claimed_platform.rs`),
-which Apple accepts, with one difference: a sign-in claiming Android gets no 2FA step, and no
-Xcode token until the code Apple pushes to your trusted devices is checked, so Apparition asks
-for that code once the password is accepted (`core/vendor/isideload`, `code_after_login`).
+which Apple accepts. Since about 22 October Apple refuses the Xcode token to a sign-in claiming
+Android (`-80046`), but issues it when that request claims a Mac, whatever made the anisette. So
+once the password is accepted, Apparition asks for the token, and makes its developer requests,
+as a Mac (`Claim::after_sign_in`). A sign-in Apple asks a 2FA code for goes through the usual
+prompt; one it doesn't is asked for the code Apple pushes to your trusted devices if the token
+is refused (`core/vendor/isideload`, `code_after_login`).
 Dadoum's anisette-v3-server, the self-hosted one above, runs those libraries too and gets the
 same claim. Other servers make their anisette differently and say what to claim, and Apparition
 claims that (jkcoxson's native-c server reports a Mac, and Apple refuses it claiming Android).

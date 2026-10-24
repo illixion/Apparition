@@ -50,6 +50,16 @@ impl GrandSlam {
         })
     }
 
+    /// The same client and URL bag, claiming `client_info` instead. Apple issues the Xcode token
+    /// for a sign-in claiming Android only to requests claiming a Mac.
+    pub fn claiming(&self, client_info: AnisetteClientInfo) -> Self {
+        Self {
+            client: self.client.clone(),
+            client_info,
+            url_bag: self.url_bag.clone(),
+        }
+    }
+
     /// Fetch the URL bag from GrandSlam and cache it
     pub async fn fetch_url_bag(
         client: &reqwest_middleware::ClientWithMiddleware,

@@ -5,7 +5,7 @@ LICENSE alongside), used as core's `isideload` dependency by path. `readme` in C
 at this folder's README.md instead of the repository's. Moved up from 0bee45d (0.4.4) with
 `git merge-file`, upstream's 0bee45d..fc7a81a over this copy.
 
-Seven changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Eight changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -17,8 +17,8 @@ Apple stops pushing codes once the anisette identity is trusted. Upstream 0.5.0 
 code when the password step answers hsc 409 ("code already sent"); a code taken that way counts as
 checked, so `code_after_login` doesn't ask for a second one. And once Apple has taken a code, being asked
 for another after signing in again ends the sign-in instead of prompting up to 15 times (from
-valentinBoch's PR #6). Since about 2026-10-23 Apple answers an Android-claimed Xcode token request
--80046 and pushes no code; core reports that rather than asking (core/src/lib.rs).
+valentinBoch's PR #6). Since about 2026-10-22 Apple answers an Android-claimed Xcode token request
+-80046 and pushes no code; the eighth change gets the token anyway.
 
 A second change: the GrandSlam client also trusts Apple Root CA - G3
 (src/assets/AppleRootCA-G3.cer, src/auth/grandslam.rs). gsd.apple.com, where machine
@@ -58,3 +58,11 @@ makes GSA answer the first SRP request 503; the bag fetched with the real claim 
 2026-10-24 with a made-up account and the built-in (Android) anisette from this Mac: 3 of 3 runs
 got 503 with the Mac bag, 2 of 2 got -20970 ("entered incorrectly", past the anisette check) with
 the real claim, as 0.4.4 did (src/auth/grandslam.rs).
+
+An eighth change: `GrandSlam::claiming` gives the same client and URL bag claiming other client
+info (src/auth/grandslam.rs). Apple refuses the Xcode token to a sign-in claiming Android
+(-80046) but issues it to the same sign-in when the token request claims a Mac, so core swaps the
+account's client for a Mac-claiming one once the password is accepted, for the token and the
+developer requests (core/src/lib.rs, `Claim::after_sign_in`). Checked 2026-10-24 on one account
+with the built-in Android anisette: the token request claiming Android got -80046 whatever else
+changed, claiming a Mac got the token, and the developer services then listed the certificates.

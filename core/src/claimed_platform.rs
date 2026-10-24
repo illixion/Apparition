@@ -57,7 +57,7 @@ impl Served {
 /// What a sign-in through one server claims to be (`X-Mme-Client-Info` and User-Agent).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
-    /// Android or not, for what Apple does differently then (no 2FA step: lib.rs, `code_after_login`).
+    /// Android or not, for what Apple does differently then (the Xcode token: `after_sign_in`).
     pub served: Served,
     pub client_info: String,
     pub user_agent: String,
@@ -66,6 +66,18 @@ pub struct Claim {
 impl Claim {
     fn of(served: Served) -> Claim {
         Claim { served, client_info: served.client_info().to_string(), user_agent: USER_AGENT.to_string() }
+    }
+
+    /// What to claim once Apple has taken the password, for the Xcode token and the developer
+    /// requests made with it, when that differs from the sign-in's claim. Claiming Android, Apple
+    /// refuses the Xcode token (-80046, since about 2026-10-22) but issues it claiming a Mac,
+    /// whatever made the anisette. Checked 2026-10-24 on one account with
+    /// examples/apptoken_probe.rs: an Android-claimed sign-in, then the token request claiming
+    /// Android (with or without Xcode's headers, naming Xcode, `svct` Xcode) got -80046 and
+    /// claiming a Mac got the token. An iCloud token was issued claiming Android.
+    pub fn after_sign_in(&self) -> Option<AnisetteClientInfo> {
+        (self.served == Served::Android)
+            .then(|| AnisetteClientInfo { client_info: MAC_CLIENT_INFO.to_string(), user_agent: USER_AGENT.to_string() })
     }
 
     /// The claim for a server's `/v3/client_info` reply and its `Implementation-Version` header.
@@ -168,6 +180,15 @@ mod tests {
         assert_eq!((claim.client_info.as_str(), claim.user_agent.as_str()), (NATIVE_C, "akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0"));
         let android = Claim::from_reply(&json!({ "client_info": "<Pixel 7> <Android;14;x> <…>", "user_agent": "akd/1.0" }), None);
         assert_eq!(android.served, Served::Android);
+    }
+
+    #[test]
+    fn an_android_sign_in_asks_for_the_xcode_token_as_a_mac() {
+        let after = Claim::of(Served::Android).after_sign_in().unwrap();
+        assert_eq!((after.client_info.as_str(), after.user_agent.as_str()), (MAC_CLIENT_INFO, USER_AGENT));
+        assert!(Claim::of(Served::Mac).after_sign_in().is_none());
+        let native_c = Claim::from_reply(&json!({ "client_info": NATIVE_C, "user_agent": "akd/1.0" }), None);
+        assert!(native_c.after_sign_in().is_none());
     }
 
     #[test]

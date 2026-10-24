@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     ffi::{CStr, CString, c_char, c_void},
     path::PathBuf,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use isideload::{
@@ -151,7 +151,7 @@ pub fn native_anisette() -> bool {
 /// What Apple's `-80045` ("This action cannot be completed at this time") means here.
 pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition claims what the anisette server says it makes (Android for Dadoum's anisette-v3-server), and this server's anisette doesn't match that. Use the built-in anisette, Apparition's companion, or another anisette-v3 server.";
 /// Apple took the password but refused the Xcode sign-in for anisette from the Android libraries.
-pub const REFUSED_ANDROID_ANISETTE: &str = "Apple took the password but refused the Xcode sign-in (-80046) for anisette made by Apple's Android libraries, which the built-in anisette uses off a Mac and Dadoum's anisette-v3-server runs. Use a Mac's own anisette (Apparition on a Mac with macOS 26 or earlier, or its companion) or an anisette-v3 server that doesn't use those libraries.";
+pub const REFUSED_ANDROID_ANISETTE: &str = "Apple took the password but refused the Xcode sign-in (-80046) for anisette made by Apple's Android libraries, which the built-in anisette uses off a Mac and Dadoum's anisette-v3-server runs, even asked for as a Mac. Use a Mac's own anisette (Apparition on a Mac with macOS 26 or earlier, or its companion) or an anisette-v3 server that doesn't use those libraries.";
 
 /// The v3 server address to use for `requested`: itself, or the built-in provider's, which is
 /// started on first use and stays up for the life of the process.
@@ -204,6 +204,7 @@ pub async fn sign_in(
     // Claim the platform the anisette was made on, or Apple refuses the sign-in (claimed_platform).
     let claim = claimed_platform::claim_for(&anisette_url).await;
     let served = claim.served;
+    let after_sign_in = claim.after_sign_in();
     let anisette = claimed_platform::ClaimedPlatform::new(
         RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?,
         claim,
@@ -223,18 +224,27 @@ pub async fn sign_in(
     let mut account =
         AppleAccount::builder(email).anisette_provider(anisette).login(&password, callback).await.map_err(refused)?;
 
+    // The Xcode token, and the developer requests made with it, may need another claim than the
+    // sign-in (claimed_platform, `after_sign_in`).
+    let signing_in = account.grandslam_client.clone();
+    let claim_after_sign_in = |account: &mut AppleAccount| {
+        if let Some(client_info) = &after_sign_in {
+            account.grandslam_client = Arc::new(signing_in.claiming(client_info.clone()));
+        }
+    };
+    claim_after_sign_in(&mut account);
     let session = match DeveloperSession::from_account(&mut account).await {
         Ok(session) => session,
-        // Claiming Android, a sign-in Apple doesn't trust yet gets no 2FA step and no Xcode
-        // token (-22411) until the code it pushes to the trusted devices is checked: sign in
+        // Claiming Android, a sign-in Apple doesn't trust yet got no 2FA step and no Xcode
+        // token (-22411) until the code it pushes to the trusted devices was checked: sign in
         // again, which pushes one, and check it (vendor/isideload, code_after_login).
         Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-22411) => {
+            account.grandslam_client = signing_in.clone();
             account.code_after_login = true;
             account.login(&password, callback).await.map_err(refused)?;
+            claim_after_sign_in(&mut account);
             DeveloperSession::from_account(&mut account).await.context("Failed to open a developer session")?
         }
-        // Since about 2026-10-23 Apple answers -80046 instead and pushes no code (seen on one
-        // account, 2026-10-24), so there is nothing to ask for.
         Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-80046) => {
             return Err(error.context(REFUSED_ANDROID_ANISETTE).into_dynamic());
         }
