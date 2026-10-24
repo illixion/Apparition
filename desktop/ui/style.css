@@ -118,8 +118,9 @@ code { font: .875em/1.4 var(--mono); }
   gap: 1rem;
   padding: 1rem 1.75rem;
 }
-/* macOS: the content runs under a transparent title bar, beside the window buttons. */
-.mac .top { padding-left: 5.5rem; padding-top: .55rem; padding-bottom: .55rem; }
+/* macOS: the content runs under a transparent title bar, beside the window buttons, which
+   trafficLightPosition (tauri.conf.json) centres on this row: keep the two in step. */
+.mac .top { padding-left: 6.5rem; padding-top: .55rem; padding-bottom: .55rem; }
 .brand {
   display: inline-flex;
   align-items: center;
