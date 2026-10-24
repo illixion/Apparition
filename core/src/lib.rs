@@ -149,7 +149,9 @@ pub fn native_anisette() -> bool {
 }
 
 /// What Apple's `-80045` ("This action cannot be completed at this time") means here.
-pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition says Android for anisette from Apple's Android libraries (what anisette servers run) and a Mac for a Mac's own, so this anisette server makes neither. Use the built-in anisette, Apparition's companion, or another anisette-v3 server.";
+pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition claims what the anisette server says it makes (Android for Dadoum's anisette-v3-server), and this server's anisette doesn't match that. Use the built-in anisette, Apparition's companion, or another anisette-v3 server.";
+/// Apple took the password but refused the Xcode sign-in for anisette from the Android libraries.
+pub const REFUSED_ANDROID_ANISETTE: &str = "Apple took the password but refused the Xcode sign-in (-80046) for anisette made by Apple's Android libraries, which the built-in anisette uses off a Mac and Dadoum's anisette-v3-server runs. Use a Mac's own anisette (Apparition on a Mac with macOS 26 or earlier, or its companion) or an anisette-v3 server that doesn't use those libraries.";
 
 /// The v3 server address to use for `requested`: itself, or the built-in provider's, which is
 /// started on first use and stays up for the life of the process.
@@ -175,6 +177,14 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
         let _ = data_dir;
         bail!("This build has no built-in anisette provider; give the address of an anisette v3 server")
     }
+}
+
+/// The code of the GrandSlam error behind `error` (-22411, -80045...), if one is.
+fn auth_code(error: &Report) -> Option<i64> {
+    error.iter_reports().find_map(|cause| match cause.downcast_current_context::<isideload::SideloadError>()? {
+        isideload::SideloadError::AuthWithMessage(code, _) => Some(*code),
+        _ => None,
+    })
 }
 
 /// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, or the built-in
@@ -204,7 +214,7 @@ pub async fn sign_in(
         async move { Ok(response) }
     };
     let refused = |error: Report| {
-        if format!("{error:?}").contains("-80045") {
+        if auth_code(&error) == Some(-80045) {
             error.context(REFUSED_ANISETTE).into_dynamic()
         } else {
             error.context("Apple ID sign-in failed").into_dynamic()
@@ -218,10 +228,15 @@ pub async fn sign_in(
         // Claiming Android, a sign-in Apple doesn't trust yet gets no 2FA step and no Xcode
         // token (-22411) until the code it pushes to the trusted devices is checked: sign in
         // again, which pushes one, and check it (vendor/isideload, code_after_login).
-        Err(error) if served == claimed_platform::Served::Android && format!("{error:?}").contains("-22411") => {
+        Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-22411) => {
             account.code_after_login = true;
             account.login(&password, callback).await.map_err(refused)?;
             DeveloperSession::from_account(&mut account).await.context("Failed to open a developer session")?
+        }
+        // Since about 2026-10-23 Apple answers -80046 instead and pushes no code (seen on one
+        // account, 2026-10-24), so there is nothing to ask for.
+        Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-80046) => {
+            return Err(error.context(REFUSED_ANDROID_ANISETTE).into_dynamic());
         }
         Err(error) => return Err(error.context("Failed to open a developer session").into_dynamic()),
     };
@@ -783,5 +798,24 @@ mod builtin_anisette_tests {
         // Anything else is passed through untouched.
         assert_eq!(super::anisette_address("http://example.test:1", &root).await.unwrap(), "http://example.test:1");
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_code_is_found_under_the_contexts() {
+        let token = || -> Result<(), Report> {
+            bail!(isideload::SideloadError::AuthWithMessage(-80046, "This action cannot be completed at this time.".into()))
+        };
+        let error = token()
+            .context("GrandSlam error during app token request")
+            .context("Failed to get xcode token from Apple account")
+            .unwrap_err()
+            .into_dynamic();
+        assert_eq!(auth_code(&error), Some(-80046));
+        assert_eq!(auth_code(&report!("no code here").into_dynamic()), None);
     }
 }

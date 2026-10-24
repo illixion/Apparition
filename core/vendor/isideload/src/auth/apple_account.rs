@@ -214,6 +214,8 @@ impl AppleAccount {
         debug!("Initial login successful");
 
         let mut attempts = 0;
+        // Set once Apple takes a trusted-device code, so being asked again ends the sign-in.
+        let mut code_taken = false;
 
         loop {
             attempts += 1;
@@ -262,6 +264,7 @@ impl AppleAccount {
                             // Taken (hsc 409 asks for it too): code_after_login mustn't ask again.
                             if matches!(self.login_state, LoginState::NeedsLogin) {
                                 self.code_checked = true;
+                                code_taken = true;
                             }
                         }
                         TwoFactorCallbackResponse::SendSms(selected_number_id) => {
@@ -334,6 +337,13 @@ impl AppleAccount {
                         .login_inner(password)
                         .await
                         .context("Failed to login again")?;
+                    // Asking for another code would only repeat: Apple took one and still doesn't
+                    // trust this anisette identity.
+                    if code_taken
+                        && matches!(self.login_state, LoginState::NeedsDevice2FA | LoginState::NeedsDevice2FAVerification)
+                    {
+                        bail!("Apple took the code but asks for another after signing in again: it doesn't trust this anisette identity");
+                    }
                 }
                 LoginState::NeedsUnknown2FA => {
                     info!(

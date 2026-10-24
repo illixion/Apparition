@@ -15,7 +15,10 @@ and a public field) makes `login` ask for that code once the password is accepte
 `code_after_login`, `code_checked`). Core sets it only after the Xcode token is refused, since
 Apple stops pushing codes once the anisette identity is trusted. Upstream 0.5.0 also asks for the
 code when the password step answers hsc 409 ("code already sent"); a code taken that way counts as
-checked, so `code_after_login` doesn't ask for a second one.
+checked, so `code_after_login` doesn't ask for a second one. And once Apple has taken a code, being asked
+for another after signing in again ends the sign-in instead of prompting up to 15 times (from
+valentinBoch's PR #6). Since about 2026-10-23 Apple answers an Android-claimed Xcode token request
+-80046 and pushes no code; core reports that rather than asking (core/src/lib.rs).
 
 A second change: the GrandSlam client also trusts Apple Root CA - G3
 (src/assets/AppleRootCA-G3.cer, src/auth/grandslam.rs). gsd.apple.com, where machine
