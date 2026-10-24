@@ -185,7 +185,11 @@ final class LibraryModel {
 
     func addSource(_ id: String, assetPattern: String?, prereleases: Bool) async {
         let id = id.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !sources.contains(where: { $0.id == id }) {
+        // Adding a source again takes the new options (a GitHub asset pattern, prereleases).
+        if let index = sources.firstIndex(where: { $0.id == id }) {
+            sources[index].assetPattern = assetPattern
+            sources[index].prereleases = prereleases
+        } else {
             sources.append(Sources.Source(id: id, assetPattern: assetPattern, prereleases: prereleases))
         }
         await refreshSource(id)
