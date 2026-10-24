@@ -161,6 +161,9 @@ async fn client_info(State(shared): State<Arc<Shared>>) -> Json<Value> {
 struct HeadersRequest {
     identifier: String,
     adi_pb: String,
+    /// Apple's resync data, sent by isideload 0.5.0 and later after GrandSlam answers hsc=434.
+    #[serde(default)]
+    sim: Option<String>,
 }
 
 async fn get_headers(State(shared): State<Arc<Shared>>, Json(request): Json<HeadersRequest>) -> Json<Value> {
@@ -172,6 +175,11 @@ async fn get_headers(State(shared): State<Arc<Shared>>, Json(request): Json<Head
 }
 
 async fn headers_for(shared: &Arc<Shared>, request: HeadersRequest) -> Result<Value, Report> {
+    // Resync isn't done here, and ordinary headers in its place would be refused again. The
+    // message mustn't say "provision": isideload's client reprovisions on that word.
+    if request.sim.is_some() {
+        bail!("Apple asked for an anisette resync (hsc 434), which this server can't do");
+    }
     // This Mac's own headers, whatever the identity: the client's identifier and adi.pb still
     // give its X-Mme-Device-Id and X-Apple-I-MD-LU, which Apple takes alongside them.
     #[cfg(target_os = "macos")]
@@ -330,6 +338,19 @@ mod tests {
             assert!(headers.get(name).is_some_and(|value| value.len() > 8), "{name} missing or empty");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_headers_request_may_carry_resync_data() {
+        let legacy: HeadersRequest = serde_json::from_value(json!({
+            "identifier": "AAAAAAAAAAAAAAAAAAAAAA==", "adi_pb": "AA=="
+        })).unwrap();
+        assert!(legacy.sim.is_none());
+        let resync: HeadersRequest = serde_json::from_value(json!({
+            "identifier": "AAAAAAAAAAAAAAAAAAAAAA==", "adi_pb": "AA==",
+            "sim": "AQID", "device_id": "some-device", "md_lu": "some-local-user"
+        })).unwrap();
+        assert!(resync.sim.is_some());
     }
 
     #[test]
