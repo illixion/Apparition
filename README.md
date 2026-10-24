@@ -17,7 +17,8 @@ computer at all.
 ## What it does
 
 - **Install apps** from AltStore and SideStore sources, from a GitHub project's releases
-  (`github:owner/repo`), or from an IPA you have. A link like
+  (`github:owner/repo`), or from an IPA you have. Apps published as a `.deb` package, as Kodi's
+  are, install the same way: Apparition unpacks the app from the package. A link like
   `apparition://source?url=https%3A%2F%2Fexample.com%2Fsource.json` opens Add Source with the
   source filled in, ready to add, for a source's own "Add to Apparition" button.
 - **Sign** with a free Apple ID, which Apple limits to apps that last 7 days and two
@@ -216,6 +217,7 @@ companion (`apparition relay`, `apparition anisette serve|up|down`):
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969
+    apparition install kodi.deb --apple-id you@example.com   # a .deb package: the app inside is installed
     apparition sign UTM.ipa --apple-id you@example.com   # sign only, for a paired device; nothing installed
     apparition relay      # the companion, with this computer's anisette (not on Windows); until Ctrl-C
 
@@ -276,7 +278,7 @@ guided app, so nobody needs a terminal, and the companion, kept running from the
 tray after the window closes (its Companion tab: the relay and its connections, the anisette
 server offered to devices, opening at login). As an installer, it finds the headset over mDNS (or takes its address) and pairs with
 the PIN it shows, or pairs an iPhone or iPad over its cable (like `pair --usb`), signs in to an Apple ID (asking for the 2FA code) or opens a .p12 and
-profiles, installs the latest signed release (or an IPA you pick) with progress, and hands
+profiles, installs the latest signed release (or an IPA or .deb you pick) with progress, and hands
 Apparition its signing at the end. When a free account's certificate or App ID slots are full
 it lists them and frees one only after you type `revoke` or `delete`. It drives the same
 `apparition_core::api` as the command line and shares its pairings and Apple ID data, so a
