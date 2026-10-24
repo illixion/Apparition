@@ -25,7 +25,7 @@ use rootcause::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use srp::{ClientVerifier, groups::G2048};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct AppleAccount {
     pub email: String,
@@ -118,6 +118,21 @@ struct SmsSecurityCode {
     too_many_codes_validated: bool,
     security_code_locked: bool,
     security_code_cooldown: bool,
+}
+
+/// Extracts the resync SIM (base64 `X-Apple-I-MD-DATA`) from a GSA response that
+/// demands an anisette resync (`Status.hsc == 434`); `None` otherwise.
+fn resync_sim(resp: &plist::Dictionary) -> Option<String> {
+    use base64::prelude::*;
+    let status = resp.get("Status")?.as_dictionary()?;
+    if status.get("hsc").and_then(plist::Value::as_signed_integer) != Some(434) {
+        return None;
+    }
+    match status.get("X-Apple-I-MD-DATA")? {
+        plist::Value::Data(d) => Some(BASE64_STANDARD.encode(d)),
+        plist::Value::String(s) => Some(s.clone()),
+        _ => None,
+    }
 }
 
 impl AppleAccount {
@@ -222,9 +237,7 @@ impl AppleAccount {
                     return Ok(());
                 }
                 LoginState::NeedsDevice2FA => {
-                    if self.trusted_phone_numbers.is_none() {
-                        self.trusted_phone_numbers = Some(self.get_trusted_numbers().await?);
-                    }
+                    self.update_trusted_numbers().await;
                     self.send_trusted_device_2fa()
                         .await
                         .context("Failed to complete trusted device 2FA")?;
@@ -246,6 +259,10 @@ impl AppleAccount {
                                 .verify_trusted_device_2fa(code)
                                 .await
                                 .context("Failed to verify trusted device 2FA")?;
+                            // Taken (hsc 409 asks for it too): code_after_login mustn't ask again.
+                            if matches!(self.login_state, LoginState::NeedsLogin) {
+                                self.code_checked = true;
+                            }
                         }
                         TwoFactorCallbackResponse::SendSms(selected_number_id) => {
                             self.login_state = self.select_number(selected_number_id)?;
@@ -266,9 +283,7 @@ impl AppleAccount {
                     }
                 }
                 LoginState::NeedsSMS2FA(id) => {
-                    if self.trusted_phone_numbers.is_none() {
-                        self.trusted_phone_numbers = Some(self.get_trusted_numbers().await?);
-                    }
+                    self.update_trusted_numbers().await;
                     info!("SMS 2FA required");
                     self.login_state = self
                         .send_sms_2fa(id)
@@ -665,6 +680,21 @@ impl AppleAccount {
         })
     }
 
+    async fn update_trusted_numbers(&mut self) {
+        if self.trusted_phone_numbers.is_some() {
+            return;
+        }
+        match self.get_trusted_numbers().await {
+            Ok(numbers) => {
+                self.trusted_phone_numbers = Some(numbers);
+            }
+            Err(report) => {
+                // Doesn't need to be a fatal error for users who have trusted devices
+                error!("Failed to retrieve trusted phone numbers:\n{}", report);
+            }
+        };
+    }
+
     async fn get_trusted_numbers(&mut self) -> Result<Vec<TrustedNumber>, Report> {
         let anisette_data = self
             .anisette_generator
@@ -758,29 +788,24 @@ impl AppleAccount {
         let a: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
         let a_pub = srp_client.compute_public_ephemeral(&a);
 
-        let req1 = plist!(dict {
-            "Header": {
-                "Version": "1.0.1"
-            },
-            "Request": {
-                "A2k": a_pub, // A2k = client public ephemeral
-                "cpd": cpd.clone(), // cpd = client provided data
-                "o": "init", // o = operation
-                "ps": [ // ps = protocols supported
-                    "s2k",
-                    "s2k_fo"
-                ],
-                "u": self.email.clone(), // u = username
-            }
-        });
+        let mut raw_response = self
+            .send_init_request(&gs_service_url, &cpd, &a_pub)
+            .await?;
 
-        debug!("Sending initial login request");
-
-        let response = self
-            .grandslam_client
-            .plist_request(&gs_service_url, &req1, None, self.err_429_retries)
-            .await
-            .context("Failed to send initial login request")?
+        if let Some(sim) = resync_sim(&raw_response) {
+            debug!("Anisette resync required (hsc 434); syncing then retrying init");
+            let fresh_anisette = self
+                .anisette_generator
+                .resync(&sim)
+                .await
+                .context("Anisette resync failed")?;
+            let fresh_cpd = fresh_anisette.get_client_provided_data();
+            raw_response = self
+                .send_init_request(&gs_service_url, &fresh_cpd, &a_pub)
+                .await
+                .context("Failed to send resynced init request")?;
+        }
+        let response = raw_response
             .check_grandslam_error()
             .context("GrandSlam error during initial login request")?;
 
@@ -897,6 +922,23 @@ impl AppleAccount {
             });
         }
 
+        if let Some(plist::Value::Integer(hsc)) = status.get("hsc") {
+            match hsc.as_signed() {
+                Some(200) => {}
+                Some(409) => {
+                    info!("2FA code already sent");
+                    self.update_trusted_numbers().await;
+                    return Ok(LoginState::NeedsDevice2FAVerification);
+                }
+                Some(code) => {
+                    warn!("Unknown status code {}: {:?}", code, status);
+                }
+                None => {
+                    warn!("Unknown status code (invalid integer): {:?}", status);
+                }
+            }
+        }
+
         Ok(LoginState::LoggedIn)
     }
 
@@ -1002,6 +1044,36 @@ impl AppleAccount {
         info!("Successfully retrieved app token for {}", app);
 
         Ok(app_token)
+    }
+
+    async fn send_init_request(
+        &mut self,
+        gs_service_url: &str,
+        cpd: &Dictionary,
+        a_pub: &Vec<u8>,
+    ) -> Result<Dictionary, Report> {
+        debug!("Sending initial login request");
+        let req1 = plist!(dict {
+            "Header": {
+                "Version": "1.0.1"
+            },
+            "Request": {
+                "A2k": a_pub.clone(), // A2k = client public ephemeral
+                "cpd": cpd.clone(), // cpd = client provided data
+                "o": "init", // o = operation
+                "ps": [ // ps = protocols supported
+                    "s2k", // password sent as sha256
+                    "s2k_fo" // password sent as utf8 hex string of sha256
+                ],
+                "u": self.email.clone(), // u = username
+            }
+        });
+
+        Ok(self
+            .grandslam_client
+            .plist_request(gs_service_url, &req1, None, self.err_429_retries)
+            .await
+            .context("Failed to send initial login request")?)
     }
 
     fn create_session_key(usr: &ClientVerifier<Sha256>, name: &str) -> Result<Vec<u8>, Report> {

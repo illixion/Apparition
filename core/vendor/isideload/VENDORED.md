@@ -1,10 +1,11 @@
-# isideload 0.4.4, vendored
+# isideload 0.5.0, vendored
 
-From https://github.com/nab138/isideload at 0bee45d8cdb07ca24524a26f38fdda0dbb4e04b3 (MIT,
+From https://github.com/nab138/isideload at fc7a81a (0.5.0 on crates.io; MIT,
 LICENSE alongside), used as core's `isideload` dependency by path. `readme` in Cargo.toml points
-at this folder's README.md instead of the repository's.
+at this folder's README.md instead of the repository's. Moved up from 0bee45d (0.4.4) with
+`git merge-file`, upstream's 0bee45d..fc7a81a over this copy.
 
-Six changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Seven changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -12,7 +13,9 @@ libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no X
 and a public field) makes `login` ask for that code once the password is accepted, check it with
 `validateCode` alone, and sign in again (src/auth/builder.rs, src/auth/apple_account.rs:
 `code_after_login`, `code_checked`). Core sets it only after the Xcode token is refused, since
-Apple stops pushing codes once the anisette identity is trusted.
+Apple stops pushing codes once the anisette identity is trusted. Upstream 0.5.0 also asks for the
+code when the password step answers hsc 409 ("code already sent"); a code taken that way counts as
+checked, so `code_after_login` doesn't ask for a second one.
 
 A second change: the GrandSlam client also trusts Apple Root CA - G3
 (src/assets/AppleRootCA-G3.cer, src/auth/grandslam.rs). gsd.apple.com, where machine
@@ -25,11 +28,10 @@ it by path, and src/sideload/sign.rs, cert_identity.rs and sideloader.rs import
 `ProvisioningProfile`, `BundleSigningSettings`, `Signer` (was `RustCryptoCmsSigner`, whose `new`
 now returns a `Result`) and `sign_bundle` from it.
 
-A fourth change: a saved anisette identity the server refuses ("isn't provisioned", say one
-provisioned with another server) is provisioned again, once, instead of failing every sign-in.
-The remote v3 provider reports that refusal as `SideloadError::AnisetteNotProvisioned`, and
-`AnisetteDataGenerator` then calls the new `AnisetteProvider::forget_provisioning` (a no-op by
-default) and provisions (src/anisette/mod.rs, src/anisette/remote_v3/mod.rs).
+A fourth change: our server refuses a saved anisette identity it doesn't know with "isn't
+provisioned" (with ADI's code), not upstream's -45061, so the remote v3 provider takes any message
+saying "provision" as `IncorrectlyProvisioned` too, and upstream's generator provisions again
+(src/anisette/remote_v3/mod.rs). Until 0.5.0 this was our own `forget_provisioning`.
 
 A fifth change: `sign_app` and `install_app` take the portal capability IDs to turn on for the main
 App ID (`capabilities: &[String]`) instead of an `increased_memory_limit` flag, and
@@ -46,3 +48,10 @@ provisioning profile") even with the Apple TV registered. The request stays on t
 endpoint (`tvos/` answers 404) and adds `subPlatform: tvOS`. The platform comes from the app being
 signed (UIDeviceFamily 3 or CFBundleSupportedPlatforms AppleTVOS), or from running on tvOS, not
 from the computer signing it (src/dev/app_ids.rs, src/sideload/sideloader.rs).
+
+A seventh change: upstream 0.5.0 fetches GrandSlam's URL bag claiming a Mac whatever the sign-in
+claims ("sending the android client info gets us the wrong url bag"). With our Android claim that
+makes GSA answer the first SRP request 503; the bag fetched with the real claim works. Checked
+2026-10-24 with a made-up account and the built-in (Android) anisette from this Mac: 3 of 3 runs
+got 503 with the Mac bag, 2 of 2 got -20970 ("entered incorrectly", past the anisette check) with
+the real claim, as 0.4.4 did (src/auth/grandslam.rs).

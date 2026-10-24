@@ -56,6 +56,8 @@ impl GrandSlam {
         base_headers: HeaderMap,
     ) -> Result<Dictionary, Report> {
         debug!("Fetching URL bag from GrandSlam");
+        // Upstream claims a Mac here whatever the sign-in claims. Claiming Android for the sign-in
+        // after a Mac's bag, GSA answers the first SRP request 503, so the bag gets the real claim.
         let resp = client
             .get(URL_BAG)
             .headers(base_headers)

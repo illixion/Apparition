@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use isideload::anisette::{AnisetteClientInfo, AnisetteData, AnisetteProvider};
+use isideload::anisette::{AnisetteClientInfo, AnisetteDataResponse, AnisetteProvider};
 use isideload::auth::grandslam::GrandSlam;
 use rootcause::prelude::*;
 
@@ -85,24 +85,20 @@ impl<P> ClaimedPlatform<P> {
 
 #[async_trait::async_trait]
 impl<P: AnisetteProvider + Send + Sync> AnisetteProvider for ClaimedPlatform<P> {
-    async fn get_anisette_data(&self) -> Result<AnisetteData, Report> {
+    async fn get_anisette_data(&self) -> Result<AnisetteDataResponse, Report> {
         self.inner.get_anisette_data().await
+    }
+
+    async fn resync(&self, sim: &str) -> Result<AnisetteDataResponse, Report> {
+        self.inner.resync(sim).await
     }
 
     async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
         Ok(AnisetteClientInfo { client_info: self.served.client_info().to_string(), user_agent: USER_AGENT.to_string() })
     }
 
-    async fn provision(&mut self, gs: Arc<GrandSlam>) -> Result<(), Report> {
-        self.inner.provision(gs).await
-    }
-
-    fn needs_provisioning(&self) -> Result<bool, Report> {
-        self.inner.needs_provisioning()
-    }
-
-    fn forget_provisioning(&mut self) {
-        self.inner.forget_provisioning()
+    async fn provision(&mut self, gs: &Arc<GrandSlam>, force_recheck: bool) -> Result<(), Report> {
+        self.inner.provision(gs, force_recheck).await
     }
 }
 

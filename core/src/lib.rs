@@ -16,7 +16,7 @@ use isideload::{
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
     dev::{app_ids::AppIdsApi, developer_session::DeveloperSession, devices::DevicesApi, teams::DeveloperTeam},
     sideload::{SideloaderBuilder, TeamSelection, builder::MaxCertsBehavior, sideloader::Sideloader},
-    util::{callbacks::MaxCertsCallbackBox, storage::SideloadingStorage},
+    util::{callbacks::{ExtensionsBehaviorCallbackBox, MaxCertsCallbackBox}, storage::SideloadingStorage},
 };
 use rootcause::prelude::*;
 
@@ -49,7 +49,7 @@ pub struct Session {
     team: DeveloperTeam,
     /// Where its storage.json (anisette state, the certificate key) lives.
     data_dir: PathBuf,
-    sideloader: Sideloader<MaxCertsCallbackBox>,
+    sideloader: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox>,
 }
 
 impl Session {
@@ -225,7 +225,7 @@ pub async fn sign_in(
         Err(error) => return Err(error.context("Failed to open a developer session").into_dynamic()),
     };
     drop(password);
-    let mut sideloader: Sideloader<MaxCertsCallbackBox> = SideloaderBuilder::new(session, email.to_string())
+    let mut sideloader: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox> = SideloaderBuilder::new(session, email.to_string())
         .team_selection(TeamSelection::First)
         // Never revoke someone's existing certificates on our own: report instead.
         .max_certs_behavior(MaxCertsBehavior::Error)
