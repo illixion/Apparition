@@ -192,10 +192,11 @@ pub async fn sign_in(
     let storage_path = data_dir.join("storage.json");
     let anisette_url = anisette_address(anisette_url, data_dir).await?;
     // Claim the platform the anisette was made on, or Apple refuses the sign-in (claimed_platform).
-    let served = claimed_platform::served_by(&anisette_url).await;
+    let claim = claimed_platform::claim_for(&anisette_url).await;
+    let served = claim.served;
     let anisette = claimed_platform::ClaimedPlatform::new(
         RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?,
-        served,
+        claim,
     );
     let two_factor = &two_factor;
     let callback = |params: TwoFactorCallbackParams| {
