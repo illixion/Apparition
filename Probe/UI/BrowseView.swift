@@ -2,7 +2,7 @@ import RAVEUI
 import SwiftUI
 
 /// Sources and the apps they offer, with Install. A source is an AltStore/SideStore JSON URL
-/// or `github:owner/repo` (the newest release with a matching .ipa asset).
+/// or `github:owner/repo` (the newest release with a matching .ipa or .deb asset).
 struct BrowseView: View {
     let model: ProbeModel
     let account: AccountModel
@@ -255,7 +255,7 @@ struct AddSourceSheet: View {
                     } header: {
                         Text("Release asset")
                     } footer: {
-                        Text("The newest release with an .ipa whose name contains this text is used; the shortest match wins, so \"visionOS\" picks UTM-visionOS.ipa over UTM-Remote-visionOS.ipa. A name ending in .ipa matches exactly.")
+                        Text("The newest release with an .ipa whose name contains this text is used; the shortest match wins, so \"visionOS\" picks UTM-visionOS.ipa over UTM-Remote-visionOS.ipa. A name ending in .ipa matches exactly. A release with only a .deb package (how Kodi is published) is unpacked, and its app installed.")
                     }
                 }
                 Section("Suggestions") {

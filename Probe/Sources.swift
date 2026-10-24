@@ -2,7 +2,7 @@ import Foundation
 
 /// App sources Apparition can install from:
 /// - AltStore/SideStore source JSON (`apps[].versions[]`, or the older app-level `version`/`downloadURL`);
-/// - `github:owner/repo`, the newest release with a matching `.ipa` asset (see fetchGitHub).
+/// - `github:owner/repo`, the newest release with a matching `.ipa` asset, or `.deb` (see fetchGitHub).
 ///   Many visionOS builds (UTM's `UTM-visionOS.ipa`) are only published that way.
 enum Sources {
     struct App: Codable, Sendable, Identifiable {
@@ -81,12 +81,17 @@ enum Sources {
             let assets = release["assets"] as? [[String: Any]] ?? []
             // A pattern ending in .ipa names the asset exactly; otherwise the shortest matching
             // name wins, so "visionOS" picks UTM-visionOS.ipa over UTM-Remote-visionOS.ipa.
+            // A release with no matching .ipa may hold a .deb instead (Kodi publishes that way).
             let wanted = pattern.lowercased()
-            let matches = assets.filter { asset in
-                let name = (asset["name"] as? String ?? "").lowercased()
-                guard name.hasSuffix(".ipa") else { return false }
-                return wanted.hasSuffix(".ipa") ? name == wanted : (wanted.isEmpty || name.contains(wanted))
+            func matching(_ ext: String) -> [[String: Any]] {
+                assets.filter { asset in
+                    let name = (asset["name"] as? String ?? "").lowercased()
+                    guard name.hasSuffix(ext) else { return false }
+                    return wanted.hasSuffix(ext) ? name == wanted : (wanted.isEmpty || name.contains(wanted))
+                }
             }
+            let ipas = matching(".ipa")
+            let matches = ipas.isEmpty ? matching(".deb") : ipas
             guard let asset = matches.min(by: { ($0["name"] as? String ?? "").count < ($1["name"] as? String ?? "").count }),
                   let download = asset["browser_download_url"] as? String else { continue }
             let tag = release["tag_name"] as? String ?? "?"
@@ -96,7 +101,7 @@ enum Sources {
                           size: asset["size"] as? Int, minOSVersion: nil, iconURL: nil)
             return (repo, [app])
         }
-        throw IDevice.ProbeError("no release of \(repo) has an .ipa matching \"\(pattern)\"")
+        throw IDevice.ProbeError("no release of \(repo) has an .ipa or .deb matching \"\(pattern)\"")
     }
 
     private static func get(_ url: URL) async throws -> Data {

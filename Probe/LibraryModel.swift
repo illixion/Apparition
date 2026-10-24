@@ -744,8 +744,7 @@ final class LibraryModel {
                 throw IDevice.ProbeError("HTTP \(code) downloading \(app.name)")
             }
         }
-        try Self.checkIsZip(temporary, name: app.name)
-        try FileManager.default.moveItem(at: temporary, to: destination)
+        try await Self.keepAsIPA(temporary, to: destination, name: app.name)
         // Keep one version per app.
         for other in (try? FileManager.default.contentsOfDirectory(atPath: AccountModel.appsDir.path)) ?? []
         where other.hasPrefix("\(safe)-") && other != file {
@@ -755,12 +754,26 @@ final class LibraryModel {
         return file
     }
 
-    /// An IPA is a zip: say what a source linked instead, rather than the signer's zip error.
-    private static func checkIsZip(_ file: URL, name: String) throws {
+    /// Keeps a download as the app's IPA. An IPA is a zip. A .deb package holds the app inside
+    /// (Kodi and many older apps are published that way): it's repacked as an IPA, so signing and
+    /// refreshing work as for any app. Anything else: say what a source linked instead, rather than
+    /// the signer's zip error.
+    private static func keepAsIPA(_ file: URL, to destination: URL, name: String) async throws {
         let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
         let head = (try? handle.read(upToCount: 512)) ?? Data()
-        if head.starts(with: [0x50, 0x4B]) { return }
+        try? handle.close()
+        if head.starts(with: [0x50, 0x4B]) {
+            try FileManager.default.moveItem(at: file, to: destination)
+            return
+        }
+        if head.starts(with: Array("!<arch>\n".utf8)) {
+            let reply = await Task.detached { AccountModel.call(apparition_convert_package(file.path, destination.path)) }.value
+            try? FileManager.default.removeItem(at: file)
+            guard reply["ok"] as? Bool == true else {
+                throw IDevice.ProbeError("\(name)'s package has no app Apparition can unpack: \(reply["error"] as? String ?? "unknown")")
+            }
+            return
+        }
         let text = String(decoding: head, as: UTF8.self).lowercased()
         if text.contains("manifestschemaversion") || text.contains("distributionpackage") {
             throw IDevice.ProbeError("\(name)'s download is an EU App Marketplace (AltStore PAL) package manifest, not an IPA, so it can't be sideloaded.")
@@ -768,7 +781,7 @@ final class LibraryModel {
         if text.contains("<html") || text.contains("<!doctype") {
             throw IDevice.ProbeError("\(name)'s download is a web page, not an IPA: the source links somewhere that needs a browser.")
         }
-        throw IDevice.ProbeError("\(name)'s download isn't an IPA (not a zip archive).")
+        throw IDevice.ProbeError("\(name)'s download isn't an IPA or a .deb package.")
     }
 
     private func upsert(_ record: InstalledApp) {
