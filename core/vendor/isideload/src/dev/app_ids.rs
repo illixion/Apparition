@@ -157,15 +157,29 @@ pub trait AppIdsApi {
         app_id: &AppId,
         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
     ) -> Result<Profile, Report> {
-        let body = plist!(dict {
+        let requested_platform = device_type.into();
+        let tvos = matches!(requested_platform.as_ref(), Some(DeveloperDeviceType::Tvos));
+        let mut body = plist!(dict {
             "teamId": &team.team_id,
             "appIdId": &app_id.app_id_id,
         });
+        // Apple's legacy /ios/ endpoint uses a subPlatform field to select
+        // a tvOS provisioning profile; switching to /tvos/ returns HTTP 404.
+        if tvos {
+            body.insert("subPlatform".into(), Value::String("tvOS".into()));
+        }
 
         let response: Profile = self
             .developer_session()
             .send_dev_request(
-                &dev_url("downloadTeamProvisioningProfile", device_type),
+                &dev_url(
+                    "downloadTeamProvisioningProfile",
+                    if tvos {
+                        Some(DeveloperDeviceType::Ios)
+                    } else {
+                        requested_platform
+                    },
+                ),
                 body,
                 "provisioningProfile",
             )

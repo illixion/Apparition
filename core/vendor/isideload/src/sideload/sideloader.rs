@@ -3,6 +3,7 @@ use crate::{
         app_groups::AppGroupsApi,
         app_ids::{AppIdsApi, Profile},
         developer_session::DeveloperSession,
+        device_type::DeveloperDeviceType,
         devices::DevicesApi,
         teams::{DeveloperTeam, TeamsApi},
     },
@@ -101,6 +102,13 @@ impl<C: MaxCertsCallback> Sideloader<C> {
         }
 
         let mut app = Application::new(app_path)?;
+        // When signing on macOS, choose the provisioning platform from the
+        // target app rather than the operating system of this installer.
+        let profile_platform = if cfg!(target_os = "tvos") || targets_tvos(&app.bundle.app_info) {
+            Some(DeveloperDeviceType::Tvos)
+        } else {
+            None
+        };
         let special = app.get_special_app();
 
         let main_bundle_id = app.main_bundle_id()?;
@@ -190,7 +198,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
         let main_provisioning_profile = self
             .dev_session
-            .download_team_provisioning_profile(&team, &main_app_id, None)
+            .download_team_provisioning_profile(&team, &main_app_id, profile_platform.clone())
             .await?;
 
         let mut provisioning_profiles: Vec<(String, Profile, Dictionary)> = Vec::new();
@@ -203,7 +211,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
             let profile = self
                 .dev_session
-                .download_team_provisioning_profile(&team, &id, None)
+                .download_team_provisioning_profile(&team, &id, profile_platform.clone())
                 .await
                 .context(format!(
                     "Failed to download provisioning profile for {}",
@@ -355,5 +363,54 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
     pub fn get_email(&self) -> &str {
         &self.apple_email
+    }
+}
+
+/// A TV app needs a tvOS profile even when it is signed from a Mac.
+fn targets_tvos(info: &Dictionary) -> bool {
+    info.get("UIDeviceFamily")
+        .and_then(plist::Value::as_array)
+        .is_some_and(|families| families.iter().any(|v| v.as_unsigned_integer() == Some(3)))
+        || info
+            .get("CFBundleSupportedPlatforms")
+            .and_then(plist::Value::as_array)
+            .is_some_and(|platforms| platforms.iter().any(|v| v.as_string() == Some("AppleTVOS")))
+}
+
+#[cfg(test)]
+mod profile_platform_tests {
+    use super::*;
+
+    #[test]
+    fn device_family_3_is_tvos() {
+        let mut info = Dictionary::new();
+        info.insert(
+            "UIDeviceFamily".into(),
+            plist::Value::Array(vec![plist::Value::Integer(3.into())]),
+        );
+        assert!(targets_tvos(&info));
+    }
+
+    #[test]
+    fn apple_tv_platform_is_tvos() {
+        let mut info = Dictionary::new();
+        info.insert(
+            "CFBundleSupportedPlatforms".into(),
+            plist::Value::Array(vec![plist::Value::String("AppleTVOS".into())]),
+        );
+        assert!(targets_tvos(&info));
+    }
+
+    #[test]
+    fn iphone_and_ipad_do_not_need_tvos_profiles() {
+        let mut info = Dictionary::new();
+        info.insert(
+            "UIDeviceFamily".into(),
+            plist::Value::Array(vec![
+                plist::Value::Integer(1.into()),
+                plist::Value::Integer(2.into()),
+            ]),
+        );
+        assert!(!targets_tvos(&info));
     }
 }

@@ -4,7 +4,7 @@ From https://github.com/nab138/isideload at 0bee45d8cdb07ca24524a26f38fdda0dbb4e
 LICENSE alongside), used as core's `isideload` dependency by path. `readme` in Cargo.toml points
 at this folder's README.md instead of the repository's.
 
-Five changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Six changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -39,3 +39,10 @@ existing ones (App Groups stays), and its error carries Apple's `detail`. If App
 sign_app asks for each one alone, so a refused one (EXTENDED_VIRTUAL_ADDRESSING on a free team:
 "not … eligible for this feature") doesn't cost the others (src/dev/app_ids.rs,
 src/sideload/sideloader.rs).
+
+A sixth change, from valentinBoch (Apparition PR #1): a tvOS app gets a tvOS profile. Without it
+Apple makes an iOS one and a free team answers 8220 ("no devices from which to generate a
+provisioning profile") even with the Apple TV registered. The request stays on the `ios/`
+endpoint (`tvos/` answers 404) and adds `subPlatform: tvOS`. The platform comes from the app being
+signed (UIDeviceFamily 3 or CFBundleSupportedPlatforms AppleTVOS), or from running on tvOS, not
+from the computer signing it (src/dev/app_ids.rs, src/sideload/sideloader.rs).
