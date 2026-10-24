@@ -83,6 +83,10 @@ struct RootView: View {
                 } else if let source = LibraryModel.sourceLink(url) {
                     library.linkedSource = source
                     tab = .browse
+                } else if LibraryModel.isAppFile(url) {
+                    // An .ipa or .deb from Files or Safari's share sheet: the library offers to install it.
+                    tab = .library
+                    Task { await library.receiveAppFile(url) }
                 } else {
                     Task { await library.signing.receive(url) }
                 }
@@ -98,6 +102,9 @@ struct RootView: View {
                 Text(LibraryModel.JITRequest.message(request))
             }
             #endif
+            .panel(isPresented: Binding(get: { library.incoming != nil }, set: { if !$0 { library.discardIncoming() } })) {
+                IncomingAppSheet(library: library) { tab = .library }
+            }
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }

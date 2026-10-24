@@ -95,6 +95,8 @@ final class LibraryModel {
     /// The last install error of each source app, by bundle ID, shown under that app's row so
     /// it's in view where Install was tapped.
     private(set) var installErrors: [String: String] = [:]
+    /// An app from a file (shared, opened in Apparition or picked), on its way to Install.
+    private(set) var incoming: IncomingFile?
 
     /// Whether `status` is an install error already shown under its app's row.
     var statusIsInline: Bool {
@@ -256,6 +258,114 @@ final class LibraryModel {
             self.upsert(record)
             return outcome
         }
+    }
+
+    // MARK: Apps from a file
+
+    /// What the library lists as the source of an app that came from a file.
+    nonisolated static let fileSource = "a file"
+
+    /// An .ipa or .deb the person gave Apparition, from reading it to asking whether to install it.
+    enum IncomingFile: Equatable {
+        case reading(String)
+        case ready(IncomingApp)
+        case failed(file: String, message: String)
+    }
+
+    struct IncomingApp: Equatable {
+        let bundleId: String
+        let name: String
+        let version: String
+        /// The kept copy, in the apps folder, as an IPA whatever it arrived as.
+        let ipaFile: String
+        let fileName: String
+    }
+
+    nonisolated static func isAppFile(_ url: URL) -> Bool {
+        ["ipa", "deb"].contains(url.pathExtension.lowercased())
+    }
+
+    /// Keeps a copy of an .ipa, or the app a .deb package holds (repacked as an IPA), and reads what
+    /// app it is. Nothing is signed or installed until `installIncoming`, which the person confirms.
+    func receiveAppFile(_ url: URL) async {
+        let fileName = url.lastPathComponent
+        guard !busy else {
+            incoming = .failed(file: fileName, message: "Apparition is busy with another install. Open the file again when it finishes.")
+            return
+        }
+        discardIncoming()
+        incoming = .reading(fileName)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let folder = AccountModel.appsDir
+        let part = folder.appendingPathComponent("incoming-\(UUID().uuidString).part")
+        let kept = folder.appendingPathComponent("incoming-\(UUID().uuidString).kept")
+        defer {
+            try? FileManager.default.removeItem(at: part)
+            try? FileManager.default.removeItem(at: kept)
+        }
+        do {
+            // Off the main actor: an app is hundreds of megabytes to copy, and a package is repacked.
+            try await Task.detached {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: url, to: part)
+                try await Self.keepAsIPA(part, to: kept, subject: fileName)
+            }.value
+            let info = await Task.detached { AccountModel.call(apparition_app_info(kept.path)) }.value
+            guard info["ok"] as? Bool == true, let bundleId = info["bundleId"] as? String else {
+                throw IDevice.ProbeError("\(fileName): \(info["error"] as? String ?? "no app in it")")
+            }
+            let name = info["name"] as? String ?? bundleId
+            let version = info["version"] as? String ?? ""
+            let safe = bundleId.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+            let file = "file_\(safe)-\(version).ipa"
+            let destination = folder.appendingPathComponent(file)
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: kept, to: destination)
+            incoming = .ready(IncomingApp(bundleId: bundleId, name: name, version: version, ipaFile: file, fileName: fileName))
+            log.info("received an app file")
+        } catch {
+            incoming = .failed(file: fileName, message: "\(error)")
+            log.error("could not read an app file: \(String(describing: error))")
+        }
+        account.refreshDownloads()
+    }
+
+    /// Signs and installs the app `receiveAppFile` read, and keeps it refreshed like any other.
+    func installIncoming() async {
+        guard case .ready(let app) = incoming else { return }
+        incoming = nil
+        installErrors[app.bundleId] = nil
+        defer {
+            let failed = "install \(app.name): error: "
+            if appLimit == nil, certificateChoice == nil, let status, status.hasPrefix(failed) {
+                installErrors[app.bundleId] = String(status.dropFirst(failed.count))
+            }
+        }
+        await exclusive("install \(app.name)") {
+            // The same app from a source keeps its source; a file just replaces the kept copy.
+            let existing = self.installed.first { $0.id == app.bundleId }
+            var record = existing ?? InstalledApp(id: app.bundleId, source: Self.fileSource, name: app.name, version: app.version,
+                                                  ipaFile: app.ipaFile, stripExtensions: true)
+            if let old = existing?.ipaFile, old != app.ipaFile {
+                try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(old))
+            }
+            record.version = app.version
+            record.ipaFile = app.ipaFile
+            let outcome = await self.signAndInstall(&record)
+            self.upsert(record)
+            self.account.refreshDownloads()
+            return outcome
+        }
+    }
+
+    /// Drops the app `receiveAppFile` read, and its kept copy unless the library uses it.
+    func discardIncoming() {
+        if case .ready(let app) = incoming, !installed.contains(where: { $0.ipaFile == app.ipaFile }) {
+            try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(app.ipaFile))
+            account.refreshDownloads()
+        }
+        incoming = nil
     }
 
     /// Re-signs and reinstalls every kept app that expires within `refreshMargin` (all of them
@@ -744,7 +854,7 @@ final class LibraryModel {
                 throw IDevice.ProbeError("HTTP \(code) downloading \(app.name)")
             }
         }
-        try await Self.keepAsIPA(temporary, to: destination, name: app.name)
+        try await Self.keepAsIPA(temporary, to: destination, subject: "\(app.name)'s download")
         // Keep one version per app.
         for other in (try? FileManager.default.contentsOfDirectory(atPath: AccountModel.appsDir.path)) ?? []
         where other.hasPrefix("\(safe)-") && other != file {
@@ -758,7 +868,7 @@ final class LibraryModel {
     /// (Kodi and many older apps are published that way): it's repacked as an IPA, so signing and
     /// refreshing work as for any app. Anything else: say what a source linked instead, rather than
     /// the signer's zip error.
-    private static func keepAsIPA(_ file: URL, to destination: URL, name: String) async throws {
+    private static func keepAsIPA(_ file: URL, to destination: URL, subject: String) async throws {
         let handle = try FileHandle(forReadingFrom: file)
         let head = (try? handle.read(upToCount: 512)) ?? Data()
         try? handle.close()
@@ -770,18 +880,18 @@ final class LibraryModel {
             let reply = await Task.detached { AccountModel.call(apparition_convert_package(file.path, destination.path)) }.value
             try? FileManager.default.removeItem(at: file)
             guard reply["ok"] as? Bool == true else {
-                throw IDevice.ProbeError("\(name)'s package has no app Apparition can unpack: \(reply["error"] as? String ?? "unknown")")
+                throw IDevice.ProbeError("\(subject) is a package with no app Apparition can unpack: \(reply["error"] as? String ?? "unknown")")
             }
             return
         }
         let text = String(decoding: head, as: UTF8.self).lowercased()
         if text.contains("manifestschemaversion") || text.contains("distributionpackage") {
-            throw IDevice.ProbeError("\(name)'s download is an EU App Marketplace (AltStore PAL) package manifest, not an IPA, so it can't be sideloaded.")
+            throw IDevice.ProbeError("\(subject) is an EU App Marketplace (AltStore PAL) package manifest, not an IPA, so it can't be sideloaded.")
         }
         if text.contains("<html") || text.contains("<!doctype") {
-            throw IDevice.ProbeError("\(name)'s download is a web page, not an IPA: the source links somewhere that needs a browser.")
+            throw IDevice.ProbeError("\(subject) is a web page, not an IPA: the link behind it needs a browser.")
         }
-        throw IDevice.ProbeError("\(name)'s download isn't an IPA or a .deb package.")
+        throw IDevice.ProbeError("\(subject) isn't an IPA or a .deb package.")
     }
 
     private func upsert(_ record: InstalledApp) {

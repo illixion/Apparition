@@ -482,6 +482,26 @@ fn app_info(app: &Path) -> Option<Dictionary> {
     plist::from_bytes(&data).ok()
 }
 
+/// What an IPA's main app calls itself, for listing an app picked from a file: `{bundleId, name,
+/// version}`. Fails for a zip that holds no app.
+pub fn app_summary(ipa: &Path) -> Result<Value, Report> {
+    let info = app_info(ipa).ok_or_else(|| report!("This file holds no app: it has no Payload/<name>.app/Info.plist"))?;
+    let string = |key: &str| info.get(key).and_then(Plist::as_string).filter(|s| !s.is_empty()).map(str::to_string);
+    let bundle_id = string("CFBundleIdentifier").ok_or_else(|| report!("This app's Info.plist has no bundle identifier"))?;
+    Ok(json!({
+        "bundleId": bundle_id,
+        "name": string("CFBundleDisplayName").or_else(|| string("CFBundleName")).unwrap_or_else(|| bundle_id.clone()),
+        "version": string("CFBundleShortVersionString").or_else(|| string("CFBundleVersion")).unwrap_or_default(),
+    }))
+}
+
+/// Reads the name, version and bundle identifier of the app in the IPA at `path`.
+/// Returns `{ok, bundleId, name, version}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_app_info(path: *const c_char) -> *mut c_char {
+    reply((|| app_summary(&PathBuf::from(unsafe { text(path) }?)))())
+}
+
 /// Refuses an app built only for other devices than `platform`'s, before signing it spends one of
 /// a free team's App IDs on something that can't install. An app that doesn't say is let through.
 pub fn check_app_platform(app: &Path, platform: Platform) -> Result<(), Report> {
@@ -1071,6 +1091,38 @@ mod tests {
         assert!(keychain_group_allowed(&allowed, "TEAM.com.example.app"));
         assert!(keychain_group_allowed(&allowed, "com.apple.token"));
         assert!(!keychain_group_allowed(&allowed, "OTHER.com.example.app"));
+    }
+
+    #[test]
+    fn summarises_the_app_in_an_ipa() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("apparition-summary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ipa = |name: &str, info: Option<&str>| {
+            let path = dir.join(name);
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("Payload/Kodi.app/Kodi", options).unwrap();
+            zip.write_all(b"x").unwrap();
+            if let Some(info) = info {
+                zip.start_file("Payload/Kodi.app/Info.plist", options).unwrap();
+                zip.write_all(info.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+            path
+        };
+        let plist = |body: &str| format!(r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>{body}</dict></plist>"#);
+
+        let full = ipa("full.ipa", Some(&plist("<key>CFBundleIdentifier</key><string>org.xbmc.kodi-ios</string><key>CFBundleName</key><string>Kodi</string><key>CFBundleDisplayName</key><string>Kodi Media</string><key>CFBundleShortVersionString</key><string>21.3</string><key>CFBundleVersion</key><string>21.3.0</string>")));
+        let found = app_summary(&full).unwrap();
+        assert_eq!(found, json!({"bundleId": "org.xbmc.kodi-ios", "name": "Kodi Media", "version": "21.3"}));
+
+        let bare = ipa("bare.ipa", Some(&plist("<key>CFBundleIdentifier</key><string>com.example.bare</string><key>CFBundleVersion</key><string>7</string>")));
+        assert_eq!(app_summary(&bare).unwrap(), json!({"bundleId": "com.example.bare", "name": "com.example.bare", "version": "7"}));
+
+        assert!(app_summary(&ipa("none.ipa", None)).is_err());
+        assert!(app_summary(&ipa("noid.ipa", Some(&plist("<key>CFBundleName</key><string>X</string>")))).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `APPARITION_SIGNED_APP=<a signed .app>`: reads its entitlements from the code signature.

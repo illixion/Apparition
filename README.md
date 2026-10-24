@@ -18,7 +18,9 @@ computer at all.
 
 - **Install apps** from AltStore and SideStore sources, from a GitHub project's releases
   (`github:owner/repo`), or from an IPA you have. Apps published as a `.deb` package, as Kodi's
-  are, install the same way: Apparition unpacks the app from the package. A link like
+  are, install the same way: Apparition unpacks the app from the package. On the device itself,
+  download the `.ipa` or `.deb` in Safari and share it to Apparition (or open it from Files,
+  or use Library > Install from a File): it names the app and asks before installing. A link like
   `apparition://source?url=https%3A%2F%2Fexample.com%2Fsource.json` opens Add Source with the
   source filled in, ready to add, for a source's own "Add to Apparition" button.
 - **Sign** with a free Apple ID, which Apple limits to apps that last 7 days and two

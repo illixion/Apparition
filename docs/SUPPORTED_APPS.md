@@ -62,8 +62,10 @@ anywhere else. Other emulators that already speak the request (ARMSX2, UTM) don'
 
 Kodi's official iOS download is a `.deb` package (from
 [mirrors.kodi.tv](https://mirrors.kodi.tv/releases/darwin/ios-arm64/)), not an IPA.
-Apparition 0.3.2 and later unpack the app from it: choose the `.deb` in the desktop app (Advanced, An app
-file), pass it to `apparition install`, or list it in a source. We installed and ran Kodi 21.3 on a Vision Pro.
+Apparition 0.3.2 and later unpack the app from it. On the device, download the `.deb` in Safari and
+share it to Apparition (or open it from Files, or use Library > Install from a File): Apparition names
+the app and asks before installing. The desktop app takes it too (Advanced, An app file), as does
+`apparition install`, or list it in a source. We installed and ran Kodi 21.3 on a Vision Pro.
 
 Earlier releases fail with `Signing failed … __LINKEDIT isn't final Mach-O segment`: Kodi's
 bundled Python ships an object file (`python.o`) that isn't code. See [issue #7](https://github.com/illixion/Apparition/issues/7).

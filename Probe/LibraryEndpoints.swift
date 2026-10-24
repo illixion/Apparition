@@ -83,6 +83,20 @@ enum LibraryEndpoints {
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
             },
+            .command("receiveAppFile", "As if an .ipa or .deb was opened in Apparition: keeps a copy and reads the app in it, then waits for installIncoming. Returns what it read",
+                     parameters: [.string("path", "A file on this device, or relative to Apparition's Documents folder", required: true)],
+                     timeout: .seconds(300)) { args in
+                let path = try args.requireString("path")
+                let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : AppFolders.documents.appendingPathComponent(path)
+                await model.receiveAppFile(url)
+                return String(describing: model.incoming)
+            },
+            .command("installIncoming", "Confirm the app receiveAppFile read: sign and install it. Returns at once; poll libraryState",
+                     parameters: []) { _ in
+                Task { await model.installIncoming() }
+                try await Task.sleep(for: .seconds(1))
+                return state(model, account)
+            },
             .command("refreshApps", "Re-sign and reinstall installed apps that expire within 3 days (all with force). Returns at once; poll libraryState",
                      parameters: [.boolean("force", "Refresh every installed app", default: false)]) { args in
                 let force = args.bool("force") ?? false

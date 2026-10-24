@@ -1,6 +1,7 @@
 import DebugTrace
 import RAVEUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "UI")
 
@@ -17,6 +18,7 @@ struct LibraryView: View {
     @State private var pendingRemoval: LibraryModel.InstalledApp?
     @State private var confirmingSelfRefresh = false
     @State private var confirmingUpdate = false
+    @State private var pickingFile = false
     @MainActor private static var listedThisLaunch = false
 
     private static let columns = [GridItem(.adaptive(minimum: 420, maximum: 640), spacing: 20)]
@@ -57,7 +59,13 @@ struct LibraryView: View {
             .raveScreenTitle("Library")
             #if !os(tvOS)
             .toolbar {
+                ToolbarItem(placement: .primaryAction) { installFromFileButton }
                 ToolbarItem(placement: .primaryAction) { refreshAllButton }
+            }
+            // An .ipa, or a .deb package like Kodi's: Safari's downloads and Files both lead here.
+            .fileImporter(isPresented: $pickingFile, allowedContentTypes: [.item]) { result in
+                guard case .success(let url) = result else { return }
+                Task { await library.receiveAppFile(url) }
             }
             #endif
             .confirmationDialog("Update Apparition to \(library.availableUpdate?.version ?? "")?", isPresented: $confirmingUpdate, titleVisibility: .visible) {
@@ -72,6 +80,18 @@ struct LibraryView: View {
             }
         }
     }
+
+    #if !os(tvOS)
+    private var installFromFileButton: some View {
+        Button {
+            pickingFile = true
+        } label: {
+            Label("Install from a File", systemImage: "doc.badge.plus")
+        }
+        .disabled(library.busy || model.busy)
+        .help("Install an .ipa, or the app in a .deb package, from Files")
+    }
+    #endif
 
     private var refreshAllButton: some View {
         Button {
@@ -124,6 +144,10 @@ struct LibraryView: View {
                 Text("No apps yet.").foregroundStyle(.secondary)
                 Button("Browse Sources", action: onBrowse)
                     .buttonStyle(.bordered)
+                #if !os(tvOS)
+                installFromFileButton
+                    .buttonStyle(.bordered)
+                #endif
             }
             .focusRow()
         } else {
@@ -266,10 +290,13 @@ struct LibraryView: View {
         ContentUnavailableView {
             Label("No Apps Yet", systemImage: "square.stack.3d.up.slash")
         } description: {
-            Text("Install apps from AltStore or SideStore sources, or from a GitHub repository's releases. Apparition signs them with your Apple ID and keeps them refreshed.")
+            Text("Install apps from AltStore or SideStore sources, from a GitHub repository's releases, or from an .ipa or .deb file. Apparition signs them with your Apple ID and keeps them refreshed.")
         } actions: {
             Button("Browse Sources", action: onBrowse)
                 .buttonStyle(.borderedProminent)
+            #if !os(tvOS)
+            installFromFileButton
+            #endif
             Button("Finish Setup", action: onSetup)
         }
         .frame(maxWidth: .infinity, minHeight: 420)

@@ -24,6 +24,9 @@ char *apparition_logout(void);
 // out_path (core/src/package.rs). Reads the whole package; takes about as long as downloading it.
 // {ok, app, files, bytes, others}.
 char *apparition_convert_package(const char *package_path, const char *out_path);
+// Reads the main app's name, version and bundle identifier from the IPA at path, for listing an app
+// picked from a file (core/src/identity.rs). {ok, bundleId, name, version}.
+char *apparition_app_info(const char *path);
 char *apparition_sign(const char *app_path, const char *udid, const char *device_name,
                   bool strip_extensions);
 // Signing with the Apple ID stops with code "sharedCertificate" rather than make a certificate

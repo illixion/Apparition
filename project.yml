@@ -69,6 +69,14 @@ targets:
           - CFBundleTypeName: Apparition Key File
             LSItemContentTypes: [com.illixion.apparition.key]
             LSHandlerRank: Owner
+          # Opening or sharing an .ipa, or a .deb package such as Kodi's, offers to install the app in
+          # it (LibraryModel.receiveAppFile): from Files, or Safari's share sheet after a download.
+          - CFBundleTypeName: iOS App
+            LSItemContentTypes: [com.apple.itunes.ipa]
+            LSHandlerRank: Alternate
+          - CFBundleTypeName: Debian Package
+            LSItemContentTypes: [org.debian.deb-archive]
+            LSHandlerRank: Alternate
         # A shared Apple ID certificate key (core/src/share.rs).
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.illixion.apparition.signing
@@ -83,6 +91,17 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension: [apparitionkey]
         UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.apple.itunes.ipa
+            UTTypeDescription: iOS App
+            UTTypeConformsTo: [public.data, public.zip-archive]
+            UTTypeTagSpecification:
+              public.filename-extension: [ipa]
+          - UTTypeIdentifier: org.debian.deb-archive
+            UTTypeDescription: Debian Package
+            UTTypeConformsTo: [public.data, public.archive]
+            UTTypeTagSpecification:
+              public.filename-extension: [deb]
+              public.mime-type: [application/vnd.debian.binary-package]
           - UTTypeIdentifier: com.apple.mobileprovision
             UTTypeDescription: Provisioning Profile
             UTTypeConformsTo: [public.data]
