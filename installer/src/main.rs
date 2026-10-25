@@ -102,6 +102,12 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Start or stop the self-hosted anisette server with your Docker; compose prints its file.
   apparition browse
       List the companions mDNS finds from here, for 10 seconds: a check that multicast works.
+  apparition link [--dir <dir>] [--remove]      (macOS and Linux)
+      Make `apparition` available in any terminal: a symlink to this copy in <dir> (default
+      ~/.local/bin, made if missing), and what to add to PATH if <dir> isn't on it already. From
+      the Mac app, run it as /Applications/Apparition.app/Contents/MacOS/apparition-cli link.
+      The link follows the app when it updates. --remove takes the link away again.
+  apparition --version | --help
 ";
 
 fn store() -> DeviceStore {
@@ -148,6 +154,15 @@ async fn main() -> ExitCode {
         Some("browse") => {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
         }
+        Some("link") => link(&args[1..]),
+        Some("--version" | "-V" | "version") => {
+            println!("apparition {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Some("--help" | "-h" | "help") => {
+            print!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
         _ => {
             print!("{USAGE}");
             return ExitCode::from(2);
@@ -166,6 +181,73 @@ type Error = Report;
 
 fn fail(message: impl Into<String>) -> Error {
     report!("{}", message.into())
+}
+
+// MARK: Putting the command on PATH
+
+/// `link`: a symlink named `apparition` to this executable in a directory on PATH. A symlink, not a
+/// copy, so it follows the app when it updates, and the anisette helper next to the real file
+/// is still found (`current_exe` resolves it).
+#[cfg(unix)]
+fn link(args: &[String]) -> Result<(), Error> {
+    let mut dir: Option<PathBuf> = None;
+    let mut remove = false;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dir" => dir = Some(PathBuf::from(args.next().ok_or_else(|| fail("--dir needs a directory"))?)),
+            "--remove" => remove = true,
+            other => return Err(fail(format!("unknown argument {other}"))),
+        }
+    }
+    let dir = match dir {
+        Some(dir) => dir,
+        None => PathBuf::from(std::env::var_os("HOME").ok_or_else(|| fail("HOME isn't set; pass --dir"))?).join(".local/bin"),
+    };
+    let target = std::env::current_exe().and_then(std::fs::canonicalize).map_err(|e| fail(format!("can't find this program: {e}")))?;
+    let link = dir.join("apparition");
+    let existing = std::fs::symlink_metadata(&link).ok();
+    if remove {
+        match existing {
+            Some(meta) if meta.file_type().is_symlink() => {
+                std::fs::remove_file(&link).map_err(|e| fail(format!("can't remove {}: {e}", link.display())))?;
+                println!("removed {}", link.display());
+            }
+            Some(_) => return Err(fail(format!("{} isn't a link made by `apparition link`; left alone", link.display()))),
+            None => println!("{} doesn't exist", link.display()),
+        }
+        return Ok(());
+    }
+    if let Some(meta) = existing {
+        // Only ever replace a link: a real file there is someone's own install.
+        if !meta.file_type().is_symlink() {
+            return Err(fail(format!("{} is a file, not a link; remove it first or pick another --dir", link.display())));
+        }
+        if std::fs::canonicalize(&link).ok().as_deref() == Some(target.as_path()) {
+            println!("{} already points here", link.display());
+            return path_hint(&dir);
+        }
+        std::fs::remove_file(&link).map_err(|e| fail(format!("can't replace {}: {e}", link.display())))?;
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| fail(format!("can't make {}: {e}", dir.display())))?;
+    std::os::unix::fs::symlink(&target, &link).map_err(|e| fail(format!("can't link {}: {e}", link.display())))?;
+    println!("{} -> {}", link.display(), target.display());
+    path_hint(&dir)
+}
+
+#[cfg(unix)]
+fn path_hint(dir: &Path) -> Result<(), Error> {
+    let on_path = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|entry| entry == dir));
+    if !on_path {
+        println!("{} isn't on your PATH yet. Add it to your shell's startup file:", dir.display());
+        println!("    export PATH=\"{}:$PATH\"", dir.display());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn link(_args: &[String]) -> Result<(), Error> {
+    Err(fail("link is for macOS and Linux; on Windows, put the folder holding apparition.exe on PATH"))
 }
 
 // MARK: Sharing the Apple ID's certificate key

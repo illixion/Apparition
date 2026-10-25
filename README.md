@@ -79,7 +79,8 @@ computer at all.
    working while the device is away from home (see How it works).
 
 The command line, `apparition`, does the same from a terminal; see [Installing Apparition from a
-computer](#installing-apparition-from-a-computer).
+computer](#installing-apparition-from-a-computer), which also says how to [put it on your
+PATH](#getting-apparition-on-your-path).
 
 **About Apple IDs.** Use a spare Apple ID for sideloading if you can. Apparition never stores
 the password unless you turn on Remember password on the device, where it stays in the Keychain,
@@ -222,6 +223,46 @@ companion (`apparition relay`, `apparition anisette serve|up|down`):
     apparition install kodi.deb --apple-id you@example.com   # a .deb package: the app inside is installed
     apparition sign UTM.ipa --apple-id you@example.com   # sign only, for a paired device; nothing installed
     apparition relay      # the companion, with this computer's anisette (not on Windows); until Ctrl-C
+
+#### Getting `apparition` on your PATH
+
+On a Mac the command line is inside the app (from 0.3.3), so updating the app updates
+it. Run it once to put `apparition` where every terminal finds it:
+
+    /Applications/Apparition.app/Contents/MacOS/apparition-cli link
+
+That makes `~/.local/bin/apparition`, a symlink into the app, and says what to add to your
+`PATH` if that folder isn't on it (`export PATH="$HOME/.local/bin:$PATH"` in `~/.zshrc`).
+`--dir /usr/local/bin` links somewhere else (needs `sudo`) and `--remove` undoes it. The link
+points at the app's location, so run `link` again if you move the app. The command inside the
+app is called `apparition-cli` because a Mac treats `apparition` and the app's own `Apparition`
+as one name. On Linux, `link` does the same for wherever you unpacked the tarball; on Windows, put
+the folder holding `apparition.exe` on your `PATH`. `apparition --version` checks it worked.
+
+#### Every command
+
+`apparition` with no arguments (or `--help`) prints the full text; this is the shape of it.
+
+| Command | What it does |
+| --- | --- |
+| `devices` | Lists the devices on this network that are paired or waiting to pair. |
+| `pair [<address>[:<port>]]` | Pairs with a headset or Apple TV showing its pairing screen; finds it over mDNS without an address. |
+| `pair --usb [<UDID>]` | Pairs an iPhone or iPad over its cable (or Wi-Fi sync). |
+| `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (and `--anisette <url>` where there's no built-in one) or `--p12 <file> --profile <file>`. |
+| `sign <app.ipa or .deb>` | Signs for a paired device and installs nothing; says which capabilities the app got. |
+| `jit <bundle ID>` | Is the app's debugger from this computer so it can use JIT: launches it, or with `--attach` takes the running process, and serves its JIT requests. |
+| `certificates`, `app-ids` | Show what uses up a free account's two certificates and ten App IDs, and free one you choose after you confirm. |
+| `signing receive`, `send`, `hand-off`, `share`, `import` | Move the Apple ID's certificate key between your devices and computers; see Sharing one certificate below. |
+| `forget <name or UDID>` | Forgets a paired device. |
+| `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Companion tab). |
+| `anisette serve`, `up`, `down`, `compose` | Serve this computer's built-in anisette, or run the self-hosted server with your Docker. |
+| `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
+| `link` | Puts `apparition` on your `PATH` (above). |
+
+Anything that signs in asks for the Apple ID's password, and for the 2FA code when Apple sends
+one, in the terminal; neither is kept unless you turn on Remember password on the device.
+`APPARITION_LOG=<file>` writes the sign-in's progress (no secrets) to a file, for working out
+why a sign-in failed.
 
 On Linux, `pair --usb` needs usbmuxd running. Nothing else there makes the device trust the
 computer (Finder and Apple Devices do on macOS and Windows), so Apparition asks it itself and
