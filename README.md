@@ -48,7 +48,8 @@ computer at all.
   <img src="docs/images/gta-sa-vision-pro.png" width="480" alt="GTA San Andreas running in ARMSX2 on Apple Vision Pro, launched with JIT from Apparition">
 - **Pair once, then work over Wi-Fi.** Vision Pro and Apple TV pair over Wi-Fi with the code
   they show in Settings, no cable or Developer Strap. An iPhone or iPad pairs over a USB cable
-  the first time (it has no pairing code); after that it's reached over Wi-Fi.
+  the first time (it has no pairing code); after that it's reached over Wi-Fi. Apparition keeps
+  a copy of its pairing in the device's Keychain, so reinstalling it doesn't unpair it.
 - **Share one certificate** between your devices and computers, so a free account's two
   certificates never run out one per device: nearby over the network, checked by a six-digit
   code both screens show, or as a file sealed under five words. Signing stops and asks before
@@ -68,7 +69,7 @@ computer at all.
      pairing, which the desktop app hands over at install.
    - **iPhone or iPad:** plug it into the computer with a USB cable and unlock it, then tap
      Trust and enter its passcode if it asks. There's no code to type. You only need the cable
-     this once; if the device already syncs with your Mac over Wi-Fi, that works too.
+     until the device trusts the computer: after that, pairing it again works over Wi-Fi.
 3. Sign in with your Apple ID, or choose your own certificate and profile, and install.
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
    signing it used.
@@ -233,7 +234,8 @@ Apparition (or any IPA) on the headset without Xcode, using the same Rust core, 
 companion (`apparition relay`, `apparition anisette serve|up|down`):
 
     apparition pair       # with Settings > General > Remote Devices open; type the PIN
-    apparition pair --usb # an iPhone or iPad on a cable (or Wi-Fi sync); tap Trust if it asks
+    apparition pair --usb # an iPhone or iPad: a cable until it trusts this computer, then Wi-Fi works too
+    apparition pairing hand-off   # give an Apparition already installed there its pairing
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969
@@ -264,7 +266,8 @@ the folder holding `apparition.exe` on your `PATH`. `apparition --version` check
 | --- | --- |
 | `devices` | Lists the devices on this network that are paired or waiting to pair. |
 | `pair [<address>[:<port>]]` | Pairs with a headset or Apple TV showing its pairing screen; finds it over mDNS without an address. |
-| `pair --usb [<UDID>]` | Pairs an iPhone or iPad over its cable (or Wi-Fi sync). |
+| `pair --usb [<UDID>]` | Pairs an iPhone or iPad. Despite the name, the cable is only needed until it trusts this computer; after that this works over Wi-Fi. Also makes the pairing for Apparition on the device. |
+| `pairing hand-off` | Gives Apparition, already installed on an iPhone, iPad or Apple TV, its pairing with that device, without reinstalling it. |
 | `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (and `--anisette <url>` where there's no built-in one) or `--p12 <file> --profile <file>`. |
 | `sign <app.ipa or .deb>` | Signs for a paired device and installs nothing; says which capabilities the app got. |
 | `jit <bundle ID>` | Is the app's debugger from this computer so it can use JIT: launches it, or with `--attach` takes the running process, and serves its JIT requests. |
@@ -295,6 +298,32 @@ certificate as the computer once signed in to the same Apple ID, so the two use 
 account's two certificates instead of one each. For an Apparition installed some other way,
 `apparition signing hand-off --apple-id <email> [--device <name>]` puts the key in its inbox on
 its own.
+
+#### When Apparition says it isn't paired
+
+Apparition reaches the device it runs on with a pairing of its own,
+`apparition_rp_pairing.plist` in its Documents folder. On Vision Pro it makes that itself in
+Setup. On iPhone, iPad and Apple TV it gets it from the computer that paired the device:
+installing Apparition hands it over. Anything that needs the device (an install, a refresh, a
+JIT request from an app such as Madeira) stops at once and says which of two things is wrong:
+
+- **Apparition isn't paired.** The file is missing, for example after Apparition was deleted
+  and installed again some other way. Apparition keeps a copy in the Keychain (this device
+  only, never synced) and puts the file back from it at launch, so this only happens when that
+  copy is gone too (it was never made, or the new copy is signed by another team). On iPhone or
+  iPad, from a computer that trusts the device, run
+
+      apparition pair --usb
+      apparition pairing hand-off [--device <name>]
+
+  Wi-Fi is enough; the cable is only needed while the device doesn't trust the computer. On an
+  Apple TV, run `apparition pair` with Remote App and Devices open (it shows a code twice), then
+  `pairing hand-off`. On Vision Pro, pair again in Setup.
+- **The device no longer trusts Apparition's pairing.** The file is there, but the device turns
+  it down, for example after the device was erased or its trust settings were reset. Pair
+  again the same way.
+
+Settings > Forget Pairing deletes both the file and the Keychain copy.
 
 #### Sharing one certificate
 

@@ -15,7 +15,7 @@ struct SetupStatus {
     @MainActor
     init(model: ProbeModel, account: AccountModel, pairedUDID: String?) {
         companion = model.relay != nil
-        paired = model.hasPairingFile && pairedUDID != nil
+        paired = model.hasPairingFile && pairedUDID != nil && model.pairingProblem == nil
         anisette = !account.anisetteURL.isEmpty
         // Signed in now, or able to sign in unattended with the remembered password (not while
         // that waits for the person, after a 2FA code went unentered).
@@ -281,7 +281,9 @@ struct PairStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if model.hasPairingFile, pairedUDID != nil {
+            if model.pairingProblem == .rejected {
+                Note(text: "This \(ThisDevice.noun) no longer trusts Apparition's pairing, so installs, refreshes and JIT fail until you pair again.", kind: .warning)
+            } else if model.hasPairingFile, pairedUDID != nil {
                 Note(text: "Paired with \(pairedName ?? "this \(ThisDevice.noun)").", kind: .success)
             }
             #if os(visionOS)
@@ -303,19 +305,21 @@ struct PairStep: View {
             }
             .foregroundStyle(.secondary)
             if !model.hasPairingFile {
-                Note(text: "Not paired yet. Install Apparition from a computer with the Apparition desktop app to pair it.", kind: .info)
+                Note(text: "Not paired yet. Installing Apparition from a computer pairs it; for the copy already here, run apparition pair, then apparition pairing hand-off.", kind: .info)
             }
             #else
             // iPhone and iPad have no Remote Devices screen to pair from: a computer pairs over
-            // the cable and hands Apparition its record when it installs it.
+            // usbmuxd and hands Apparition its record, when it installs it or on its own.
             VStack(alignment: .leading, spacing: 8) {
-                Text("1. Connect this \(ThisDevice.noun) to a computer with a cable and tap Trust if it asks.")
-                Text("2. On the computer, open the Apparition desktop app and pair (or run apparition pair --usb, then apparition install). Installing Apparition gives it the pairing.")
-                Text("3. Confirm the identity here; after that the cable isn't needed.")
+                Text("1. On a computer, open the Apparition desktop app and pair, or run apparition pair --usb. The first time, connect this \(ThisDevice.noun) with a cable and tap Trust; once it trusts the computer, Wi-Fi is enough.")
+                Text("2. Give Apparition the pairing: installing Apparition from the computer does it, or run apparition pairing hand-off for the copy already here.")
+                Text("3. Confirm the identity here.")
+                Text("Apparition keeps a copy of the pairing in this \(ThisDevice.noun)'s Keychain, so reinstalling Apparition doesn't lose it.")
+                    .font(.callout)
             }
             .foregroundStyle(.secondary)
             if !model.hasPairingFile {
-                Note(text: "Not paired yet. Install Apparition from a computer with the Apparition desktop app to pair it.", kind: .info)
+                Note(text: "Not paired yet: installs, refreshes and JIT need the pairing from a computer (steps 1 and 2).", kind: .info)
             }
             #endif
 

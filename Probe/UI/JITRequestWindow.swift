@@ -20,6 +20,8 @@ extension LibraryModel.JITRequest {
 /// The "Enable JIT?" prompt for an app Apparition didn't install, in a utility window. A
 /// confirmation dialog on visionOS is a popover anchored to the main window, which could land far
 /// to its right and out of reach, leaving the request to time out. iOS and tvOS keep the dialog.
+/// It also says why a request couldn't be served (no pairing, a pairing the headset turned down,
+/// no companion), which iOS and tvOS show in an alert.
 struct JITRequestWindow: Scene {
     static let windowID = "jit-request"
 
@@ -47,7 +49,23 @@ private struct JITRequestView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            if let request = library.pendingJITRequest {
+            if let failure = model.jitFailure {
+                Image(systemName: failure.problem == nil ? "exclamationmark.triangle.fill" : "link.badge.plus")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.orange)
+                Text("Can't Enable JIT for \(library.displayName(of: failure.bundleId))")
+                    .font(.title2.bold())
+                    .multilineTextAlignment(.center)
+                Text(failure.message)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("jitFailure")
+                Button("OK") {
+                    model.jitFailure = nil
+                    dismissWindow(id: JITRequestWindow.windowID)
+                }
+                .buttonStyle(.borderedProminent)
+            } else if let request = library.pendingJITRequest {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 40))
                 Text("Enable JIT for \(library.displayName(of: request.bundleId))?")
@@ -77,7 +95,10 @@ private struct JITRequestView: View {
         .padding(32)
         .frame(width: 460)
         // Closing the window with the request still up is a no.
-        .onDisappear { library.pendingJITRequest = nil }
+        .onDisappear {
+            library.pendingJITRequest = nil
+            model.jitFailure = nil
+        }
     }
 }
 

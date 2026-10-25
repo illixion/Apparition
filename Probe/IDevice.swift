@@ -103,7 +103,9 @@ enum IDevice {
     }
 
     /// Opens the tunnel (apparition_tunnel_create), runs `body` with its handles, then frees them.
-    static func withTunnel<T>(_ target: Target, hostname: String, file: PairingFile, pin: PinCallback,
+    /// With no `pin` it only pair-verifies, and a pairing the device turns down throws
+    /// `PairingRejected` at once; with one, it pair-sets-up instead and asks for the PIN.
+    static func withTunnel<T>(_ target: Target, hostname: String, file: PairingFile, pin: PinCallback?,
                               context: UnsafeMutableRawPointer,
                               _ body: (OpaquePointer?, OpaquePointer?) throws -> T) throws -> T {
         var adapter: OpaquePointer?
@@ -115,6 +117,7 @@ enum IDevice {
             if let adapter { adapter_free(adapter) }
         }
         guard reply["ok"] as? Bool == true else {
+            if reply["code"] as? String == "pairingRejected" { throw PairingRejected() }
             throw ProbeError("tunnel via \(target): \(reply["error"] as? String ?? "failed")")
         }
         return try body(adapter, handshake)
@@ -142,7 +145,7 @@ enum IDevice {
 
     /// Opens a tunnel, launches the app under the debugger and serves its JIT requests.
     static func launchJIT(target: Target, hostname: String, file: PairingFile,
-                          pin: PinCallback, context: UnsafeMutableRawPointer,
+                          pin: PinCallback?, context: UnsafeMutableRawPointer,
                           bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             return AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds))
@@ -152,7 +155,7 @@ enum IDevice {
     /// Opens a tunnel, attaches the debugger to the running process `pid` of `bundleId` and
     /// serves its JIT requests, bringing it back to the front.
     static func attachJIT(target: Target, hostname: String, file: PairingFile,
-                          pin: PinCallback, context: UnsafeMutableRawPointer,
+                          pin: PinCallback?, context: UnsafeMutableRawPointer,
                           pid: UInt64, bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             return AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds))
@@ -163,7 +166,7 @@ enum IDevice {
     /// (apparition_install_ipa, reusing `sourceIPA`'s unchanged files), or file by file
     /// (apparition_install) when `asIPA` is off.
     static func install(target: Target, hostname: String, file: PairingFile,
-                        pin: PinCallback, context: UnsafeMutableRawPointer, appPath: String,
+                        pin: PinCallback?, context: UnsafeMutableRawPointer, appPath: String,
                         sourceIPA: String? = nil, asIPA: Bool = true, detachAfterMs: UInt64 = 0) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             guard asIPA else { return AccountModel.call(apparition_install(adapter, handshake, appPath)) }
@@ -173,7 +176,7 @@ enum IDevice {
 
     /// Opens a tunnel and lists every user app on the device (apparition_list_apps).
     static func listApps(target: Target, hostname: String, file: PairingFile,
-                         pin: PinCallback, context: UnsafeMutableRawPointer) throws -> [String: Any] {
+                         pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             AccountModel.call(apparition_list_apps(adapter, handshake))
         }
@@ -181,7 +184,7 @@ enum IDevice {
 
     /// Opens a tunnel and deletes `bundleId` and its data from the device (apparition_uninstall).
     static func uninstall(target: Target, hostname: String, file: PairingFile,
-                          pin: PinCallback, context: UnsafeMutableRawPointer, bundleId: String) throws -> [String: Any] {
+                          pin: PinCallback?, context: UnsafeMutableRawPointer, bundleId: String) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             AccountModel.call(apparition_uninstall(adapter, handshake, bundleId))
         }
@@ -190,7 +193,7 @@ enum IDevice {
     /// Opens a tunnel and copies the data of the installed app `from` to the installed app `to`
     /// (apparition_migrate_container).
     static func migrateContainer(target: Target, hostname: String, file: PairingFile,
-                                 pin: PinCallback, context: UnsafeMutableRawPointer,
+                                 pin: PinCallback?, context: UnsafeMutableRawPointer,
                                  from: String, to: String) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             AccountModel.call(apparition_migrate_container(adapter, handshake, from, to))
@@ -200,7 +203,7 @@ enum IDevice {
     /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
     /// return them (only pair-setup does), and signing needs the UDID.
     static func identify(target: Target, hostname: String, file: PairingFile,
-                         pin: PinCallback, context: UnsafeMutableRawPointer) throws -> PeerDevice {
+                         pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> PeerDevice {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             var client: OpaquePointer?
             try check(lockdownd_connect_rsd(adapter, handshake, &client))
@@ -222,7 +225,7 @@ enum IDevice {
     /// Pair-verify (pairing first if needed), open the CDTunnel and run the RSD handshake.
     /// Returns the device UUID and its RSD service list; the tunnel is closed afterwards.
     static func tunnelServices(target: Target, hostname: String, file: PairingFile,
-                               pin: PinCallback, context: UnsafeMutableRawPointer) throws -> (uuid: String, services: [Service]) {
+                               pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> (uuid: String, services: [Service]) {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             guard let handshake else { throw ProbeError("tunnel_create_rppairing returned no handshake") }
 

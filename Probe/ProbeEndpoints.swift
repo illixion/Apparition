@@ -14,6 +14,8 @@ enum ProbeEndpoints {
         let busy: Bool
         let pinRequested: Bool
         let hasPairingFile: Bool
+        /// "missing" or "rejected" (the device turned the pairing down), or nil.
+        let pairingProblem: PairingRecord.Problem?
         let relay: String?
     }
 
@@ -22,7 +24,7 @@ enum ProbeEndpoints {
               advertised: model.advertised.values.sorted { $0.id < $1.id },
               reachability: model.reachability, attempts: model.attempts,
               busy: model.busy, pinRequested: model.pinRequested, hasPairingFile: model.hasPairingFile,
-              relay: model.relay)
+              pairingProblem: model.pairingProblem, relay: model.relay)
     }
 
     static func register(_ model: ProbeModel) {
@@ -107,7 +109,7 @@ enum ProbeEndpoints {
                 try await Task.sleep(for: .seconds(1))
                 return state(model)
             },
-            .command("forgetPairing", "Delete the saved pairing file", destructive: true) { _ in
+            .command("forgetPairing", "Delete the saved pairing file and its Keychain copy", destructive: true) { _ in
                 model.forgetPairing()
                 return state(model)
             },

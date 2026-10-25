@@ -72,7 +72,12 @@ struct RootView: View {
             }
             .onOpenURL { url in
                 if let request = LibraryModel.jitRequest(url) {
-                    if library.isManaged(request.bundleId) {
+                    model.refreshPairing()
+                    if model.pairingProblem == .missing {
+                        // Nothing to connect with: say so, instead of asking or "debugging".
+                        model.jitFailure = ProbeModel.JITFailure(bundleId: request.bundleId,
+                                                                 message: PairingRecord.message(.missing), problem: .missing)
+                    } else if library.isManaged(request.bundleId) {
                         attach(request)
                     } else {
                         library.pendingJITRequest = request
@@ -91,7 +96,22 @@ struct RootView: View {
                     Task { await library.signing.receive(url) }
                 }
             }
-            #if !os(visionOS)
+            #if os(visionOS)
+            // A request that couldn't be served: the JIT request window says why.
+            .onChange(of: model.jitFailure?.id) { _, failure in
+                if failure != nil { openWindow(id: JITRequestWindow.windowID) }
+            }
+            #else
+            .alert(model.jitFailure.map { "Can't Enable JIT for \(library.displayName(of: $0.bundleId))" } ?? "",
+                   isPresented: Binding(get: { model.jitFailure != nil }, set: { if !$0 { model.jitFailure = nil } }),
+                   presenting: model.jitFailure) { failure in
+                if failure.problem != nil {
+                    Button("Open Setup") { tab = .setup }
+                }
+                Button("OK", role: .cancel) {}
+            } message: { failure in
+                Text(failure.message)
+            }
             // visionOS asks in JITRequestWindow: a dialog there can land out of reach.
             .confirmationDialog("Enable JIT for \(library.pendingJITRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
                                 isPresented: Binding(get: { library.pendingJITRequest != nil }, set: { if !$0 { library.pendingJITRequest = nil } }),

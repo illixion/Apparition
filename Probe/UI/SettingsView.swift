@@ -171,7 +171,12 @@ struct SettingsView: View {
 
     private var pairingSection: some View {
         Section {
-            LabeledContent("Pairing", value: model.hasPairingFile ? "Saved" : "Not paired")
+            LabeledContent("Pairing", value: model.pairingProblem == .rejected ? "No longer trusted" : model.hasPairingFile ? "Saved" : "Not paired")
+            if let problem = model.pairingProblem {
+                Text(PairingRecord.message(problem))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             if let pairedName { LabeledContent("Device", value: pairedName) }
             if let pairedUDID {
                 LabeledContent("UDID") {
@@ -184,7 +189,7 @@ struct SettingsView: View {
                     .confirmationDialog("Forget this pairing?", isPresented: $confirmForget, titleVisibility: .visible) {
                         Button("Forget Pairing", role: .destructive) { model.forgetPairing() }
                     } message: {
-                        Text("Installs, refreshes and JIT stop working until you pair again in Setup. Also remove Apparition from Settings > General > Remote Devices.")
+                        Text("Installs, refreshes and JIT stop working until you pair again in Setup. This deletes the pairing and the copy kept in the Keychain. Also remove Apparition from Settings > General > Remote Devices.")
                     }
             } else {
                 Button("Pair in Setup…", action: onSetup)

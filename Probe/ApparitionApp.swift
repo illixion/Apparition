@@ -48,6 +48,8 @@ struct ApparitionApp: App {
                 .task { await library.scheduleRefreshIfNeeded() }
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active { StateVault.sync() }
+                    // A computer may have handed over a pairing while Apparition was away.
+                    if phase == .active { model.refreshPairing() }
                 }
         }
         #if !os(tvOS)

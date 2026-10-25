@@ -84,6 +84,8 @@ final class ProbeModel {
     private(set) var busy = false
     private(set) var pinRequested = false
     private(set) var hasPairingFile = false
+    /// What stops Apparition reaching this device (no pairing, or one it turned down), if anything.
+    private(set) var pairingProblem: PairingRecord.Problem?
     /// Every user app on this headset at the last listApps, whoever installed it.
     private(set) var deviceApps: [DeviceApp] = []
     private(set) var deviceAppsFetchedAt: String?
@@ -114,15 +116,12 @@ final class ProbeModel {
     private var resolvers: [String: ServiceResolver] = [:]
     private let pinBox = PinBox()
 
-    private var pairingFileURL: URL {
-        AppFolders.documents
-            .appendingPathComponent("apparition_rp_pairing.plist")
-    }
+    private var pairingFileURL: URL { PairingRecord.url }
 
     init() {
         let documents = AppFolders.documents
         IDevice.startLogging(to: documents.appendingPathComponent("idevice.log"))
-        hasPairingFile = FileManager.default.fileExists(atPath: pairingFileURL.path)
+        refreshPairing()
         loadDeviceApps()
         pinBox.onRequest = { [weak self] in
             Task { @MainActor in self?.pinRequested = true }
@@ -251,21 +250,30 @@ final class ProbeModel {
         pinBox.submit(nil)
     }
 
+    /// Deletes the pairing, and the copy kept in the Keychain.
     func forgetPairing() {
-        try? FileManager.default.removeItem(at: pairingFileURL)
-        hasPairingFile = false
+        PairingRecord.delete()
+        refreshPairing()
+    }
+
+    /// Restores the pairing from the Keychain if the file is gone (or keeps the Keychain copy up
+    /// to date), and reads what's wrong with it. At launch, when the app comes to the front (a
+    /// computer may have handed a new one over) and around every action that needs it.
+    func refreshPairing() {
+        pairingProblem = PairingRecord.sync()
+        hasPairingFile = PairingRecord.exists
     }
 
     func pair(host: String, port: Int) async {
         if host == Self.relayHost, let relay {
-            await run(action: "pair", host: host, port: port) { file, box in
+            await run(action: "pair", host: host, port: port, needsPairing: false) { file, box in
                 try IDevice.pairViaRelay(relay, port: UInt16(port), hostname: Self.hostname, file: file,
                                          pin: PinBox.callback, context: box)
                 return { _ in }
             }
             return
         }
-        await run(action: "pair", host: host, port: port) { file, box in
+        await run(action: "pair", host: host, port: port, needsPairing: false) { file, box in
             let peer = try IDevice.pair(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
                                         pin: PinBox.callback, context: box)
             return { attempt in attempt.peer = peer }
@@ -274,7 +282,9 @@ final class ProbeModel {
 
     func tunnel(host: String, port: Int) async {
         let target = tunnelTarget(host: host, port: port)
-        await run(action: "tunnel", host: host, port: port) { file, box in
+        // Diagnostics: the one tunnel that may pair-set-up (asking for the PIN) when there's no
+        // pairing yet or the device turns the saved one down.
+        await run(action: "tunnel", host: host, port: port, needsPairing: false) { file, box in
             let (uuid, services) = try IDevice.tunnelServices(target: target, hostname: Self.hostname,
                                                               file: file, pin: PinBox.callback, context: box)
             return { attempt in
@@ -290,7 +300,7 @@ final class ProbeModel {
         let target = tunnelTarget(host: host, port: port)
         return await run(action: "identify", host: host, port: port) { file, box in
             let peer = try IDevice.identify(target: target, hostname: Self.hostname, file: file,
-                                            pin: PinBox.callback, context: box)
+                                            pin: nil, context: box)
             return { attempt in attempt.peer = peer }
         }
     }
@@ -304,7 +314,7 @@ final class ProbeModel {
         let target = tunnelTarget(host: host, port: port)
         let outcome = await run(action: "install", host: host, port: port) { file, box in
             let reply = try IDevice.install(target: target, hostname: Self.hostname, file: file,
-                                            pin: PinBox.callback, context: box, appPath: appPath,
+                                            pin: nil, context: box, appPath: appPath,
                                             sourceIPA: sourceIPA, asIPA: asIPA, detachAfterMs: detachAfterMs)
             guard reply["ok"] as? Bool == true else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "install failed")
@@ -333,7 +343,7 @@ final class ProbeModel {
         let box = AppsBox()
         let outcome = await run(action: "apps", host: host, port: port) { file, context in
             let reply = try IDevice.listApps(target: target, hostname: Self.hostname, file: file,
-                                             pin: PinBox.callback, context: context)
+                                             pin: nil, context: context)
             guard reply["ok"] as? Bool == true, let apps = reply["apps"] else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "app lookup failed")
             }
@@ -358,7 +368,7 @@ final class ProbeModel {
         let target = tunnelTarget(host: host, port: port)
         let outcome = await run(action: "uninstall", host: host, port: port) { file, box in
             let reply = try IDevice.uninstall(target: target, hostname: Self.hostname, file: file,
-                                              pin: PinBox.callback, context: box, bundleId: bundleId)
+                                              pin: nil, context: box, bundleId: bundleId)
             guard reply["ok"] as? Bool == true else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "uninstall failed")
             }
@@ -400,7 +410,7 @@ final class ProbeModel {
         let box = MoveBox()
         let outcome = await run(action: "migrate", host: host, port: port) { file, context in
             let reply = try IDevice.migrateContainer(target: target, hostname: Self.hostname, file: file,
-                                                     pin: PinBox.callback, context: context, from: from, to: to)
+                                                     pin: nil, context: context, from: from, to: to)
             guard reply["ok"] as? Bool == true else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "data copy failed")
             }
@@ -440,26 +450,50 @@ final class ProbeModel {
     func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int) async {
         await serveJIT(host: host, port: port, bundleId: bundleId) { target, file, box in
             try IDevice.launchJIT(target: target, hostname: Self.hostname, file: file,
-                                  pin: PinBox.callback, context: box,
+                                  pin: nil, context: box,
                                   bundleId: bundleId, waitSeconds: UInt32(waitSeconds))
         }
     }
+
+    /// A JIT request from another app (an `enable-jit` link) that failed: what the JIT request
+    /// window (visionOS) or an alert shows, since nothing else in view would.
+    struct JITFailure: Identifiable, Sendable {
+        let id = UUID()
+        let bundleId: String
+        let message: String
+        /// Set when the pairing is what's wrong: Setup is where to go.
+        let problem: PairingRecord.Problem?
+    }
+
+    var jitFailure: JITFailure?
 
     /// Takes the running process `pid` of `bundleId` (an app that asked for JIT itself, through
     /// an `enable-jit` link) and serves its JIT requests until it exits or detaches. The app is
     /// brought back to the front once attached.
     func attachJIT(host: String, port: Int, bundleId: String, pid: Int) async {
-        await serveJIT(host: host, port: port, bundleId: bundleId) { target, file, box in
+        await serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: true) { target, file, box in
             try IDevice.attachJIT(target: target, hostname: Self.hostname, file: file,
-                                  pin: PinBox.callback, context: box,
+                                  pin: nil, context: box,
                                   pid: UInt64(max(pid, 0)), bundleId: bundleId, waitSeconds: 0)
         }
     }
 
-    private func serveJIT(host: String, port: Int, bundleId: String,
+    private func serveJIT(host: String, port: Int, bundleId: String, reportsFailure: Bool = false,
                           _ body: @escaping @Sendable (IDevice.Target, IDevice.PairingFile, UnsafeMutableRawPointer) throws -> [String: Any]) async {
         guard !jitSessions.contains(bundleId) else {
             log.info("jit already serving this app")
+            return
+        }
+        let report = { [weak self] (outcome: String) in
+            guard reportsFailure, outcome.hasPrefix("error"), let self else { return }
+            self.jitFailure = JITFailure(bundleId: bundleId,
+                                         message: outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome,
+                                         problem: PairingRecord.problem(in: outcome))
+        }
+        // No pairing: say so now, without showing a session that can't start.
+        refreshPairing()
+        if pairingProblem == .missing {
+            report(await run(action: "jit", host: host, port: port, exclusive: false) { _, _ in { _ in } })
             return
         }
         let target = tunnelTarget(host: host, port: port)
@@ -474,7 +508,7 @@ final class ProbeModel {
             notice.remove(bundleId: bundleId)
             keepAlive.update(active: !jitSessions.isEmpty)
         }
-        await run(action: "jit", host: host, port: port, exclusive: false) { file, box in
+        let outcome = await run(action: "jit", host: host, port: port, exclusive: false) { file, box in
             let reply = try body(target, file, box)
             guard reply["ok"] as? Bool == true else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "JIT launch failed")
@@ -486,12 +520,15 @@ final class ProbeModel {
                 attempt.events = events
             }
         }
+        report(outcome)
     }
 
     /// With `exclusive` (everything but a JIT session), refuses to start while another
-    /// exclusive action runs, and holds `busy` meanwhile.
+    /// exclusive action runs, and holds `busy` meanwhile. With `needsPairing` (everything but
+    /// pairing and the diagnostic tunnel), fails at once when there's no pairing, rather than
+    /// making up a new one the device has never seen.
     @discardableResult
-    private func run(action: String, host: String, port: Int, exclusive: Bool = true,
+    private func run(action: String, host: String, port: Int, exclusive: Bool = true, needsPairing: Bool = true,
                      _ body: @escaping @Sendable (IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async -> String {
         if exclusive {
             guard !busy else { return "busy" }
@@ -502,10 +539,13 @@ final class ProbeModel {
         attempts.insert(attempt, at: 0)
         log.info("\(action, privacy: .public) start")
 
+        // A computer may have handed a pairing over since, or the Keychain copy can bring it back.
+        refreshPairing()
         let url = pairingFileURL
         let box = Unmanaged.passUnretained(pinBox).toOpaque()
         let outcome: Result<(@Sendable (inout Attempt) -> Void), Error> = await Task.detached {
             Result {
+                if needsPairing && !FileManager.default.fileExists(atPath: url.path) { throw PairingMissing() }
                 let file = try FileManager.default.fileExists(atPath: url.path)
                     ? IDevice.PairingFile.load(Data(contentsOf: url))
                     : IDevice.PairingFile.generate(hostname: Self.hostname)
@@ -532,7 +572,14 @@ final class ProbeModel {
         }.value
 
         pinRequested = false
-        hasPairingFile = FileManager.default.fileExists(atPath: url.path)
+        // The device answering to the pairing clears an earlier refusal; a refusal is kept
+        // (for this record only) so Setup and Settings can say so.
+        switch outcome {
+        case .success: PairingRecord.clearRejected()
+        case .failure(let error) where error is PairingRejected: PairingRecord.markRejected()
+        case .failure: break
+        }
+        refreshPairing()
         // Other attempts may have started since: find this one again.
         guard let index = attempts.firstIndex(where: { $0.id == attempt.id }) else { return "unknown" }
         attempts[index].finishedAt = DebugTime.iso(Date())

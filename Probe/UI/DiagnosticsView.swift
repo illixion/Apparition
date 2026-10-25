@@ -74,7 +74,7 @@ struct DiagnosticsView: View {
                 }
 
                 Section("This device") {
-                    Text(model.hasPairingFile ? "Pairing file saved" : "No pairing file")
+                    Text(model.pairingProblem == .rejected ? "Pairing file saved, but the device turned it down" : model.hasPairingFile ? "Pairing file saved" : "No pairing file")
                     if model.hasPairingFile {
                         Button("Forget pairing", role: .destructive) { model.forgetPairing() }
                     }

@@ -659,6 +659,18 @@ final class LibraryModel {
 
     private static let noUDID = "can't read this device's UDID (paired, and LocalDevVPN or the companion up?)"
 
+    /// Why nothing can be installed right now, when there's no pairing: checked before signing,
+    /// so an install or refresh says so at once instead of after signing.
+    private var missingPairing: String? {
+        probe.refreshPairing()
+        return probe.pairingProblem == .missing ? PairingRecord.message(.missing) : nil
+    }
+
+    /// Why the device's UDID couldn't be read: the pairing when that's what's wrong.
+    private var noUDIDReason: String {
+        probe.pairingProblem.map(PairingRecord.message) ?? Self.noUDID
+    }
+
     private func deviceUDID() async -> String? {
         if UserDefaults.standard.string(forKey: "pairedUDID") == nil {
             await probe.identify(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
@@ -667,8 +679,9 @@ final class LibraryModel {
     }
 
     private func signAndInstall(_ record: inout InstalledApp) async -> String {
+        if let missingPairing { return fail(&record, missingPairing) }
         guard let udid = await deviceUDID() else {
-            return fail(&record, Self.noUDID)
+            return fail(&record, noUDIDReason)
         }
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
         let path = AccountModel.appsDir.appendingPathComponent(record.ipaFile).path
@@ -847,7 +860,8 @@ final class LibraryModel {
         guard let me = selfApp, let team = me.teamId else {
             return selfFail("this copy of Apparition has no provisioning profile to renew")
         }
-        guard let udid = await deviceUDID() else { return selfFail(Self.noUDID) }
+        if let missingPairing { return selfFail(missingPairing) }
+        guard let udid = await deviceUDID() else { return selfFail(noUDIDReason) }
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
         let signer = selfSigner
         var signingId: String?
@@ -970,6 +984,8 @@ final class LibraryModel {
     /// failed; past that, installd answered and its reason is the whole story.
     private static func installFailure(_ outcome: String) -> String {
         let reason = outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome
+        // No pairing, or one the device turned down: the message says what to do.
+        if PairingRecord.problem(in: outcome) != nil { return reason }
         let unreachable = reason.contains("tunnel via") || reason.contains("connect failed")
         return unreachable ? "install failed (LocalDevVPN connected, or the companion running?): \(reason)" : "install failed: \(reason)"
     }
