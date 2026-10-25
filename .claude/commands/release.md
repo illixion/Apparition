@@ -48,7 +48,7 @@ Wait for it in the background (`gh run watch <id> -R illixion/Apparition --exit-
 
 ## 5. Check and create the GitHub release
 
-- `gh run download <id> -R illixion/Apparition -n release-x.y.z -D build/release/x.y.z`
+- `gh run download <id> -R illixion/Apparition -n release-vx.y.z -D build/release/x.y.z` (the artifact is named after the tag, with its `v`)
 - `for f in build/release/x.y.z/Apparition-*; do gh attestation verify "$f" -R illixion/Apparition; done`. Every file must verify.
 - Draft the release notes from the commit summary and show them to the user for approval.
 - `gh release create vx.y.z build/release/x.y.z/Apparition-* -R illixion/Apparition --title "Apparition x.y.z" --notes "<approved notes>"`. Add `--target <full sha>` if the tag is not yet on the remote.
