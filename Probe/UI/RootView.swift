@@ -105,6 +105,11 @@ struct RootView: View {
             .panel(isPresented: Binding(get: { library.incoming != nil }, set: { if !$0 { library.discardIncoming() } })) {
                 IncomingAppSheet(library: library) { tab = .library }
             }
+            .panel(isPresented: Binding(get: { library.signerChoice != nil }, set: { if !$0 { library.cancelSignerChoice() } })) {
+                if let choice = library.signerChoice {
+                    InstallSignerSheet(library: library, choice: choice)
+                }
+            }
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }

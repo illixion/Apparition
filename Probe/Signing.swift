@@ -62,6 +62,15 @@ final class SigningStore {
         didSet { UserDefaults.standard.set(defaultSigner, forKey: Self.defaultSignerKey) }
     }
 
+    private nonisolated static let movesDataKey = "movesDataOnSignerChange"
+
+    /// Whether an app that comes back under another bundle ID (a different signer or team) takes
+    /// the old copy's data along and replaces it. On by default: the library keeps one copy of
+    /// each app, and a copy left behind would never be refreshed.
+    var movesData: Bool = UserDefaults.standard.object(forKey: SigningStore.movesDataKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(movesData, forKey: Self.movesDataKey) }
+    }
+
     /// Whether apps sign with an imported certificate by default, so setup needs no Apple ID.
     nonisolated static var signsWithOwnCertificate: Bool {
         (UserDefaults.standard.string(forKey: defaultSignerKey) ?? appleID) != appleID
@@ -106,6 +115,61 @@ final class SigningStore {
 
     func signerName(_ signer: String) -> String {
         signer == Self.appleID ? "Apple ID" : identity(signer)?.name ?? "Removed certificate"
+    }
+
+    /// One way to sign an app, for the install-time choice.
+    struct SignerOption: Identifiable, Hashable {
+        /// `appleID` or an imported certificate's id.
+        let id: String
+        let title: String
+        let detail: String
+        /// The team that would sign, when known (an Apple ID that isn't signed in yet has none).
+        let teamId: String?
+        /// Why it can't sign an app for this device, if so.
+        let unusable: String?
+        /// Whether the app is installed under a bundle ID with the team ID added (the Apple ID does that).
+        let addsTeamToBundleId: Bool
+    }
+
+    /// What can sign an app now: the Apple ID, when there is one (signed in, or remembered), and
+    /// each imported certificate.
+    func signerOptions(account: AccountModel) -> [SignerOption] {
+        var options: [SignerOption] = []
+        if account.team != nil || account.lastAppleID != nil {
+            let team = account.team
+            let who = account.email ?? account.lastAppleID ?? "Apple ID"
+            let detail = team.map { "\(who) · \($0.name ?? "Personal team") (\($0.id))" } ?? who
+            options.append(SignerOption(id: Self.appleID, title: "Apple ID", detail: detail, teamId: team?.id,
+                                        unusable: nil, addsTeamToBundleId: true))
+        }
+        for identity in identities {
+            let unusable: String? = if identity.expired {
+                "expired"
+            } else if usableProfiles(for: identity).isEmpty {
+                "no profile for this \(ThisDevice.noun)"
+            } else {
+                nil
+            }
+            let team = identity.teamName.map { "\($0) (\(identity.teamId ?? "?"))" } ?? identity.teamId ?? "unknown team"
+            options.append(SignerOption(id: identity.id, title: identity.name, detail: "\(identity.kind.capitalized) certificate · \(team)",
+                                        teamId: identity.teamId, unusable: unusable, addsTeamToBundleId: false))
+        }
+        return options
+    }
+
+    /// The option to start from: the default signer when it can sign, else the first that can.
+    func preferredSigner(in options: [SignerOption]) -> String {
+        if let option = options.first(where: { $0.id == defaultSigner && $0.unusable == nil }) { return option.id }
+        return options.first(where: { $0.unusable == nil })?.id ?? defaultSigner
+    }
+
+    /// The bundle ID `signer` would give an app whose own is `bundleId`, and the team it signs for:
+    /// the Apple ID adds the team ID, an imported certificate keeps the bundle ID. Nil team: not known yet.
+    func prediction(of option: SignerOption, bundleId: String) -> (bundleId: String, teamId: String?) {
+        if option.addsTeamToBundleId {
+            return (option.teamId.map { "\(bundleId).\($0)" } ?? bundleId, option.teamId)
+        }
+        return (bundleId, option.teamId)
     }
 
     // MARK: Import and delete

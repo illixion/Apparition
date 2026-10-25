@@ -26,6 +26,13 @@ enum LibraryEndpoints {
         let record: LibraryModel.SelfRecord
     }
 
+    struct MoveState: Encodable {
+        let outcome: String
+        let files: Int
+        let bytes: Int
+        let failed: [String]
+    }
+
     struct UpdateState: Encodable {
         let current: String
         let latest: SelfUpdate.Latest?
@@ -75,11 +82,14 @@ enum LibraryEndpoints {
                         .string("sourceId", "The source's id", required: true),
                         .string("appId", "The app's id in that source (bundle id or github:owner/repo)", required: true),
                         .boolean("stripExtensions", "Drop app extensions, which a free account can't sign", default: true),
+                        .string("signer", "appleID or an imported certificate's id (see signing): what signs it from now on; default: the app's own, else the default signer"),
+                        .string("takeOver", "Bundle ID of a copy of it on the device (another team's) whose data moves to this one, and which is then removed"),
                      ]) { args in
                 let source = try args.requireString("sourceId")
                 let app = try args.requireString("appId")
                 let strip = args.bool("stripExtensions") ?? true
-                Task { await model.install(sourceId: source, appId: app, stripExtensions: strip) }
+                let (signer, takeOver) = (args.string("signer"), args.string("takeOver"))
+                Task { await model.install(sourceId: source, appId: app, stripExtensions: strip, signer: signer, takeOver: takeOver) }
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
             },
@@ -92,10 +102,27 @@ enum LibraryEndpoints {
                 return String(describing: model.incoming)
             },
             .command("installIncoming", "Confirm the app receiveAppFile read: sign and install it. Returns at once; poll libraryState",
-                     parameters: []) { _ in
-                Task { await model.installIncoming() }
+                     parameters: [
+                        .string("signer", "appleID or an imported certificate's id (see signing): what signs it from now on"),
+                        .string("takeOver", "Bundle ID of a copy of it on the device (another team's) whose data moves to this one, and which is then removed"),
+                     ]) { args in
+                let (signer, takeOver) = (args.string("signer"), args.string("takeOver"))
+                Task { await model.installIncoming(signer: signer, takeOver: takeOver) }
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
+            },
+            .command("migrateData", "Copy the data of the installed app `from` to the installed app `to` (both development-signed) through the tunnel. Changes nothing in `from`; nothing is removed. Returns what was copied",
+                     parameters: [
+                        .string("from", "Bundle ID of the old copy", required: true),
+                        .string("to", "Bundle ID of the new copy, installed and not yet launched", required: true),
+                     ], timeout: .seconds(600)) { args in
+                let (from, to) = (try args.requireString("from"), try args.requireString("to"))
+                guard from != Bundle.main.bundleIdentifier, to != Bundle.main.bundleIdentifier else {
+                    throw SigningStore.Failure(description: "Apparition's own data isn't moved")
+                }
+                let (outcome, move) = await model.migrateData(from: from, to: to)
+                guard let move else { throw SigningStore.Failure(description: outcome) }
+                return MoveState(outcome: outcome, files: move.files, bytes: move.bytes, failed: move.failed)
             },
             .command("refreshApps", "Re-sign and reinstall installed apps that expire within 3 days (all with force). Returns at once; poll libraryState",
                      parameters: [.boolean("force", "Refresh every installed app", default: false)]) { args in

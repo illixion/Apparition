@@ -198,6 +198,23 @@ profile keeps each app's own bundle ID, and development profiles keep Launch wit
 The .p12 password is only used to open the file; the decrypted key is kept in Apparition's
 container, like the free account's key.
 
+### Both an Apple ID and a certificate
+
+With an Apple ID and an imported certificate (a free account for trying apps out, a paid team
+for keeping them), Apparition asks what signs a new app before its first install: Install in
+Browse, or an .ipa you open. It also lists a copy of the app that another team signed, if the
+headset has one. A copy signed by another team can't be replaced, so the choice has to come first.
+The Apple ID adds its team ID to the bundle ID and a certificate keeps it, so the two kinds
+install side by side with data of their own. Where a certificate from another team would need the
+same bundle ID, Apparition says so before installing, rather than passing on installd's error.
+
+Changing an app's signer later (its menu in the Library) changes its bundle ID too, as does an
+Apple ID that signs for another team. The app comes back as a new copy; Apparition then copies
+the old copy's files to it through the same tunnel (house_arrest), and removes the old copy only
+once every file arrived. Turn it off in Settings > Signing. Caches are left behind, and so are
+Keychain items and app group data, which belong to the signing team. Only a development-signed
+app can have its data read, so a distribution-signed one keeps its data in the old copy.
+
 ## Releases
 
 Releases are listed on [apparition.illixion.com](https://apparition.illixion.com) (repo

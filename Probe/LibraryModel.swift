@@ -29,6 +29,9 @@ final class LibraryModel {
         var signWith: String?
         /// What signed the installed copy, for the card: "Apple ID" or the certificate's name.
         var signedWith: String?
+        /// A copy of this app under another bundle ID (signed by another team) whose data the next
+        /// install takes over, chosen when installing. Cleared once that has been tried.
+        var takeOver: String?
     }
 
     /// Apparition's own refreshes: it re-signs and reinstalls itself (`refreshSelf`).
@@ -230,7 +233,9 @@ final class LibraryModel {
     // MARK: Install and refresh
 
     /// Downloads (if this version isn't kept yet), signs and installs `appId` from `sourceId`.
-    func install(sourceId: String, appId: String, stripExtensions: Bool) async {
+    /// `signer` and `takeOver` come from the install-time choice (`requestInstall`): what signs it
+    /// from now on, and a copy under another bundle ID whose data it takes over.
+    func install(sourceId: String, appId: String, stripExtensions: Bool, signer: String? = nil, takeOver: String? = nil) async {
         guard let app = sources.first(where: { $0.id == sourceId })?.apps.first(where: { $0.id == appId }) else {
             status = "no app \(appId) in \(sourceId)"
             return
@@ -254,10 +259,99 @@ final class LibraryModel {
             record.version = app.version
             record.ipaFile = file
             record.stripExtensions = stripExtensions
+            if let signer { record.signWith = signer }
+            if let takeOver { record.takeOver = takeOver }
             let outcome = await self.signAndInstall(&record)
             self.upsert(record)
             return outcome
         }
+    }
+
+    // MARK: Choosing the signer at install time
+
+    /// An install waiting for the person to choose what signs it.
+    struct SignerChoice: Identifiable, Equatable {
+        let id = UUID()
+        let sourceId: String
+        let appId: String
+        let appName: String
+        /// The app's own bundle ID, when the source lists one (a GitHub release doesn't).
+        let bundleId: String?
+        let stripExtensions: Bool
+    }
+
+    private(set) var signerChoice: SignerChoice?
+
+    /// Installs an app from a source. A new app, with more than one way to sign it (the Apple ID
+    /// and an imported certificate, say), asks first what signs it: an installed app can't be
+    /// replaced by a copy signed by another team, so it is chosen before the first install. An app
+    /// already in the library keeps its signer (its menu changes it), and one way to sign it needs no asking.
+    func requestInstall(sourceId: String, appId: String, stripExtensions: Bool) {
+        guard let app = sources.first(where: { $0.id == sourceId })?.apps.first(where: { $0.id == appId }) else {
+            status = "no app \(appId) in \(sourceId)"
+            return
+        }
+        let choices = signing.signerOptions(account: account).filter { $0.unusable == nil }
+        guard !installed.contains(where: { $0.id == appId }), choices.count > 1, !busy else {
+            Task { await install(sourceId: sourceId, appId: appId, stripExtensions: stripExtensions) }
+            return
+        }
+        signerChoice = SignerChoice(sourceId: sourceId, appId: appId, appName: app.name,
+                                    bundleId: app.id.hasPrefix("github:") ? nil : app.id, stripExtensions: stripExtensions)
+    }
+
+    func cancelSignerChoice() {
+        signerChoice = nil
+    }
+
+    /// Runs the install `requestInstall` held back, with what the person chose.
+    func confirmSignerChoice(signer: String, takeOver: String?) async {
+        guard let choice = signerChoice else { return }
+        signerChoice = nil
+        await install(sourceId: choice.sourceId, appId: choice.appId, stripExtensions: choice.stripExtensions,
+                      signer: signer, takeOver: takeOver)
+    }
+
+    /// Copies of the app whose own bundle ID is `bundleId` that are on the device under another
+    /// bundle ID, as the last app listing has them: the same app signed by another team (an Apple ID
+    /// adds its team ID to the bundle ID). Only development-signed ones, since only their data can be read.
+    func otherCopies(of bundleId: String) -> [ProbeModel.DeviceApp] {
+        probe.deviceApps.filter { app in
+            guard app.debuggable, app.bundleId != Bundle.main.bundleIdentifier else { return false }
+            if app.bundleId == bundleId { return true }
+            guard app.bundleId.hasPrefix(bundleId + ".") else { return false }
+            let suffix = app.bundleId.dropFirst(bundleId.count + 1)
+            return suffix.count == 10 && suffix.allSatisfy { $0.isASCII && ($0.isUppercase || $0.isNumber) }
+        }
+    }
+
+    /// The app's team on the device if `bundleId` is installed there under a team other than `team`:
+    /// installd refuses to replace such a copy. Reads the device's apps again before saying so.
+    func conflictingTeam(bundleId: String, team: String) async -> String? {
+        func clash() -> String? {
+            probe.deviceApps.first { $0.bundleId == bundleId && $0.teamId != nil && $0.teamId != team }?.teamId
+        }
+        guard clash() != nil else { return nil }
+        await refreshDeviceApps()
+        return clash()
+    }
+
+    /// The ways to sign an app now (`SigningStore.signerOptions`).
+    var signerOptions: [SigningStore.SignerOption] { signing.signerOptions(account: account) }
+
+    /// The app on the device with this bundle ID, as the last app listing has it.
+    func installedOnDevice(_ bundleId: String) -> ProbeModel.DeviceApp? {
+        probe.deviceApps.first { $0.bundleId == bundleId }
+    }
+
+    /// Copies one installed app's data to another's, nothing more (the debug endpoint's use).
+    func migrateData(from: String, to: String) async -> (outcome: String, move: ProbeModel.DataMove?) {
+        await probe.migrateData(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, from: from, to: to)
+    }
+
+    /// Reads the device's apps through the tunnel again.
+    func refreshDeviceApps() async {
+        await probe.listApps(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
     }
 
     // MARK: Apps from a file
@@ -332,7 +426,7 @@ final class LibraryModel {
     }
 
     /// Signs and installs the app `receiveAppFile` read, and keeps it refreshed like any other.
-    func installIncoming() async {
+    func installIncoming(signer: String? = nil, takeOver: String? = nil) async {
         guard case .ready(let app) = incoming else { return }
         incoming = nil
         installErrors[app.bundleId] = nil
@@ -352,6 +446,8 @@ final class LibraryModel {
             }
             record.version = app.version
             record.ipaFile = app.ipaFile
+            if let signer { record.signWith = signer }
+            if let takeOver { record.takeOver = takeOver }
             let outcome = await self.signAndInstall(&record)
             self.upsert(record)
             self.account.refreshDownloads()
@@ -577,6 +673,9 @@ final class LibraryModel {
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
         let path = AccountModel.appsDir.appendingPathComponent(record.ipaFile).path
         let signer = signing.signer(for: record)
+        // The copy whose data this install takes over: the one chosen at install time, else the one
+        // the library installed before, when the signer changed.
+        let previousId = record.takeOver ?? (signing.movesData ? record.installedBundleId : nil)
         let signed: [String: Any]
         if signer == SigningStore.appleID {
             guard await account.signInWithRememberedPassword() else {
@@ -596,6 +695,13 @@ final class LibraryModel {
         }
         if signer == SigningStore.appleID { certificateChoice = nil }
         let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
+        // installd can't replace an app with a copy from another team, and says so cryptically.
+        if let bundleId = main?.bundleId, let team = main?.profileTeam,
+           let other = await conflictingTeam(bundleId: bundleId, team: team) {
+            try? FileManager.default.removeItem(atPath: signedPath)
+            return fail(&record, "this \(ThisDevice.noun) already has \(bundleId) signed by team \(other), and \(ThisDevice.os) won't replace it with a copy signed by team \(team). Sign it with team \(other)'s certificate, or delete the app from the \(ThisDevice.home) first (its data goes with it).",
+                        logged: "installed copy belongs to another team")
+        }
         let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           sourceIPA: path)
         try? FileManager.default.removeItem(atPath: signedPath)
@@ -612,7 +718,45 @@ final class LibraryModel {
         record.expiresAt = main?.profileExpires
         record.signedWith = signing.signerName(signer)
         record.lastError = nil
-        return "ok, expires \(record.expiresAt ?? "?")"
+        var moved = ""
+        if let previousId, let newId = main?.bundleId, previousId != newId {
+            moved = await moveData(from: previousId, to: newId)
+        }
+        record.takeOver = nil
+        return "ok, expires \(record.expiresAt ?? "?")" + moved
+    }
+
+    /// Copies the data of `previousId`, the app's copy under another bundle ID, to the copy just
+    /// installed as `newId`, then removes the old one once everything arrived. The new copy hasn't
+    /// run yet, so nothing of its own is overwritten. Returns what to add to the install's result:
+    /// nothing when the old copy is gone, and the reason when its data stayed behind (the old copy
+    /// is then still installed).
+    private func moveData(from previousId: String, to newId: String) async -> String {
+        let own = Bundle.main.bundleIdentifier
+        guard previousId != own, newId != own else { return "" }
+        await refreshDeviceApps()
+        guard let old = probe.deviceApps.first(where: { $0.bundleId == previousId }) else { return "" }
+        let name = displayName(of: previousId)
+        guard old.debuggable else {
+            log.notice("old copy isn't development-signed; data left")
+            return "; \(name)'s data stayed in the old copy (\(previousId)): it isn't development-signed, so its data can't be read"
+        }
+        let host = probe.defaultTunnelHost, port = probe.defaultTunnelPort
+        let (outcome, move) = await probe.migrateData(host: host, port: port, from: previousId, to: newId)
+        guard outcome == "ok", let move else {
+            log.error("data move failed")
+            return "; \(name)'s data didn't move: \(outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome). The old copy (\(previousId)) is still installed"
+        }
+        guard move.complete else {
+            log.error("data move incomplete: \(move.failed.count, privacy: .public) files")
+            return "; \(move.failed.count) files of \(name)'s data didn't copy (\(move.failed.first ?? "")). The old copy (\(previousId)) is still installed"
+        }
+        let removed = await probe.uninstall(host: host, port: port, bundleId: previousId)
+        log.info("moved \(move.summary, privacy: .public) of data to the new copy")
+        if removed == "ok" {
+            return "; moved \(move.summary) of data from the copy signed by team \(old.teamId ?? "?") and removed it"
+        }
+        return "; moved \(move.summary) of data, but couldn't remove the old copy (\(previousId)): delete it from the \(ThisDevice.home)"
     }
 
     // MARK: Apparition itself

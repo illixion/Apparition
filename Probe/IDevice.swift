@@ -187,6 +187,16 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and copies the data of the installed app `from` to the installed app `to`
+    /// (apparition_migrate_container).
+    static func migrateContainer(target: Target, hostname: String, file: PairingFile,
+                                 pin: PinCallback, context: UnsafeMutableRawPointer,
+                                 from: String, to: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_migrate_container(adapter, handshake, from, to))
+        }
+    }
+
     /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
     /// return them (only pair-setup does), and signing needs the UDID.
     static func identify(target: Target, hostname: String, file: PairingFile,

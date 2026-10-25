@@ -97,6 +97,11 @@ char *apparition_list_apps(struct AdapterHandle *adapter, struct RsdHandshakeHan
 // Deletes bundle_id and its data from the device: {ok}.
 char *apparition_uninstall(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                            const char *bundle_id);
+// Copies the data of the installed app `from` to the installed app `to` (the same app signed
+// under another bundle ID) through house_arrest: {ok, files, bytes, folders, skipped, failed, ms}.
+// Both must be development-signed. Remove the old copy only when failed is empty.
+char *apparition_migrate_container(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                   const char *from, const char *to);
 // Launches bundle_id suspended, attaches debugserver over the tunnel and serves the
 // brk #0x69 (UTM) and brk #0xf00d (JIT26) protocols. Waits up to wait_seconds (0: no limit)
 // for the first request; once the app has asked, serves it until it exits or detaches.

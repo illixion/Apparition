@@ -70,13 +70,14 @@ struct SigningView: View {
             }
             .pickerStyle(.inline)
             .labelsHidden()
+            Toggle("Move data when an app changes signer", isOn: Binding(get: { signing.movesData }, set: { signing.movesData = $0 }))
         } header: {
             Text("Sign Apps With")
         } footer: {
             Text((signing.defaultSigner == SigningStore.appleID
                  ? "Your Apple ID signs for 7 days at a time and needs the anisette server. A free account has two certificates and ten App IDs a week. Each app can choose otherwise in its menu in the Library."
                  : "Your own certificate signs without signing in, for as long as its profile lasts (usually a year). Each app can choose otherwise in its menu in the Library; the change applies at its next refresh.")
-                 + " Switching changes the app's bundle ID (the Apple ID adds your team ID to it), so the app installs as a separate copy with its own data.")
+                 + " Apparition asks what signs an app when you install it, if there is more than one way. Switching an installed app changes its bundle ID (the Apple ID adds your team ID to it), so it comes back as a new copy; with the switch on, Apparition copies the old copy's data to it and removes the old copy once everything arrived. Keychain items and app group data can't move, and neither can the data of an app that isn't development-signed.")
         }
     }
 

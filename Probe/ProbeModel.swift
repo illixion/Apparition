@@ -374,6 +374,46 @@ final class ProbeModel {
         return outcome
     }
 
+    /// What copying one app's data to another's left behind.
+    struct DataMove: Sendable {
+        let files: Int
+        let bytes: Int
+        /// Files that didn't arrive whole: the copy is incomplete when there are any.
+        let failed: [String]
+
+        var complete: Bool { failed.isEmpty }
+
+        var summary: String {
+            "\(files) files, \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
+        }
+    }
+
+    private final class MoveBox: @unchecked Sendable {
+        var move: DataMove?
+    }
+
+    /// Copies the data of the installed app `from` to the installed app `to` through the tunnel
+    /// (apparition_migrate_container). Changes nothing in `from`. Returns "ok" and what was copied,
+    /// or what failed.
+    func migrateData(host: String, port: Int, from: String, to: String) async -> (outcome: String, move: DataMove?) {
+        let target = tunnelTarget(host: host, port: port)
+        let box = MoveBox()
+        let outcome = await run(action: "migrate", host: host, port: port) { file, context in
+            let reply = try IDevice.migrateContainer(target: target, hostname: Self.hostname, file: file,
+                                                     pin: PinBox.callback, context: context, from: from, to: to)
+            guard reply["ok"] as? Bool == true else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "data copy failed")
+            }
+            let move = DataMove(files: reply["files"] as? Int ?? 0, bytes: reply["bytes"] as? Int ?? 0,
+                                failed: reply["failed"] as? [String] ?? [])
+            box.move = move
+            let detail = "copied \(move.summary) in \(reply["ms"] as? Int ?? 0) ms" + (move.complete ? "" : ", \(move.failed.count) failed")
+            log.info("\(detail, privacy: .public)")
+            return { attempt in attempt.detail = detail }
+        }
+        return (outcome, box.move)
+    }
+
     private func loadDeviceApps() {
         guard let data = try? Data(contentsOf: Self.deviceAppsURL),
               let stored = try? JSONDecoder().decode(StoredApps.self, from: data) else { return }

@@ -195,7 +195,7 @@ struct BrowseView: View {
             }
             let button = Button(label) {
                 // Free accounts can't sign app extensions, so they're dropped.
-                Task { await library.install(sourceId: source.id, appId: app.id, stripExtensions: installed?.stripExtensions ?? true) }
+                library.requestInstall(sourceId: source.id, appId: app.id, stripExtensions: installed?.stripExtensions ?? true)
             }
             .disabled(library.busy || model.busy)
             if installed == nil {

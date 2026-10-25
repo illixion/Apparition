@@ -29,6 +29,7 @@ mod share;
 mod nearby;
 mod identity;
 mod ipa;
+mod migrate;
 pub mod package;
 mod jit;
 mod tunnel;
