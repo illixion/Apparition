@@ -32,6 +32,7 @@ Check with `git diff`: exactly five lines change. Also grep for the old version 
 ## 3. Commit and push the release
 
 - `git add project.yml desktop/Cargo.toml desktop/Cargo.lock installer/Cargo.toml installer/Cargo.lock`
+- Before committing, check the Rust crates build: `(cd installer && cargo check)` and `(cd desktop && cargo check)`. Both must finish with no errors. A broken build here would otherwise only show up after the tag has started the full release, which is how 0.3.3 failed on its first run.
 - Commit **signed** in the foreground: `git commit -S`. Subject `Release x.y.z`. The body summarises everything since the last release in plain prose (not a raw list of commit subjects), followed by `Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>`.
 - If signing fails with "agent refused operation", stop. **USER:** run `git commit -S` themselves with the `!` prefix (touch the YubiKey), then continue.
 - `git push origin main`.
