@@ -3,7 +3,7 @@ description: Release Apparition: bump the version, push, build on GitHub Actions
 allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 ---
 
-You are performing a release of Apparition. The user may give $ARGUMENTS: `major`, `minor` or `patch` (default `patch` when empty or unrecognised). Apparition versions are plain `major.minor.patch` (semver, no pre-release suffix). The release site is `~/Projects/apparition.illixion.com`; the signing keys are a YubiKey and an offline backup.
+You are performing a release of Apparition. The user may give $ARGUMENTS: `major`, `minor` or `patch` (default `patch` when empty or unrecognised). Apparition versions are plain `major.minor.patch` (semver, no pre-release suffix). The release site is `~/Projects/apparition.illixion.com`; releases are signed by the YubiKey.
 
 Follow these steps in order, stopping on any error. Steps marked **USER** need the person at the keyboard; stop there, say what to run, and wait.
 
