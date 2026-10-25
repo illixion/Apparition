@@ -38,7 +38,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
   apparition pair --usb [<UDID>]
       Pair with an iPhone or iPad (it has no PIN pairing screen). Despite the name, a cable
       is only needed until it trusts this computer: after that this works over Wi-Fi too,
-      whenever this computer sees it on the network (listed as "network" here). If it doesn't
+      whenever this computer sees it on the network (listed as \"network\" here). If it doesn't
       trust this computer yet, it asks: unlock it, tap Trust and enter its passcode.
       Afterwards it's reached over the network like a headset. It also makes the pairing
       Apparition on the device uses, which `install` or `pairing hand-off` gives it.
