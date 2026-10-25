@@ -36,10 +36,17 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
   apparition pair --usb [<UDID>]
-      Pair with an iPhone or iPad (it has no PIN pairing screen) over its cable, or over
-      Wi-Fi if it already syncs with this computer over Wi-Fi. If it doesn't trust this
-      computer yet, it asks: unlock it, tap Trust and enter its passcode. Afterwards it's
-      reached over the network like a headset.
+      Pair with an iPhone or iPad (it has no PIN pairing screen). Despite the name, a cable
+      is only needed until it trusts this computer: after that this works over Wi-Fi too,
+      whenever this computer sees it on the network (listed as "network" here). If it doesn't
+      trust this computer yet, it asks: unlock it, tap Trust and enter its passcode.
+      Afterwards it's reached over the network like a headset. It also makes the pairing
+      Apparition on the device uses, which `install` or `pairing hand-off` gives it.
+  apparition pairing hand-off [--device <name or UDID>] [--bundle-id <id>]
+      Give Apparition, already installed on an iPhone, iPad or Apple TV, its pairing with
+      that device, as installing Apparition does. For when Apparition says it isn't paired
+      (it was reinstalled some other way) or that the device no longer trusts its pairing
+      (run `pair --usb` first then, or `pair` for an Apple TV). Works over Wi-Fi.
   apparition install [<app.ipa or .deb>] [--device <name or UDID>]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
           [--keep-extensions] [--no-handoff] [--release-site <url>]
@@ -147,6 +154,7 @@ async fn main() -> ExitCode {
         Some("jit") => jit(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("signing") => signing(&args[1..]).await,
+        Some("pairing") => pairing(&args[1..]).await,
         Some("certificates") => account_command(&args[1..], Slot::Certificates).await,
         Some("app-ids") => account_command(&args[1..], Slot::AppIds).await,
         Some("relay") => relay(&args[1..]).await,
@@ -500,6 +508,56 @@ async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
     println!("Pairing with {udid} as \"{}\"…", api::hostname());
     let (device, info) = store().pair_usb(&udid, &|what| println!("{what}")).await?;
     println!("Paired with {} ({} {}), reached at {}:{}.", info.name, info.product_type, info.os_version, device.address, device.port);
+    Ok(())
+}
+
+/// `pairing hand-off`: puts the record `pair --usb` (or an Apple TV's `pair`) made for Apparition
+/// in its Documents on the device, as `install` does, without reinstalling it.
+async fn pairing(args: &[String]) -> Result<(), Error> {
+    let usage = || fail("usage: apparition pairing hand-off [--device <name or UDID>] [--bundle-id <id>]");
+    if args.first().map(String::as_str) != Some("hand-off") {
+        return Err(usage());
+    }
+    let (mut wanted, mut bundle_id) = (None, None);
+    let mut rest = args[1..].iter();
+    while let Some(arg) = rest.next() {
+        let value = rest.next().ok_or_else(usage)?;
+        match arg.as_str() {
+            "--device" => wanted = Some(value.as_str()),
+            "--bundle-id" => bundle_id = Some(value.clone()),
+            _ => return Err(usage()),
+        }
+    }
+    let device = find_device(wanted)?;
+    if !store().has_app_pairing(&device.udid) {
+        return Err(fail(match device.platform() {
+            api::Platform::VisionOS => format!(
+                "there's no pairing for Apparition on {} to hand over: on Apple Vision Pro, Apparition pairs itself (Setup > Pair This Headset)",
+                device.name
+            ),
+            api::Platform::TvOS => format!(
+                "there's no pairing for Apparition on {}: run `apparition pair` with Remote App and Devices open on it (it shows a second code, for Apparition), then try again",
+                device.name
+            ),
+            api::Platform::IOS => format!(
+                "there's no pairing for Apparition on {}: run `apparition pair --usb` first (over Wi-Fi works once it trusts this computer), then try again",
+                device.name
+            ),
+        }));
+    }
+    println!("Connecting to {}…", device.name);
+    let pin = || ask("The device wants to pair again. PIN: ");
+    let mut tunnel = store().connect(&device, pin).await?;
+    let bundle_id = match bundle_id {
+        Some(id) => id,
+        None => match tunnel.installed_like(APPARITION_ID).await?.as_slice() {
+            [one] => one.clone(),
+            [] => return Err(fail(format!("Apparition isn't installed on {}; `apparition install` installs it and gives it the pairing", device.name))),
+            several => return Err(fail(format!("several Apparitions on {}: choose one with --bundle-id ({})", device.name, several.join(", ")))),
+        },
+    };
+    store().hand_over_pairing(&mut tunnel, &bundle_id, &device.udid).await?;
+    println!("Gave {bundle_id} on {} its pairing. Open Apparition there (close it first if it's open) and it can reach the device again.", device.name);
     Ok(())
 }
 

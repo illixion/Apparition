@@ -69,10 +69,15 @@ pub(crate) async fn open(
     hostname: &str,
     pairing: &mut idevice::remote_pairing::RpPairingFile,
     pin: impl Fn() -> String,
+    pair_again: bool,
 ) -> Result<(idevice::tcp::handle::AdapterHandle, RsdHandshake), Report> {
     let control = dial(device, relay).await.context("RemotePairing connection")?;
     let mut rpc = RemotePairingClient::new(RpPairingSocket::new(control), hostname);
-    verify(&mut rpc, pairing, device, pin).await?;
+    if pair_again {
+        verify(&mut rpc, pairing, device, pin).await?;
+    } else {
+        verify_only(&mut rpc, pairing, device).await?;
+    }
 
     let mut tunnel_addr = device;
     tunnel_addr.set_port(step("the tunnel port", rpc.create_tcp_listener()).await??);
@@ -126,9 +131,56 @@ pub(crate) async fn verify<R: idevice::remote_pairing::RpPairingSocketProvider>(
     }
 }
 
+/// The device turned down the pairing record at pair-verify: it doesn't know it (any more),
+/// for example after it was erased or its trust settings were reset. Pairing again is the only
+/// way back.
+#[derive(Debug)]
+pub struct PairingRejected;
+
+impl std::fmt::Display for PairingRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The device no longer trusts this pairing (pair-verify failed). Pair again.")
+    }
+}
+
+impl std::error::Error for PairingRejected {}
+
+/// Whether `error` comes from [`PairingRejected`].
+pub fn is_pairing_rejected(error: &Report) -> bool {
+    error.iter_reports().any(|cause| cause.downcast_current_context::<PairingRejected>().is_some())
+}
+
+/// Pair-verify only: unlike [`verify`], a record the device turns down is an error
+/// ([`PairingRejected`]) rather than the start of a pair-setup. For a device with no pairing
+/// screen to answer one (iPhone, iPad), or an action that shouldn't wait on a PIN nobody is
+/// asked for (JIT, installs), that's the honest answer.
+pub(crate) async fn verify_only<R: idevice::remote_pairing::RpPairingSocketProvider>(
+    rpc: &mut RemotePairingClient<R>,
+    pairing: &mut idevice::remote_pairing::RpPairingFile,
+    device: SocketAddr,
+) -> Result<(), Report> {
+    let verified = tokio::time::timeout(TIMEOUT, async {
+        rpc.attempt_pair_verify().await?;
+        rpc.validate_pairing(pairing).await
+    })
+    .await
+    .map_err(|_| {
+        report!("no RemotePairing answer from port {} within {} s: is that the device's pairing port?", device.port(), TIMEOUT.as_secs())
+    })?;
+    match verified {
+        Ok(()) => Ok(()),
+        Err(IdeviceError::RemotePairing(idevice::remote_pairing::errors::RemotePairingError::PairVerifyFailed)) => {
+            Err(report!(PairingRejected).into_dynamic())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Opens a tunnel to `device_host:device_port`, or, with `relay` (`ip:port`), through a
 /// companion that connects back to this device (`device_host` is then unused).
 /// On success fills the same handle types `tunnel_create_rppairing` produces.
+/// With no `pin` callback this only pair-verifies: a record the device turns down fails at once
+/// (`code: "pairingRejected"`) instead of starting a pair-setup that waits for a PIN.
 /// Returns `{ok}` or `{ok: false, error}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_tunnel_create(
@@ -164,7 +216,7 @@ pub unsafe extern "C" fn apparition_tunnel_create(
             })
             .unwrap_or_else(|| "000000".to_string())
         };
-        let (adapter, handshake) = runtime().block_on(open(device, relay, &hostname, pairing, ask_pin))?;
+        let (adapter, handshake) = runtime().block_on(open(device, relay, &hostname, pairing, ask_pin, pin.is_some()))?;
         unsafe {
             *out_adapter = Box::into_raw(Box::new(AdapterHandle(adapter)));
             *out_handshake = Box::into_raw(Box::new(RsdHandshakeHandle(handshake)));

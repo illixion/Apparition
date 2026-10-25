@@ -233,9 +233,19 @@ pub async fn connect(
     pairing: &mut RpPairingFile,
     pin: impl Fn() -> String,
 ) -> Result<Tunnel, Report> {
-    let (adapter, handshake) = crate::tunnel::open(device, None, hostname, pairing, pin).await?;
+    let (adapter, handshake) = crate::tunnel::open(device, None, hostname, pairing, pin, true).await?;
     Ok(Tunnel { adapter, handshake })
 }
+
+/// Like [`connect`], but only pair-verifies: a pairing the device turns down fails with
+/// [`PairingRejected`](crate::tunnel::PairingRejected) (see [`is_pairing_rejected`]) instead of
+/// starting a pair-setup. For iPhone and iPad, which have no PIN screen to answer one.
+pub async fn connect_verified(device: SocketAddr, hostname: &str, pairing: &mut RpPairingFile) -> Result<Tunnel, Report> {
+    let (adapter, handshake) = crate::tunnel::open(device, None, hostname, pairing, String::new, false).await?;
+    Ok(Tunnel { adapter, handshake })
+}
+
+pub use crate::tunnel::{PairingRejected, is_pairing_rejected};
 
 /// The device's identity, from lockdown over the tunnel.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -619,12 +629,25 @@ mod desktop {
             Ok((device, info))
         }
 
-        /// Opens a tunnel to a paired device. `pin` is asked only if it wants to pair again.
+        /// Opens a tunnel to a paired device. `pin` is asked only if a headset or Apple TV wants
+        /// to pair again; an iPhone or iPad has no PIN screen, so a pairing it turns down is an
+        /// error saying to pair again over usbmuxd.
         pub async fn connect(&self, device: &PairedDevice, pin: impl Fn() -> String) -> Result<Tunnel, Report> {
             let data = std::fs::read(self.dir.join("pairings").join(&device.pairing))
                 .context(format!("The pairing with {} is missing; pair again", device.name))?;
             let mut pairing = RpPairingFile::from_bytes(&data)?;
-            super::connect(SocketAddr::new(device.address, device.port), &hostname(), &mut pairing, pin).await
+            let address = SocketAddr::new(device.address, device.port);
+            if device.platform() != super::Platform::IOS {
+                return super::connect(address, &hostname(), &mut pairing, pin).await;
+            }
+            match super::connect_verified(address, &hostname(), &mut pairing).await {
+                Err(error) if super::is_pairing_rejected(&error) => Err(error.context(format!(
+                    "{} no longer trusts this computer's pairing. Pair again with `apparition pair --usb` (over Wi-Fi works once it trusts this computer).",
+                    device.name
+                ))
+                .into_dynamic()),
+                other => other,
+            }
         }
 
         /// Pairs with an iPhone or iPad over usbmuxd (it has no PIN screen; if it doesn't trust
@@ -683,15 +706,28 @@ mod desktop {
             Ok((device, info))
         }
 
-        /// For a device paired with [`DeviceStore::pair_usb`]: puts the record made for
-        /// Apparition where it keeps its own (Documents/apparition_rp_pairing.plist), so it
-        /// can reach its device. False when there's none (a headset).
+        /// For a device paired with [`DeviceStore::pair_usb`] (or an Apple TV, which pairs a
+        /// second record for Apparition): puts the record made for Apparition where it keeps its
+        /// own (Documents/apparition_rp_pairing.plist), so it can reach its device. False when
+        /// there's none (a headset, which pairs itself in Setup). Installing Apparition does this;
+        /// `apparition pairing hand-off` does it for one already installed.
         pub async fn hand_over_pairing(&self, tunnel: &mut Tunnel, bundle_id: &str, udid: &str) -> Result<bool, Report> {
-            let Ok(record) = std::fs::read(self.dir.join("pairings").join(format!("{udid}.app.plist"))) else {
+            if !self.has_app_pairing(udid) {
                 return Ok(false);
-            };
+            }
+            let record = std::fs::read(self.app_pairing_path(udid))?;
             tunnel.put_documents(bundle_id, "", &[("apparition_rp_pairing.plist".to_string(), record)]).await?;
             Ok(true)
+        }
+
+        fn app_pairing_path(&self, udid: &str) -> PathBuf {
+            self.dir.join("pairings").join(format!("{udid}.app.plist"))
+        }
+
+        /// Whether there's a record for Apparition on `udid` to hand over
+        /// ([`DeviceStore::hand_over_pairing`]).
+        pub fn has_app_pairing(&self, udid: &str) -> bool {
+            self.app_pairing_path(udid).is_file()
         }
 
         /// Updates a paired device's address, when mDNS finds it somewhere else.

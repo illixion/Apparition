@@ -119,7 +119,9 @@ char *apparition_attach_jit(struct AdapterHandle *adapter, struct RsdHandshakeHa
 // Opens the RemotePairing tunnel at device_host:device_port, or, when relay ("ip:port") is
 // non-null, through a companion (Apparition on a computer) that connects back to this device (device_host is
 // then ignored). Fills the same handles as idevice's tunnel_create_rppairing; free them with
-// adapter_free / rsd_handshake_free. Returns {ok} or {ok: false, error}.
+// adapter_free / rsd_handshake_free. Returns {ok} or {ok: false, error}. With pin null it only
+// pair-verifies: a pairing the device turns down fails at once with code "pairingRejected",
+// rather than starting a pair-setup that waits for a PIN.
 char *apparition_tunnel_create(const char *device_host, unsigned short device_port, const char *relay,
                            const char *hostname, struct RpPairingFileHandle *pairing_file,
                            const char *(*pin)(void *context), void *pin_context,

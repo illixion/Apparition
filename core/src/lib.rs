@@ -650,6 +650,8 @@ fn reply(result: Result<Value, Report>) -> *mut c_char {
                 })
             } else if is_shared_certificate(&error) {
                 json!({"ok": false, "code": "sharedCertificate", "error": text})
+            } else if tunnel::is_pairing_rejected(&error) {
+                json!({"ok": false, "code": "pairingRejected", "error": text})
             } else {
                 json!({"ok": false, "error": text})
             }
@@ -1006,6 +1008,18 @@ mod tests {
         let error = error.context("Signing failed").unwrap_err().into_dynamic();
         assert!(is_shared_certificate(&error));
         assert!(!is_shared_certificate(&report!("something else")));
+    }
+
+    #[test]
+    fn rejected_pairing_has_its_own_code() {
+        let error: Result<(), Report> = Err(report!(tunnel::PairingRejected).into_dynamic());
+        let error = error.context("tunnel").unwrap_err().into_dynamic();
+        assert!(tunnel::is_pairing_rejected(&error));
+        assert!(!tunnel::is_pairing_rejected(&report!("no RemotePairing answer")));
+        let reply = unsafe { std::ffi::CString::from_raw(reply(Err(error))) };
+        let reply: serde_json::Value = serde_json::from_str(reply.to_str().unwrap()).unwrap();
+        assert_eq!(reply["code"], "pairingRejected");
+        assert_eq!(reply["ok"], false);
     }
 
     #[test]
