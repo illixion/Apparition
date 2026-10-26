@@ -57,9 +57,9 @@ Wait for it in the background (`gh run watch <id> -R illixion/Apparition --exit-
 
 In `~/Projects/apparition.illixion.com` (check `git status` is clean and `git pull` is current):
 
-- `scripts/publish.py add x.y.z ../Apparition/build/release/x.y.z --url-base https://github.com/illixion/Apparition/releases/download/vx.y.z --notes "<approved notes>"`. This hashes the files, then calls `scripts/bless.sh`, which signs `SHA256SUMS` with the YubiKey.
+- Run the script with `python3`, not directly: `scripts/publish.py` is committed without its executable bit, so `scripts/publish.py` fails with "Permission denied". `python3 scripts/publish.py add x.y.z ../Apparition/build/release/x.y.z --url-base https://github.com/illixion/Apparition/releases/download/vx.y.z --notes "<approved notes>"`. This hashes the files, then calls `scripts/bless.sh`, which signs `SHA256SUMS` with the YubiKey.
 - The YubiKey needs a PIN and a touch, and runs in the foreground with `--gpg-agent` (the plain agent path is refused for the YubiKey). If it does not respond (no prompt, timeout, or agent error), stop and pause: tell the user to touch the YubiKey or run the command with the `!` prefix, then wait for their reply before retrying. Do not fall back to any other key.
-- Then `scripts/publish.py verify x.y.z --download`. Every URL must serve its signed file.
+- Then `python3 scripts/publish.py verify x.y.z --download`. Every URL must serve its signed file.
 - `git add -A && git commit -m "List Apparition x.y.z"`, signed, then `git push`. Updating the website is automatic: the push deploys it, so do not ask first.
 
 ## 7. Report
