@@ -686,15 +686,26 @@ pub unsafe extern "C" fn apparition_string_free(string: *mut c_char) {
     }
 }
 
-/// Sends isideload's tracing output (info and up) to `log_path`. Call once, before anything else.
+/// Sends the Rust side's tracing output (isideload, idevice, the signer) to `log_path` only (info
+/// and up, idevice's debug). Call once, before anything else; this is the only subscriber
+/// (idevice's own logger is not started, as it also wrote to stdout). Nothing goes to the device
+/// console: Apple's error text passed on here can name the team, and bundle IDs carry its ID.
+///
+/// apple_codesign is held to errors: it logs every bundle it signs at warn, naming the signing
+/// certificate, whose name on a free account is the Apple ID's email address.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_init_logging(log_path: *const c_char) {
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::{filter::Targets, prelude::*};
+
     let Ok(path) = (unsafe { text(log_path) }) else { return };
-    let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else { return };
-    let _ = tracing_subscriber::fmt()
-        .with_writer(Mutex::new(file))
-        .with_ansi(false)
-        .with_max_level(tracing::Level::INFO)
+    let Ok(file) = std::fs::File::create(path) else { return };
+    let targets = Targets::new()
+        .with_default(LevelFilter::INFO)
+        .with_target("idevice", LevelFilter::DEBUG)
+        .with_target("apple_codesign", LevelFilter::ERROR);
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(Mutex::new(file)).with_ansi(false).with_filter(targets))
         .try_init();
 }
 

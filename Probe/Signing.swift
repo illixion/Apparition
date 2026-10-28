@@ -90,6 +90,7 @@ final class SigningStore {
         guard let list = try? Self.decode(List.self, reply) else { return }
         identities = list.identities
         profiles = list.profiles
+        LogScrub.remember(identities.flatMap { [$0.name, $0.teamName] } + profiles.map(\.teamName))
         if defaultSigner != Self.appleID, identity(defaultSigner) == nil {
             defaultSigner = Self.appleID
         }

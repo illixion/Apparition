@@ -966,7 +966,7 @@ final class LibraryModel {
     private func selfFail(_ message: String, logged: String? = nil) -> String {
         selfRecord.lastError = message
         save()
-        log.error("Apparition: \(logged ?? message, privacy: .public)")
+        log.error("Apparition: \(LogScrub.text(logged ?? message), privacy: .public)")
         return "error: \(message)"
     }
 
@@ -997,7 +997,7 @@ final class LibraryModel {
     /// `logged` replaces the message in the log when it names other apps.
     private func fail(_ record: inout InstalledApp, _ message: String, logged: String? = nil) -> String {
         record.lastError = message
-        log.error("\(record.name, privacy: .public): \(logged ?? message, privacy: .public)")
+        log.error("\(record.name, privacy: .public): \(LogScrub.text(logged ?? message), privacy: .public)")
         return "error: \(message)"
     }
 

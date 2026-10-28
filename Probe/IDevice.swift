@@ -36,12 +36,6 @@ enum IDevice {
         throw error
     }
 
-    static func startLogging(to url: URL) {
-        url.path.withCString { path in
-            _ = idevice_init_logger(Warn, Debug, UnsafeMutablePointer(mutating: path))
-        }
-    }
-
     /// Resolves a numeric host (IPv4, IPv6, or scoped `fe80::1%en0`) and port into a sockaddr.
     static func withSockaddr<T>(host: String, port: UInt16,
                                 _ body: (UnsafePointer<sockaddr>, socklen_t) throws -> T) throws -> T {

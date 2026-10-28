@@ -35,7 +35,7 @@ final class CompanionFinder {
             do {
                 companions.append(try await Self.info(endpoint, name: name))
             } catch {
-                log.error("companion \(name, privacy: .private) didn't answer: \(String(describing: error), privacy: .public)")
+                log.error("companion \(name, privacy: .private) didn't answer: \(LogScrub.text(String(describing: error)), privacy: .public)")
             }
         }
         found = companions

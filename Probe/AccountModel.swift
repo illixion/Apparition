@@ -106,8 +106,6 @@ final class AccountModel {
     init() {
         try? FileManager.default.createDirectory(at: Self.dataDir, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: Self.appsDir, withIntermediateDirectories: true)
-        let documents = AppFolders.documents
-        apparition_init_logging(documents.appendingPathComponent("apparition-core.log").path)
         refreshDownloads()
     }
 
@@ -197,6 +195,7 @@ final class AccountModel {
             self.email = reply["email"] as? String
             team = Self.team(reply["team"])
             teams = (reply["teams"] as? [Any] ?? []).compactMap(Self.team)
+            LogScrub.remember(teams.map(\.name))
             autoSignInPaused = false
             log.info("sign-in ok, \(self.teams.count, privacy: .public) teams")
             return true
@@ -289,7 +288,7 @@ final class AccountModel {
             log.info("sign ok")
         } else {
             signs[0].outcome = "error: \(reply["error"] as? String ?? "unknown")"
-            log.error("sign failed: \(self.signs[0].outcome ?? "", privacy: .public)")
+            log.error("sign failed: \(LogScrub.text(self.signs[0].outcome ?? ""), privacy: .public)")
         }
     }
 

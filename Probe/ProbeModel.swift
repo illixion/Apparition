@@ -182,7 +182,9 @@ final class ProbeModel {
 
     init() {
         let documents = AppFolders.documents
-        IDevice.startLogging(to: documents.appendingPathComponent("idevice.log"))
+        apparition_init_logging(documents.appendingPathComponent("apparition-core.log").path)
+        // idevice's own log, from before the core's logger took over: it named the Apple ID.
+        try? FileManager.default.removeItem(at: documents.appendingPathComponent("idevice.log"))
         refreshPairing()
         loadDeviceApps()
         pinBox.onRequest = { [weak self] in
@@ -658,7 +660,7 @@ final class ProbeModel {
             attempts[index].outcome = "error: \(error)"
             // The app-limit error lists other apps' bundle IDs, which stay out of the log.
             let reason = AppLimit.blockingApps(in: "\(error)") == nil ? String(describing: error) : "free-profile app limit reached"
-            log.error("\(action, privacy: .public) failed: \(reason, privacy: .public)")
+            log.error("\(action, privacy: .public) failed: \(LogScrub.text(reason), privacy: .public)")
         }
         return attempts[index].outcome ?? "unknown"
     }
