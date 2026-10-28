@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Apparition
+Comment=Install apps on your Apple devices and run their companion
+Exec=Apparition
+Icon=com.illixion.apparition.desktop
+Terminal=false
+Categories=Utility;
+StartupWMClass=Apparition

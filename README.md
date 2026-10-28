@@ -412,6 +412,10 @@ as an archive with both and the headless command line. Opening the app again sho
 one, which is also the way back to its window on a Linux desktop with no tray (niri or plain
 GNOME, say).
 
+A Flatpak prototype packages both Linux architectures against a GNOME runtime,
+with the CLI included for diagnostics. See [building and testing the Flatpak](docs/LINUX_FLATPAK.md)
+for bundle creation, NixOS/Fusion USB setup, permissions and current integration gaps.
+
 ## Anisette
 
 Signing in to Apple needs "anisette" data that identifies the computer. On macOS and Linux

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.illixion.apparition.desktop</id>
+  <name>Apparition</name>
+  <summary>Install apps on your Apple devices and run their companion</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Pair with Apple devices, sign apps using your Apple ID or certificate,
+    and install them. Keep the companion running to provide a relay and
+    optional anisette server to Apparition on your devices.</p>
+  </description>
+  <launchable type="desktop-id">com.illixion.apparition.desktop.desktop</launchable>
+  <url type="homepage">https://apparition.illixion.com</url>
+  <url type="bugtracker">https://github.com/illixion/Apparition/issues</url>
+  <content_rating type="oars-1.1"/>
+</component>
