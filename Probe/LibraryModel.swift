@@ -89,6 +89,11 @@ final class LibraryModel {
     /// Apps taken out of the library while a refresh or install was running, so that run doesn't
     /// put the record back when it finishes (`upsert`).
     private var removedWhileBusy: Set<String> = []
+    /// Why this refresh run's sign-in failed, once it has: the rest of the run fails with it
+    /// instead of trying again for each app (an anisette server that times out would cost the
+    /// wait once per app, with no way to stop the run).
+    private var runSignInFailure: String?
+    private var inRefreshRun = false
     private(set) var status: String?
     private(set) var refreshRuns: [RefreshRun] = []
     private(set) var selfRecord = SelfRecord()
@@ -485,6 +490,8 @@ final class LibraryModel {
             run.results["-"] = "busy"
         } else {
             busy = true
+            inRefreshRun = true
+            defer { inRefreshRun = false; runSignInFailure = nil }
             for var record in due {
                 status = "refreshing \(record.name)"
                 run.results[record.id] = await signAndInstall(&record)
@@ -699,6 +706,16 @@ final class LibraryModel {
         return UserDefaults.standard.string(forKey: "pairedUDID")
     }
 
+    /// Signs in for work that signs with the Apple ID: nil when there's a session, else why not.
+    /// Within a refresh run, only the first app tries; the others get the same reason.
+    private func signInFailure() async -> String? {
+        if let runSignInFailure { return runSignInFailure }
+        if await account.signInWithRememberedPassword() { return nil }
+        let reason = account.notSignedInReason
+        if inRefreshRun { runSignInFailure = reason }
+        return reason
+    }
+
     private func signAndInstall(_ record: inout InstalledApp) async -> String {
         if let missingPairing { return fail(&record, missingPairing) }
         guard let udid = await deviceUDID() else {
@@ -712,9 +729,7 @@ final class LibraryModel {
         let previousId = record.takeOver ?? (signing.movesData ? record.installedBundleId : nil)
         let signed: [String: Any]
         if signer == SigningStore.appleID {
-            guard await account.signInWithRememberedPassword() else {
-                return fail(&record, account.notSignedInReason)
-            }
+            if let reason = await signInFailure() { return fail(&record, reason) }
             signed = await AccountModel.signFile(path, udid: udid, deviceName: name, stripExtensions: record.stripExtensions)
         } else {
             // An imported certificate signs on its own: no sign-in, no anisette, no slots.
@@ -887,9 +902,7 @@ final class LibraryModel {
         let signer = selfSigner
         var signingId: String?
         if signer == SigningStore.appleID {
-            guard await account.signInWithRememberedPassword() else {
-                return selfFail(account.notSignedInReason)
-            }
+            if let reason = await signInFailure() { return selfFail(reason) }
             guard account.team?.id == team else {
                 return selfFail("Apparition was installed by team \(team), but the Apple ID signs for team \(account.team?.id ?? "?"), so it would install as a second copy. Sign in with the Apple ID that installed it, or import the certificate that signed it.")
             }
