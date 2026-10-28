@@ -262,6 +262,11 @@ struct LibraryView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
+                #if os(visionOS)
+                // visionOS doesn't replace an app that has a window open: the install waits, and
+                // the refresh with it, until every one of them is closed.
+                Note(text: "Close every window of an app before it's refreshed. Vision Pro won't replace an app that's open, so the refresh waits until it closes.", kind: .info)
+                #endif
             } else if let run = library.refreshRuns.first, let finished = Date.iso(run.finishedAt) {
                 lastRun(run, finished: finished)
             }
