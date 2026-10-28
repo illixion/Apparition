@@ -68,8 +68,14 @@ final class AccountModel {
     /// An anisette-v3 server URL. Apparition ships none: the user enters one, or self-hosts
     /// selfhost/anisette/compose.yaml.
     var anisetteURL: String = UserDefaults.standard.string(forKey: "anisetteURL") ?? "" {
-        didSet { UserDefaults.standard.set(anisetteURL, forKey: "anisetteURL") }
+        didSet {
+            UserDefaults.standard.set(anisetteURL, forKey: "anisetteURL")
+            if anisetteURL != oldValue { anisetteProblem = nil }
+        }
     }
+    /// The anisette server the last sign-in couldn't get its data from, so the Library can say
+    /// so; nil after a sign-in gets through, or once the address changes.
+    private(set) var anisetteProblem: AnisetteProblem?
     private(set) var busy = false
     private(set) var email: String?
     private(set) var team: Team?
@@ -197,6 +203,7 @@ final class AccountModel {
             teams = (reply["teams"] as? [Any] ?? []).compactMap(Self.team)
             LogScrub.remember(teams.map(\.name))
             autoSignInPaused = false
+            anisetteProblem = nil
             log.info("sign-in ok, \(self.teams.count, privacy: .public) teams")
             return true
         }
@@ -208,10 +215,40 @@ final class AccountModel {
                 ? "The two-factor code wasn't entered. Sign in again when you're ready; refreshes wait until then."
                 : "Apple asked for a two-factor code, which nobody was here to enter. Sign in again to continue; refreshes wait until then."
             log.notice("automatic sign-ins paused: a 2FA step went unanswered")
+        } else if let problem = Self.anisetteProblem(in: error, url: anisette) {
+            anisetteProblem = problem
+            lastError = problem.message
         } else {
             lastError = error
         }
         return false
+    }
+
+    struct AnisetteProblem: Equatable, Sendable {
+        let url: String
+        /// No answer at all (wrong address, server down, out of reach), rather than an answer
+        /// Apple's sign-in couldn't use.
+        let unreachable: Bool
+
+        /// host:port, the part of the address a person recognises.
+        var host: String {
+            guard let parsed = URL(string: url), let host = parsed.host(percentEncoded: false) else { return url }
+            return parsed.port.map { "\(host):\($0)" } ?? host
+        }
+
+        var message: String {
+            unreachable
+                ? "Apparition can't reach the anisette server at \(host), which Apple's sign-in needs. Check its address in Connection settings, and that the server is running."
+                : "The anisette server at \(host) didn't give Apple's sign-in what it needs. Check that it's an anisette v3 server and up to date, or use another."
+        }
+    }
+
+    /// The core's error chain names the anisette step when that's where the sign-in stopped.
+    nonisolated static func anisetteProblem(in error: String, url: String) -> AnisetteProblem? {
+        guard error.contains("anisette") else { return nil }
+        let unreachable = ["error sending request", "Connection refused", "timed out", "dns error", "No route to host"]
+            .contains { error.localizedCaseInsensitiveContains($0) }
+        return AnisetteProblem(url: url, unreachable: unreachable)
     }
 
     /// `code:123456`, `devices`, `sms:<id>`, `resend` or `abort`.

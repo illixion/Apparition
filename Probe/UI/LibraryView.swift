@@ -275,8 +275,10 @@ struct LibraryView: View {
                     Note(text: "Apparition doesn't know how to reach this \(ThisDevice.noun) yet. Choose Companion or Local VPN in Setup.", kind: .warning)
                 }
                 .buttonStyle(.plain)
+            } else if let problem = account.anisetteProblem, problem.url == account.anisetteURL {
+                ConnectionProblemNote(model: model, account: account, problem: .anisette(problem), onSettings: onSetup)
             } else if let mode = model.unreachableMode, mode == model.connectionMode {
-                ConnectionProblemNote(model: model, account: account, mode: mode, onSettings: onSetup)
+                ConnectionProblemNote(model: model, account: account, problem: .unreachable(mode), onSettings: onSetup)
             }
         }
     }
