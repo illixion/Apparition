@@ -318,3 +318,18 @@ extension View {
         #endif
     }
 }
+
+/// Ends the refresh or install under way (`LibraryModel.stop`), shown beside its progress.
+struct StopButton: View {
+    let library: LibraryModel
+
+    var body: some View {
+        Button(role: .destructive) {
+            library.stop()
+        } label: {
+            Label(library.stopping ? "Stopping…" : "Stop", systemImage: "stop.fill")
+        }
+        .buttonStyle(.bordered)
+        .disabled(library.stopping)
+    }
+}

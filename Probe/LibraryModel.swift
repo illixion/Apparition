@@ -84,8 +84,19 @@ final class LibraryModel {
     private(set) var sources: [Sources.Source] = []
     private(set) var installed: [InstalledApp] = []
     private(set) var busy = false {
-        didSet { if !busy { removedWhileBusy.removeAll() } }
+        didSet {
+            if !busy {
+                removedWhileBusy.removeAll()
+                stopping = false
+            }
+        }
     }
+    /// Stop was pressed: what's under way ends at its next wait, and the run takes on nothing more.
+    private(set) var stopping = false
+    /// A result for work that Stop ended: not an error, and the app's last error stays as it was.
+    nonisolated static let stoppedResult = "stopped"
+    /// The IPA download under way, for Stop to cancel.
+    private var downloading: Task<(URL, URLResponse), Error>?
     /// Apps taken out of the library while a refresh or install was running, so that run doesn't
     /// put the record back when it finishes (`upsert`).
     private var removedWhileBusy: Set<String> = []
@@ -493,11 +504,15 @@ final class LibraryModel {
             inRefreshRun = true
             defer { inRefreshRun = false; runSignInFailure = nil }
             for var record in due {
+                guard !stopping else {
+                    run.results[record.id] = Self.stoppedResult
+                    continue
+                }
                 status = "refreshing \(record.name)"
                 run.results[record.id] = await signAndInstall(&record)
                 upsert(record)
             }
-            if selfDue {
+            if selfDue && !stopping {
                 // Last: its update waits in installd until Apparition closes.
                 status = "refreshing Apparition"
                 run.results[Self.selfResultKey] = await signAndInstallSelf(runStartedAt: run.startedAt)
@@ -705,6 +720,22 @@ final class LibraryModel {
         }
         return UserDefaults.standard.string(forKey: "pairedUDID")
     }
+
+    /// Ends the refresh or install under way (core/src/stop.rs): the sign-in, signing, tunnel or
+    /// install running now stops at its next wait, a 2FA prompt is answered with a cancel, and a
+    /// refresh run skips the apps it hadn't reached. What the device already received stays.
+    func stop() {
+        guard busy, !stopping else { return }
+        stopping = true
+        status = "stopping…"
+        if account.twoFactor != nil { account.answerTwoFactor("abort") }
+        downloading?.cancel()
+        apparition_stop()
+        log.notice("stop requested")
+    }
+
+    /// The core's message for work Stop ended (`STOPPED` in core/src/stop.rs).
+    nonisolated static let stoppedText = "Stopped before it finished"
 
     /// Signs in for work that signs with the Apple ID: nil when there's a session, else why not.
     /// Within a refresh run, only the first app tries; the others get the same reason.
@@ -977,6 +1008,7 @@ final class LibraryModel {
 
     /// `logged` replaces the message in the log when it names other apps.
     private func selfFail(_ message: String, logged: String? = nil) -> String {
+        if stopping || message.contains(Self.stoppedText) { return Self.stoppedResult }
         selfRecord.lastError = message
         save()
         log.error("Apparition: \(LogScrub.text(logged ?? message), privacy: .public)")
@@ -1009,6 +1041,7 @@ final class LibraryModel {
 
     /// `logged` replaces the message in the log when it names other apps.
     private func fail(_ record: inout InstalledApp, _ message: String, logged: String? = nil) -> String {
+        if stopping || message.contains(Self.stoppedText) { return Self.stoppedResult }
         record.lastError = message
         log.error("\(record.name, privacy: .public): \(LogScrub.text(logged ?? message), privacy: .public)")
         return "error: \(message)"
@@ -1035,7 +1068,11 @@ final class LibraryModel {
         if FileManager.default.fileExists(atPath: destination.path) { return file }
         guard let url = URL(string: app.downloadURL) else { throw IDevice.ProbeError("bad download URL") }
         status = "downloading \(app.name) \(app.version)"
-        let (temporary, response) = try await URLSession.shared.download(from: url)
+        // Held so Stop can cancel it: the core's stop doesn't reach URLSession.
+        let fetch = Task { try await URLSession.shared.download(from: url) }
+        downloading = fetch
+        defer { downloading = nil }
+        let (temporary, response) = try await fetch.value
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
             switch code {
@@ -1105,9 +1142,9 @@ final class LibraryModel {
         do {
             status = "\(label): \(try await body())"
         } catch {
-            status = "\(label): error: \(error)"
+            status = stopping ? "\(label): \(Self.stoppedResult)" : "\(label): error: \(error)"
         }
-        log.info("\(self.status ?? "", privacy: .public)")
+        log.info("\(LogScrub.text(self.status ?? ""), privacy: .public)")
     }
 
     // MARK: Background refresh

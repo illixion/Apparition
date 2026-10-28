@@ -261,7 +261,10 @@ struct LibraryView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
+                    Spacer(minLength: 0)
+                    StopButton(library: library)
                 }
+                .focusRow()
                 #if os(visionOS)
                 // visionOS doesn't replace an app that has a window open: the install waits, and
                 // the refresh with it, until every one of them is closed.
@@ -286,9 +289,12 @@ struct LibraryView: View {
     private func lastRun(_ run: LibraryModel.RefreshRun, finished: Date) -> some View {
         let failed = run.results.values.filter { $0.hasPrefix("error") }.count
         let ok = run.results.values.filter { $0.hasPrefix("ok") }.count
+        let stopped = run.results.values.contains(LibraryModel.stoppedResult)
         let text: String
         if run.results["-"] == "nothing due" {
             text = "Last check \(finished.relativeToNow): nothing was due"
+        } else if stopped {
+            text = "Last refresh \(finished.relativeToNow): stopped, \(ok) refreshed" + (failed > 0 ? ", \(failed) failed" : "")
         } else if failed > 0 {
             text = "Last refresh \(finished.relativeToNow): \(ok) refreshed, \(failed) failed"
         } else {

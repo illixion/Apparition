@@ -73,7 +73,10 @@ struct BrowseView: View {
                     HStack(spacing: 12) {
                         ProgressView()
                         Text(status).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        StopButton(library: library)
                     }
+                    .focusRow()
                 }
             } else if let limit = library.appLimit {
                 Section {

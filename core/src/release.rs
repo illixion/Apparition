@@ -418,7 +418,7 @@ pub unsafe extern "C" fn apparition_release_download_app(
         let platform = unsafe { text(platform) }?;
         let dir = PathBuf::from(unsafe { text(dir) }?);
         let _ = std::fs::remove_dir_all(&dir);
-        let (verified, ipa) = runtime().block_on(async {
+        let (verified, ipa) = runtime().block_on(crate::stop::stoppable(async {
             let verified = latest_signed_by(&site, &signers).await?;
             let asset = verified
                 .asset("app", &platform)
@@ -426,7 +426,7 @@ pub unsafe extern "C" fn apparition_release_download_app(
                 .clone();
             let ipa = download(&verified, &asset, &dir, |_, _| {}).await?;
             Ok::<_, Report>((verified, ipa))
-        })?;
+        }))?;
         let unpacked = dir.join("unpacked");
         zip::ZipArchive::new(std::fs::File::open(&ipa)?)?.extract(&unpacked)?;
         let app = std::fs::read_dir(unpacked.join("Payload"))?

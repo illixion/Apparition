@@ -161,7 +161,7 @@ pub unsafe extern "C" fn apparition_install_ipa(
         let source = if source_ipa.is_null() { None } else { Some(PathBuf::from(unsafe { text(source_ipa) }?)) };
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        runtime().block_on(install(adapter, handshake, &app_path, source.as_deref(), detach_after_ms))
+        runtime().block_on(crate::stop::stoppable(install(adapter, handshake, &app_path, source.as_deref(), detach_after_ms)))
     })())
 }
 

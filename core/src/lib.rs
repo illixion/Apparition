@@ -33,6 +33,7 @@ mod migrate;
 pub mod package;
 mod jit;
 mod tunnel;
+pub mod stop;
 #[cfg(all(feature = "anisette", unix))]
 pub mod anisette;
 #[cfg(feature = "desktop")]
@@ -648,6 +649,8 @@ fn reply(result: Result<Value, Report>) -> *mut c_char {
                     "code": "securityKeysRequired",
                     "error": "This Apple ID uses security keys for two-factor authentication, which Apparition can't answer on the headset. Use an Apple ID without security keys.",
                 })
+            } else if stop::is_stopped(&error) {
+                json!({"ok": false, "code": "stopped", "error": stop::STOPPED})
             } else if is_shared_certificate(&error) {
                 json!({"ok": false, "code": "sharedCertificate", "error": text})
             } else if tunnel::is_pairing_rejected(&error) {
@@ -726,11 +729,11 @@ pub unsafe extern "C" fn apparition_login(
         let password = unsafe { text(password) }?;
         let anisette_url = unsafe { text(anisette_url) }?;
         let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
-        runtime().block_on(async move {
+        runtime().block_on(crate::stop::stoppable(async move {
             let (session, result) = sign_in(&email, password, &anisette_url, &data_dir, |params| callback.ask(params)).await?;
             *SESSION.lock().unwrap() = Some(session);
             Ok(result)
-        })
+        }))
     })())
 }
 
@@ -780,7 +783,7 @@ pub unsafe extern "C" fn apparition_sign(
         let device_name = unsafe { text(device_name) }?;
         let mut guard = SESSION.lock().unwrap();
         let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
-        runtime().block_on(sign_with_apple_id(session, app_path, &udid, &device_name, strip_extensions, identity::Platform::THIS))
+        runtime().block_on(crate::stop::stoppable(sign_with_apple_id(session, app_path, &udid, &device_name, strip_extensions, identity::Platform::THIS)))
     })())
 }
 
@@ -828,14 +831,14 @@ pub unsafe extern "C" fn apparition_install(
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
         let started = std::time::Instant::now();
-        runtime().block_on(async {
+        runtime().block_on(crate::stop::stoppable(async {
             isideload::sideload::install::install_app_rsd(adapter, handshake, &app_path, |progress| {
                 tracing::info!("install progress {progress}%");
             })
             .await
             .context("Install failed")?;
             Ok(json!({"elapsedMs": started.elapsed().as_millis() as u64}))
-        })
+        }))
     })())
 }
 
@@ -854,7 +857,7 @@ pub unsafe extern "C" fn apparition_list_apps(
         }
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        runtime().block_on(async {
+        runtime().block_on(crate::stop::stoppable(async {
             use idevice::RsdService;
             let mut installer = idevice::installation_proxy::InstallationProxyClient::connect_rsd(adapter, handshake)
                 .await
@@ -879,7 +882,7 @@ pub unsafe extern "C" fn apparition_list_apps(
                 .collect();
             list.sort_by_key(|app| app["name"].as_str().unwrap_or_default().to_lowercase());
             Ok(json!({ "apps": list }))
-        })
+        }))
     })())
 }
 
@@ -898,14 +901,14 @@ pub unsafe extern "C" fn apparition_uninstall(
         let bundle_id = unsafe { text(bundle_id) }?;
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        runtime().block_on(async {
+        runtime().block_on(crate::stop::stoppable(async {
             use idevice::RsdService;
             let mut installer = idevice::installation_proxy::InstallationProxyClient::connect_rsd(adapter, handshake)
                 .await
                 .context("installation_proxy connect failed")?;
             installer.uninstall(bundle_id, None).await.context("Uninstall failed")?;
             Ok(json!({}))
-        })
+        }))
     })())
 }
 

@@ -20,6 +20,10 @@ char *apparition_login(const char *email, const char *password, const char *anis
 char *apparition_session(void);
 // Forgets the signed-in session in this process. Returns {ok}.
 char *apparition_logout(void);
+// Stops the sign-ins, signings, tunnels, installs, app listings, data moves and update downloads
+// under way (core/src/stop.rs): each returns {ok: false, code: "stopped"} at its next wait.
+// Pairing and JIT sessions aren't affected; work started after the call runs normally.
+void apparition_stop(void);
 // Repacks the app in a .deb package (Kodi and many older apps are published that way) as an IPA at
 // out_path (core/src/package.rs). Reads the whole package; takes about as long as downloading it.
 // {ok, app, files, bytes, others}.

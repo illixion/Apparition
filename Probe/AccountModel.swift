@@ -208,6 +208,11 @@ final class AccountModel {
             return true
         }
         let error = reply["error"] as? String ?? "unknown error"
+        if reply["code"] as? String == "stopped" {
+            // Stop was pressed: nothing went wrong, so there's no error to show.
+            log.notice("sign-in stopped")
+            return false
+        }
         log.error("sign-in failed: \(error, privacy: .private)")
         if asked.value {
             autoSignInPaused = true

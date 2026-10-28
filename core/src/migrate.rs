@@ -185,7 +185,7 @@ pub unsafe extern "C" fn apparition_migrate_container(
         let to = unsafe { crate::text(to) }?;
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        crate::runtime().block_on(migrate_container(adapter, handshake, &from, &to))
+        crate::runtime().block_on(crate::stop::stoppable(migrate_container(adapter, handshake, &from, &to)))
     })())
 }
 

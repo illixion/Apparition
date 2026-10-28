@@ -216,7 +216,7 @@ pub unsafe extern "C" fn apparition_tunnel_create(
             })
             .unwrap_or_else(|| "000000".to_string())
         };
-        let (adapter, handshake) = runtime().block_on(open(device, relay, &hostname, pairing, ask_pin, pin.is_some()))?;
+        let (adapter, handshake) = runtime().block_on(crate::stop::stoppable(open(device, relay, &hostname, pairing, ask_pin, pin.is_some())))?;
         unsafe {
             *out_adapter = Box::into_raw(Box::new(AdapterHandle(adapter)));
             *out_handshake = Box::into_raw(Box::new(RsdHandshakeHandle(handshake)));

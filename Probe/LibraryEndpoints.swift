@@ -131,6 +131,12 @@ enum LibraryEndpoints {
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
             },
+            .command("stopWork", "Press Stop: end the refresh or install under way (sign-in, signing, tunnel, install, download) at its next wait; returns once it has",
+                     timeout: .seconds(30)) { _ in
+                model.stop()
+                while model.busy { try await Task.sleep(for: .milliseconds(100)) }
+                return state(model, account)
+            },
             .command("refreshSelf", "Re-sign Apparition with selfSigner and hand the update to installd, which applies it when the app closes; relaunch and read libraryState.apparition",
                      timeout: .seconds(5)) { _ in
                 Task { await model.refreshSelf() }
