@@ -146,7 +146,7 @@ struct SettingsView: View {
                     Label("Share Signing with Another Device…", systemImage: "square.and.arrow.up")
                 }
                 .panel(isPresented: $sharingSigning) {
-                    ShareSigningSheet(signing: library.signing, email: email, teamId: account.team?.id) { sharingSigning = false }
+                    ShareSigningSheet(signing: library.signing, account: account, email: email, teamId: account.team?.id) { sharingSigning = false }
                 }
             }
             Button {

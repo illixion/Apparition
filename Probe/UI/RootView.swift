@@ -175,7 +175,7 @@ struct RootView: View {
         case .getSigning:
             ReceiveSigningSheet(signing: library.signing, email: account.email ?? account.lastAppleID) { _ in close() }
         case .shareSigning:
-            ShareSigningSheet(signing: library.signing, email: account.email ?? account.lastAppleID ?? "", teamId: account.team?.id, onDone: close)
+            ShareSigningSheet(signing: library.signing, account: account, email: account.email ?? account.lastAppleID ?? "", teamId: account.team?.id, onDone: close)
         case .certificates:
             NavigationStack {
                 DeveloperSlotsView(account: account, library: library, onSignIn: close)

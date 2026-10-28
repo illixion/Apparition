@@ -15,6 +15,7 @@ import UniformTypeIdentifiers
 /// six words, to copy or share. Files are deleted when the sheet closes.
 struct ShareSigningSheet: View {
     let signing: SigningStore
+    let account: AccountModel
     let email: String
     let teamId: String?
     let onDone: () -> Void
@@ -30,7 +31,7 @@ struct ShareSigningSheet: View {
                 NearbySendSection(signing: signing, email: email, teamId: teamId)
                 #if !os(tvOS)
                 KeyFileSection(signing: signing, email: email, teamId: teamId)
-                CertificateFileSection(signing: signing)
+                CertificateFileSection(signing: signing, account: account)
                 #endif
             }
             .raveScreenTitle("Share Signing")
@@ -117,6 +118,7 @@ private struct KeyFileSection: View {
 /// from it.
 private struct CertificateFileSection: View {
     let signing: SigningStore
+    let account: AccountModel
 
     @State private var exported: (file: URL, password: String)?
     @State private var error: String?
@@ -151,8 +153,15 @@ private struct CertificateFileSection: View {
                     Text("Import it in the other app with this password. This file is deleted when you close this screen.")
                 }
             } else {
+                if let request = account.twoFactor {
+                    Section {
+                        TwoFactorPrompt(account: account, request: request)
+                    } header: {
+                        Text("Apple Needs a Code")
+                    }
+                }
                 Section {
-                    Button(working ? "Making the file…" : "Export Certificate as .p12…") { confirming = true }
+                    Button(working ? "Working…" : "Export Certificate as .p12…") { confirming = true }
                         .disabled(working)
                     if let error { Note(text: error, kind: .error) }
                 } header: {
@@ -168,22 +177,34 @@ private struct CertificateFileSection: View {
         } message: {
             Text("The file holds your certificate and its private key. With its password, anyone can sign apps as your Apple ID. Only give it to an app you trust.")
         }
+        // This sheet shows Apple's 2FA step itself: RootView's can't open over it.
+        .hostsTwoFactorPrompt(account)
         .onDisappear {
             if let exported { signing.discardShare(exported.file) }
         }
     }
 
+    /// The certificate comes from Apple, so this needs a session. Setup counts a remembered
+    /// password as signed in, but the session itself only exists once something has signed in
+    /// since launch: open one here, as the certificates screen does.
     private func export() {
         working = true
         Task {
+            defer { working = false }
+            if account.team == nil, !(await account.signInWithRememberedPassword(byPerson: true)) {
+                if account.rememberPassword && Keychain.hasPassword {
+                    error = "Couldn't sign in" + (account.lastError.map { ": \($0)" } ?? "") + ". Sign in from Settings, then export again."
+                } else {
+                    error = "Sign in with your Apple ID first (Settings), then export again."
+                }
+                return
+            }
             do {
                 exported = try await signing.exportCertificateP12()
                 error = nil
             } catch {
-                let text = "\(error)"
-                self.error = text.contains("Not signed in") ? "Sign in with your Apple ID first (Settings), then export again." : text
+                self.error = "\(error)"
             }
-            working = false
         }
     }
 

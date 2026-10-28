@@ -157,7 +157,7 @@ struct DeveloperSlotsView: View {
             }
             .focusRow()
             .panel(isPresented: $sharing) {
-                ShareSigningSheet(signing: library.signing, email: email, teamId: account.team?.id) { sharing = false }
+                ShareSigningSheet(signing: library.signing, account: account, email: email, teamId: account.team?.id) { sharing = false }
             }
         } else if certificates.contains(where: { $0.madeByApparition }) {
             VStack(alignment: .leading, spacing: 10) {
