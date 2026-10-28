@@ -141,7 +141,9 @@ enum ShortcutActions {
         }
         if waited { parts.insert("Waited for a refresh already running", at: 0) }
         return RefreshOutcome(refreshed: done.count, failed: errors.count, waited: waited,
-                              summary: parts.joined(separator: ". "), results: run.results)
+                              // Messages that end in their own full stop keep just that one.
+                              summary: parts.map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }.joined(separator: ". "),
+                              results: run.results)
     }
 
     nonisolated static func parseDate(_ text: String?) -> Date? {
