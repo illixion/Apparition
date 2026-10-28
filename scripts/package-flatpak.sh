@@ -28,13 +28,15 @@ out="$ROOT/build/flatpak"
 mkdir -p "$out"
 work="$(mktemp -d "$out/work-$arch.XXXXXX")"
 app="$work/app"
-mkdir -p "$work/input" "$work/deb" "$app/files/bin" "$app/files/share/applications" "$app/files/share/metainfo"
+mkdir -p "$work/input" "$work/deb" "$app/files/bin" "$app/files/libexec" "$app/files/share/applications" "$app/files/share/metainfo"
 tar -xzf "$archive" -C "$work/input" Apparition.deb Apparition.AppImage apparition
 (cd "$work/deb" && ar x "$work/input/Apparition.deb")
 tar -xf "$work/deb/data.tar.gz" -C "$work/deb"
-install -m755 "$work/deb/usr/bin/Apparition" "$app/files/bin/Apparition"
+install -m755 "$work/deb/usr/bin/Apparition" "$app/files/libexec/Apparition"
 # Distinct beyond case: macOS Docker bind mounts may be case-insensitive.
-install -m755 "$work/input/apparition" "$app/files/bin/apparition-cli"
+install -m755 "$work/input/apparition" "$app/files/libexec/apparition-cli"
+install -m755 "$ROOT/packaging/flatpak/launch.sh" "$app/files/bin/Apparition"
+install -m755 "$ROOT/packaging/flatpak/launch.sh" "$app/files/bin/apparition-cli"
 # Tauri's resources, if a future build adds any beyond the embedded frontend.
 if [[ -d "$work/deb/usr/lib" ]]; then
   cp -R "$work/deb/usr/lib" "$app/files/"

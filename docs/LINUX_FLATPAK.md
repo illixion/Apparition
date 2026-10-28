@@ -88,7 +88,7 @@ Useful diagnostics, without signing in or changing a device:
 ```sh
 flatpak info --show-permissions com.illixion.apparition.desktop
 flatpak run --command=sh com.illixion.apparition.desktop -c \
-  'ls -l /run/usbmuxd /var/run/usbmuxd; ldd /app/bin/Apparition'
+  'ls -l /run/usbmuxd /var/run/usbmuxd; ldd /app/libexec/Apparition'
 ```
 
 ## Permissions and remaining work
@@ -122,7 +122,15 @@ path. The relay listened on TCP 49160 and advertised over mDNS. The bundled CLI'
 builtin anisette server fetched its libraries, started, and answered
 `/v3/client_info`; Apple provisioning and sign-in were not exercised.
 
-USB passthrough, actual device pairing/signing/installation, file chooser portals,
-and connectivity from another device still need testing. The x64 bundle has not
+Signing/installation, file chooser portals, and connectivity from another device
+still need testing. The x64 bundle has not
 been run on an x64 desktop. Fusion's graphics driver emitted Mesa warnings, but
 the ARM64 window rendered without a graphics workaround.
+
+USB pairing was subsequently checked with an iPhone through Fusion passthrough.
+It exposed a pairing identity collision: without `/etc/hostname` or an exported
+`HOSTNAME`, the computer used the same name as the phone app, so the second
+pairing invalidated the first. The Flatpak launchers now export the runtime's
+hostname for both desktop and CLI. Using that distinct identity completed USB
+pairing and reached the phone's authenticated network service. Signing and
+installation remain untested in this VM.
