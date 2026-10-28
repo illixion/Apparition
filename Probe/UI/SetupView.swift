@@ -14,7 +14,7 @@ struct SetupStatus {
 
     @MainActor
     init(model: ProbeModel, account: AccountModel, pairedUDID: String?) {
-        companion = model.relay != nil
+        companion = model.routeChosen
         paired = model.hasPairingFile && pairedUDID != nil && model.pairingProblem == nil
         anisette = !account.anisetteURL.isEmpty
         // Signed in now, or able to sign in unattended with the remembered password (not while
@@ -54,11 +54,13 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     RAVEScreenHeading("Setup")
                     intro(status)
-                    StepPanel(number: 1, title: "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
+                    StepPanel(number: 1, title: ProbeModel.localDevVPNOffered ? "Companion or LocalDevVPN" : "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
                         CompanionStep(model: model, account: account, companions: companions)
                     }
                     StepPanel(number: 2, title: "Pair This \(ThisDevice.title)", systemImage: "link", done: status.paired,
-                              blocked: status.companion ? nil : "Set up the companion first: pairing goes through it.") {
+                              blocked: status.companion ? nil : (ProbeModel.localDevVPNOffered
+                                  ? "Choose a companion or LocalDevVPN first: pairing goes through one of them."
+                                  : "Set up the companion first: pairing goes through it.")) {
                         PairStep(model: model)
                     }
                     StepPanel(number: 3, title: "Anisette Server", systemImage: "server.rack", done: status.anisette) {
@@ -168,6 +170,10 @@ struct CompanionStep: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("This \(ThisDevice.noun) can't reach its own developer services directly, so Apparition goes through a companion: Apparition on your Mac or PC, which keeps running in its menu bar or tray (or `apparition relay` on the command line). It only carries encrypted traffic and never sees keys.")
                 .foregroundStyle(.secondary)
+            if ProbeModel.localDevVPNOffered {
+                Text("Without a companion, LocalDevVPN does the same on this \(ThisDevice.noun), but it takes the device's only VPN slot.")
+                    .foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 12) {
                 Button {
@@ -196,13 +202,14 @@ struct CompanionStep: View {
                         .roundedFieldStyle()
                         .frame(maxWidth: 340)
                         .onSubmit(useDraft)
-                    Button("Use and Check", action: useDraft)
+                    Button(draftIsEmpty ? "Use LocalDevVPN" : "Use and Check", action: useDraft)
                         .buttonStyle(.bordered)
-                        .disabled(relayDraft.trimmingCharacters(in: .whitespaces).isEmpty || checking)
+                        .disabled((draftIsEmpty && !ProbeModel.localDevVPNOffered) || checking)
                     if checking { ProgressView() }
                 }
                 .focusRow()
-                Text("Over Tailscale there is no Bonjour, so enter the companion's Tailscale address with port 49160.")
+                Text("Over Tailscale there is no Bonjour, so enter the companion's Tailscale address with port 49160."
+                     + (ProbeModel.localDevVPNOffered ? " Leave it empty to use LocalDevVPN." : ""))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -223,6 +230,9 @@ struct CompanionStep: View {
                 }
                 .focusRow()
             }
+            if model.relay == nil && model.routeChosen {
+                Note(text: "Using LocalDevVPN. Turn it on in the LocalDevVPN app whenever Apparition installs, refreshes or enables JIT.", kind: .success)
+            }
             if let error = companions.lastError {
                 Note(text: error, kind: .warning)
             }
@@ -230,10 +240,16 @@ struct CompanionStep: View {
         .onAppear { relayDraft = model.relay ?? "" }
     }
 
+    private var draftIsEmpty: Bool { relayDraft.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// A typed address is checked; an empty field is the choice of LocalDevVPN, where it's offered.
     private func useDraft() {
+        guard !draftIsEmpty else {
+            model.setRelay("")
+            return
+        }
+        model.setRelay(relayDraft)
         let relay = relayDraft.trimmingCharacters(in: .whitespaces)
-        guard !relay.isEmpty else { return }
-        model.relay = relay
         checking = true
         Task { _ = await companions.check(relay: relay); checking = false }
     }
@@ -344,10 +360,10 @@ struct PairStep: View {
                 #endif
 
                 Button("Confirm Identity") {
-                    Task { await model.identify(host: ProbeModel.relayHost, port: model.defaultTunnelPort) }
+                    Task { await model.identify(host: model.defaultTunnelHost, port: model.defaultTunnelPort) }
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.busy || model.relay == nil || !model.hasPairingFile)
+                .disabled(model.busy || !model.routeChosen || !model.hasPairingFile)
                 .help("Open a tunnel and read this \(ThisDevice.noun)'s name and UDID, which signing needs")
 
                 if model.busy { ProgressView() }

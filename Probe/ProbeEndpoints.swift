@@ -99,8 +99,7 @@ enum ProbeEndpoints {
             },
                         .command("setRelay", "Set the companion relay (ip:port), or clear it with an empty string",
                      parameters: [.string("relay", "e.g. 172.20.48.198:49160", required: true)]) { args in
-                let relay = try args.requireString("relay").trimmingCharacters(in: .whitespaces)
-                model.relay = relay.isEmpty ? nil : relay
+                model.setRelay(try args.requireString("relay"))
                 return state(model)
             },
             .command("submitPin", "Answer a pending PIN request with the 6-digit code shown in Settings",

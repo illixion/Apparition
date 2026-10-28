@@ -49,9 +49,45 @@ final class ProbeModel {
     /// Pass as `host` to go through the companion relay instead.
     nonisolated static let relayHost = "relay"
 
-    /// The companion relay ("ip:port"), or nil to use LocalDevVPN.
+    /// The companion relay ("ip:port"), or nil to use LocalDevVPN. Setting one drops the choice
+    /// of LocalDevVPN below; `setRelay` is how a typed address, or an empty one, gets here.
     var relay: String? = UserDefaults.standard.string(forKey: "relay") {
-        didSet { UserDefaults.standard.set(relay, forKey: "relay") }
+        didSet {
+            UserDefaults.standard.set(relay, forKey: "relay")
+            if relay != nil { usesLocalDevVPN = false }
+        }
+    }
+
+    /// Whether LocalDevVPN is offered as the way to reach this device's own services, in place of
+    /// a companion: on iPhone and iPad. On visionOS the headset resets connections it makes to
+    /// itself, so the companion is the only way (README), and tvOS is paired from a computer.
+    nonisolated static let localDevVPNOffered: Bool = {
+        #if os(iOS)
+        true
+        #else
+        false
+        #endif
+    }()
+
+    /// The person chose LocalDevVPN, rather than never having set a companion up: with no relay,
+    /// that is what the first-run setup and the Library's warning go by.
+    var usesLocalDevVPN: Bool = UserDefaults.standard.bool(forKey: "usesLocalDevVPN") {
+        didSet { UserDefaults.standard.set(usesLocalDevVPN, forKey: "usesLocalDevVPN") }
+    }
+
+    /// A way to reach the device is chosen: a companion relay, or LocalDevVPN where it's offered.
+    var routeChosen: Bool { relay != nil || (usesLocalDevVPN && Self.localDevVPNOffered) }
+
+    /// Sets the relay from an address a person typed. Empty means LocalDevVPN, chosen on purpose
+    /// where it's offered; elsewhere it just clears the relay.
+    func setRelay(_ typed: String) {
+        let address = typed.trimmingCharacters(in: .whitespaces)
+        if address.isEmpty {
+            relay = nil
+            usesLocalDevVPN = Self.localDevVPNOffered
+        } else {
+            relay = address
+        }
     }
 
     /// Where unattended work (installs, refreshes) opens its tunnel: the relay when one is set.

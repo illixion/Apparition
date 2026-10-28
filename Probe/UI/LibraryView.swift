@@ -263,7 +263,7 @@ struct LibraryView: View {
             } else if let run = library.refreshRuns.first, let finished = Date.iso(run.finishedAt) {
                 lastRun(run, finished: finished)
             }
-            if model.relay == nil {
+            if !model.routeChosen {
                 Button(action: onSetup) {
                     Note(text: "No companion relay is set, so refreshes and JIT go through LocalDevVPN. Set up a companion in Setup.", kind: .warning)
                 }

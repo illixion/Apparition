@@ -40,6 +40,9 @@ struct RootView: View {
 
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @AppStorage(RootView.setupFinishedKey) private var setupFinished = false
+    /// Setup was asked for ("Run Setup Again", a prompt to pair or sign in): its tab stays until
+    /// Setup is left with Finish or Go to Library, even when everything is already done.
+    @State private var setupRequested = false
     /// Opens on the Library once setup is complete, on Setup on first run or while anything
     /// is missing (whether or not Setup was dismissed with Finish Later).
     @State private var tab: AppTab
@@ -56,8 +59,20 @@ struct RootView: View {
         _tab = State(initialValue: SetupStatus.opensOnLibrary(model: model, account: account) ? .library : .setup)
     }
 
+    /// Setup has its tab until it's complete, and again whenever something in it breaks (the
+    /// pairing is rejected, say) or it's asked for. It stays while it's the tab on screen, so
+    /// the last step finishing doesn't take it away before "All set" is read.
+    private var setupHidden: Bool {
+        !setupRequested && tab != .setup && SetupStatus.opensOnLibrary(model: model, account: account)
+    }
+
     private var visibleTabs: [AppTab] {
-        AppTab.allCases.filter { $0 != .diagnostics || showDiagnostics }
+        AppTab.allCases.filter { ($0 != .diagnostics || showDiagnostics) && ($0 != .setup || !setupHidden) }
+    }
+
+    private func openSetup() {
+        setupRequested = true
+        tab = .setup
     }
 
     var body: some View {
@@ -106,7 +121,7 @@ struct RootView: View {
                    isPresented: Binding(get: { model.jitFailure != nil }, set: { if !$0 { model.jitFailure = nil } }),
                    presenting: model.jitFailure) { failure in
                 if failure.problem != nil {
-                    Button("Open Setup") { tab = .setup }
+                    Button("Open Setup") { openSetup() }
                 }
                 Button("OK", role: .cancel) {}
             } message: { failure in
@@ -210,16 +225,17 @@ struct RootView: View {
             switch shown {
             case .library:
                 LibraryView(model: model, account: account, library: library,
-                            onBrowse: { tab = .browse }, onSetup: { tab = .setup })
+                            onBrowse: { tab = .browse }, onSetup: openSetup)
             case .browse:
-                BrowseView(model: model, account: account, library: library, onSetup: { tab = .setup })
+                BrowseView(model: model, account: account, library: library, onSetup: openSetup)
             case .setup:
                 SetupView(model: model, account: account, companions: companions) {
                     setupFinished = true
+                    setupRequested = false
                     tab = .library
                 }
             case .settings:
-                SettingsView(model: model, account: account, library: library, companions: companions, onSetup: { tab = .setup })
+                SettingsView(model: model, account: account, library: library, companions: companions, onSetup: openSetup)
             case .diagnostics:
                 DiagnosticsView(model: model, account: account, library: library, companions: companions)
             }

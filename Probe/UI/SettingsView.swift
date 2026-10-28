@@ -40,8 +40,7 @@ struct SettingsView: View {
         Section {
             LabeledContent("Relay") {
                 TextField("ip:49160, empty for LocalDevVPN",
-                          text: Binding(get: { model.relay ?? "" },
-                                        set: { model.relay = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0.trimmingCharacters(in: .whitespaces) }))
+                          text: Binding(get: { model.relay ?? "" }, set: { model.setRelay($0) }))
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
