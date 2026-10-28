@@ -5,7 +5,8 @@ import os
 /// keeping in the log (it is how a failure gets diagnosed), but it can carry who the person is:
 /// the Apple ID's email (a free account's certificate is named after it), the team ID (also the
 /// suffix of every bundle ID Apparition installs) and the team's name, which on a free account
-/// is the person's own. Each becomes a placeholder; the rest of the text stays.
+/// is the person's own. Their own servers' addresses (an anisette server, a companion) are
+/// theirs too. Each becomes a placeholder; the rest of the text stays.
 enum LogScrub {
     private static let names = OSAllocatedUnfairLock(initialState: Set<String>())
 
@@ -13,6 +14,10 @@ enum LogScrub {
     /// Ten capitals and digits with at least one of each: a team ID (or a certificate's ID,
     /// written the same way beside its name).
     private static let teamId = try! NSRegularExpression(pattern: #"\b(?=[A-Z0-9]*[0-9])(?=[A-Z0-9]*[A-Z])[A-Z0-9]{10}\b"#)
+    private static let url = try! NSRegularExpression(pattern: #"\b[a-z][a-z0-9+.-]*://[^\s)"']+"#, options: .caseInsensitive)
+    /// IPv4 addresses, with a port if any, except the ones Apparition itself uses: LocalDevVPN's
+    /// and loopback say how it connected, not where the person is.
+    private static let address = try! NSRegularExpression(pattern: #"\b(?!10\.7\.0\.1\b)(?!127\.0\.0\.1\b)(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b"#)
 
     /// Team and certificate names to take out, as they become known (sign-in, imports).
     static func remember(_ newNames: some Sequence<String?>) {
@@ -28,6 +33,8 @@ enum LogScrub {
             out = out.replacingOccurrences(of: name, with: "<name>")
         }
         out = replace(email, in: out, with: "<email>")
+        out = replace(url, in: out, with: "<url>")
+        out = replace(address, in: out, with: "<address>")
         return replace(teamId, in: out, with: "<team>")
     }
 
