@@ -54,6 +54,9 @@ computer at all.
   certificates never run out one per device: nearby over the network, checked by a six-digit
   code both screens show, or as a file sealed under five words. Signing stops and asks before
   it would make a second.
+- **Export the certificate as a .p12** for an app that signs with one, such as
+  [LiveContainer](docs/SUPPORTED_APPS.md#livecontainer), which then runs any number of apps under
+  a single App ID. See [For other apps](#for-other-apps-a-p12).
 
 ## Getting started
 
@@ -352,6 +355,18 @@ passes) and the file is ChaCha20-Poly1305, so the file alone is useless. The wor
 the [EFF's short wordlist 2.0](https://www.eff.org/dice) (CC BY 3.0 US, in `core/assets/`),
 where each word is known by its first three letters, so case, spacing and a mistyped ending
 don't matter.
+
+#### For other apps: a .p12
+
+Some apps sign other apps themselves and need a certificate with its private key:
+[LiveContainer](docs/SUPPORTED_APPS.md#livecontainer)'s JIT-less mode, which iOS 26 and later
+require, is the one we've tested. Settings > Share Signing with Another Device > Export
+Certificate as .p12 (0.3.4 and later) writes the Apple ID's certificate and key as a `.p12`
+under a password of six new words, to copy and share separately. It signs in if it has to and
+makes no new certificate, so the other app signs with the one Apparition already uses. The file
+is deleted when the screen closes. Anyone with the file and its password can sign apps as your
+Apple ID, so give it only to an app you trust; if it gets out, revoke the certificate in
+Certificates & App IDs.
 
 An update of an app that is open on the headset finishes when it's closed. It never revokes a
 certificate on its own: with no free slot it offers to receive another Apparition's key, then to
