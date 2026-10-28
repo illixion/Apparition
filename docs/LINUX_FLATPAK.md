@@ -31,8 +31,21 @@ docker run --rm -v "$PWD:/src" apparition-flatpak-packager \
 The bundles land in `build/flatpak/`. Assembly does not run the payload, so it
 does not require CPU emulation or a privileged Docker container. It repackages the
 archive's desktop binary, resources, CLI and AppImage's tray libraries; it does not rebuild Rust against the
-Flatpak SDK. Moving compilation into the SDK and adding an offline source manifest
-are follow-up work before a Flathub submission.
+Flatpak SDK. An optional source build is described below; an offline source
+manifest is still needed before a Flathub submission.
+
+To build the current desktop source against the runtime instead of reusing the
+archive's binary, run these on Linux with the same CPU architecture as the bundle:
+
+```sh
+flatpak install --user flathub org.gnome.Sdk//49 org.freedesktop.Sdk.Extension.rust-stable//25.08
+scripts/build-flatpak-desktop.sh
+FLATPAK_DESKTOP_BINARY="$PWD/build/flatpak/sdk-cache/target/release/apparition-app" \
+  scripts/package-flatpak.sh build/release/0.3.5/Apparition-Installer-0.3.5-linux-arm64.tar.gz
+```
+
+The build uses Cargo's lockfile and network access inside the SDK, with a separate
+cache under `build/flatpak/`. An offline source manifest is still needed for Flathub.
 
 ## Install and run
 
@@ -134,3 +147,8 @@ pairing invalidated the first. The Flatpak launchers now export the runtime's
 hostname for both desktop and CLI. Using that distinct identity completed USB
 pairing and reached the phone's authenticated network service. Signing and
 installation remain untested in this VM.
+
+The desktop was then rebuilt from source in GNOME SDK 49 with the Rust SDK
+extension, packaged using `FLATPAK_DESKTOP_BINARY`, and launched successfully in
+the VM. Its libraries resolved from the runtime. This build includes the desktop
+App ID manager; account deletion was exercised with mocked responses only.

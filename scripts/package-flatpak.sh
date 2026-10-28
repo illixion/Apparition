@@ -32,7 +32,7 @@ mkdir -p "$work/input" "$work/deb" "$app/files/bin" "$app/files/libexec" "$app/f
 tar -xzf "$archive" -C "$work/input" Apparition.deb Apparition.AppImage apparition
 (cd "$work/deb" && ar x "$work/input/Apparition.deb")
 tar -xf "$work/deb/data.tar.gz" -C "$work/deb"
-install -m755 "$work/deb/usr/bin/Apparition" "$app/files/libexec/Apparition"
+install -m755 "${FLATPAK_DESKTOP_BINARY:-$work/deb/usr/bin/Apparition}" "$app/files/libexec/Apparition"
 # Distinct beyond case: macOS Docker bind mounts may be case-insensitive.
 install -m755 "$work/input/apparition" "$app/files/libexec/apparition-cli"
 install -m755 "$ROOT/packaging/flatpak/launch.sh" "$app/files/bin/Apparition"

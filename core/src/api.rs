@@ -415,7 +415,7 @@ impl Slot {
         if lower.contains("7460") || lower.contains("maximum number of certificates") {
             return Some(Slot::Certificates);
         }
-        (lower.contains("app id") && ["limit", "maximum", "more than", "9401"].iter().any(|w| lower.contains(w)))
+        (lower.contains("app id") && ["limit", "maximum", "more than", "9401", "not enough"].iter().any(|w| lower.contains(w)))
             .then_some(Slot::AppIds)
     }
 
@@ -809,6 +809,7 @@ mod tests {
     fn slot_errors() {
         assert_eq!(Slot::of_error("Apple error 7460: no more certificates"), Some(Slot::Certificates));
         assert_eq!(Slot::of_error("You already have the maximum number of certificates"), Some(Slot::Certificates));
+        assert_eq!(Slot::of_error("Not enough available app IDs"), Some(Slot::AppIds));
         assert_eq!(Slot::of_error("Cannot create more than 10 App IDs"), Some(Slot::AppIds));
         assert_eq!(Slot::of_error("Device registration failed"), None);
     }

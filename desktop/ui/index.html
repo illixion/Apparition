@@ -267,6 +267,8 @@
       <p class="signed-title" data-role="signed-title"></p>
       <ul class="signed-list" data-role="signed-list"></ul>
       <button type="button" class="link" data-role="change">Use something else</button>
+      <div class="row"><button type="button" class="button quiet small" data-role="manage-app-ids" hidden>Manage App IDs</button></div>
+      <div class="slots account-manager" data-role="app-id-manager" hidden></div>
       <div class="nearby-send" data-role="nearby-send" hidden>
         <p class="hint">Your other devices and computers can sign with this computer's certificate too, rather than each making its own. In Apparition there, choose Settings > Get Signing from Another Device, then send it from here.</p>
         <div class="row"><button type="button" class="button quiet" data-role="nearby-find">Send to a Nearby Device</button></div>
@@ -323,6 +325,7 @@
 
     <p class="status" data-role="status" hidden></p>
     <div class="slots" data-role="slots" hidden></div>
+    <div class="row"><button type="button" class="button quiet small" data-role="manage-app-ids" hidden>Manage App IDs</button></div>
 
     <div class="actions">
       <button type="button" class="button quiet" data-role="back">Back</button>
@@ -333,7 +336,10 @@
 
 <template id="t-slots">
   <div class="slots-inner">
-    <h2 class="small" data-role="title"></h2>
+    <div class="group-head">
+      <h2 class="small" data-role="title"></h2>
+      <button type="button" class="link" data-role="close">Close</button>
+    </div>
     <div class="slots-inner" data-role="share" hidden>
       <p class="hint">Revoking a certificate stops the apps it signed. If one of these is Apparition's on another device, get its key instead, and this computer signs with that one.</p>
       <div class="row">
@@ -344,7 +350,10 @@
       <p class="status" data-role="nearby-status" hidden></p>
     </div>
     <p class="hint" data-role="explain"></p>
+    <label class="field" data-role="filter-field" hidden>Find an App ID<input type="search" data-role="filter" placeholder="Name or bundle identifier" autocomplete="off" spellcheck="false"></label>
     <ul class="choices" data-role="list"></ul>
+    <p class="hint" data-role="no-matches" hidden>No App IDs match your search.</p>
+    <div class="row"><button type="button" class="button quiet small" data-role="refresh">Refresh</button></div>
     <div class="confirm" data-role="confirm" hidden>
       <p class="warning" data-role="warning"></p>
       <label class="field"><span>Type <strong data-role="word"></strong> to confirm</span><input data-role="typed" autocomplete="off" spellcheck="false"></label>

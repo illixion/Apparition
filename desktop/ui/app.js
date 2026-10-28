@@ -433,6 +433,9 @@ function signing() {
   const signed = $(panel, "signed");
   const status = $(panel, "status");
   const continueButton = /** @type {HTMLButtonElement} */ ($(panel, "continue"));
+  const manageIds = /** @type {HTMLButtonElement} */ ($(panel, "manage-app-ids"));
+  const idManager = $(panel, "app-id-manager");
+  manageIds.addEventListener("click", () => showSlots(idManager, "appIds", () => {}, undefined, true));
   const modes = /** @type {NodeListOf<HTMLInputElement>} */ (panel.querySelectorAll('input[name="mode"]'));
 
   $(panel, "back").addEventListener("click", () => go(state.pairSkipped ? "headset" : "pair"));
@@ -449,6 +452,8 @@ function signing() {
     keyForm.hidden = appleForm.hidden;
     certForm.hidden = done || state.mode !== "certificate";
     signed.hidden = !done;
+    manageIds.hidden = state.signing?.mode !== "appleId";
+    if (manageIds.hidden) idManager.hidden = true;
     continueButton.disabled = !done;
     if (done) drawSigned();
     renderTrail();
@@ -715,6 +720,9 @@ function install() {
   const status = $(panel, "status");
   const stages = $(panel, "stages");
   const slots = $(panel, "slots");
+  const manageIds = /** @type {HTMLButtonElement} */ ($(panel, "manage-app-ids"));
+  manageIds.hidden = state.signing?.mode !== "appleId";
+  manageIds.addEventListener("click", () => showSlots(slots, "appIds", () => {}, undefined, true));
   const advanced = $(panel, "advanced");
   const what = /** @type {NodeListOf<HTMLInputElement>} */ (panel.querySelectorAll('input[name="what"]'));
   const handoff = /** @type {HTMLInputElement} */ ($(panel, "handoff"));
@@ -771,6 +779,7 @@ function install() {
 
   const run = async () => {
     setBusy(start, true);
+    manageIds.disabled = true;
     back.disabled = true;
     advanced.hidden = true;
     slots.hidden = true;
@@ -844,6 +853,7 @@ function install() {
     } finally {
       cleanup();
       setBusy(start, false);
+      manageIds.disabled = false;
       back.disabled = false;
     }
   };
@@ -890,13 +900,17 @@ function showShared(box, retry) {
  * Lists what fills the slot and frees one the user picks, only after they type the word.
  * @param {HTMLElement} box @param {"certificates"|"appIds"} slot @param {() => void} retry
  * @param {any} [sample] a listing to show instead of asking the account (debug previews)
+ * @param {boolean} [manager] Open directly, without an install failure or automatic retry.
  */
-async function showSlots(box, slot, retry, sample) {
+async function showSlots(box, slot, retry, sample, manager = false) {
   const certificates = slot === "certificates";
   const word = certificates ? "revoke" : "delete";
   box.replaceChildren(template("t-slots"));
   box.hidden = false;
-  $(box, "title").textContent = certificates ? "Free a certificate slot" : "Free an App ID";
+  box.classList.toggle("account-manager", manager);
+  $(box, "title").textContent = certificates ? "Free a certificate slot" : "App IDs";
+  $(box, "close").addEventListener("click", () => { box.hidden = true; });
+  $(box, "refresh").addEventListener("click", () => showSlots(box, slot, retry, sample, manager));
   $(box, "word").textContent = word;
   if (certificates) {
     $(box, "share").hidden = false;
@@ -913,6 +927,9 @@ async function showSlots(box, slot, retry, sample) {
   const confirm = $(box, "confirm");
   const list = $(box, "list");
   const explain = $(box, "explain");
+  const filter = /** @type {HTMLInputElement} */ ($(box, "filter"));
+  $(box, "filter-field").hidden = certificates;
+  box.scrollIntoView({ block: "nearest", behavior: "smooth" });
   explain.textContent = "Looking at the account…";
   /** @type {any} */ let chosen = null;
 
@@ -927,13 +944,16 @@ async function showSlots(box, slot, retry, sample) {
     } else {
       const ids = sample ?? (await invoke("list_app_ids"));
       items = ids.appIds ?? [];
-      const left = ids.availableQuantity ?? "?";
-      explain.textContent = `A free Apple ID can make ten App IDs a week (${left} more allowed now). Deleting one may help; nothing is deleted until you confirm.`;
+      const left = ids.availableQuantity ?? "unknown";
+      const limit = ids.maxQuantity == null ? "" : ` (limit: ${ids.maxQuantity})`;
+      explain.textContent = `${items.length} App ID${items.length === 1 ? "" : "s"} registered; ${left} more allowed now${limit}. On a free account, deleting an ID may not restore the weekly allowance before it expires.`;
     }
   } catch (error) {
+    if (!box.contains(list)) return;
     explain.textContent = `Couldn't list them: ${messageOf(error)}`;
     return;
   }
+  if (!box.contains(list)) return;
   if (!items.length) {
     explain.textContent += certificates ? " The account has no development certificates." : " The account has no App IDs.";
     return;
@@ -953,6 +973,7 @@ async function showSlots(box, slot, retry, sample) {
     } else {
       title.textContent = item.identifier ?? "?";
       meta.textContent = `${item.name ?? ""}, expires ${day(item.expires)}`;
+      badge.textContent = item.expires && new Date(item.expires).getTime() < Date.now() ? "Expired" : "";
     }
     input.addEventListener("change", () => {
       chosen = item;
@@ -970,6 +991,20 @@ async function showSlots(box, slot, retry, sample) {
     });
     list.append(row);
   }
+  filter.addEventListener("input", () => {
+    const query = filter.value.trim().toLocaleLowerCase();
+    let visible = 0;
+    for (const row of list.children) {
+      const hide = !row.textContent.toLocaleLowerCase().includes(query);
+      row.hidden = hide;
+      if (!hide) visible++;
+    }
+    // A hidden selection must never remain the target of a destructive action.
+    chosen = null;
+    confirm.hidden = true;
+    list.querySelectorAll("input").forEach((input) => { input.checked = false; });
+    $(box, "no-matches").hidden = visible > 0;
+  });
   box.scrollIntoView({ block: "nearest", behavior: "smooth" });
 
   typed.addEventListener("input", () => (button.disabled = typed.value.trim() !== word));
@@ -980,8 +1015,11 @@ async function showSlots(box, slot, retry, sample) {
     try {
       if (certificates) await invoke("revoke_certificate", { serial: chosen.serialNumber, confirmation: typed.value });
       else await invoke("delete_app_id", { appIdId: chosen.appIdId, confirmation: typed.value });
-      box.hidden = true;
-      retry();
+      if (manager) await showSlots(box, slot, retry, undefined, true);
+      else {
+        box.hidden = true;
+        retry();
+      }
     } catch (error) {
       $(box, "warning").textContent = messageOf(error);
       setBusy(button, false);

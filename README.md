@@ -390,6 +390,11 @@ headset paired with one is paired with both. Passwords go from the app's own fie
 core and nowhere else. On launch it checks the release site for a newer installer and links to
 it; it never replaces itself.
 
+After Apple ID sign-in, **Manage App IDs** is available on the signing and install
+screens. It shows Apple's remaining allowance, registered bundle identifiers and expiry
+dates, with search, refresh and deletion after confirmation. Deleting an ID may not
+restore a free account's weekly allowance before it expires.
+
     cargo install tauri-cli --version '^2' --locked                         # once
     cd desktop && cargo tauri build --bundles app                           # this Mac
     cargo tauri build --target universal-apple-darwin --bundles app         # arm64 + x86_64

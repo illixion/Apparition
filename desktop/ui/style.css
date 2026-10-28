@@ -652,6 +652,8 @@ details[open] > summary { margin-bottom: .85rem; }
 }
 .slots-inner { display: flex; flex-direction: column; gap: .8rem; }
 .slots .choices { max-width: none; }
+.slots.account-manager { border-color: var(--line); }
+.slots .group-head { max-width: none; }
 .confirm { display: flex; flex-direction: column; gap: .8rem; }
 .warning { color: var(--ink); max-width: var(--measure); }
 
