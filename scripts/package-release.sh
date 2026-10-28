@@ -204,6 +204,8 @@ linux_build() {
   cp "$src/bundles/$bin" "$out/"
   cp "$src"/bundles/*.AppImage "$out/$app_name.AppImage"
   cp "$src"/bundles/*.deb "$out/$app_name.deb"
+  cp "$out/$app_name.AppImage" "$OUT/Apparition-Installer-$VERSION-linux-$arch.AppImage"
+  cp "$out/$app_name.deb" "$OUT/Apparition-Installer-$VERSION-linux-$arch.deb"
   readme "$out" "./$bin" "Run $app_name.AppImage (chmod +x it first) for a guided install, or install $app_name.deb on Debian or Ubuntu; it then stays in the tray as the companion. Both need glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later)."
   tar -C "$out" -czf "$OUT/Apparition-Installer-$VERSION-linux-$arch.tar.gz" "$bin" "$app_name.AppImage" "$app_name.deb" README.txt
 }

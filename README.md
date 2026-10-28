@@ -407,8 +407,10 @@ debug build opens on any step with `APPARITION_DESKTOP_PREVIEW=signing` (or `pai
 `APPARITION_COMPANION_PORTS=<relay>,<anisette>`; release builds ignore all four.
 `scripts/package-release.sh` puts the app in the macOS and Windows installer zips next to the
 command line, and with `--linux` builds a .deb and an AppImage per architecture (Ubuntu 22.04,
-so glibc 2.35 or newer). Opening the app again shows the running one, which is also the way
-back to its window on a Linux desktop with no tray (niri or plain GNOME, say).
+so glibc 2.35 or newer). The Linux release includes direct .deb and AppImage downloads as well
+as an archive with both and the headless command line. Opening the app again shows the running
+one, which is also the way back to its window on a Linux desktop with no tray (niri or plain
+GNOME, say).
 
 ## Anisette
 
