@@ -542,10 +542,12 @@ final class LibraryModel {
     nonisolated static let launchedAt = Date()
 
     /// Whether the device's apps, listed since Apparition opened, no longer include this app: it
-    /// was deleted from the Home Screen. An older listing, or none, says nothing.
+    /// was deleted from the Home Screen. An older listing, or none, says nothing, and neither does
+    /// one taken before the app was last installed (the listing doesn't have it yet).
     func isMissingFromDevice(_ app: InstalledApp) -> Bool {
         guard let bundleId = app.installedBundleId,
               let listed = Date.iso(probe.deviceAppsFetchedAt), listed >= Self.launchedAt else { return false }
+        if let signed = Date.iso(app.signedAt), listed < signed { return false }
         return !probe.deviceApps.contains { $0.bundleId == bundleId }
     }
 
