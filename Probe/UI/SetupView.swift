@@ -22,8 +22,13 @@ struct SetupStatus {
         self.account = account.team != nil || (account.rememberPassword && Keychain.hasPassword && !account.autoSignInPaused)
     }
 
-    var doneCount: Int { [companion, paired, anisette, account].filter { $0 }.count }
-    var complete: Bool { doneCount == 4 }
+    /// The Connection step: how to reach the device, and the anisette server that goes with it
+    /// (an imported certificate signs without an Apple ID, so it needs none).
+    var connection: Bool { companion && (anisette || SigningStore.signsWithOwnCertificate) }
+
+    static let stepCount = 3
+    var doneCount: Int { [connection, paired, account].filter { $0 }.count }
+    var complete: Bool { doneCount == Self.stepCount }
 
     /// Whether the window opens on the Library rather than Setup. At launch nobody is signed in
     /// yet (the session lives in memory), so an Apple ID signed in with before counts as done:
@@ -54,18 +59,15 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     RAVEScreenHeading("Setup")
                     intro(status)
-                    StepPanel(number: 1, title: "Connection", systemImage: "macbook.and.visionpro", done: status.companion) {
-                        ConnectionView(model: model, companions: companions)
+                    StepPanel(number: 1, title: "Connection", systemImage: "macbook.and.visionpro", done: status.connection) {
+                        ConnectionView(model: model, account: account, companions: companions)
                     }
                     StepPanel(number: 2, title: "Pair This \(ThisDevice.title)", systemImage: "link", done: status.paired,
                               blocked: status.companion ? nil : "Choose how Apparition connects first: pairing goes through it.") {
                         PairStep(model: model)
                     }
-                    StepPanel(number: 3, title: "Anisette Server", systemImage: "server.rack", done: status.anisette) {
-                        AnisetteStep(account: account, companions: companions)
-                    }
-                    StepPanel(number: 4, title: "Apple ID", systemImage: "person.crop.circle", done: status.account,
-                              blocked: status.anisette ? nil : "Choose an anisette server first: Apple's sign-in needs one.") {
+                    StepPanel(number: 3, title: "Apple ID", systemImage: "person.crop.circle", done: status.account,
+                              blocked: status.anisette ? nil : "Choose an anisette server in the Connection step first: Apple's sign-in needs one.") {
                         AppleIDStep(account: account)
                     }
                     finish(status)
@@ -80,11 +82,11 @@ struct SetupView: View {
 
     private func intro(_ status: SetupStatus) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Apparition installs apps on this \(ThisDevice.noun), signed with your own Apple ID, and keeps them refreshed. Four things make that work.")
+            Text("Apparition installs apps on this \(ThisDevice.noun), signed with your own Apple ID, and keeps them refreshed. Three things make that work.")
                 .font(.title3)
                 .foregroundStyle(.secondary)
-            ProgressView(value: Double(status.doneCount), total: 4) {
-                Text("\(status.doneCount) of 4 done").font(.callout.weight(.medium))
+            ProgressView(value: Double(status.doneCount), total: Double(SetupStatus.stepCount)) {
+                Text("\(status.doneCount) of \(SetupStatus.stepCount) done").font(.callout.weight(.medium))
             }
             .frame(maxWidth: 360)
         }
@@ -326,83 +328,6 @@ struct PairStep: View {
             case nil: Note(text: "\(label) in progress…")
             case "ok": Note(text: "\(label) succeeded\(attempt.peer.map { ": \($0.name)" } ?? "").", kind: .success)
             case let outcome?: Note(text: "\(label) failed: \(outcome)", kind: .error)
-            }
-        }
-    }
-}
-
-// MARK: - 3. Anisette
-
-struct AnisetteStep: View {
-    let account: AccountModel
-    let companions: CompanionFinder
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Signing in to Apple needs an anisette server (v3). Apparition doesn't pick one for you: use the one your companion runs, any v3 server you trust, or your own. The server sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password.")
-                .foregroundStyle(.secondary)
-
-            #if os(tvOS)
-            // One menu instead of a row per companion: rows of text and buttons made the step
-            // long enough that moving between them scrolled a whole screen.
-            let offered = companions.found.filter { $0.anisetteURL != nil }
-            if !offered.isEmpty {
-                Menu {
-                    ForEach(offered) { companion in
-                        Button("\(companion.name): \(companion.anisetteURL ?? "")") {
-                            account.anisetteURL = companion.anisetteURL ?? ""
-                        }
-                    }
-                } label: {
-                    let current = offered.first { $0.anisetteURL == account.anisetteURL }
-                    Label(current.map { "Using \($0.name)'s server" } ?? "Use a Companion's Server", systemImage: "desktopcomputer")
-                }
-                .focusRow()
-            }
-            #else
-            ForEach(companions.found.filter { $0.anisetteURL != nil }) { companion in
-                if let url = companion.anisetteURL {
-                    HStack(spacing: 12) {
-                        Image(systemName: "desktopcomputer")
-                        Text("\(companion.name) runs one at \(url)")
-                            .font(.callout.monospaced())
-                        Spacer()
-                        if account.anisetteURL == url {
-                            StatusPill(text: "In use", systemImage: "checkmark", tint: .green)
-                        } else {
-                            Button("Use Companion's Anisette") { account.anisetteURL = url }
-                                .buttonStyle(.bordered)
-                        }
-                    }
-                    .focusRow()
-                }
-            }
-
-            #endif
-
-            TextField("http://your-server:6969", text: Binding(get: { account.anisetteURL },
-                                                              set: { account.anisetteURL = $0.trimmingCharacters(in: .whitespaces) }))
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.body.monospaced())
-                .roundedFieldStyle()
-                .frame(maxWidth: 480)
-
-            Disclosure("Host your own") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Apparition on your Mac can offer its own (no Docker needed), and on any computer it can run one with your Docker: choose it in its Companion tab, then Find Companion above and use it.")
-                    Text("Or, on any machine with Docker, from the Apparition repository:")
-                    Text("docker compose -f selfhost/anisette/compose.yaml up -d")
-                        .font(.callout.monospaced())
-                        .selectableText()
-                        .padding(10)
-                        .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
-                    Text("and enter http://<that machine>:6969 here.")
-                }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding(.top, 8)
             }
         }
     }

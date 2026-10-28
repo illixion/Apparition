@@ -22,7 +22,6 @@ struct SettingsView: View {
             Form {
                 RAVEScreenHeading("Settings")
                 companionSection
-                anisetteSection
                 accountSection
                 pairingSection
                 shortcutsSection
@@ -37,30 +36,11 @@ struct SettingsView: View {
 
     private var companionSection: some View {
         Section {
-            ConnectionView(model: model, companions: companions)
+            ConnectionView(model: model, account: account, companions: companions)
         } header: {
             Text("Connection")
         } footer: {
-            Text("How Apparition reaches this \(ThisDevice.noun)'s own services for installs, refreshes and JIT. Switching keeps the companion's address.")
-        }
-    }
-
-    private var anisetteSection: some View {
-        Section {
-            TextField("http://your-server:6969",
-                      text: Binding(get: { account.anisetteURL }, set: { account.anisetteURL = $0.trimmingCharacters(in: .whitespaces) }))
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.body.monospaced())
-                .textFieldTapTarget()
-            ForEach(companions.found.filter { $0.anisetteURL != nil && $0.anisetteURL != account.anisetteURL }) { companion in
-                Button("Use \(companion.name)'s anisette server") { account.anisetteURL = companion.anisetteURL ?? "" }
-            }
-        } header: {
-            Text("Anisette Server")
-        } footer: {
-            Text("An anisette-v3 server for Apple sign-in. It sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password.")
+            Text("How Apparition reaches this \(ThisDevice.noun)'s own services for installs, refreshes and JIT, and the anisette server that goes with it. Switching keeps each mode's companion address and anisette server.")
         }
     }
 

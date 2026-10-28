@@ -35,6 +35,7 @@ extension ProbeModel.ConnectionMode {
 /// Settings.
 struct ConnectionView: View {
     let model: ProbeModel
+    let account: AccountModel
     let companions: CompanionFinder
 
     @State private var draft = ""
@@ -44,6 +45,7 @@ struct ConnectionView: View {
         VStack(alignment: .leading, spacing: 16) {
             ForEach(ProbeModel.ConnectionMode.offered) { mode in
                 ModeOption(mode: mode, selected: model.connectionMode == mode) {
+                    account.switchAnisette(from: model.connectionMode, to: mode)
                     model.connectionMode = mode
                 }
             }
@@ -52,8 +54,18 @@ struct ConnectionView: View {
             case .localVPN: localVPNNote
             case nil: Note(text: "Choose one to continue.", kind: .info)
             }
+            if let mode = model.connectionMode {
+                anisetteControls(mode)
+            }
         }
         .onAppear { draft = model.companionAddress }
+        // A companion that runs an anisette server is the likely choice for one: take it when
+        // none is set yet.
+        .onChange(of: companions.found.map(\.relay)) { _, _ in
+            guard model.connectionMode == .companion, account.anisetteURL.isEmpty,
+                  let url = companions.found.first(where: { $0.relay == model.relay })?.anisetteURL else { return }
+            account.anisetteURL = url
+        }
     }
 
     // MARK: Companion
@@ -147,6 +159,93 @@ struct ConnectionView: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
+    // MARK: Anisette
+
+    /// The anisette server for Apple's sign-in, which goes with the connection: a companion
+    /// usually runs one itself, where Local VPN has no computer to run it, so a public server
+    /// is the likelier choice. Each mode keeps its own (`AccountModel.switchAnisette`).
+    private func anisetteControls(_ mode: ProbeModel.ConnectionMode) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            Label("Anisette Server", systemImage: "server.rack")
+                .font(.headline)
+            Text(mode == .companion
+                 ? "Signing in to Apple needs an anisette server (v3). Your companion can run one: Apparition on your Mac offers its own. The server sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password."
+                 : "Signing in to Apple needs an anisette server (v3), and Local VPN has no computer to run one. Use a public one you trust, or host your own. The server sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if mode == .companion { companionAnisetteChoices }
+
+            TextField(mode == .companion ? "http://your-computer:6969" : "https://your-anisette-server", text: Binding(
+                get: { account.anisetteURL },
+                set: { account.anisetteURL = $0.trimmingCharacters(in: .whitespaces) }))
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.body.monospaced())
+                .roundedFieldStyle()
+                .wideFieldOnTV()
+                .frame(maxWidth: 480)
+
+            Disclosure("Host your own") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Apparition on your Mac can offer its own (no Docker needed), and on any computer it can run one with your Docker: choose it in its Companion tab, then Find Companion above and use it.")
+                    Text("Or, on any machine with Docker, from the Apparition repository:")
+                    Text("docker compose -f selfhost/anisette/compose.yaml up -d")
+                        .font(.callout.monospaced())
+                        .selectableText()
+                        .padding(10)
+                        .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
+                    Text("and enter http://<that machine>:6969 above.")
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.top, 8)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var companionAnisetteChoices: some View {
+        let offered = companions.found.filter { $0.anisetteURL != nil }
+        #if os(tvOS)
+        // One menu instead of a row per companion: rows made the step long enough that moving
+        // between them scrolled a whole screen.
+        if !offered.isEmpty {
+            Menu {
+                ForEach(offered) { companion in
+                    Button("\(companion.name): \(companion.anisetteURL ?? "")") {
+                        account.anisetteURL = companion.anisetteURL ?? ""
+                    }
+                }
+            } label: {
+                let current = offered.first { $0.anisetteURL == account.anisetteURL }
+                Label(current.map { "Using \($0.name)'s server" } ?? "Use a Companion's Server", systemImage: "desktopcomputer")
+            }
+            .focusRow()
+        }
+        #else
+        ForEach(offered) { companion in
+            if let url = companion.anisetteURL {
+                HStack(spacing: 12) {
+                    Image(systemName: "desktopcomputer")
+                    Text("\(companion.name) runs one at \(url)")
+                        .font(.callout.monospaced())
+                    Spacer(minLength: 0)
+                    if account.anisetteURL == url {
+                        StatusPill(text: "In use", systemImage: "checkmark", tint: .green)
+                    } else {
+                        Button("Use") { account.anisetteURL = url }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                .focusRow()
+            }
+        }
+        #endif
+    }
+
     // MARK: Local VPN
 
     private var localVPNNote: some View {
@@ -197,5 +296,17 @@ private struct ModeOption: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+extension AccountModel {
+    /// Each connection mode keeps its own anisette server: a companion's is not what Local VPN
+    /// uses, so switching saves the one in use under the mode being left and brings back the one
+    /// the other mode had (none the first time).
+    func switchAnisette(from old: ProbeModel.ConnectionMode?, to new: ProbeModel.ConnectionMode) {
+        guard old != new else { return }
+        let defaults = UserDefaults.standard
+        if let old { defaults.set(anisetteURL, forKey: "anisetteURL." + old.rawValue) }
+        anisetteURL = defaults.string(forKey: "anisetteURL." + new.rawValue) ?? ""
     }
 }
