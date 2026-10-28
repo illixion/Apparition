@@ -58,6 +58,7 @@ private struct KeyFileSection: View {
     let teamId: String?
 
     @State private var shared: (file: URL, words: String)?
+    @State private var sharing: URL?
     @State private var error: String?
     @State private var sealing = false
 
@@ -75,7 +76,9 @@ private struct KeyFileSection: View {
                     Text("Tell them to whoever opens the file; don't send them with it. Anyone with both can sign as this Apple ID.")
                 }
                 Section {
-                    ShareLink(item: shared.file, preview: SharePreview("Apple ID signing")) {
+                    Button {
+                        sharing = shared.file
+                    } label: {
                         Label("Share Key File…", systemImage: "square.and.arrow.up")
                     }
                 } footer: {
@@ -93,6 +96,7 @@ private struct KeyFileSection: View {
                 }
             }
         }
+        .shareSheet(url: $sharing)
         .onDisappear {
             if let shared { signing.discardShare(shared.file) }
         }
@@ -121,6 +125,7 @@ private struct CertificateFileSection: View {
     let account: AccountModel
 
     @State private var exported: (file: URL, password: String)?
+    @State private var sharing: URL?
     @State private var error: String?
     @State private var working = false
     @State private var confirming = false
@@ -145,7 +150,9 @@ private struct CertificateFileSection: View {
                     Text("Copying keeps it on this device's clipboard for two minutes, and not on your other devices. Send it apart from the file, over something other than where the file went.")
                 }
                 Section {
-                    ShareLink(item: exported.file, preview: SharePreview("Apparition Certificate.p12")) {
+                    Button {
+                        sharing = exported.file
+                    } label: {
                         Label("Share Certificate File…", systemImage: "square.and.arrow.up")
                     }
                     Note(text: "Anyone with this file and its password can sign apps as your Apple ID. Delete the file once the other app has it. If it ends up anywhere it shouldn't, revoke the certificate in Certificates & App IDs.", kind: .warning)
@@ -177,6 +184,7 @@ private struct CertificateFileSection: View {
         } message: {
             Text("The file holds your certificate and its private key. With its password, anyone can sign apps as your Apple ID. Only give it to an app you trust.")
         }
+        .shareSheet(url: $sharing)
         // This sheet shows Apple's 2FA step itself: RootView's can't open over it.
         .hostsTwoFactorPrompt(account)
         .onDisappear {
