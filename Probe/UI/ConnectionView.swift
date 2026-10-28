@@ -48,7 +48,7 @@ struct ConnectionView: View {
             ForEach(ProbeModel.ConnectionMode.offered) { mode in
                 ModeOption(mode: mode, selected: model.connectionMode == mode) {
                     account.switchAnisette(from: model.connectionMode, to: mode)
-                    model.connectionMode = mode
+                    model.switchMode(to: mode)
                 }
             }
             switch model.connectionMode {

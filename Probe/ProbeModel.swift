@@ -98,6 +98,25 @@ final class ProbeModel {
     /// A way to reach the device is chosen and, for the companion, has an address.
     var routeChosen: Bool { relay != nil || connectionMode == .localVPN }
 
+    /// The mode whose tunnel last failed to get through (LocalDevVPN off, the companion not
+    /// running or out of reach), so the Library can say so and offer the other; nil once
+    /// anything reaches the device, or after a switch.
+    private(set) var unreachableMode: ConnectionMode?
+
+    /// The tunnel or the connection under it failed, as opposed to the device answering and
+    /// refusing. A missing or refused pairing is its own problem, with its own message.
+    nonisolated static func isUnreachable(_ outcome: String) -> Bool {
+        guard PairingRecord.problem(in: outcome) == nil else { return false }
+        return ["tunnel via", "connect failed", "deadline has elapsed", "Connection refused", "timed out"]
+            .contains { outcome.localizedCaseInsensitiveContains($0) }
+    }
+
+    /// Switches to `mode` and forgets that the other one was out of reach.
+    func switchMode(to mode: ConnectionMode) {
+        connectionMode = mode
+        unreachableMode = nil
+    }
+
     /// Uses the companion at `address`: found on the network (`name` is its name) or typed (no name).
     func useCompanion(_ address: String, name: String? = nil) {
         companionAddress = address.trimmingCharacters(in: .whitespaces)
@@ -651,6 +670,7 @@ final class ProbeModel {
         case .success(let apply):
             apply(&attempts[index])
             attempts[index].outcome = "ok"
+            unreachableMode = nil
             if let peer = attempts[index].peer {
                 UserDefaults.standard.set(peer.udid, forKey: "pairedUDID")
                 UserDefaults.standard.set(peer.name, forKey: "pairedName")
@@ -661,6 +681,10 @@ final class ProbeModel {
             // The app-limit error lists other apps' bundle IDs, which stay out of the log.
             let reason = AppLimit.blockingApps(in: "\(error)") == nil ? String(describing: error) : "free-profile app limit reached"
             log.error("\(action, privacy: .public) failed: \(LogScrub.text(reason), privacy: .public)")
+            // Only the default route: a pairing against another host says nothing about it.
+            if host == defaultTunnelHost, Self.isUnreachable(attempts[index].outcome ?? "") {
+                unreachableMode = connectionMode
+            }
         }
         return attempts[index].outcome ?? "unknown"
     }

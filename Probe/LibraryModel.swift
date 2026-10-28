@@ -1007,8 +1007,7 @@ final class LibraryModel {
         let reason = outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome
         // No pairing, or one the device turned down: the message says what to do.
         if PairingRecord.problem(in: outcome) != nil { return reason }
-        let unreachable = reason.contains("tunnel via") || reason.contains("connect failed")
-        return unreachable ? "install failed (LocalDevVPN connected, or the companion running?): \(reason)" : "install failed: \(reason)"
+        return ProbeModel.isUnreachable(reason) ? "install failed (LocalDevVPN connected, or the companion running?): \(reason)" : "install failed: \(reason)"
     }
 
     private static func appLimitMessage(_ blocking: [String]) -> String {
