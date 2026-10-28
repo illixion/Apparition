@@ -49,44 +49,62 @@ final class ProbeModel {
     /// Pass as `host` to go through the companion relay instead.
     nonisolated static let relayHost = "relay"
 
-    /// The companion relay ("ip:port"), or nil to use LocalDevVPN. Setting one drops the choice
-    /// of LocalDevVPN below; `setRelay` is how a typed address, or an empty one, gets here.
-    var relay: String? = UserDefaults.standard.string(forKey: "relay") {
-        didSet {
-            UserDefaults.standard.set(relay, forKey: "relay")
-            if relay != nil { usesLocalDevVPN = false }
+    /// How Apparition reaches this device's own services: through a companion on a computer
+    /// (over the local network or Tailscale), or through LocalDevVPN on the device itself.
+    enum ConnectionMode: String, CaseIterable, Identifiable, Sendable {
+        case companion, localVPN
+        var id: String { rawValue }
+
+        /// The modes this device can use. tvOS is paired from a computer, with no VPN app.
+        static var offered: [ConnectionMode] {
+            #if os(tvOS)
+            [.companion]
+            #else
+            allCases
+            #endif
         }
     }
 
-    /// Whether LocalDevVPN is offered as the way to reach this device's own services, in place of
-    /// a companion: on iPhone and iPad. On visionOS the headset resets connections it makes to
-    /// itself, so the companion is the only way (README), and tvOS is paired from a computer.
-    nonisolated static let localDevVPNOffered: Bool = {
-        #if os(iOS)
-        true
-        #else
-        false
-        #endif
-    }()
-
-    /// The person chose LocalDevVPN, rather than never having set a companion up: with no relay,
-    /// that is what the first-run setup and the Library's warning go by.
-    var usesLocalDevVPN: Bool = UserDefaults.standard.bool(forKey: "usesLocalDevVPN") {
-        didSet { UserDefaults.standard.set(usesLocalDevVPN, forKey: "usesLocalDevVPN") }
+    /// The chosen mode, or nil before the person has chosen one. A relay address saved by an
+    /// earlier version counts as choosing the companion, and its LocalDevVPN flag as choosing that.
+    var connectionMode: ConnectionMode? = {
+        let defaults = UserDefaults.standard
+        if let saved = defaults.string(forKey: "connectionMode").flatMap(ConnectionMode.init) { return saved }
+        if !(defaults.string(forKey: "relay") ?? "").isEmpty { return .companion }
+        return defaults.bool(forKey: "usesLocalDevVPN") ? .localVPN : nil
+    }() {
+        didSet { UserDefaults.standard.set(connectionMode?.rawValue, forKey: "connectionMode") }
     }
 
-    /// A way to reach the device is chosen: a companion relay, or LocalDevVPN where it's offered.
-    var routeChosen: Bool { relay != nil || (usesLocalDevVPN && Self.localDevVPNOffered) }
+    /// The companion's address ("ip:port"), kept when the mode switches to LocalDevVPN so that
+    /// switching back needs no typing. A LAN address and a Tailscale one are the same to Apparition.
+    var companionAddress: String = UserDefaults.standard.string(forKey: "relay") ?? "" {
+        didSet { UserDefaults.standard.set(companionAddress, forKey: "relay") }
+    }
 
-    /// Sets the relay from an address a person typed. Empty means LocalDevVPN, chosen on purpose
-    /// where it's offered; elsewhere it just clears the relay.
+    /// The companion relay in use: the address, in companion mode. nil means LocalDevVPN, or
+    /// that no companion is set yet.
+    var relay: String? {
+        connectionMode == .companion && !companionAddress.isEmpty ? companionAddress : nil
+    }
+
+    /// A way to reach the device is chosen and, for the companion, has an address.
+    var routeChosen: Bool { relay != nil || connectionMode == .localVPN }
+
+    /// Uses the companion at `address` (typed, or found on the network).
+    func useCompanion(_ address: String) {
+        companionAddress = address.trimmingCharacters(in: .whitespaces)
+        connectionMode = .companion
+    }
+
+    /// For the debug endpoint: an address is the companion, an empty one is LocalDevVPN. The
+    /// address that was set stays remembered.
     func setRelay(_ typed: String) {
         let address = typed.trimmingCharacters(in: .whitespaces)
         if address.isEmpty {
-            relay = nil
-            usesLocalDevVPN = Self.localDevVPNOffered
+            connectionMode = .localVPN
         } else {
-            relay = address
+            useCompanion(address)
         }
     }
 

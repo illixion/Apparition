@@ -110,7 +110,7 @@ struct DiagnosticsView: View {
                     Text("\(companion.name) at \(companion.relay)").font(.caption)
                     HStack {
                         if model.relay != companion.relay {
-                            Button("Use as relay") { model.relay = companion.relay }
+                            Button("Use as relay") { model.useCompanion(companion.relay) }
                         }
                         // The user's own server, used only when they choose it here.
                         if let anisette = companion.anisetteURL, account.anisetteURL != anisette {

@@ -54,13 +54,11 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     RAVEScreenHeading("Setup")
                     intro(status)
-                    StepPanel(number: 1, title: "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
-                        CompanionStep(model: model, account: account, companions: companions)
+                    StepPanel(number: 1, title: "Connection", systemImage: "macbook.and.visionpro", done: status.companion) {
+                        ConnectionView(model: model, companions: companions)
                     }
                     StepPanel(number: 2, title: "Pair This \(ThisDevice.title)", systemImage: "link", done: status.paired,
-                              blocked: status.companion ? nil : (ProbeModel.localDevVPNOffered
-                                  ? "Choose a companion or LocalDevVPN first: pairing goes through one of them."
-                                  : "Set up the companion first: pairing goes through it.")) {
+                              blocked: status.companion ? nil : "Choose how Apparition connects first: pairing goes through it.") {
                         PairStep(model: model)
                     }
                     StepPanel(number: 3, title: "Anisette Server", systemImage: "server.rack", done: status.anisette) {
@@ -114,6 +112,19 @@ struct SetupView: View {
     }
 }
 
+/// A step's title with its icon, or the title alone where there's no room for the icon.
+private struct PanelTitleStyle: LabelStyle {
+    let iconless: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        if iconless {
+            configuration.title
+        } else {
+            Label(configuration)
+        }
+    }
+}
+
 /// One numbered step: a header with its status, then its content.
 private struct StepPanel<Content: View>: View {
     let number: Int
@@ -122,6 +133,7 @@ private struct StepPanel<Content: View>: View {
     let done: Bool
     var blocked: String? = nil
     @ViewBuilder let content: Content
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
         Card(padding: 28) {
@@ -138,7 +150,10 @@ private struct StepPanel<Content: View>: View {
                     .frame(width: 40, height: 40)
                     Label(title, systemImage: systemImage)
                         .font(.title2.weight(.semibold))
-                    Spacer()
+                        // On a phone the icon leaves the title a few letters a line.
+                        .labelStyle(PanelTitleStyle(iconless: sizeClass == .compact))
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
                     if done {
                         StatusPill(text: "Done", systemImage: "checkmark.circle.fill", tint: .green)
                     } else if blocked != nil {
@@ -153,132 +168,6 @@ private struct StepPanel<Content: View>: View {
                 content
             }
         }
-    }
-}
-
-// MARK: - 1. Companion
-
-struct CompanionStep: View {
-    let model: ProbeModel
-    let account: AccountModel
-    let companions: CompanionFinder
-
-    @State private var relayDraft = ""
-    @State private var checking = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("This \(ThisDevice.noun) can't reach its own developer services directly, so Apparition goes through a companion: Apparition on your Mac or PC, which keeps running in its menu bar or tray (or `apparition relay` on the command line). It only carries encrypted traffic and never sees keys.")
-                .foregroundStyle(.secondary)
-            if ProbeModel.localDevVPNOffered {
-                Text("Without a companion, LocalDevVPN does the same on this \(ThisDevice.noun), but it takes the device's only VPN slot.")
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    Task { await companions.search() }
-                } label: {
-                    Label(companions.searching ? "Searching…" : "Find Companion", systemImage: "dot.radiowaves.left.and.right")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(companions.searching)
-                if companions.searching { ProgressView() }
-            }
-            .focusRow()
-
-            ForEach(companions.found) { companion in
-                companionRow(companion)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Or type its address").font(.headline)
-                HStack(spacing: 12) {
-                    TextField("100.x.y.z:49160", text: $relayDraft)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
-                        .roundedFieldStyle()
-                        .frame(maxWidth: 340)
-                        .onSubmit(useDraft)
-                    Button(draftIsEmpty ? "Use LocalDevVPN" : "Use and Check", action: useDraft)
-                        .buttonStyle(.bordered)
-                        .disabled((draftIsEmpty && !ProbeModel.localDevVPNOffered) || checking)
-                    if checking { ProgressView() }
-                }
-                .focusRow()
-                Text("Over Tailscale there is no Bonjour, so enter the companion's Tailscale address with port 49160."
-                     + (ProbeModel.localDevVPNOffered ? " Leave it empty to use LocalDevVPN." : ""))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            if let relay = model.relay {
-                HStack(spacing: 12) {
-                    if companions.found.contains(where: { $0.relay == relay }) {
-                        Note(text: "Using \(relay), and it answered.", kind: .success)
-                    } else {
-                        Note(text: "Using \(relay).", kind: .info)
-                    }
-                    Button("Check") {
-                        checking = true
-                        Task { _ = await companions.check(relay: relay); checking = false }
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(checking)
-                }
-                .focusRow()
-            }
-            if model.relay == nil && model.routeChosen {
-                Note(text: "Using LocalDevVPN. Turn it on in the LocalDevVPN app whenever Apparition installs, refreshes or enables JIT.", kind: .success)
-            }
-            if let error = companions.lastError {
-                Note(text: error, kind: .warning)
-            }
-        }
-        .onAppear { relayDraft = model.relay ?? "" }
-    }
-
-    private var draftIsEmpty: Bool { relayDraft.trimmingCharacters(in: .whitespaces).isEmpty }
-
-    /// A typed address is checked; an empty field is the choice of LocalDevVPN, where it's offered.
-    private func useDraft() {
-        guard !draftIsEmpty else {
-            model.setRelay("")
-            return
-        }
-        model.setRelay(relayDraft)
-        let relay = relayDraft.trimmingCharacters(in: .whitespaces)
-        checking = true
-        Task { _ = await companions.check(relay: relay); checking = false }
-    }
-
-    private func companionRow(_ companion: CompanionFinder.Companion) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: "desktopcomputer")
-                .font(.title2)
-                .frame(width: 44)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(companion.name).font(.headline)
-                Text(companion.relay + (companion.anisetteURL != nil ? " · runs an anisette server" : ""))
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if model.relay == companion.relay {
-                StatusPill(text: "Relay", systemImage: "checkmark", tint: .green)
-            } else {
-                Button("Use as Relay") {
-                    model.relay = companion.relay
-                    relayDraft = companion.relay
-                }
-                .buttonStyle(.bordered)
-            }
-        }
-        .focusRow()
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -345,18 +234,18 @@ struct PairStep: View {
                     guard let port = model.selfManualPairingPort else { return }
                     submitted = false
                     pin = ""
-                    log.info("pairing through the relay, port \(port, privacy: .public)")
+                    log.info("pairing through the \(model.connectionMode?.rawValue ?? "default", privacy: .public) connection, port \(port, privacy: .public)")
                     Task {
-                        await model.pair(host: ProbeModel.relayHost, port: port)
+                        await model.pair(host: model.defaultTunnelHost, port: port)
                         if model.latestAttempt("pair")?.outcome == "ok" {
-                            await model.identify(host: ProbeModel.relayHost, port: model.defaultTunnelPort)
+                            await model.identify(host: model.defaultTunnelHost, port: model.defaultTunnelPort)
                         }
                     }
                 } label: {
                     Label(model.hasPairingFile ? "Pair Again" : "Start Pairing", systemImage: "link.badge.plus")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.busy || model.relay == nil || model.selfManualPairingPort == nil)
+                .disabled(model.busy || !model.routeChosen || model.selfManualPairingPort == nil)
                 #endif
 
                 Button("Confirm Identity") {

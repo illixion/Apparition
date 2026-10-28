@@ -267,7 +267,7 @@ struct LibraryView: View {
             }
             if !model.routeChosen {
                 Button(action: onSetup) {
-                    Note(text: "No companion relay is set, so refreshes and JIT go through LocalDevVPN. Set up a companion in Setup.", kind: .warning)
+                    Note(text: "Apparition doesn't know how to reach this \(ThisDevice.noun) yet. Choose Companion or Local VPN in Setup.", kind: .warning)
                 }
                 .buttonStyle(.plain)
             }

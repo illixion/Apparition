@@ -14,7 +14,6 @@ struct SettingsView: View {
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @State private var confirmForget = false
     @State private var confirmSignOut = false
-    @State private var checking = false
     @State private var sharingSigning = false
     @State private var receivingSigning = false
 
@@ -38,52 +37,11 @@ struct SettingsView: View {
 
     private var companionSection: some View {
         Section {
-            LabeledContent("Relay") {
-                TextField("ip:49160, empty for LocalDevVPN",
-                          text: Binding(get: { model.relay ?? "" }, set: { model.setRelay($0) }))
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .multilineTextAlignment(.trailing)
-                    .font(.body.monospaced())
-                    .textFieldTapTarget()
-                    .wideFieldOnTV()
-            }
-            HStack {
-                Button(companions.searching ? "Searching…" : "Find Companion") { Task { await companions.search() } }
-                    .disabled(companions.searching)
-                Spacer()
-                if let relay = model.relay {
-                    if checking { ProgressView() }
-                    Button("Check \(relay)") {
-                        checking = true
-                        Task { _ = await companions.check(relay: relay); checking = false }
-                    }
-                    .disabled(checking)
-                }
-            }
-            .focusRow()
-            ForEach(companions.found) { companion in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(companion.name)
-                        Text(companion.relay).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if model.relay == companion.relay {
-                        Image(systemName: "checkmark").foregroundStyle(.green)
-                    } else {
-                        Button("Use as Relay") { model.relay = companion.relay }
-                            .buttonStyle(.borderless)
-                    }
-                }
-                .focusRow()
-            }
-            if let error = companions.lastError { Note(text: error, kind: .warning) }
+            ConnectionView(model: model, companions: companions)
         } header: {
-            Text("Companion")
+            Text("Connection")
         } footer: {
-            Text("The companion (Apparition on your Mac or PC) relays the connection back to this \(ThisDevice.noun). On Tailscale, type its Tailscale address.")
+            Text("How Apparition reaches this \(ThisDevice.noun)'s own services for installs, refreshes and JIT. Switching keeps the companion's address.")
         }
     }
 
