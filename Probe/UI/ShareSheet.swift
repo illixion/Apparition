@@ -1,5 +1,8 @@
 #if !os(tvOS)  // No share sheet or AirDrop there.
+import DebugTrace
 import SwiftUI
+
+private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "Share")
 
 /// The system's share options for a file, shown the way Hypnos shows them (its ShareSheetHelper),
 /// because SwiftUI's ShareLink inside a sheet opened nothing on the headset: a sheet with a
@@ -64,11 +67,13 @@ private final class ActivityHostController: UIViewController {
             popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
             popover.permittedArrowDirections = []
         }
-        activityVC.completionWithItemsHandler = { [weak self] _, _, _, _ in
+        activityVC.completionWithItemsHandler = { [weak self] activity, completed, _, error in
+            log.info("share sheet closed: completed \(completed, privacy: .public), activity \(activity?.rawValue ?? "none", privacy: .public), error \(error.map { "\($0)" } ?? "none", privacy: .private)")
             DispatchQueue.main.async {
                 self?.isPresented.wrappedValue = false
             }
         }
+        log.info("share sheet opening")
         present(activityVC, animated: true)
     }
 }

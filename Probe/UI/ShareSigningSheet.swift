@@ -20,6 +20,10 @@ struct ShareSigningSheet: View {
     let teamId: String?
     let onDone: () -> Void
 
+    /// The file the share options are open for. One share sheet for the whole screen: on a Group
+    /// inside a Form, `.sheet` lands on each of its rows, and the copies dismissed each other.
+    @State private var sharing: URL?
+
     var body: some View {
         NavigationStack {
             Form {
@@ -30,8 +34,8 @@ struct ShareSigningSheet: View {
                 }
                 NearbySendSection(signing: signing, email: email, teamId: teamId)
                 #if !os(tvOS)
-                KeyFileSection(signing: signing, email: email, teamId: teamId)
-                CertificateFileSection(signing: signing, account: account)
+                KeyFileSection(signing: signing, email: email, teamId: teamId, sharing: $sharing)
+                CertificateFileSection(signing: signing, account: account, sharing: $sharing)
                 #endif
             }
             .raveScreenTitle("Share Signing")
@@ -42,10 +46,18 @@ struct ShareSigningSheet: View {
             }
         }
         .sheetFrame(minWidth: 620, minHeight: 520)
+        #if !os(tvOS)
+        .shareSheet(url: $sharing)
+        #endif
+        // This sheet shows Apple's 2FA step itself (the export's sign-in): RootView's can't open over it.
+        .hostsTwoFactorPrompt(account)
         .task { signing.nearbySender.startBrowsing() }
         .onDisappear {
             signing.nearbySender.stopBrowsing()
             signing.nearbySender.reset()
+            // Here, not in the sections: a modifier on a Group inside a Form lands on each of its
+            // rows, so the export section's own onDisappear deleted the file as it swapped in.
+            signing.discardShares()
         }
     }
 }
@@ -57,8 +69,9 @@ private struct KeyFileSection: View {
     let email: String
     let teamId: String?
 
+    @Binding var sharing: URL?
+
     @State private var shared: (file: URL, words: String)?
-    @State private var sharing: URL?
     @State private var error: String?
     @State private var sealing = false
 
@@ -96,10 +109,6 @@ private struct KeyFileSection: View {
                 }
             }
         }
-        .shareSheet(url: $sharing)
-        .onDisappear {
-            if let shared { signing.discardShare(shared.file) }
-        }
     }
 
     private func seal() {
@@ -124,8 +133,9 @@ private struct CertificateFileSection: View {
     let signing: SigningStore
     let account: AccountModel
 
+    @Binding var sharing: URL?
+
     @State private var exported: (file: URL, password: String)?
-    @State private var sharing: URL?
     @State private var error: String?
     @State private var working = false
     @State private var confirming = false
@@ -170,6 +180,12 @@ private struct CertificateFileSection: View {
                 Section {
                     Button(working ? "Working…" : "Export Certificate as .p12…") { confirming = true }
                         .disabled(working)
+                        .confirmationDialog("Export your signing certificate?", isPresented: $confirming, titleVisibility: .visible) {
+                            Button("Export Certificate") { export() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("The file holds your certificate and its private key. With its password, anyone can sign apps as your Apple ID. Only give it to an app you trust.")
+                        }
                     if let error { Note(text: error, kind: .error) }
                 } header: {
                     Text("For Other Apps")
@@ -177,18 +193,6 @@ private struct CertificateFileSection: View {
                     Text("For an app that signs with a certificate you give it, such as LiveContainer's JIT-less mode. It needs you signed in, and it makes no new certificate.")
                 }
             }
-        }
-        .confirmationDialog("Export your signing certificate?", isPresented: $confirming, titleVisibility: .visible) {
-            Button("Export Certificate") { export() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The file holds your certificate and its private key. With its password, anyone can sign apps as your Apple ID. Only give it to an app you trust.")
-        }
-        .shareSheet(url: $sharing)
-        // This sheet shows Apple's 2FA step itself: RootView's can't open over it.
-        .hostsTwoFactorPrompt(account)
-        .onDisappear {
-            if let exported { signing.discardShare(exported.file) }
         }
     }
 

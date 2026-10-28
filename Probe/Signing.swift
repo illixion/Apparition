@@ -360,14 +360,23 @@ final class SigningStore {
         pendingKeys.removeAll { $0.id == incoming.id }
     }
 
+    /// Folders holding files made to share, until `discardShares` deletes them.
+    @ObservationIgnored private var shareFolders: [URL] = []
+
+    private func newShareFolder() -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(UUID().uuidString)", isDirectory: true)
+        shareFolders.append(folder)
+        return folder
+    }
+
     /// Seals the Apple ID's certificate key for another device: the file to share, and the
     /// five words that open it, to show. The file is in a folder of its own under tmp; delete
-    /// it (`discardShare`) once shared.
+    /// it (`discardShares`) once shared.
     func shareAppleIDKey(email: String, teamId: String?) async throws -> (file: URL, words: String) {
         let dataDir = Self.dataDir
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
         let from = "Apparition on \(name)"
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(UUID().uuidString)", isDirectory: true)
+        let folder = newShareFolder()
         let reply = await Task.detached {
             AccountModel.call(apparition_export_signing_share(dataDir, email, teamId, from, folder.path))
         }.value
@@ -379,10 +388,10 @@ final class SigningStore {
 
     /// The signed-in Apple ID's certificate and key as a .p12 (core/src/share.rs), for an app that
     /// signs with one, and the six words that open it, to show and copy. The file is in a folder
-    /// of its own under tmp; delete it (`discardShare`) once shared. Needs a signed-in session,
+    /// of its own under tmp; delete it (`discardShares`) once shared. Needs a signed-in session,
     /// and never makes a certificate.
     func exportCertificateP12() async throws -> (file: URL, password: String) {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(UUID().uuidString)", isDirectory: true)
+        let folder = newShareFolder()
         let reply = await Task.detached {
             AccountModel.call(apparition_export_certificate_p12(folder.path))
         }.value
@@ -392,8 +401,11 @@ final class SigningStore {
         return (URL(fileURLWithPath: exported.path), exported.password)
     }
 
-    func discardShare(_ file: URL) {
-        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    /// Deletes every file made to share. Called when the share screen closes, not from its rows:
+    /// a Form's rows disappear while it stays open (a section swapped for another, a scroll).
+    func discardShares() {
+        for folder in shareFolders { try? FileManager.default.removeItem(at: folder) }
+        shareFolders = []
     }
 
     /// Skips a waiting certificate. One in the inbox stays there until imported or deleted in Files.
