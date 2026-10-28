@@ -57,6 +57,13 @@ char *apparition_signing_file_from(const char *path);
 char *apparition_export_signing_share(const char *data_dir, const char *email, const char *team_id,
                                       const char *from, const char *out_dir);
 
+// Writes the signed-in Apple ID's development certificate and its private key as a .p12 into
+// <out_dir>/Apparition Certificate.p12, for an app that signs with one (LiveContainer, SideStore).
+// Needs a signed-in session. Makes no certificate: it fails where Apple has none for this install's
+// key. Returns {ok, path, password, serialNumber}: the password is six new words joined by hyphens,
+// to show and copy. Whoever has both can sign as this Apple ID.
+char *apparition_export_certificate_p12(const char *out_dir);
+
 // Handing the certificate key to a nearby Apparition, checked by a six-digit code both screens
 // show (core/src/nearby.rs). The app moves the messages: each is JSON text, framed on the wire by
 // its length (4 bytes, little-endian, at most 16 KiB). Every reply but end's is

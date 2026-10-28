@@ -171,6 +171,7 @@ dependencies = [
  "mdns-sd 0.21.5",
  "plist",
  "rand 0.8.8",
+ "rcgen",
  "reqwest 0.13.5",
  "ring",
  "rootcause",

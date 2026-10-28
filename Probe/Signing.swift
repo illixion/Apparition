@@ -377,6 +377,21 @@ final class SigningStore {
         return (URL(fileURLWithPath: shared.path), shared.passphrase)
     }
 
+    /// The signed-in Apple ID's certificate and key as a .p12 (core/src/share.rs), for an app that
+    /// signs with one, and the six words that open it, to show and copy. The file is in a folder
+    /// of its own under tmp; delete it (`discardShare`) once shared. Needs a signed-in session,
+    /// and never makes a certificate.
+    func exportCertificateP12() async throws -> (file: URL, password: String) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("share-\(UUID().uuidString)", isDirectory: true)
+        let reply = await Task.detached {
+            AccountModel.call(apparition_export_certificate_p12(folder.path))
+        }.value
+        struct Exported: Decodable { let path: String; let password: String }
+        let exported = try Self.decode(Exported.self, reply)
+        log.notice("exported the Apple ID certificate as a .p12")
+        return (URL(fileURLWithPath: exported.path), exported.password)
+    }
+
     func discardShare(_ file: URL) {
         try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
     }

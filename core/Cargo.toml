@@ -67,6 +67,7 @@ required-features = ["anisette"]
 
 [dev-dependencies]
 rand = "0.8"
+rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
 tokio = { version = "1.49", features = ["macros"] }
 
 # isideload depends on idevice from crates.io; use the same revision the FFI is built from,

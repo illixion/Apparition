@@ -133,6 +133,85 @@ pub fn import_signing_file(data_dir: &Path, data: &[u8]) -> Result<Value, Report
     }))
 }
 
+// MARK: The certificate as a .p12, for other sideloaders
+
+/// Words in a .p12's password. A .p12 is opened with nothing but its password, and PKCS#12 turns
+/// that into a key with only 10,000 rounds, so it gets one word more than a sealed file's five
+/// (about 62 bits against 52).
+const P12_WORDS: usize = 6;
+const P12_FILE_NAME: &str = "Apparition Certificate.p12";
+
+/// The password for a .p12: six words joined by hyphens, which survive a paste into a field that
+/// trims spaces, and are typed the same wherever they're read.
+fn new_p12_password() -> Result<String, Report> {
+    Ok(random_words(P12_WORDS)?.join("-"))
+}
+
+/// Writes the Apple ID's development certificate and its private key as a .p12 into `out_dir`,
+/// under a password of new words, for an app that signs with one (LiveContainer's JIT-less mode,
+/// SideStore, AltStore). Returns `{path, password, serialNumber}`.
+///
+/// This hands out the means to sign as this Apple ID, so it is only ever done at the person's
+/// request, and never makes anything: the certificate is the one Apple already has for this
+/// install's key. Without one (revoked, or none made yet) it stops and says so, where signing
+/// would have made a new certificate and used up one of a free account's two.
+pub async fn export_certificate_p12(session: &mut crate::Session, out_dir: &Path) -> Result<Value, Report> {
+    use isideload::{dev::certificates::CertificatesApi, sideload::cert_identity::CertificateIdentity};
+    use x509_cert::der::Decode;
+
+    adopt_key(&session.data_dir, &session.email);
+    let encoded = FileStorage::open(session.data_dir.join("storage.json"))
+        .get(&key_name(&session.email))
+        .ok_or_else(|| report!("This install has no certificate key yet: sign an app with {} first", session.email))?;
+    let private_key = RsaPrivateKey::from_pkcs8_der(&BASE64_STANDARD.decode(encoded).map_err(|_| report!("The certificate key is damaged"))?)
+        .map_err(|_| report!("The certificate key isn't an RSA private key"))?;
+    let ours = {
+        use rsa::pkcs1::EncodeRsaPublicKey;
+        private_key.to_public_key().to_pkcs1_der()?.as_bytes().to_vec()
+    };
+
+    let team = session.team.clone();
+    let certificates = CertificatesApi::list_ios_certs(session.sideloader.get_dev_session(), &team).await?;
+    let (found, certificate) = certificates
+        .iter()
+        .filter(|cert| cert.machine_name.as_deref() == Some(MACHINE_NAME))
+        .find_map(|cert| {
+            let der = cert.cert_content.as_ref()?.as_ref();
+            if crate::account::public_key(der)? != ours {
+                return None;
+            }
+            Some((cert, x509_cert::Certificate::from_der(der).ok()?))
+        })
+        .ok_or_else(|| report!("Apple has no certificate for this install's key (it may have been revoked). Sign an app to make one, then export again"))?;
+
+    let identity = CertificateIdentity {
+        machine_id: found.machine_id.clone().unwrap_or_default(),
+        machine_name: found.machine_name.clone().unwrap_or_default(),
+        private_key,
+        certificate,
+    };
+    let password = new_p12_password()?;
+    let p12 = identity.as_p12(&password).await?;
+    std::fs::create_dir_all(out_dir)?;
+    let path = out_dir.join(P12_FILE_NAME);
+    std::fs::write(&path, p12)?;
+    tracing::info!("exported the Apple ID certificate as a .p12");
+    Ok(json!({ "path": path.to_string_lossy(), "password": password, "serialNumber": identity.get_serial_number() }))
+}
+
+/// Writes the signed-in Apple ID's certificate and key as a password-protected .p12 into
+/// `out_dir`: `{ok, path, password, serialNumber}`, the password being six words to show and copy.
+/// Needs a signed-in session, since the certificate is fetched from Apple.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_export_certificate_p12(out_dir: *const c_char) -> *mut c_char {
+    reply((|| {
+        let out_dir = PathBuf::from(unsafe { text(out_dir) }?);
+        let mut guard = crate::SESSION.lock().unwrap();
+        let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
+        crate::runtime().block_on(export_certificate_p12(session, &out_dir))
+    })())
+}
+
 // MARK: Sealed files, for AirDrop and other channels nobody vouches for
 
 // A `.apparitionkey` file is a signing file sealed under five words the sending device shows:
@@ -195,11 +274,11 @@ fn random<const N: usize>() -> Result<[u8; N], Report> {
     Ok(bytes)
 }
 
-/// Five words from the list, chosen uniformly.
-fn new_passphrase() -> Result<String, Report> {
+/// `count` words from the list, chosen uniformly.
+fn random_words(count: usize) -> Result<Vec<&'static str>, Report> {
     let list = wordlist();
-    let mut words = Vec::with_capacity(WORDS);
-    while words.len() < WORDS {
+    let mut words = Vec::with_capacity(count);
+    while words.len() < count {
         let draw = u16::from_le_bytes(random::<2>()?);
         // Rejecting the top of the range keeps every word equally likely.
         let limit = u16::MAX - u16::MAX % list.len() as u16;
@@ -207,7 +286,12 @@ fn new_passphrase() -> Result<String, Report> {
             words.push(list[usize::from(draw) % list.len()]);
         }
     }
-    Ok(words.join(" "))
+    Ok(words)
+}
+
+/// Five words from the list, chosen uniformly.
+fn new_passphrase() -> Result<String, Report> {
+    Ok(random_words(WORDS)?.join(" "))
 }
 
 /// The words as the sealer chose them, from however they were typed or dictated: any case,
@@ -383,6 +467,42 @@ pub unsafe extern "C" fn apparition_export_signing_share(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn p12_password_is_six_listed_words() {
+        let password = new_p12_password().unwrap();
+        let words: Vec<&str> = password.split('-').collect();
+        assert_eq!(words.len(), P12_WORDS);
+        assert!(words.iter().all(|word| wordlist().contains(word)));
+        assert_ne!(password, new_p12_password().unwrap());
+    }
+
+    /// What an app opens the export with: the password opens it, a wrong one doesn't, and the
+    /// key and certificate inside belong together.
+    #[tokio::test]
+    async fn p12_opens_with_its_password() {
+        use isideload::sideload::cert_identity::CertificateIdentity;
+        use p12_keystore::{KeyStore, Pkcs12ImportPolicy};
+        use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+        use x509_cert::der::Decode;
+
+        let key = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
+        let pair = rcgen::KeyPair::from_pkcs8_pem_and_sign_algo(&key.to_pkcs8_pem(LineEnding::LF).unwrap(), &rcgen::PKCS_RSA_SHA256).unwrap();
+        let certificate = rcgen::CertificateParams::new(vec!["apparition.test".into()]).unwrap().self_signed(&pair).unwrap();
+        let identity = CertificateIdentity {
+            machine_id: "id".into(),
+            machine_name: MACHINE_NAME.into(),
+            private_key: key,
+            certificate: x509_cert::Certificate::from_der(certificate.der()).unwrap(),
+        };
+        let password = new_p12_password().unwrap();
+        let p12 = identity.as_p12(&password).await.unwrap();
+
+        assert!(KeyStore::from_pkcs12(&p12, "wrong", Pkcs12ImportPolicy::Relaxed).is_err());
+        let store = KeyStore::from_pkcs12(&p12, &password, Pkcs12ImportPolicy::Relaxed).unwrap();
+        let chain = store.private_key_chain().expect("a private key").1;
+        assert_eq!(chain.certs().len(), 1);
+    }
 
     #[test]
     fn round_trip() {
