@@ -83,7 +83,12 @@ final class LibraryModel {
 
     private(set) var sources: [Sources.Source] = []
     private(set) var installed: [InstalledApp] = []
-    private(set) var busy = false
+    private(set) var busy = false {
+        didSet { if !busy { removedWhileBusy.removeAll() } }
+    }
+    /// Apps taken out of the library while a refresh or install was running, so that run doesn't
+    /// put the record back when it finishes (`upsert`).
+    private var removedWhileBusy: Set<String> = []
     private(set) var status: String?
     private(set) var refreshRuns: [RefreshRun] = []
     private(set) var selfRecord = SelfRecord()
@@ -533,10 +538,24 @@ final class LibraryModel {
         save()
     }
 
+    /// When Apparition opened, for telling a device app listing taken since from an older one.
+    nonisolated static let launchedAt = Date()
+
+    /// Whether the device's apps, listed since Apparition opened, no longer include this app: it
+    /// was deleted from the Home Screen. An older listing, or none, says nothing.
+    func isMissingFromDevice(_ app: InstalledApp) -> Bool {
+        guard let bundleId = app.installedBundleId,
+              let listed = Date.iso(probe.deviceAppsFetchedAt), listed >= Self.launchedAt else { return false }
+        return !probe.deviceApps.contains { $0.bundleId == bundleId }
+    }
+
     /// Forgets an installed app: Apparition stops refreshing it and deletes its kept IPA. The
     /// app itself stays on the device until its profile expires (or the user deletes it).
+    /// Works while a refresh runs (a stuck one would otherwise keep a deleted app in the library);
+    /// that run then leaves the record out.
     func removeInstalled(_ id: String) {
-        guard !busy, let record = installed.first(where: { $0.id == id }) else { return }
+        guard let record = installed.first(where: { $0.id == id }) else { return }
+        if busy { removedWhileBusy.insert(id) }
         installed.removeAll { $0.id == id }
         try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(record.ipaFile))
         account.refreshDownloads()
@@ -1055,6 +1074,7 @@ final class LibraryModel {
     }
 
     private func upsert(_ record: InstalledApp) {
+        guard !removedWhileBusy.contains(record.id) else { return }
         if let index = installed.firstIndex(where: { $0.id == record.id }) {
             installed[index] = record
         } else {

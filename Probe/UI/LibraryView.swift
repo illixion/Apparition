@@ -16,6 +16,8 @@ struct LibraryView: View {
     /// The app whose JIT launch this screen started, to show its progress on the right card.
     @State private var jitAppId: String?
     @State private var pendingRemoval: LibraryModel.InstalledApp?
+    /// The same removal, asked from the card's own button for an app that is gone from the device.
+    @State private var pendingMissingRemoval: LibraryModel.InstalledApp?
     @State private var confirmingSelfRefresh = false
     @State private var confirmingUpdate = false
     @State private var pickingFile = false
@@ -405,6 +407,7 @@ struct LibraryView: View {
                 }
                 .focusRow()
                 result(app)
+                if library.isMissingFromDevice(app) { missingFromDevice(app) }
                 if let jit = jitStatus(app) { jit }
                 actions(app, listing: listing)
             }
@@ -435,6 +438,22 @@ struct LibraryView: View {
             }
         } else if let signed = Date.iso(app.signedAt) {
             Note(text: "Refreshed \(signed.relativeToNow)" + (app.signedWith.map { " with \($0)" } ?? ""), kind: .success)
+        }
+    }
+
+    /// An app deleted from the Home Screen: it can be taken out of the library right here, not
+    /// only from the menu. A refresh would install it again.
+    private func missingFromDevice(_ app: LibraryModel.InstalledApp) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Note(text: "\(app.name) isn't on this \(ThisDevice.noun) any more. Refresh installs it again; remove it to stop keeping it.", kind: .warning)
+            Button("Remove from Library", systemImage: "trash", role: .destructive) { pendingMissingRemoval = app }
+                .buttonStyle(.bordered)
+                .focusRow()
+                .confirmation("Remove \(app.name) from the library?", item: $pendingMissingRemoval, for: app.id) { app in
+                    Button("Remove", role: .destructive) { library.removeInstalled(app.id) }
+                } message: { _ in
+                    Text("Apparition stops refreshing it and deletes its kept copy.")
+                }
         }
     }
 
@@ -513,7 +532,6 @@ struct LibraryView: View {
             .pickerStyle(.menu)
             Divider()
             Button("Remove from Library", systemImage: "trash", role: .destructive) { pendingRemoval = app }
-                .disabled(library.busy)
         } label: {
             Image(systemName: "ellipsis")
                 .frame(width: 32, height: 32)
