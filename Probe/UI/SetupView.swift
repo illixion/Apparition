@@ -54,7 +54,7 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 24) {
                     RAVEScreenHeading("Setup")
                     intro(status)
-                    StepPanel(number: 1, title: ProbeModel.localDevVPNOffered ? "Companion or LocalDevVPN" : "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
+                    StepPanel(number: 1, title: "Companion", systemImage: "macbook.and.visionpro", done: status.companion) {
                         CompanionStep(model: model, account: account, companions: companions)
                     }
                     StepPanel(number: 2, title: "Pair This \(ThisDevice.title)", systemImage: "link", done: status.paired,
