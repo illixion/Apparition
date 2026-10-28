@@ -361,7 +361,7 @@ don't matter.
 Some apps sign other apps themselves and need a certificate with its private key:
 [LiveContainer](docs/SUPPORTED_APPS.md#livecontainer)'s JIT-less mode, which iOS 26 and later
 require, is the one we've tested. Settings > Share Signing with Another Device > Export
-Certificate as .p12 (0.3.4 and later) writes the Apple ID's certificate and key as a `.p12`
+Certificate as .p12 (0.3.5 and later) writes the Apple ID's certificate and key as a `.p12`
 under a password of six new words, to copy and share separately. It signs in if it has to and
 makes no new certificate, so the other app signs with the one Apparition already uses. The file
 is deleted when the screen closes. Anyone with the file and its password can sign apps as your

@@ -82,7 +82,7 @@ when signed with one.
 ## LiveContainer
 
 Runs other apps inside itself, so a whole library of apps takes one of a free account's ten App
-IDs a week. It needs Apparition 0.3.4 or later, which can export the certificate it signs with.
+IDs a week. It needs Apparition 0.3.5 or later, which can export the certificate it signs with.
 We ran Delta in it on an iPhone 15 Pro Max with iOS 27.0.1.
 
 1. **Install LiveContainer.** In Browse > Add Source, add `github:LiveContainer/LiveContainer`
