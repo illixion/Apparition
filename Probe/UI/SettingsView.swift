@@ -34,13 +34,35 @@ struct SettingsView: View {
 
     // MARK: Sections
 
+    /// The connection opens on a screen of its own, like Signing: its two modes, companion list and
+    /// anisette server are too much to lay out as one row of this form.
     private var companionSection: some View {
         Section {
-            ConnectionView(model: model, account: account, companions: companions)
-        } header: {
-            Text("Connection")
+            NavigationLink {
+                ScrollView {
+                    ConnectionView(model: model, account: account, companions: companions)
+                        .padding(24)
+                        .frame(maxWidth: 720, alignment: .leading)
+                        .frame(maxWidth: .infinity)
+                }
+                .raveScreenTitle("Connection")
+            } label: {
+                LabeledContent {
+                    Text(connectionSummary)
+                } label: {
+                    Label("Connection", systemImage: "network")
+                }
+            }
         } footer: {
-            Text("How Apparition reaches this \(ThisDevice.noun)'s own services for installs, refreshes and JIT, and the anisette server that goes with it. Switching keeps each mode's companion address and anisette server.")
+            Text("How Apparition reaches this \(ThisDevice.noun)'s own services for installs, refreshes and JIT, and the anisette server that goes with it.")
+        }
+    }
+
+    private var connectionSummary: String {
+        switch model.connectionMode {
+        case .companion: model.companionName ?? (model.relay == nil ? "Companion" : "Companion (address)")
+        case .localVPN: "Local VPN"
+        case nil: "Not set"
         }
     }
 

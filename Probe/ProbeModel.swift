@@ -82,6 +82,13 @@ final class ProbeModel {
         didSet { UserDefaults.standard.set(companionAddress, forKey: "relay") }
     }
 
+    /// The name of the companion Apparition found on the network (Find Companion), when the
+    /// address came from there. nil for an address typed by hand: that one is shown as the address,
+    /// where a found one is shown by name only.
+    var companionName: String? = UserDefaults.standard.string(forKey: "companionName") {
+        didSet { UserDefaults.standard.set(companionName, forKey: "companionName") }
+    }
+
     /// The companion relay in use: the address, in companion mode. nil means LocalDevVPN, or
     /// that no companion is set yet.
     var relay: String? {
@@ -91,9 +98,10 @@ final class ProbeModel {
     /// A way to reach the device is chosen and, for the companion, has an address.
     var routeChosen: Bool { relay != nil || connectionMode == .localVPN }
 
-    /// Uses the companion at `address` (typed, or found on the network).
-    func useCompanion(_ address: String) {
+    /// Uses the companion at `address`: found on the network (`name` is its name) or typed (no name).
+    func useCompanion(_ address: String, name: String? = nil) {
         companionAddress = address.trimmingCharacters(in: .whitespaces)
+        companionName = name
         connectionMode = .companion
     }
 
