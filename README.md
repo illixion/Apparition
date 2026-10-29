@@ -220,8 +220,11 @@ Implementation order:
    Service credentials stay separate from the existing relay.
 3. **Unify build identity.** Connect projects, immutable builds, artifact digests and
    binary UUIDs to signed installations, sessions, patch history and reports. Preserve
-   original and installed bundle IDs. Retain symbols by build/UUID rather than replacing
-   the last app/device slot. Distinguish dirty local iterations from published builds.
+   original and installed bundle IDs. Public build IDs now join jobs, installed-build
+   ledger entries, traces and immutable symbol sets; symbols are selected by the app's
+   actual binary UUIDs and retained across updates, including builds not yet deployed.
+   Next: artifact digests, source/dependency fingerprints and the remaining installation
+   and session relationships. Distinguish dirty local iterations from published builds.
 4. **Add Xcode handoff.** Let Xcode register its product and symbols or let Apparition
    build it, without nested builds. Preserve suitable existing signatures. Add an
    optional generated scheme and CLI workflow with explicit debugger ownership:
