@@ -164,6 +164,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.lab
+        # The entry-patch experiment needs optimized code and separate translation
+        # units: never let LTO fold the harness's calls into constants.
+        GCC_OPTIMIZATION_LEVEL: "2"
+        LLVM_LTO: "NO"
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_OBJC_BRIDGING_HEADER: Lab/ApparitionLab-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: minimal

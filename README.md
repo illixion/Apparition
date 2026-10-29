@@ -179,6 +179,82 @@ app's own signed `__TEXT` keep running after it detaches, including code first r
 only after the detach and a site rewritten to branch to a trampoline. Apparition serves
 this through an experimental JIT26 command, `x16 = 0x4150` (copy x2 bytes from x1 to x0).
 
+### Developer workflow integration (in progress)
+
+The intended product is Apparition for building, installing, running and diagnosing apps.
+The `appstore` Mac service supplies build jobs, artifacts and report storage; its
+`build-and-sign` remains the build executor. DebugTrace stays an independent SDK. The
+existing AltStore feed remains compatible, while an explicit job API will expose build
+progress, errors and cancellation to Apparition. Keep the Node backend initially.
+
+Implementation order:
+
+1. **Establish patching limits on hardware.** Compare an optimized function entry patch
+   with an inlined caller. Follow with Swift-native entry points, real compiled
+   replacement code, calling-convention and metadata handling, and representative
+   workloads. Retain signed-dylib injection while investigating this alternative.
+2. **Connect the build service.** Add authenticated service connection and capability
+   discovery to desktop Apparition, then projects, devices, explicit build jobs and
+   report browsing. A Mac with Xcode executes Apple builds; other desktop platforms
+   can connect to it. Keep service credentials separate from the existing relay.
+3. **Unify build identity.** Connect projects, immutable builds, artifact digests and
+   binary UUIDs to signed installations, sessions, patch history and reports. Preserve
+   original and installed bundle IDs. Retain symbols by build/UUID rather than replacing
+   the last app/device slot. Distinguish dirty local iterations from published builds.
+4. **Add Xcode handoff.** Let Xcode register its product and symbols or let Apparition
+   build it, without nested builds. Preserve suitable existing signatures. Add an
+   optional generated scheme and CLI workflow with explicit debugger ownership:
+   Xcode/LLDB and Apparition must not compete for the same process. JIT preparation
+   and Swift patching remain separately selectable capabilities.
+5. **Close the reporting loop.** Add reviewed user submissions to Apparition, then
+   connect other apps' DebugTrace reports to their exact builds. Add a portable report
+   envelope for Rust/Tauri failures, build registration and scoped external submission
+   credentials. Keep unverified imports separately classified. Report upload never
+   grants live debug access; preserve device approvals for inspection and code changes.
+6. **Consolidate packaging.** Once the connected workflows pass on real devices, move
+   appstore/build-and-sign into Apparition, manage the service from the desktop app,
+   migrate configs and ledgers, and retain the existing CLI and headless web access.
+
+Structural Swift changes need a separate approach: recreate a component with selected
+state migration, or rebuild/relaunch with state restoration. Executable-memory access
+alone cannot change the layout of instances that already exist. A debugger-assisted
+backend must retain per-patch user approval before it becomes a product feature.
+
+### Optimized entry-patch experiment
+
+The lab now runs a second experiment **before** the original experiment detaches. It
+branches from an optimized compiler-generated C function to a replacement already linked
+in the app, then restores the original instruction. A caller in the target's translation
+unit deliberately inlines the original function. The harness is in a separate translation
+unit, and the Lab target explicitly enables optimization and disables LTO.
+
+Build and install the isolated lab, then launch it through Apparition's debugger:
+
+```sh
+xcodegen
+SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab \
+  BUILD_BUNDLE_ID=com.illixion.apparition.lab \
+  ~/bin/build-and-sign --platform iOS --device AVP
+apparition jit com.illixion.apparition.lab --device AVP --wait 60
+xcrun devicectl device copy from --device AVP \
+  --domain-type appDataContainer --domain-identifier com.illixion.apparition.lab \
+  --source Documents/optimized-patch-report.json \
+  --destination build/optimized-patch-report.json
+```
+
+The report records baseline/patched/restored return values, loop checksums, write results,
+and five timings per phase in nanoseconds per call. Breadcrumbs are synced before risky
+steps to `Documents/optimized-patch-steps.txt`. A normal launch reports `not-traced` and
+does not issue debugger requests. Use a fresh launch for each experiment.
+
+Verified on a physical Vision Pro on 2026-10-29: writes succeeded, ordinary calls returned
+`[11,17,11]`, and the inlined caller returned `[11,11,11]`; loop checksums matched all three
+phases. Tiny-function timings varied substantially, including after restoration, so they
+establish no application-level performance improvement. This proves optimized entry
+redirection and the stale-inline limitation. It does **not** yet demonstrate Swift-native
+patching, dynamically generated replacement code, arbitrary type changes, or an alternative
+to DebugTrace's current injection backend. Ordinary-launch controls also remain unpatched.
+
 ## Shortcuts automation
 
 Background refresh is not reliable, so the dependable way to keep apps signed is a

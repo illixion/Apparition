@@ -20,6 +20,12 @@ struct ApparitionLabApp: App {
 
     private func run() async {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let optimized = Self.capture {
+            optimized_patch_run(documents.appendingPathComponent("optimized-patch-steps.txt").path, $0, $1)
+        }
+        lines.append(optimized)
+        try? optimized.write(to: documents.appendingPathComponent("optimized-patch-report.json"),
+                             atomically: true, encoding: .utf8)
         let report = Self.capture { text_patch_run(documents.appendingPathComponent("textpatch-steps.txt").path, $0, $1) }
         lines.append(report)
         try? report.write(to: documents.appendingPathComponent("textpatch-report.json"), atomically: true, encoding: .utf8)

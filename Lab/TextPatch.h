@@ -8,3 +8,7 @@ void text_patch_run(const char *breadcrumbs, char *report, size_t capacity);
 
 /// Calls every target again (patched or not) and reports what each returns now.
 void text_patch_recheck(char *report, size_t capacity);
+
+/// Entry-branch experiment on optimized compiler output, including an inlined
+/// caller and timing samples. Restores the entry before returning; never detaches.
+void optimized_patch_run(const char *breadcrumbs, char *report, size_t capacity);
