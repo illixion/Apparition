@@ -1107,10 +1107,10 @@ function installPlanPrompt(prompt) {
     input.type = "checkbox";
     input.value = extension.id;
     input.checked = selected.has(extension.id);
-    input.disabled = prompt.appleId && extension.extensionKit;
+    input.disabled = (prompt.unsupported ?? []).includes(extension.id) || (prompt.appleId && extension.extensionKit);
     if (input.disabled) input.checked = false;
     inputs.push(input);
-    row.append(input, document.createTextNode(`${extension.name} (${extension.id})${input.disabled ? " — ExtensionKit not supported with Apple ID signing" : ""}`));
+    row.append(input, document.createTextNode(`${extension.name} (${extension.id})${input.disabled ? (prompt.appleId ? " — ExtensionKit requires imported profiles" : " — no imported profile covers this extension") : ""}`));
     box.append(row);
   }
   if (!inputs.length) box.append(document.createTextNode("This app has no embedded extensions."));
@@ -1131,10 +1131,13 @@ function installPlanPrompt(prompt) {
   const update = () => {
     transfer.textContent = prompt.dataSource && prompt.dataSource !== select.value ? `Keep will copy Documents and Library from ${prompt.dataSource}, then remove that copy only after every file arrives.` : "Keep retains the destination app’s current data container.";
     const candidate = prompt.candidates.find(c => c.id === select.value);
-    notice.textContent = candidate?.installed ? `Replaces ${candidate.installed} on this device.` : "An account registration may also be in use on another device or by another installer.";
+    const occupied = candidate?.installed ?? (!prompt.appleId ? prompt.destination : null);
+    notice.textContent = occupied ? `Replaces ${occupied} on this device.` : "An account registration may also be in use on another device or by another installer.";
     const requested = [select.value, ...inputs.filter(i => i.checked).map(i => select.value + i.value.slice(prompt.inventory.id.length))];
     const count = requested.filter(id => !prompt.candidates.some(c => c.id === id)).length;
-    quota.textContent = prompt.appleId ? `${count} new App ID${count === 1 ? "" : "s"} required. Apple reports ${prompt.available ?? "unknown"} available.` : "Uses your imported provisioning profiles.";
+    const overQuota = prompt.appleId && Number.isInteger(prompt.available) && count > prompt.available;
+    quota.textContent = prompt.appleId ? `${count} new App ID${count === 1 ? "" : "s"} required. Apple reports ${prompt.available ?? "unknown"} available.${overQuota ? " Remove extensions or reuse registered IDs to continue." : ""}` : `Uses your imported provisioning profiles; installs as ${prompt.defaultTarget}.`;
+    document.getElementById("prompt-submit").disabled = overQuota || Boolean(candidate?.reservedChild);
   };
   select.addEventListener("change", () => { data.value = ""; update(); });
   inputs.forEach(i => i.addEventListener("change", update));
@@ -1163,6 +1166,7 @@ function openPrompt(prompt) {
   shown.hidden = !comparing;
   promptCode.hidden = comparing;
   submit.textContent = comparing ? "It matches" : "Continue";
+  submit.disabled = false;
   cancel.textContent = comparing ? "It's different" : "Cancel";
   if (prompt.kind === "installPlan") {
     title.textContent = `Review ${prompt.inventory.name}`;

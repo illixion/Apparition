@@ -390,12 +390,19 @@ headset paired with one is paired with both. Passwords go from the app's own fie
 core and nowhere else. On launch it checks the release site for a newer installer and links to
 it; it never replaces itself.
 
-Before signing, the desktop installer lists the IPA's embedded extensions and lets you
-choose which to include. Apple ID installs show the number of new App IDs needed and let
+Before signing, the desktop installer and native iPhone/iPad, Vision Pro and Apple TV apps
+list the IPA's embedded extensions and let you choose which to include. Apple ID installs show the number of new App IDs needed and let
 you reuse an existing registration by installing under its bundle identifier. Assignments
 and extension choices are saved per team, device and source app in
 `app-id-assignments.json` beside the desktop's pairing database, including reservations
-made before an install fails. An occupied identifier replaces the app already using it.
+made before an install fails. The native apps store the same choices in `library.json`,
+with the team and source identifier; Apple TV mirrors that state to its Keychain vault.
+An occupied identifier replaces the app already using it, and the previous library entry
+stops refreshing over its replacement. Forgetting a native Library entry keeps its ID
+reservations while that copy is installed; a fresh device listing releases reservations
+once a forgotten copy is gone. Failed replacements retain old extension reservations until
+installation succeeds. These databases are local to each installation;
+assignments are not synchronized between computers and devices.
 
 The review asks whether to keep existing app data or uninstall the destination first.
 Uninstalling discards its app container before the new install, so a failed installation
@@ -408,6 +415,14 @@ installers; the local assignment database cannot determine that account-wide own
 ExtensionKit helpers are currently unavailable with Apple ID signing; imported profiles
 can still sign selected helpers when they cover them. Ordinary app extensions each need
 a compatible registration; the installer reuses matching child identifiers where present.
+Certificate installs preview the actual identifier chosen by the provisioning profile and
+disable extensions whose profiles are missing. Both frontends check the App ID allowance
+before signing. Native Library > More > **Review Install Options** reopens the picker for
+a kept app, including file imports. Foreground updates review the new archive; unattended
+refreshes retain the saved identity and extension selection and never add new extensions.
+Changing a native app's signer requires reviewing its install options before refreshing.
+Existing library records retain their previous refresh behavior until reviewed. Cancelling
+a review keeps the previous archive available for refresh.
 
 After Apple ID sign-in, **Manage App IDs** is available on the signing and install
 screens. It shows Apple's remaining allowance, registered bundle identifiers and expiry

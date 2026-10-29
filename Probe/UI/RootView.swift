@@ -145,6 +145,11 @@ struct RootView: View {
                     InstallSignerSheet(library: library, choice: choice)
                 }
             }
+            .panel(isPresented: Binding(get: { library.installReview != nil }, set: { if !$0 { library.finishInstallReview(nil) } })) {
+                if let review = library.installReview {
+                    InstallReviewView(library: library, review: review)
+                }
+            }
             .panel(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
                 IncomingSigningSheet(signing: library.signing)
             }

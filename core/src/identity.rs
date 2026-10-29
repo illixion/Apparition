@@ -819,6 +819,29 @@ pub unsafe extern "C" fn apparition_sign_offline(
     })())
 }
 
+/// Resolve the exact identity and extension coverage without signing or registering anything.
+pub fn offline_install_plan(data_dir: &Path, app_path: PathBuf, identity_id: &str, udid: &str, platform: Platform) -> Result<Value, Report> {
+    check_app_platform(&app_path, platform)?;
+    let identity = Identity::load(data_dir, identity_id)?;
+    if not_after(&identity.certificate) < SystemTime::now() { bail!("The signing certificate has expired"); }
+    let usable: Vec<Profile> = Profile::all(data_dir).into_iter()
+        .filter(|p| p.certificate_ids().contains(&identity.id))
+        .filter(|p| !p.expired() && p.kind() != "appStore" && p.for_platform(platform) && p.includes(Some(udid)) == Some(true))
+        .collect();
+    let app = Application::new(app_path.clone())?;
+    let original = app.main_bundle_id()?;
+    let asked = signed_entitlements(&app.bundle.bundle_dir);
+    let main = best_profile(&usable, &original, asked.as_ref()).ok_or_else(|| report!("No imported profile can sign this app on this device"))?;
+    let target = main.bundle_id_for(&original);
+    let inventory = crate::install_plan::inspect(&app_path)?;
+    let supported: Vec<String> = inventory.extensions.iter().filter(|e| {
+        let Some(suffix) = e.id.strip_prefix(&original).filter(|s| s.starts_with('.')) else { return false };
+        let child = format!("{target}{suffix}");
+        usable.iter().any(|p| p.covers(&child))
+    }).map(|e| e.id.clone()).collect();
+    Ok(json!({"target": target, "team": main.team(), "supportedExtensions": supported}))
+}
+
 /// See `apparition_sign_offline`.
 pub fn sign_offline(
     data_dir: &Path,

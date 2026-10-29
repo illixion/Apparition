@@ -30,8 +30,16 @@ final class LibraryModel {
         /// What signed the installed copy, for the card: "Apple ID" or the certificate's name.
         var signedWith: String?
         /// A copy of this app under another bundle ID (signed by another team) whose data the next
-        /// install takes over, chosen when installing. Cleared once that has been tried.
+        /// install takes over, chosen when installing. Retained until every file arrives and the old copy is removed.
         var takeOver: String?
+        /// Persisted signing plan; nil selections preserve the behavior of older installs.
+        var selectedExtensions: [String]?
+        var assignedBundleId: String?
+        var assignedTeam: String?
+        var sourceBundleId: String?
+        var discardDestinationData: Bool?
+        var needsInstallReview: Bool?
+        var reviewedBundleId: String?
     }
 
     /// Apparition's own refreshes: it re-signs and reinstalls itself (`refreshSelf`).
@@ -83,6 +91,7 @@ final class LibraryModel {
 
     private(set) var sources: [Sources.Source] = []
     private(set) var installed: [InstalledApp] = []
+    private var assignments = InstallAssignments()
     private(set) var busy = false {
         didSet {
             if !busy {
@@ -143,6 +152,7 @@ final class LibraryModel {
         var installed: [InstalledApp]
         var refreshRuns: [RefreshRun]?
         var selfRecord: SelfRecord?
+        var assignments: InstallAssignments?
     }
 
     init(account: AccountModel, probe: ProbeModel, signing: SigningStore) {
@@ -153,6 +163,7 @@ final class LibraryModel {
            let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             sources = stored.sources
             installed = stored.installed
+            assignments = stored.assignments ?? InstallAssignments()
             refreshRuns = stored.refreshRuns ?? []
             selfRecord = stored.selfRecord ?? SelfRecord()
         }
@@ -162,9 +173,13 @@ final class LibraryModel {
 
     private func save() {
         let stored = Stored(sources: sources, installed: installed, refreshRuns: Array(refreshRuns.prefix(20)),
-                            selfRecord: selfRecord)
-        guard let data = try? JSONEncoder().encode(stored) else { return }
-        try? data.write(to: Self.stateURL, options: .atomic)
+                            selfRecord: selfRecord, assignments: assignments)
+        do {
+            try JSONEncoder().encode(stored).write(to: Self.stateURL, options: .atomic)
+            StateVault.sync()
+        } catch {
+            log.error("could not save library: \(String(describing: error), privacy: .private)")
+        }
     }
 
     // MARK: Sources
@@ -274,6 +289,7 @@ final class LibraryModel {
         }
         await exclusive("install \(app.name)") {
             let file = try await self.download(app)
+            let previousFile = self.installed.first { $0.id == app.id }?.ipaFile
             var record = self.installed.first { $0.id == app.id }
                 ?? InstalledApp(id: app.id, source: sourceId, name: app.name, version: app.version,
                                 ipaFile: file, stripExtensions: stripExtensions)
@@ -282,6 +298,10 @@ final class LibraryModel {
             record.stripExtensions = stripExtensions
             if let signer { record.signWith = signer }
             if let takeOver { record.takeOver = takeOver }
+            guard try await self.reviewInstall(&record) else { return "cancelled" }
+            if let previousFile, previousFile != file {
+                try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(previousFile))
+            }
             let outcome = await self.signAndInstall(&record)
             self.upsert(record)
             return outcome
@@ -302,6 +322,16 @@ final class LibraryModel {
     }
 
     private(set) var signerChoice: SignerChoice?
+    var installReview: InstallReview?
+    private var reviewContinuation: CheckedContinuation<InstallDecision?, Never>?
+
+    func finishInstallReview(_ decision: InstallDecision?) {
+        installReview = nil
+        let continuation = reviewContinuation
+        reviewContinuation = nil
+        continuation?.resume(returning: decision)
+    }
+
 
     /// Installs an app from a source. A new app, with more than one way to sign it (the Apple ID
     /// and an imported certificate, say), asks first what signs it: an installed app can't be
@@ -462,13 +492,14 @@ final class LibraryModel {
             let existing = self.installed.first { $0.id == app.bundleId }
             var record = existing ?? InstalledApp(id: app.bundleId, source: Self.fileSource, name: app.name, version: app.version,
                                                   ipaFile: app.ipaFile, stripExtensions: true)
-            if let old = existing?.ipaFile, old != app.ipaFile {
-                try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(old))
-            }
             record.version = app.version
             record.ipaFile = app.ipaFile
             if let signer { record.signWith = signer }
             if let takeOver { record.takeOver = takeOver }
+            guard try await self.reviewInstall(&record) else { return "cancelled" }
+            if let old = existing?.ipaFile, old != app.ipaFile {
+                try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(old))
+            }
             let outcome = await self.signAndInstall(&record)
             self.upsert(record)
             self.account.refreshDownloads()
@@ -610,6 +641,8 @@ final class LibraryModel {
             log.error("removing an app for the app limit failed")
             return
         }
+        assignments.remove(target: bundleId)
+        save()
         log.info("removed \(bundleId, privacy: .private(mask: .hash)) for the app limit")
         if let managed = installed.first(where: { $0.installedBundleId == bundleId }) {
             removeInstalled(managed.id)
@@ -690,8 +723,9 @@ final class LibraryModel {
 
     /// Chooses what signs an app from its next refresh on (nil: the default).
     func setSigner(_ signer: String?, for id: String) {
-        guard let index = installed.firstIndex(where: { $0.id == id }) else { return }
+        guard !busy, let index = installed.firstIndex(where: { $0.id == id }) else { return }
         installed[index].signWith = signer
+        installed[index].needsInstallReview = true
         save()
     }
 
@@ -730,6 +764,7 @@ final class LibraryModel {
         status = "stopping…"
         if account.twoFactor != nil { account.answerTwoFactor("abort") }
         downloading?.cancel()
+        finishInstallReview(nil)
         apparition_stop()
         log.notice("stop requested")
     }
@@ -748,23 +783,52 @@ final class LibraryModel {
     }
 
     private func signAndInstall(_ record: inout InstalledApp) async -> String {
+        if removedWhileBusy.contains(record.id) { return Self.stoppedResult }
+        if record.needsInstallReview == true { return fail(&record, "Review Install Options before refreshing with a different signer") }
         if let missingPairing { return fail(&record, missingPairing) }
         guard let udid = await deviceUDID() else {
             return fail(&record, noUDIDReason)
         }
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name
         let path = AccountModel.appsDir.appendingPathComponent(record.ipaFile).path
+        var signingPath = path
+        if let selection = record.selectedExtensions {
+            let reply = await Task.detached { AccountModel.call(apparition_install_inventory(path)) }.value
+            guard reply["ok"] as? Bool == true, let raw = reply["inventory"],
+                  let data = try? JSONSerialization.data(withJSONObject: raw),
+                  let inventory = try? JSONDecoder().decode(InstallInventory.self, from: data) else {
+                return fail(&record, reply["error"] as? String ?? "Could not inspect extensions")
+            }
+            let retained = selection.filter { id in inventory.extensions.contains { $0.id == id } }
+            let json = String(data: (try? JSONEncoder().encode(retained)) ?? Data(), encoding: .utf8) ?? "[]"
+            let prepared = await Task.detached { AccountModel.call(apparition_select_extensions(path, json)) }.value
+            guard prepared["ok"] as? Bool == true, let selectedPath = prepared["path"] as? String else {
+                return fail(&record, prepared["error"] as? String ?? "Could not prepare extensions")
+            }
+            signingPath = selectedPath
+        }
         let signer = signing.signer(for: record)
+        if record.selectedExtensions != nil, let chosen = record.signWith, chosen != signer {
+            return fail(&record, "The chosen signer is no longer available. Review Install Options before refreshing.")
+        }
         // The copy whose data this install takes over: the one chosen at install time, else the one
         // the library installed before, when the signer changed.
-        let previousId = record.takeOver ?? (signing.movesData ? record.installedBundleId : nil)
+        let previousId = record.selectedExtensions != nil ? record.takeOver : record.takeOver ?? (signing.movesData ? record.installedBundleId : nil)
+        if record.takeOver == nil, previousId != record.assignedBundleId { record.takeOver = previousId }
+        upsert(record)
         let signed: [String: Any]
         if signer == SigningStore.appleID {
             if let reason = await signInFailure() { return fail(&record, reason) }
-            signed = await AccountModel.signFile(path, udid: udid, deviceName: name, stripExtensions: record.stripExtensions)
+            if let target = record.assignedBundleId {
+                guard record.assignedTeam == account.team?.id else { return fail(&record, "This App ID is assigned to another team. Review the install with the selected Apple ID first.") }
+                let selectedPath = signingPath
+                signed = await Task.detached { AccountModel.call(apparition_sign_assigned(selectedPath, udid, name, target)) }.value
+            } else {
+                signed = await AccountModel.signFile(signingPath, udid: udid, deviceName: name, stripExtensions: record.selectedExtensions == nil && record.stripExtensions)
+            }
         } else {
             // An imported certificate signs on its own: no sign-in, no anisette, no slots.
-            signed = await SigningStore.signFile(path, identityId: signer, udid: udid, stripExtensions: record.stripExtensions)
+            signed = await SigningStore.signFile(signingPath, identityId: signer, udid: udid, stripExtensions: record.selectedExtensions == nil && record.stripExtensions)
         }
         guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
             if signed["code"] as? String == "sharedCertificate" {
@@ -776,11 +840,26 @@ final class LibraryModel {
         if signer == SigningStore.appleID { certificateChoice = nil }
         let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
         // installd can't replace an app with a copy from another team, and says so cryptically.
-        if let bundleId = main?.bundleId, let team = main?.profileTeam,
+        if record.discardDestinationData != true, let bundleId = main?.bundleId, let team = main?.profileTeam,
            let other = await conflictingTeam(bundleId: bundleId, team: team) {
             try? FileManager.default.removeItem(atPath: signedPath)
             return fail(&record, "this \(ThisDevice.noun) already has \(bundleId) signed by team \(other), and \(ThisDevice.os) won't replace it with a copy signed by team \(team). Sign it with team \(other)'s certificate, or delete the app from the \(ThisDevice.home) first (its data goes with it).",
                         logged: "installed copy belongs to another team")
+        }
+        if let expected = record.reviewedBundleId, main?.bundleId != expected {
+            try? FileManager.default.removeItem(atPath: signedPath)
+            return fail(&record, "The provisioning profile now uses a different App ID. Review Install Options before installing.")
+        }
+        if record.discardDestinationData == true, let target = main?.bundleId {
+            guard target != Bundle.main.bundleIdentifier else { return fail(&record, "Apparition cannot replace itself with another app") }
+            let listing = await probe.listApps(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
+            guard listing == "ok" else { return fail(&record, "Could not check the destination before deleting data: \(listing)") }
+            if installedOnDevice(target) != nil {
+                let removed = await probe.uninstall(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, bundleId: target)
+                guard removed == "ok" else { return fail(&record, "Could not discard destination data: \(removed)") }
+            }
+            record.discardDestinationData = nil
+            upsert(record)
         }
         let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           sourceIPA: path)
@@ -793,6 +872,9 @@ final class LibraryModel {
         guard outcome == "ok" else {
             return fail(&record, Self.installFailure(outcome))
         }
+        if let target = main?.bundleId, let team = main?.profileTeam {
+            assignments.complete(target: target, team: team)
+        }
         record.installedBundleId = main?.bundleId
         record.signedAt = DebugTime.iso(Date())
         record.expiresAt = main?.profileExpires
@@ -800,44 +882,50 @@ final class LibraryModel {
         record.lastError = nil
         var moved = ""
         if let previousId, let newId = main?.bundleId, previousId != newId {
-            moved = await moveData(from: previousId, to: newId)
+            let transfer = await moveData(from: previousId, to: newId)
+            moved = transfer.message
+            if transfer.complete { record.takeOver = nil }
+        } else {
+            record.takeOver = nil
         }
-        record.takeOver = nil
         return "ok, expires \(record.expiresAt ?? "?")" + moved
     }
 
     /// Copies the data of `previousId`, the app's copy under another bundle ID, to the copy just
     /// installed as `newId`, then removes the old one once everything arrived. The new copy hasn't
-    /// run yet, so nothing of its own is overwritten. Returns what to add to the install's result:
+    /// run yet. Returns what to add to the install's result:
     /// nothing when the old copy is gone, and the reason when its data stayed behind (the old copy
     /// is then still installed).
-    private func moveData(from previousId: String, to newId: String) async -> String {
+    private func moveData(from previousId: String, to newId: String) async -> (message: String, complete: Bool) {
         let own = Bundle.main.bundleIdentifier
-        guard previousId != own, newId != own else { return "" }
-        await refreshDeviceApps()
-        guard let old = probe.deviceApps.first(where: { $0.bundleId == previousId }) else { return "" }
+        guard previousId != own, newId != own else { return ("", true) }
+        let listing = await probe.listApps(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
+        guard listing == "ok" else { return ("; couldn't check the previous copy: \(listing). Data transfer is pending.", false) }
+        guard let old = probe.deviceApps.first(where: { $0.bundleId == previousId }) else { return ("", true) }
         let name = displayName(of: previousId)
         guard old.debuggable else {
             log.notice("old copy isn't development-signed; data left")
-            return "; \(name)'s data stayed in the old copy (\(previousId)): it isn't development-signed, so its data can't be read"
+            return ("; \(name)'s data stayed in the old copy (\(previousId)): it isn't development-signed, so its data can't be read", false)
         }
         let host = probe.defaultTunnelHost, port = probe.defaultTunnelPort
         let (outcome, move) = await probe.migrateData(host: host, port: port, from: previousId, to: newId)
         guard outcome == "ok", let move else {
             log.error("data move failed")
-            return "; \(name)'s data didn't move: \(outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome). The old copy (\(previousId)) is still installed"
+            return ("; \(name)'s data didn't move: \(outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome). The old copy (\(previousId)) is still installed", false)
         }
         guard move.complete else {
             log.error("data move incomplete: \(move.failed.count, privacy: .public) files")
-            return "; \(move.failed.count) files of \(name)'s data didn't copy (\(move.failed.first ?? "")). The old copy (\(previousId)) is still installed"
+            return ("; \(move.failed.count) files of \(name)'s data didn't copy (\(move.failed.first ?? "")). The old copy (\(previousId)) is still installed", false)
         }
         let removed = await probe.uninstall(host: host, port: port, bundleId: previousId)
         log.info("moved \(move.summary, privacy: .public) of data to the new copy")
         if removed == "ok" {
-            return "; moved \(move.summary) of data from the copy signed by team \(old.teamId ?? "?") and removed it"
+            assignments.remove(target: previousId)
+            return ("; moved \(move.summary) of data from the copy signed by team \(old.teamId ?? "?") and removed it", true)
         }
-        return "; moved \(move.summary) of data, but couldn't remove the old copy (\(previousId)): delete it from the \(ThisDevice.home)"
+        return ("; moved \(move.summary) of data, but couldn't remove the old copy (\(previousId)): delete it from the \(ThisDevice.home)", false)
     }
+
 
     // MARK: Apparition itself
 
@@ -1085,11 +1173,6 @@ final class LibraryModel {
             }
         }
         try await Self.keepAsIPA(temporary, to: destination, subject: "\(app.name)'s download")
-        // Keep one version per app.
-        for other in (try? FileManager.default.contentsOfDirectory(atPath: AccountModel.appsDir.path)) ?? []
-        where other.hasPrefix("\(safe)-") && other != file {
-            try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(other))
-        }
         account.refreshDownloads()
         return file
     }
@@ -1211,6 +1294,170 @@ final class LibraryModel {
     func pendingBackgroundTasks() async -> [[String: String]] {
         await BGTaskScheduler.shared.pendingTaskRequests().map { request in
             ["id": request.identifier, "earliest": request.earliestBeginDate.map(DebugTime.iso) ?? "-"]
+        }
+    }
+}
+
+extension LibraryModel {
+    struct InstallExtension: Codable, Identifiable, Sendable {
+        let id: String
+        let name: String
+        let path: String
+        let extensionKit: Bool
+    }
+    struct InstallInventory: Codable, Sendable {
+        let id: String
+        let name: String
+        let extensions: [InstallExtension]
+    }
+    struct InstallReview: Identifiable {
+        let id = UUID()
+        let inventory: InstallInventory
+        let appleID: Bool
+        let target: String
+        let selected: [String]
+        let unsupported: Set<String>
+        let candidates: [DeveloperSlots.AppID]
+        let available: Int?
+        let signingTeam: String?
+        let installed: [ProbeModel.DeviceApp]
+        let owners: [String: String]
+        let reserved: Set<String>
+        let extensionOwners: [String: String]
+        let dataSource: String?
+    }
+    struct InstallDecision {
+        let target: String
+        let extensions: [String]
+        let discard: Bool
+    }
+
+    /// Every foreground install reviews the downloaded archive, including updates and file imports.
+    /// Refreshes use the persisted plan without presenting UI or enabling newly added extensions.
+    private func reviewInstall(_ record: inout InstalledApp) async throws -> Bool {
+        let signer = signing.signer(for: record)
+        let appleID = signer == SigningStore.appleID
+        if appleID, let failure = await signInFailure() { throw IDevice.ProbeError(failure) }
+        let path = AccountModel.appsDir.appendingPathComponent(record.ipaFile).path
+        let reply = await Task.detached { AccountModel.call(apparition_install_inventory(path)) }.value
+        guard reply["ok"] as? Bool == true, let raw = reply["inventory"] else {
+            throw IDevice.ProbeError(reply["error"] as? String ?? "Could not inspect app")
+        }
+        let inventory = try JSONDecoder().decode(InstallInventory.self, from: JSONSerialization.data(withJSONObject: raw))
+        let team = reply["team"] as? String ?? ""
+        if appleID && team.isEmpty { throw IDevice.ProbeError("Sign in and choose a signing team before reviewing App IDs") }
+        let ids = appleID ? try await DeveloperSlots.appIDs() : nil
+        var certificatePlan: [String: Any] = [:]
+        if !appleID {
+            guard let udid = await deviceUDID() else { throw IDevice.ProbeError(noUDIDReason) }
+            let data = AccountModel.dataDir.path
+            certificatePlan = await Task.detached { AccountModel.call(apparition_offline_install_plan(data, path, signer, udid)) }.value
+            guard certificatePlan["ok"] as? Bool == true else { throw IDevice.ProbeError(certificatePlan["error"] as? String ?? "Could not resolve provisioning profile") }
+        }
+        let signingTeam = appleID ? team : certificatePlan["team"] as? String ?? ""
+        let listing = await probe.listApps(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
+        guard listing == "ok" else { throw IDevice.ProbeError("Could not check installed apps before review: \(listing)") }
+        let managedTargets = Set(installed.flatMap { [$0.assignedBundleId, $0.reviewedBundleId, $0.installedBundleId, $0.takeOver].compactMap { $0 } })
+        assignments.reconcile(installed: Set(probe.deviceApps.map(\.bundleId)), managed: managedTargets)
+        save()
+        var owners: [String: String] = [:]
+        var reserved: Set<String> = [Bundle.main.bundleIdentifier ?? ""]
+        var extensionOwners: [String: String] = [:]
+        for assignment in assignments.records where assignment.team == signingTeam && assignment.source != record.id {
+            owners[assignment.target] = assignment.name
+            let children = assignment.claims.subtracting([assignment.target])
+            reserved.formUnion(children)
+            for child in children { extensionOwners[child] = assignment.target }
+        }
+        for other in installed where other.id != record.id {
+            guard let target = other.assignedBundleId ?? other.reviewedBundleId ?? other.installedBundleId,
+                  other.assignedTeam == signingTeam || installedOnDevice(target)?.teamId == signingTeam else { continue }
+            owners[target] = other.name
+            var source = other.sourceBundleId
+            var children = other.selectedExtensions ?? []
+            if other.selectedExtensions == nil {
+                let oldPath = AccountModel.appsDir.appendingPathComponent(other.ipaFile).path
+                let oldReply = await Task.detached { AccountModel.call(apparition_install_inventory(oldPath)) }.value
+                if let raw = oldReply["inventory"], let data = try? JSONSerialization.data(withJSONObject: raw),
+                   let oldInventory = try? JSONDecoder().decode(InstallInventory.self, from: data) {
+                    source = oldInventory.id
+                    children = oldInventory.extensions.filter { !other.stripExtensions || !$0.extensionKit }.map(\.id)
+                }
+            }
+            for child in children {
+                if let source, child.hasPrefix(source + ".") {
+                    let id = target + child.dropFirst(source.count)
+                    reserved.insert(id)
+                    extensionOwners[id] = target
+                }
+            }
+            if let pending = other.takeOver { reserved.insert(pending) }
+        }
+        let previousAssignment = assignments.records.last { $0.source == record.id && $0.team == signingTeam }
+        let target = appleID ? (record.assignedTeam == team ? record.assignedBundleId : nil) ?? previousAssignment?.target ?? "\(inventory.id).\(team)" : (certificatePlan["target"] as? String ?? inventory.id)
+        let supported = Set(certificatePlan["supportedExtensions"] as? [String] ?? [])
+        let unsupported = Set(inventory.extensions.filter { appleID ? $0.extensionKit : !supported.contains($0.id) }.map(\.id))
+        let review = InstallReview(inventory: inventory, appleID: appleID, target: target,
+            selected: record.selectedExtensions ?? (record.installedBundleId == nil ? [] : inventory.extensions.filter { !record.stripExtensions || !$0.extensionKit }.map(\.id)), unsupported: unsupported, candidates: ids?.appIds ?? [], available: ids?.availableQuantity, signingTeam: signingTeam,
+            installed: probe.deviceApps, owners: owners, reserved: reserved, extensionOwners: extensionOwners,
+            dataSource: record.takeOver ?? record.installedBundleId ?? previousAssignment.flatMap { installedOnDevice($0.target)?.bundleId } ?? installedOnDevice("\(inventory.id).\(team)")?.bundleId)
+        let decision = await withCheckedContinuation { continuation in
+            reviewContinuation = continuation
+            installReview = review
+        }
+        guard let decision else { return false }
+        guard !reserved.contains(decision.target),
+              (decision.target == target || (appleID && ids?.appIds.contains(where: { $0.identifier == decision.target }) == true)),
+              decision.extensions.allSatisfy({ id in inventory.extensions.contains { $0.id == id && !unsupported.contains(id) } }) else {
+            throw IDevice.ProbeError("The chosen signing plan is no longer available")
+        }
+        for child in decision.extensions {
+            guard child.hasPrefix(inventory.id + ".") else { throw IDevice.ProbeError("Extension ID does not belong to this app") }
+            let assigned = decision.target + child.dropFirst(inventory.id.count)
+            guard (!reserved.contains(assigned) || extensionOwners[assigned] == decision.target), owners[assigned] == nil else { throw IDevice.ProbeError("An extension ID is assigned to another app") }
+        }
+        if appleID, let available = ids?.availableQuantity {
+            let registered = Set(ids?.appIds.map(\.identifier) ?? [])
+            let requested = [decision.target] + decision.extensions.map { decision.target + $0.dropFirst(inventory.id.count) }
+            guard requested.filter({ !registered.contains($0) }).count <= available else {
+                throw IDevice.ProbeError("Not enough available App IDs. Remove extensions or reuse registered IDs.")
+            }
+        }
+        // Claim before signing: failed portal operations can still allocate IDs. An app whose
+        // identity is reassigned must never refresh over its replacement, for either signer.
+        installed.removeAll { $0.id != record.id && ($0.assignedBundleId == decision.target || $0.reviewedBundleId == decision.target || $0.installedBundleId == decision.target) }
+        if appleID {
+            record.assignedBundleId = decision.target
+            record.assignedTeam = team
+        } else {
+            record.assignedBundleId = nil
+            record.assignedTeam = signingTeam
+        }
+        record.takeOver = !decision.discard && review.dataSource != decision.target ? review.dataSource : nil
+        record.reviewedBundleId = decision.target
+        record.sourceBundleId = inventory.id
+        record.needsInstallReview = nil
+        // Pin the reviewed signer so changing the global default cannot silently change identities.
+        record.signWith = signer
+        record.selectedExtensions = decision.extensions
+        record.discardDestinationData = decision.discard
+        assignments.reserve(InstallAssignment(source: record.id, bundleId: inventory.id, name: record.name,
+            team: signingTeam, target: decision.target, extensions: decision.extensions))
+        upsert(record)
+        // The assignment must reach disk before any IDs are allocated or an installed copy changes.
+        let stored = Stored(sources: sources, installed: installed, refreshRuns: Array(refreshRuns.prefix(20)), selfRecord: selfRecord, assignments: assignments)
+        try JSONEncoder().encode(stored).write(to: Self.stateURL, options: .atomic)
+        guard StateVault.sync().failed.isEmpty else { throw IDevice.ProbeError("Could not preserve the App ID assignment in the device vault") }
+        return true
+    }
+
+    func reviewInstalledApp(_ id: String) async {
+        guard var record = installed.first(where: { $0.id == id }) else { return }
+        await exclusive("install \(record.name)") {
+            guard try await self.reviewInstall(&record) else { return "cancelled" }
+            let outcome = await self.signAndInstall(&record)
+            self.upsert(record)
+            return outcome
         }
     }
 }

@@ -843,3 +843,8 @@ mod tests {
         assert_eq!(found(&["fe80::1", "169.254.170.69"]).as_deref(), Some("169.254.170.69"));
     }
 }
+
+/// Preview a certificate install's actual identifier and covered extensions before review.
+pub fn offline_install_plan(data_dir: &Path, path: std::path::PathBuf, identity: &str, udid: &str, platform: Platform) -> Result<Value, Report> {
+    crate::identity::offline_install_plan(data_dir, path, identity, udid, platform)
+}

@@ -533,6 +533,10 @@ struct LibraryView: View {
                 Text(bundleId)
             }
             Text("From \(app.source)")
+            Button("Review Install Options", systemImage: "slider.horizontal.3") {
+                Task { await library.reviewInstalledApp(app.id) }
+            }
+            .disabled(library.busy || model.busy)
             Divider()
             Picker(selection: Binding(get: { app.signWith ?? "" },
                                       set: { library.setSigner($0.isEmpty ? nil : $0, for: app.id) })) {

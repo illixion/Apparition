@@ -436,6 +436,10 @@ pub async fn sign_with_apple_id_as(
     strip_extensions: bool, platform: identity::Platform, assigned_id: Option<&str>,
 ) -> Result<Value, Report> {
     identity::check_app_platform(&app_path, platform)?;
+    if assigned_id.is_some() {
+        let inventory = install_plan::inspect(&app_path)?;
+        inventory.validate(&inventory.extensions.iter().map(|e| e.id.clone()).collect::<Vec<_>>(), true)?;
+    }
     let mut app_path = app_path;
     let mut stripped = Vec::new();
     if strip_extensions {
@@ -804,6 +808,49 @@ pub unsafe extern "C" fn apparition_sign(
         let mut guard = SESSION.lock().unwrap();
         let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
         runtime().block_on(crate::stop::stoppable(sign_with_apple_id(session, app_path, &udid, &device_name, strip_extensions, identity::Platform::THIS)))
+    })())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_offline_install_plan(data: *const c_char, path: *const c_char,
+    identity: *const c_char, udid: *const c_char) -> *mut c_char {
+    reply((|| {
+        identity::offline_install_plan(&PathBuf::from(unsafe { text(data) }?), PathBuf::from(unsafe { text(path) }?),
+            &unsafe { text(identity) }?, &unsafe { text(udid) }?, identity::Platform::THIS)
+    })())
+}
+
+/// Shared install inventory and selection bridge for all native Apple clients.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_install_inventory(path: *const c_char) -> *mut c_char {
+    reply((|| {
+        let inventory = install_plan::inspect(&PathBuf::from(unsafe { text(path) }?))?;
+        let team = SESSION.lock().unwrap().as_ref().map(|s| s.team.team_id.clone());
+        Ok(json!({"inventory": inventory, "team": team}))
+    })())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_select_extensions(path: *const c_char, selected: *const c_char) -> *mut c_char {
+    reply((|| {
+        let selected: Vec<String> = serde_json::from_str(&unsafe { text(selected) }?)?;
+        let path = install_plan::select(&PathBuf::from(unsafe { text(path) }?), &selected)?;
+        Ok(json!({"path": path}))
+    })())
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_sign_assigned(path: *const c_char, udid: *const c_char,
+    name: *const c_char, target: *const c_char) -> *mut c_char {
+    reply((|| {
+        let path = PathBuf::from(unsafe { text(path) }?);
+        let udid = unsafe { text(udid) }?;
+        let name = unsafe { text(name) }?;
+        let target = unsafe { text(target) }?;
+        let mut guard = SESSION.lock().unwrap();
+        let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
+        runtime().block_on(crate::stop::stoppable(sign_with_apple_id_as(session, path, &udid, &name, false,
+            identity::Platform::THIS, Some(&target))))
     })())
 }
 

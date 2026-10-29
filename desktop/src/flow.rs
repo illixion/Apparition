@@ -782,7 +782,14 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 }
             };
             let previous = assignments.iter().find(|a| a.team == team && a.device == info.udid && a.source == inventory.id).cloned();
-            let default_target = previous.as_ref().map(|a| a.target.clone()).unwrap_or_else(|| format!("{}.{}", inventory.id, team));
+            let certificate_plan = match &certificate {
+                Some(cert) => api::offline_install_plan(&cert.dir, prepared.path.clone(), &cert.id, &info.udid, api::Platform::of_product(&info.product_type))?,
+                None => Value::Null,
+            };
+            let default_target = certificate_plan["target"].as_str().map(str::to_owned)
+                .unwrap_or_else(|| previous.as_ref().map(|a| a.target.clone()).unwrap_or_else(|| format!("{}.{}", inventory.id, team)));
+            let supported: Vec<String> = certificate_plan["supportedExtensions"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_owned)).collect();
+            let unsupported: Vec<String> = inventory.extensions.iter().filter(|e| if certificate.is_none() { e.extension_kit } else { !supported.contains(&e.id) }).map(|e| e.id.clone()).collect();
             let mut candidates = Vec::new();
             for id in ids["appIds"].as_array().into_iter().flatten() {
                 let Some(identifier) = id["identifier"].as_str() else { continue };
@@ -802,7 +809,8 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             };
             let (target, extensions, data_mode) = match state.ask(&app, json!({
                 "kind": "installPlan", "inventory": inventory, "appleId": certificate.is_none(),
-                "candidates": candidates, "defaultTarget": default_target,
+                "candidates": candidates, "defaultTarget": default_target, "unsupported": unsupported,
+                "destination": tunnel.installed_app(&default_target).await?,
                 "previous": previous.as_ref().map(|a| &a.target),
                 "selected": previous.as_ref().map(|a| a.extensions.clone()).unwrap_or_default(),
                 "available": ids["availableQuantity"], "dataSource": data_source
@@ -814,8 +822,14 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             if certificate.is_none() && target != default_target && !candidates.iter().any(|c| c["id"].as_str() == Some(&target)) {
                 return Err(rootcause::report!("Choose an App ID from this account"));
             }
-            if certificate.is_none() && inventory.extensions.iter().any(|e| e.extension_kit && extensions.contains(&e.id)) {
-                return Err(rootcause::report!("ExtensionKit helpers are not supported by Apple ID signing yet"));
+            inventory.validate(&extensions, certificate.is_none())?;
+            if extensions.iter().any(|e| unsupported.contains(e)) { return Err(rootcause::report!("A selected extension has no compatible provisioning profile")); }
+            if certificate.is_none() {
+                let registered: Vec<String> = candidates.iter().filter_map(|c| c["id"].as_str().map(str::to_owned)).collect();
+                let needed = inventory.new_ids(&target, &extensions, &registered)?;
+                if ids["availableQuantity"].as_u64().is_some_and(|available| needed as u64 > available) {
+                    return Err(rootcause::report!("Not enough available App IDs for this selection. Remove extensions or reuse registered IDs"));
+                }
             }
             if assignments.iter().any(|a| a.team == team && a.device == info.udid && a.source != inventory.id && a.target != target && a.claims().contains(&target)) {
                 return Err(rootcause::report!("This identifier belongs to another app's extension or pending data transfer"));
@@ -824,7 +838,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             for extension in inventory.extensions.iter().filter(|e| extensions.contains(&e.id)) {
                 let suffix = extension.id.strip_prefix(&inventory.id).filter(|s| s.starts_with('.')).ok_or_else(|| rootcause::report!("Extension {} does not belong to this app", extension.name))?;
                 let child = format!("{target}{suffix}");
-                if assignments.iter().any(|a| a.team == team && a.device == info.udid && a.source != inventory.id && a.claims().contains(&child)) {
+                if assignments.iter().any(|a| a.team == team && a.device == info.udid && a.source != inventory.id && a.target != target && a.claims().contains(&child)) {
                     return Err(rootcause::report!("Extension {child} is assigned to another app. Deselect it before proceeding"));
                 }
             }
@@ -859,7 +873,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| rootcause::report!("Signing returned no app"))?);
             let bundle_id = api::bundle_id(&signed_path).ok_or_else(|| rootcause::report!("The signed app has no bundle ID"))?;
 
-            if certificate.is_none() && bundle_id != target { return Err(rootcause::report!("Signer changed the assigned App ID")); }
+            if bundle_id != target { return Err(rootcause::report!("Signer changed the reviewed App ID. Review the install again")); }
             let existing = tunnel.installed_app(&bundle_id).await?;
             if data_mode == "discard" && existing.is_some() {
                 tunnel.uninstall(&bundle_id).await?;

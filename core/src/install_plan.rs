@@ -20,6 +20,31 @@ pub struct Inventory {
     pub extensions: Vec<Extension>,
 }
 
+impl Inventory {
+    /// Every signing frontend uses the same supported-extension and identifier rules.
+    pub fn validate(&self, selected: &[String], apple_id: bool) -> Result<(), Report> {
+        let mut seen = std::collections::HashSet::new();
+        for id in selected {
+            let extension = self.extensions.iter().find(|e| &e.id == id)
+                .ok_or_else(|| report!("The selected extension is not in this app"))?;
+            if !seen.insert(id) { bail!("An extension was selected more than once"); }
+            if !id.strip_prefix(&self.id).is_some_and(|suffix| suffix.starts_with('.')) {
+                bail!("Extension {} does not belong to this app", extension.name);
+            }
+            if apple_id && extension.extension_kit {
+                bail!("ExtensionKit helpers require imported provisioning profiles; deselect them for Apple ID signing");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn new_ids(&self, target: &str, selected: &[String], registered: &[String]) -> Result<usize, Report> {
+        self.validate(selected, false)?;
+        let ids = std::iter::once(target.to_owned()).chain(selected.iter().map(|id| format!("{target}{}", &id[self.id.len()..])));
+        Ok(ids.filter(|id| !registered.contains(id)).count())
+    }
+}
+
 pub fn inspect(path: &Path) -> Result<Inventory, Report> {
     let app = Application::new(path.to_path_buf())?;
     let mut extensions = Vec::new();
@@ -42,9 +67,7 @@ pub fn inspect(path: &Path) -> Result<Inventory, Report> {
 /// Always starts from the original archive; selections are IDs, never filesystem paths from the UI.
 pub fn select(path: &Path, selected: &[String]) -> Result<PathBuf, Report> {
     let inventory = inspect(path)?;
-    if selected.iter().any(|id| !inventory.extensions.iter().any(|e| &e.id == id)) {
-        bail!("The selected extension is not in this app");
-    }
+    inventory.validate(selected, false)?;
     let app = Application::new(path.to_path_buf())?;
     let keep_extension_kit = inventory.extensions.iter().any(|e| e.extension_kit && selected.contains(&e.id));
     for extension in inventory.extensions {
@@ -78,10 +101,22 @@ mod tests {
         assert_eq!(inventory.extensions.len(), 3);
         assert!(inventory.extensions.iter().any(|e| e.extension_kit));
         assert!(select(&archive, &["../outside".into()]).is_err());
+        assert!(inventory.validate(&["org.test.worker".into(), "org.test.worker".into()], true).is_err());
+        assert!(inventory.validate(&["org.test.helper".into()], true).is_err());
+        assert!(inventory.validate(&["org.test.helper".into()], false).is_ok());
+        assert_eq!(inventory.new_ids("pool.id", &["org.test.worker".into()], &["pool.id".into()]).unwrap(), 1);
+        assert_eq!(inventory.new_ids("pool.id", &["org.test.worker".into()], &["pool.id".into(), "pool.id.worker".into()]).unwrap(), 0);
         let app = select(&archive, &["org.test.worker".into()]).unwrap();
         assert!(app.join("PlugIns/Worker.appex").is_dir());
         assert!(!app.join("PlugIns/Share.appex").exists());
         assert!(!app.join("Extensions/Helper.appex").exists());
+        // Packing with the original IPA as a compression source must not restore omitted plugins.
+        let packed = dir.join("selected.ipa");
+        crate::ipa::pack(&app, Some(&archive), &packed).unwrap();
+        let mut selected_zip = zip::ZipArchive::new(std::fs::File::open(packed).unwrap()).unwrap();
+        assert!(selected_zip.by_name("Payload/Test.app/PlugIns/Worker.appex/Info.plist").is_ok());
+        assert!(selected_zip.by_name("Payload/Test.app/PlugIns/Share.appex/Info.plist").is_err());
+        assert!(selected_zip.by_name("Payload/Test.app/Extensions/Helper.appex/Info.plist").is_err());
         assert_eq!(inspect(&archive).unwrap().extensions.len(), 3);
         // Delete only our fixture directory and the exact extracted test bundle.
         std::fs::remove_dir_all(&dir).unwrap();

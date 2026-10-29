@@ -168,4 +168,11 @@ char *apparition_release_latest(const char *site, const char *signers, const cha
 char *apparition_release_download_app(const char *site, const char *signers, const char *platform,
                                       const char *dir);
 
+// Install review, extension filtering, and explicit Apple ID assignment.
+char *apparition_install_inventory(const char *path);
+char *apparition_select_extensions(const char *path, const char *selected);
+char *apparition_sign_assigned(const char *path, const char *udid, const char *name, const char *target);
+
+char *apparition_offline_install_plan(const char *data, const char *path, const char *identity, const char *udid);
+
 #endif
