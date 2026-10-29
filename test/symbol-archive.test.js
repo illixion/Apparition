@@ -14,7 +14,7 @@ test('immutable symbol sets retain three real builds, reject identity reuse and 
     const archive = path.join(root, 'archive');
     fs.mkdirSync(bundle, { recursive: true });
     const script = fs.readFileSync(path.join(__dirname, '..', 'bin', 'build-and-sign'), 'utf8');
-    const fn = script.slice(script.indexOf('archive_dsyms() {'), script.indexOf('\n# Step 9: Deploy to device'));
+    const fn = script.slice(script.indexOf('archive_dsyms() {'), script.indexOf('\n# Retain symbols and an immutable artifact'));
     assert.match(fn, /immutable dSYMs/);
     const command = (name, args) => {
       const result = spawnSync(name, args, { encoding: 'utf8' });

@@ -54,6 +54,7 @@ set -euo pipefail
 # repo's build-signing.conf, either <root>/scripts/build-signing.conf or
 # <root>/build-signing.conf, after the shared ~/.config/build-signing/global.conf.
 # See the README for the conf variables.
+# Requires Node 18+ and the complete build tools checkout for artifact manifests.
 
 # --help has to work before any signing config exists.
 for arg in "$@"; do
@@ -719,6 +720,15 @@ if (( ${#SIGN_DYLIBS[@]} > 0 )); then
 fi
 
 IPA_PATH="$BUILD_DIR/${TARGET_NAME}.ipa"
+BUILD_ID="$(/usr/bin/python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+BAS_INFRA_ROOT="$(/usr/bin/python3 -c 'import os,sys; print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))' "$0")"
+MANIFEST_TOOL="$BAS_INFRA_ROOT/bin/build-manifest"
+if ! command -v node >/dev/null || [[ ! -f "$MANIFEST_TOOL" ]]; then
+    echo "ERROR: build-and-sign needs Node 18+ and the complete build tools checkout to record artifacts" >&2
+    exit 1
+fi
+SOURCE_BEFORE=""
+SOURCE_AFTER=""
 
 # Step 1: Build (unless --sign-only)
 if [[ "$SIGN_ONLY" == false ]]; then
@@ -787,6 +797,11 @@ if [[ "$SIGN_ONLY" == false ]]; then
         fi
     fi
 
+    SOURCE_BEFORE="$WORK_DIR/source-before.json"
+    SOURCE_AFTER="$WORK_DIR/source-after.json"
+    printf '%s\0' "${XCB_ARGS[@]}" > "$WORK_DIR/build-arguments"
+    node "$MANIFEST_TOOL" snapshot "$PROJECT_ROOT" "$SOURCE_BEFORE" "$WORK_DIR/build-arguments"
+
     if [[ "$INJECT" == true ]]; then
         echo "==> Building for $PLATFORM ($CONFIG) for live patching..."
     else
@@ -800,6 +815,7 @@ if [[ "$SIGN_ONLY" == false ]]; then
         xcodebuild -quiet "${XCB_ARGS[@]}" build >>"$LOG_FILE" 2>&1
     fi
     echo "  Build succeeded."
+    node "$MANIFEST_TOOL" snapshot "$PROJECT_ROOT" "$SOURCE_AFTER" "$WORK_DIR/build-arguments"
 
     # --- Locate the product ------------------------------------------------
     # Globbing DerivedData for the .app has now failed three separate ways,
@@ -979,6 +995,7 @@ if [[ -z "$APP_BUNDLE" ]]; then
 fi
 APP_INFO_PLIST="$APP_BUNDLE/Info.plist"
 [[ -f "$APP_BUNDLE/Contents/Info.plist" ]] && APP_INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
+ORIGINAL_BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$APP_INFO_PLIST")"
 
 # Step 4.1: refuse to sign a bundle that was built for a different platform.
 # This is the backstop for the entire "wrong .app shipped to the device"
@@ -1086,11 +1103,8 @@ fi
 # Skipped for --sign-only/--ipa: the IPA may not match the repo's HEAD.
 GIT_STAMP=""
 if [[ "$SIGN_ONLY" == false ]]; then
-    GIT_STAMP=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || true)
+    GIT_STAMP=$(node "$MANIFEST_TOOL" stamp "$SOURCE_BEFORE" "$PROJECT_ROOT")
     if [[ -n "$GIT_STAMP" ]]; then
-        if ! git -C "$PROJECT_ROOT" diff --quiet HEAD -- 2>/dev/null; then
-            GIT_STAMP="${GIT_STAMP}-dirty"
-        fi
         plutil -replace CFBundleVersion -string "$GIT_STAMP" "$APP_INFO_PLIST"
         if [[ -n "$APPEX_BUNDLE" ]]; then
             plutil -replace CFBundleVersion -string "$GIT_STAMP" "$APPEX_BUNDLE/Info.plist"
@@ -1140,7 +1154,7 @@ embed_trace_credential() {
     # The key never reaches stdout or the build log: it moves file to file.
     der="$WORK_DIR/trace-key.der"
     ( umask 077 && "$openssl" genpkey -algorithm ed25519 -outform DER -out "$der" ) >>"$LOG_FILE" 2>&1
-    TRACE_KEY_ID="$("$openssl" rand -hex 8)"
+    TRACE_KEY_ID="$BUILD_ID"
     if [[ "${HAS_DEBUG_SERVER:-false}" == true && "${DEBUGTRACE_SERVER:-}" != off ]]; then
         COMMAND_TOKEN="$("$openssl" rand -hex 24)"
     fi
@@ -1343,11 +1357,8 @@ for d in exact + loose:
     fi
 }
 
-# Step 8.5 (runs after Step 9's install): keep the dSYMs of what is now on the
-# device, one set per app and device. A device that is not updated stays on its
-# old build while others move on, and the build folder's dSYM is replaced by the
-# next build, so a crash report from the old build could no longer be symbolicated.
-# Immutable symbol sets keyed by the build credential id, with a UUID index.
+# Step 8.5: keep the dSYMs before installing or publishing this build.
+# Immutable symbol sets are keyed by the build id, with a UUID index.
 # Keep old app/device slots readable; a later build never rotates away symbols
 # that a tester's delayed report may still need. Also archive --no-deploy builds.
 DEBUGTRACE_DSYM_DIR="${DEBUGTRACE_DSYM_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/debugtrace/dsyms}"
@@ -1356,7 +1367,7 @@ archive_dsyms() {
     build_no=$(plutil -extract CFBundleVersion raw -o - "$APP_BUNDLE/Info.plist" 2>/dev/null \
         || plutil -extract CFBundleVersion raw -o - "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)
     DSYM_PRODUCTS="$(dirname "$APP_PATH")" DSYM_APP="$APP_PATH" DSYM_ARCHIVE="$DEBUGTRACE_DSYM_DIR" \
-    DSYM_BUILD="$build_no" DSYM_KEY_ID="$TRACE_KEY_ID" DSYM_BUNDLE="$BUILD_BUNDLE_ID" \
+    DSYM_BUILD="$build_no" DSYM_KEY_ID="$TRACE_KEY_ID" DSYM_BUILD_ID="${BUILD_ID:-$TRACE_KEY_ID}" DSYM_BUNDLE="$BUILD_BUNDLE_ID" \
     DSYM_PLATFORM="$PLATFORM" DSYM_CONFIG="$CONFIG" DSYM_DEVICE="${DEVICE_NAME:-local}" /usr/bin/python3 -c '
 import hashlib, json, os, pathlib, re, shutil, subprocess, tempfile, time, uuid
 
@@ -1379,7 +1390,7 @@ for binary in pathlib.Path(e["DSYM_APP"]).rglob("*"):
             is_macho = handle.read(4) in magic
         if is_macho:
             wanted.update(binary_uuids(binary))
-build_id = e["DSYM_KEY_ID"] or uuid.uuid4().hex
+build_id = e["DSYM_BUILD_ID"] or uuid.uuid4().hex
 bundle = e["DSYM_BUNDLE"]
 if not re.fullmatch(r"[A-Za-z0-9.-]+", bundle) or not re.fullmatch(r"[A-Za-z0-9-]+", build_id):
     raise SystemExit("invalid symbol archive identity")
@@ -1434,6 +1445,31 @@ finally:
 '
 }
 
+# Retain symbols and an immutable artifact before any install. Terminal builds
+# and build-on-download jobs use the same identity and manifest path.
+if [[ "${HAS_DEBUGTRACE:-false}" == true && "$USE_DIST" == false \
+      && "$SIGN_ONLY" == false && -n "${APP_PATH:-}" ]]; then
+    archive_dsyms || echo "WARNING: could not keep the dSYMs of this build" >&2
+fi
+APPARITION_BUILD_DIR="${APPARITION_BUILD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/apparition/builds}"
+if [[ "$MACOS_BUILD" == true ]]; then MANIFEST_ARTIFACT="$SIGNED_APP"; else MANIFEST_ARTIFACT="$SIGNED_IPA"; fi
+BAS_MANIFEST_APP="$APP_BUNDLE" BAS_MANIFEST_ARTIFACT="$MANIFEST_ARTIFACT" \
+BAS_MANIFEST_PROJECT="$PROJECT_ROOT" BAS_MANIFEST_BEFORE="$SOURCE_BEFORE" BAS_MANIFEST_AFTER="$SOURCE_AFTER" \
+BAS_MANIFEST_ID="$BUILD_ID" BAS_MANIFEST_KEY="$TRACE_KEY_ID" BAS_MANIFEST_PLATFORM="$PLATFORM" \
+BAS_MANIFEST_CONFIG="$CONFIG" BAS_MANIFEST_ORIGINAL="$ORIGINAL_BUNDLE_ID" BAS_MANIFEST_STORE="$APPARITION_BUILD_DIR" \
+BAS_MANIFEST_SYMBOLS="$DEBUGTRACE_DSYM_DIR/$BUILD_BUNDLE_ID@$BUILD_ID/uuids.json" \
+/usr/bin/python3 -c '
+import json, os, sys
+e = os.environ
+record = {key: e["BAS_MANIFEST_" + value] for key, value in {
+    "app": "APP", "artifact": "ARTIFACT", "project": "PROJECT", "buildId": "ID", "keyId": "KEY",
+    "platform": "PLATFORM", "configuration": "CONFIG", "originalBundleId": "ORIGINAL", "store": "STORE", "symbols": "SYMBOLS"}.items()}
+record.update({key: e["BAS_MANIFEST_" + key.upper()] or None for key in ("before", "after")})
+with open(sys.argv[1], "w") as handle:
+    json.dump(record, handle)
+' "$WORK_DIR/manifest-options.json"
+BUILD_MANIFEST="$(node "$MANIFEST_TOOL" publish "$WORK_DIR/manifest-options.json")"
+
 # Step 9: Deploy to device
 if [[ "$MACOS_BUILD" == true ]]; then
     INSTALL_STATUS=""
@@ -1448,10 +1484,6 @@ if [[ "$NO_DEPLOY" == false ]]; then
     # so its own output is clean already; still logged in case of failure.
     xcrun devicectl device install app --device "$DEVICE_ID" "$SIGNED_IPA" >>"$LOG_FILE" 2>&1
     INSTALL_STATUS="installed"
-fi
-if [[ "${HAS_DEBUGTRACE:-false}" == true && "$USE_DIST" == false \
-      && "$SIGN_ONLY" == false && -n "${APP_PATH:-}" ]]; then
-    archive_dsyms || echo "WARNING: could not keep the dSYMs of this build" >&2
 fi
 
 # Finds the app's DebugTrace debug server after a --log launch and writes how
@@ -1651,7 +1683,8 @@ printf '  %-12s %s\n' "App:" "$BUILD_BUNDLE_ID"
 [[ -n "$EXTENSION_ID" ]] && printf '  %-12s %s\n' "Extension:" "$EXTENSION_ID"
 [[ -n "$WATCH_ID" ]] && printf '  %-12s %s\n' "Watch:" "$WATCH_ID"
 [[ -n "$GIT_STAMP" ]] && printf '  %-12s %s\n' "Build:" "$GIT_STAMP"
-[[ -n "$TRACE_KEY_ID" ]] && printf '  %-12s %s\n' "Build ID:" "$TRACE_KEY_ID"
+printf '  %-12s %s\n' "Build ID:" "$BUILD_ID"
+printf '  %-12s %s\n' "Manifest:" "$BUILD_MANIFEST"
 printf '  %-12s %s\n' "Config:" "$CONFIG"
 printf '  %-12s %s items\n' "Signed:" "$SIGNED_COUNT"
 if [[ "$MACOS_BUILD" == true ]]; then

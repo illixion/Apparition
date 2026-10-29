@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
+const { readBuild, listBuilds, defaultStore: defaultBuildStore } = require('./lib/artifacts');
 
 const ROOT = __dirname;
 // APPSTORE_CONFIG and APPSTORE_DATA relocate the config and the runtime data
@@ -19,6 +20,7 @@ if (!fs.existsSync(CONFIG_PATH)) {
   process.exit(1);
 }
 let CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+const buildStore = () => path.resolve(path.dirname(CONFIG_PATH), CONFIG.buildManifestDir || defaultBuildStore());
 if (process.argv[2] === 'set-password') {
   require('./lib/set-password').run(CONFIG_PATH);
   return;
@@ -129,51 +131,7 @@ function cloneSlot(repoPath, branch) {
 function clonePath(repoPath, branch) {
   return path.join(cloneSlot(repoPath, branch), path.basename(repoPath));
 }
-const MANIFEST_SKIP = new Set(['.build', 'build', 'DerivedData', 'node_modules']);
-// Local package directories that the Xcode projects and SwiftPM manifests under
-// `top` reference by relative path, resolved to absolute paths.
-function localPackageRefs(top) {
-  const out = [];
-  const read = fp => { try { return fs.readFileSync(fp, 'utf8'); } catch { return ''; } };
-  (function walk(dir, depth) {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      const fp = path.join(dir, e.name);
-      if (e.name === 'Package.swift') {
-        for (const m of read(fp).matchAll(/\.package\(\s*(?:name:\s*"[^"]*"\s*,\s*)?path:\s*"([^"]+)"/g)) out.push(path.resolve(dir, m[1]));
-      } else if (e.name.endsWith('.xcodeproj')) {
-        for (const m of read(path.join(fp, 'project.pbxproj')).matchAll(/isa = XCLocalSwiftPackageReference;\s*relativePath = "?([^";\n]+)"?;/g)) out.push(path.resolve(dir, m[1]));
-      } else if (depth < 4 && !e.name.startsWith('.') && !MANIFEST_SKIP.has(e.name) && (e.isDirectory() || e.isSymbolicLink())) {
-        walk(fp, depth + 1);
-      }
-    }
-  })(top, 0);
-  return out;
-}
-// The names in `parent` (the real checkout's parent directory) of the packages a
-// clone at `clone` builds against, transitively: ['DebugTrace', 'RAVESDK', ...].
-// The clone's own references resolve inside its slot; a package's own, inside
-// `parent`. Anything outside that layout can't be mirrored and is left alone.
-function siblingPackages(clone, parent) {
-  const names = new Set();
-  const seen = new Set([path.basename(clone)]);
-  const queue = [{ dir: clone, base: path.dirname(clone) }];
-  while (queue.length) {
-    const { dir, base } = queue.pop();
-    for (const ref of localPackageRefs(dir)) {
-      const rel = path.relative(base, ref);
-      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
-      const top = rel.split(path.sep)[0];
-      if (seen.has(top)) continue;
-      seen.add(top);
-      if (!fs.existsSync(path.join(parent, top))) continue;
-      names.add(top);
-      queue.push({ dir: path.join(parent, top), base: parent });
-    }
-  }
-  return [...names].sort();
-}
+const { localPackageRefs, siblingPackages } = require('./lib/projects');
 // `cp -c` shares the data blocks but still creates an inode per file, so cost
 // scales with file count: RegentChat's checkout is 357k files (a 27 GB Rust
 // `target/`, an Android client, a 15 GB iOS tree) and took 78 s to clone, nearly
@@ -590,7 +548,7 @@ async function executeBuild(job) {
       // would break only here, under the agent, and not when run by hand.
       const child = spawn(buildArgs[0], buildArgs.slice(1), {
         cwd: buildCwd,
-        env: { ...process.env, PLATFORM: job.platform },
+        env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore() },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       procs.set(job.id, child);
@@ -618,14 +576,22 @@ async function executeBuild(job) {
     // The public build identity links this job, its trace credential and retained
     // symbol set without reading the secret-bearing credential from the IPA.
     job.buildId = [...String(liveLogs.get(job.id) || '').matchAll(/^\s*Build ID:\s+([A-Za-z0-9-]+)\s*$/gm)].pop()?.[1] || null;
+    const kept = job.buildId ? readBuild(job.buildId, { store: buildStore(), verify: true }) : null;
+    if (kept) {
+      if (kept.manifest.app.bundleId !== job.bundleId) throw new Error('build manifest bundle identity differs from the requested target');
+      job.artifact = kept.manifest.artifact;
+      job.source = kept.manifest.source ? { fingerprint: kept.manifest.source.before.fingerprint,
+        stable: kept.manifest.source.stable, anyDirty: kept.manifest.source.before.anyDirty } : null;
+      if ((job.altSource || job.macApp) && kept.manifest.source?.stable === false) throw new Error('source changed during compilation; refusing to publish this download');
+    }
 
     // A Mac app is done once its zip is kept. Nothing below applies: there is
     // no IPA (a clone's build/ may still hold another platform's, which must not
     // be published as this one), no device and no install ledger.
     if (job.macApp) {
-      const appPath = builtMacApp(buildCwd, liveLogs.get(job.id));
+      const appPath = kept ? kept.manifest.app.bundleName : builtMacApp(buildCwd, liveLogs.get(job.id));
       if (!appPath) throw new Error('no signed .app found after the build');
-      const entry = await macBuilds.record(job.macApp, job.rev, job.builtBranch, appPath);
+      const entry = await macBuilds.record(job.macApp, job.rev, job.builtBranch, appPath, kept);
       job.version = entry.version;
       job.buildNo = entry.buildNo;
       job.status = 'success';
@@ -635,13 +601,14 @@ async function executeBuild(job) {
 
     // read the version actually installed from the SIGNED IPA (the staging
     // build/Payload copy predates the git-hash CFBundleVersion stamp)
+    if (kept && kept.manifest.artifact.kind !== 'ipa') throw new Error('device build manifest does not describe an IPA');
     let version = null, buildNo = null, ipaPath = null, appName = null;
     try {
       const buildDir = path.join(buildCwd, 'build');
-      const ipa = fs.readdirSync(buildDir).filter(f => f.endsWith('-signed.ipa'))
+      const ipa = !kept && fs.readdirSync(buildDir).filter(f => f.endsWith('-signed.ipa'))
         .map(f => ({ f, m: fs.statSync(path.join(buildDir, f)).mtimeMs }))
         .sort((a, b) => b.m - a.m)[0].f;
-      ipaPath = path.join(buildDir, ipa);
+      ipaPath = kept ? kept.file : path.join(buildDir, ipa);
       const info = await readIpaInfo(ipaPath, fs.statSync(ipaPath).mtimeMs);
       version = info.version;
       buildNo = info.buildNo;
@@ -1694,6 +1661,21 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/state' && req.method === 'GET') {
       return json(res, 200, await stateBundle());
+    }
+    const artifactRoute = url.pathname.match(/^\/api\/artifacts\/([A-Za-z0-9-]{1,64})\/(manifest|download)$/);
+    if (url.pathname === '/api/artifacts' && req.method === 'GET') {
+      return json(res, 200, { builds: listBuilds({ store: buildStore() }) });
+    }
+    if (artifactRoute && req.method === 'GET') {
+      let kept;
+      try { kept = readBuild(artifactRoute[1], { store: buildStore() }); }
+      catch { return json(res, 404, { error: 'Build artifact not found or invalid.' }); }
+      if (artifactRoute[2] === 'manifest') return json(res, 200, kept.manifest);
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': kept.manifest.artifact.bytes,
+        'Content-Disposition': `attachment; filename="${kept.manifest.artifact.file}"`, 'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff' });
+      fs.createReadStream(kept.file).on('error', () => res.destroy()).pipe(res);
+      return;
     }
     if (url.pathname === '/api/build' && req.method === 'POST') {
       const body = native.body || await readBody(req);

@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+'use strict';
+const fs = require('node:fs');
+const { snapshot, publish } = require('../lib/artifacts');
+
+try {
+  const [mode, ...args] = process.argv.slice(2);
+  if (mode === 'snapshot') {
+    const [project, output, argumentsFile] = args;
+    fs.writeFileSync(output, JSON.stringify(snapshot(project, { argumentsFile })), { mode: 0o600 });
+  } else if (mode === 'stamp') {
+    const path = require('node:path');
+    const { spawnSync } = require('node:child_process');
+    const [file, project] = args;
+    const directory = fs.realpathSync(project);
+    const source = JSON.parse(fs.readFileSync(file)).sources.filter(item => directory === item.path || directory.startsWith(item.path + path.sep))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    if (!source) throw new Error('source snapshot is missing the project');
+    if (!source.commit) console.log('');
+    else {
+      const result = spawnSync('git', ['-C', path.resolve(project), 'rev-parse', '--short', source.commit], { encoding: 'utf8' });
+      if (result.status !== 0) throw new Error('cannot resolve the captured commit');
+      console.log(result.stdout.trim() + (source.dirty ? '-dirty' : ''));
+    }
+  } else if (mode === 'publish') {
+    const [options] = args;
+    const input = JSON.parse(fs.readFileSync(options));
+    for (const key of ['before', 'after']) if (typeof input[key] === 'string') input[key] = JSON.parse(fs.readFileSync(input[key]));
+    const result = publish(input);
+    console.log(result.path);
+  } else throw new Error('usage: build-manifest snapshot PROJECT OUTPUT [ARGUMENTS] | stamp SNAPSHOT PROJECT | publish OPTIONS.json');
+} catch (error) {
+  console.error(`Build manifest: ${error.message}`);
+  process.exitCode = 1;
+}

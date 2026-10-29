@@ -13,7 +13,8 @@ Two parts, which ship together:
 
 ## Requirements
 
-- macOS with Xcode (`xcodebuild`, `xcrun devicectl`) and Node 18 or newer.
+- macOS with Xcode (`xcodebuild`, `xcrun devicectl`) and Node 18 or newer (also required
+  by the terminal build-and-sign command for artifact manifests).
 - Bash 4+ (`brew install bash`); the script's shebang is `/opt/homebrew/bin/bash`.
 - A paid Apple Developer account, a development certificate exported as `.p12`, and a **wildcard
   development provisioning profile** listing your devices (see below).
@@ -52,6 +53,9 @@ Extensions and watch apps need their own profiles when the profile isn't a wildc
    build-and-sign              # Release build, sign, install on the conf's device
    build-and-sign --help       # every flag
    ```
+
+   Keep the complete tools checkout: build-and-sign calls `bin/build-manifest` and
+   `lib/` beside its real path. A symlink on PATH works; copying only the bash file does not.
 
 4. Create the server's config and start it:
 
@@ -109,7 +113,9 @@ check that no build is active before restarting.
   Session tokens are hashed in the existing session store; password changes invalidate them.
 - Authenticated operations use `/api/service/v1/`: `state`, `build`, `builds/<id>/log`,
   `builds/<id>/cancel`, `traces`, trace files, `crashlogs`, crash files, `debug/apps`, and
-  an app's `help`/`call`. Other methods/paths, report deletion and web authentication
+  an app's `help`/`call`, plus `artifacts` (recent registered builds) and
+  `artifacts/<buildId>/manifest` and `/download`.
+  Other methods/paths, report deletion and web authentication
   operations are excluded. Native bearer credentials are not accepted at the old API paths.
 - `POST /api/service/v1/disconnect` revokes that session. The desktop app keeps it only in
   Rust memory and remembers only the service URL between launches.
@@ -131,6 +137,34 @@ the exact DWARF files; stale symbols from sibling targets are excluded. Each arc
 DWARF file has a SHA-256 and byte count. Updating
 an app does not rotate away its older symbols. Distribution and sign-only builds remain
 excluded; no automatic symbol pruning is enabled yet.
+
+### Immutable artifacts and source provenance
+
+Every signing invocation now gets a public build ID, also used as its DebugTrace key ID
+when a credential is embedded. Before installing, build-and-sign retains the exact signed
+IPA or Mac app zip under `~/.local/state/apparition/builds/<buildId>/` with an
+`apparition-build/1` manifest. Artifact and binary hashes, byte counts, UUIDs, original and
+installed bundle IDs, and the retained symbol set are recorded together. The build report
+prints the ID and manifest path. Signing-only inputs explicitly have unknown source
+provenance rather than inheriting the current checkout's revision.
+
+Source builds capture state before and after compilation: Git commits, dirty diffs,
+untracked file contents, local Swift package and submodule dependencies, resolved-package
+file hashes, toolchain versions and a digest of build arguments. Unversioned projects use
+a directory fingerprint; an unborn Git repo is supported too. Cached build directories
+are excluded. This records Git/directory and package state, not every possible input from
+an arbitrary build hook or ignored generated file. The version stamp uses the captured
+commit even if HEAD advances during compilation. A changed source fingerprint marks the
+build inconsistent, and source-feed/Mac-download jobs refuse to publish it.
+
+The service uses these retained artifacts instead of choosing a mutable build output
+when a manifest is available. Historical builds without manifests remain readable without
+inventing provenance. `APPARITION_BUILD_DIR` overrides the archive root; the service also
+accepts `buildManifestDir` in config and passes it to its build jobs. Archives contain
+signed apps and credentials and are private to this user. Relative `buildManifestDir`
+paths resolve beside the service configuration file. Automatic pruning is not yet
+enabled. Apparition desktop offers build details and verified downloads; it checks SHA-256
+and size before replacing a chosen destination file.
 
 ## Debug traces
 

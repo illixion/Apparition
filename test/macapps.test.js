@@ -105,6 +105,20 @@ describe('requests', () => {
     assert.equal(h.s.cached('com.example.a-macOS', 'aaaa111'), null);
     assert.ok(!fs.existsSync(path.join(h.dir, 'com.example.a-macOS-aaaa111.app.zip')));
   });
+
+  test('a registered artifact is copied exactly without inspecting or repacking mutable output', async () => {
+    const h = harness();
+    h.setBundle('com.example.wrong-mutable-output');
+    const file = path.join(h.dir, 'registered.zip'); fs.writeFileSync(file, 'registered artifact');
+    const sha256 = require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    const kept = { file, manifest: { buildId: 'build-id', artifact: { kind: 'app.zip', sha256 },
+      app: { bundleId: 'com.example.a', build: 'abc1234', version: '2.0', name: 'Display Name', minOSVersion: '14.0' } } };
+    const entry = await h.s.record('com.example.a-macOS', 'abc1234', 'main', 'ActualProduct.app', kept);
+    assert.equal(fs.readFileSync(h.s.file(entry), 'utf8'), 'registered artifact');
+    assert.equal(entry.bundle, 'ActualProduct.app');
+    assert.equal(entry.buildId, 'build-id'); assert.equal(entry.artifactSha256, sha256);
+    assert.equal(entry.minOSVersion, '14.0');
+  });
 });
 
 // ---- end to end: real server, a git repo, and a build-and-sign that makes an unsigned .app ----

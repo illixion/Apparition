@@ -42,6 +42,17 @@ Either form's value may itself be an object `{ "<platform>": [...], "*": [...] }
 
 ## The version-freshness model (important, non-obvious)
 
+`lib/artifacts.js` and `bin/build-manifest` retain immutable signed outputs under
+`~/.local/state/apparition/builds/<buildId>/` (`APPARITION_BUILD_DIR`, or the server's
+`buildManifestDir`). `apparition-build/1` manifests join artifact/binary digests and UUIDs,
+original/installed bundle IDs, symbols and before/after source fingerprints. Git, untracked
+contents, unversioned directories, local Swift packages/submodules, resolved packages,
+toolchain and argument digests are captured. This is scoped source provenance, not proof
+of every arbitrary hook input. Source instability blocks feed/Mac publication. Queue jobs
+prefer the manifest's exact artifact; old jobs without manifests retain the legacy path.
+`lib/projects.js` owns package-reference discovery for both clones and manifests.
+Native service routes expose manifest/download; session credentials remain required.
+
 Dev builds keep a **static** `CFBundleShortVersionString` (`"1.0"`), so the version string can never reveal whether a device is stale. Instead, `build-and-sign` stamps the **git short SHA into `CFBundleVersion`**, which `devicectl` reports back as `buildNo` (e.g. `"304c1c9"`, or `"24ca4f4-dirty"`). The freshness check compares that on-device SHA against the repo's HEAD commit (`git.commit`), falling back to the store ledger's recorded `commit` when `devicectl` gives a non-git buildNo. The frontend (`public/index.html`, `render()`) uses this to show up-to-date / out-of-date / dirty / other-branch state per platform. When touching version/staleness logic, reason about the SHA, not the version string.
 
 ## Auth (`lib/auth.js`) and live debugging (`lib/debug.js`)

@@ -7,6 +7,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
+const crypto = require('node:crypto');
 const { hashPassword } = require('../lib/auth');
 const { createService } = require('../lib/service');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'apparition-service-test-'));
@@ -20,7 +21,7 @@ before(async () => {
   await new Promise(resolve => socket.close(resolve));
   const config = path.join(dir, 'config.json');
   fs.writeFileSync(config, JSON.stringify({ port, bundlePrefix: 'com.example', repos: [],
-    passwordHash: hashPassword(password), crashLogs: { enabled: false } }));
+    passwordHash: hashPassword(password), crashLogs: { enabled: false }, buildManifestDir: 'artifacts' }));
   child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: { ...process.env, APPSTORE_CONFIG: config, APPSTORE_DATA: path.join(dir, 'data'),
       DEBUGTRACE_KEY_DIR: path.join(dir, 'keys') }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -77,6 +78,24 @@ test('native sessions authorize only the bounded service namespace and are revoc
 test('cross-site requests cannot establish or use a native session', async () => {
   assert.equal((await request('/api/service/connect', { method: 'POST', body: { password },
     headers: { Origin: 'https://unrelated.example' } })).status, 403);
+});
+
+test('artifact manifests and exact downloads require the native session', async () => {
+  const buildId = 'fixture-build', content = Buffer.from('immutable test artifact');
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+  const artifact = { sha256, bytes: content.length, kind: 'ipa', file: `${sha256}.ipa` };
+  const directory = path.join(dir, 'artifacts', buildId); fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, artifact.file), content);
+  fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ format: 'apparition-build/1', buildId, artifact }));
+  assert.equal((await request(`/api/service/v1/artifacts/${buildId}/manifest`)).status, 401);
+  const token = await connect();
+  const listed = await request('/api/service/v1/artifacts', { token });
+  assert.equal(listed.status, 200); assert.equal(listed.body.builds[0].buildId, buildId);
+  const manifest = await request(`/api/service/v1/artifacts/${buildId}/manifest`, { token });
+  assert.equal(manifest.status, 200); assert.equal(manifest.body.artifact.sha256, sha256);
+  const download = await fetch(base + `/api/service/v1/artifacts/${buildId}/download`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(download.status, 200); assert.deepEqual(Buffer.from(await download.arrayBuffer()), content);
+  assert.equal((await request('/api/service/v1/artifacts/nonexistent/manifest', { token })).status, 404);
 });
 
 test('target validation preserves platform identity and refuses arbitrary branches/options', async () => {
