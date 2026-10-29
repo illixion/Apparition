@@ -25,6 +25,10 @@ const server = http.createServer(async (req, res) => {
     const json = value => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (req.url === '/api/service/connect') {
       assert.equal(req.headers.authorization, undefined);
+      if (body.password === 'rejected-delayed') {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{}');
+      }
       if (body.password === 'rejected') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{}'); }
       if (body.password === 'redirect') { res.writeHead(302, { Location: '/stolen' }); return res.end(); }
       if (body.password === 'oversized') {

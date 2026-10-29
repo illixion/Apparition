@@ -63,6 +63,16 @@ import Foundation
         let rejected = BuildService(defaults: defaults, passwords: passwords)
         await rejected.restoreConnection()
         precondition(!rejected.connected && stored[origin] == nil) // Do not retry a revoked password on every launch.
+        stored[origin] = "fixture-password"
+        let otherOrigin = "https://other.example.invalid/"
+        stored[otherOrigin] = "other-fixture"
+        let pending = Task { await service.connect(password: "rejected-delayed", restoring: true) }
+        try await Task.sleep(for: .milliseconds(100))
+        await service.disconnect()
+        service.address = otherOrigin
+        await pending.value
+        precondition(stored[otherOrigin] == "other-fixture")
+        precondition(service.message == "Disconnected.") // A stale reply cannot change the new connection state.
         print("PASS: password restoration, expiry recovery, origin scoping, forgetting, rejected credentials and transport boundaries")
     }
 }

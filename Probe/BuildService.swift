@@ -225,8 +225,9 @@ final class BuildService {
         busy = true
         defer { busy = false }
         let expected = generation
+        let destination = try? Self.serviceURL(address)
         do {
-            let url = try Self.serviceURL(address)
+            guard let url = destination else { throw Failure.address }
             let credential = try await openSession(at: url, password: password)
             guard expected == generation else { throw Failure.expired }
             base = url; token = credential; connected = true; restoreAttempted = true
@@ -235,9 +236,10 @@ final class BuildService {
             message = saved ? "Connected." : "Connected, but the password could not be saved in this device's Keychain."
             await refresh()
         } catch Failure.rejected(401) {
-            if restoring, let url = try? Self.serviceURL(address) { passwords.delete(url.absoluteString) }
+            guard expected == generation else { return }
+            if restoring, let url = destination { passwords.delete(url.absoluteString) }
             message = Failure.rejected(401).localizedDescription
-        } catch { message = error.localizedDescription }
+        } catch { if expected == generation { message = error.localizedDescription } }
     }
 
     func disconnect() async {
