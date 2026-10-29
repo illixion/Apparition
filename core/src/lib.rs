@@ -419,6 +419,57 @@ fn auth_code(error: &Report) -> Option<i64> {
     })
 }
 
+/// Apple's GrandSlam service can transiently return 503 during either SRP request. Retry only
+/// those two transport failures; authentication rejections and all later stages stay single-shot.
+fn is_transient_srp_503(error: &Report) -> bool {
+    let srp_request = error.iter_reports().any(|cause| {
+        matches!(
+            cause.format_current_context().to_string().as_str(),
+            "Failed to send initial login request" | "Failed to send proof login request"
+        )
+    });
+    let service_unavailable = error.iter_reports().any(|cause| {
+        if let Some(error) = cause.downcast_current_context::<reqwest::Error>() {
+            return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        }
+        if let Some(reqwest_middleware::Error::Reqwest(error)) =
+            cause.downcast_current_context::<reqwest_middleware::Error>()
+        {
+            return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        }
+        false
+    });
+    srp_request && service_unavailable
+}
+
+/// The Xcode app-token request is read-only and can be repeated when GrandSlam returns 503.
+async fn developer_session_with_retry(account: &mut AppleAccount) -> Result<DeveloperSession, Report> {
+    match DeveloperSession::from_account(account).await {
+        Ok(session) => Ok(session),
+        Err(error)
+            if error.iter_reports().any(|cause| {
+                cause.format_current_context().to_string() == "Failed to send app token request"
+            })
+                && error.iter_reports().any(|cause| {
+                    if let Some(error) = cause.downcast_current_context::<reqwest::Error>() {
+                        return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+                    }
+                    if let Some(reqwest_middleware::Error::Reqwest(error)) =
+                        cause.downcast_current_context::<reqwest_middleware::Error>()
+                    {
+                        return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+                    }
+                    false
+                }) =>
+        {
+            tracing::warn!("GrandSlam returned HTTP 503 during Xcode token request; retrying once after 10 seconds");
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            DeveloperSession::from_account(account).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, or the built-in
 /// provider for [`BUILTIN_ANISETTE`]; state kept in `<data_dir>/storage.json`) and opens a
 /// developer session. `two_factor` answers 2FA.
@@ -453,8 +504,15 @@ pub async fn sign_in(
             error.context("Apple ID sign-in failed").into_dynamic()
         }
     };
-    let mut account =
-        AppleAccount::builder(email).anisette_provider(anisette).login(&password, callback).await.map_err(refused)?;
+    let mut account = AppleAccount::builder(email).anisette_provider(anisette).build().await.map_err(refused)?;
+    if let Err(error) = account.login(&password, callback).await {
+        if !is_transient_srp_503(&error) {
+            return Err(refused(error));
+        }
+        tracing::warn!("GrandSlam returned HTTP 503 during SRP; retrying once after 10 seconds");
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        account.login(&password, callback).await.map_err(refused)?;
+    }
 
     // The Xcode token, and the developer requests made with it, may need another claim than the
     // sign-in (claimed_platform, `after_sign_in`).
@@ -465,7 +523,7 @@ pub async fn sign_in(
         }
     };
     claim_after_sign_in(&mut account);
-    let session = match DeveloperSession::from_account(&mut account).await {
+    let session = match developer_session_with_retry(&mut account).await {
         Ok(session) => session,
         // Claiming Android, a sign-in Apple doesn't trust yet got no 2FA step and no Xcode
         // token (-22411) until the code it pushes to the trusted devices was checked: sign in
@@ -475,7 +533,7 @@ pub async fn sign_in(
             account.code_after_login = true;
             account.login(&password, callback).await.map_err(refused)?;
             claim_after_sign_in(&mut account);
-            DeveloperSession::from_account(&mut account).await.context("Failed to open a developer session")?
+            developer_session_with_retry(&mut account).await.context("Failed to open a developer session")?
         }
         Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-80046) => {
             return Err(error.context(REFUSED_ANDROID_ANISETTE).into_dynamic());

@@ -66,6 +66,10 @@ anisette = ["dep:libc", "dep:axum", "tokio/net", "tokio/time", "tokio/sync"]
 name = "apptoken_probe"
 required-features = ["anisette"]
 
+[[example]]
+name = "grandslam_init_probe"
+required-features = ["desktop", "anisette"]
+
 [dev-dependencies]
 rand = "0.8"
 rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
