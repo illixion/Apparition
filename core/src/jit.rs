@@ -239,7 +239,11 @@ pub async fn serve(
                 gdb.proxy.send_raw(&[0x03]).await?;
                 // Bounded: a process that died meanwhile may never answer.
                 let _ = tokio::time::timeout(CLOSE_WAIT, gdb.read()).await;
-                tokio::time::timeout(CLOSE_WAIT, gdb.request("D")).await.ok();
+                events.log(match tokio::time::timeout(CLOSE_WAIT, gdb.request("D")).await {
+                    Ok(Ok(reply)) => format!("detached: {reply}"),
+                    Ok(Err(error)) => format!("detach failed: {error}"),
+                    Err(_) => "detach timed out".into(),
+                });
                 detached = true;
                 break ended;
             }
