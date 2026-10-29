@@ -1176,7 +1176,7 @@ embed_trace_credential() {
 import json, os, time
 e = os.environ
 record = {
-    "keyId": e["TRACE_KEY_ID"], "algorithm": "ed25519", "publicKey": e["TRACE_PUBLIC_KEY"],
+    "keyId": e["TRACE_KEY_ID"], "buildId": e["TRACE_KEY_ID"], "algorithm": "ed25519", "publicKey": e["TRACE_PUBLIC_KEY"],
     "bundleId": e["TRACE_BUNDLE_ID"], "build": e["TRACE_BUILD"], "platform": e["TRACE_PLATFORM"],
     "configuration": e["TRACE_CONFIG"], "project": e["TRACE_PROJECT"], "branch": e["TRACE_BRANCH"],
     "device": e["TRACE_DEVICE"], "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1347,52 +1347,91 @@ for d in exact + loose:
 # device, one set per app and device. A device that is not updated stays on its
 # old build while others move on, and the build folder's dSYM is replaced by the
 # next build, so a crash report from the old build could no longer be symbolicated.
-# One slot per bundle id and device, replaced by the next successful install to
-# that device (the replaced one is kept once, as <slot>.previous): it never grows
-# past two builds, and it always matches what the device runs.
-# `cp -c` clones on APFS, so there is no copy time and no extra disk until the
-# build folder's dSYM is overwritten. uuids.json maps each binary UUID to its DWARF
-# file, which is how DebugTrace/Tools/debugtrace-symbolicate finds the dSYM for a
-# MetricKit report. DEBUGTRACE_DSYM_DIR overrides the location.
+# Immutable symbol sets keyed by the build credential id, with a UUID index.
+# Keep old app/device slots readable; a later build never rotates away symbols
+# that a tester's delayed report may still need. Also archive --no-deploy builds.
 DEBUGTRACE_DSYM_DIR="${DEBUGTRACE_DSYM_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/debugtrace/dsyms}"
 archive_dsyms() {
-    local products slot tmp dsym build_no
-    products="$(dirname "$APP_PATH")"
-    slot="$DEBUGTRACE_DSYM_DIR/$BUILD_BUNDLE_ID@${DEVICE_NAME:-local}"
-    if ! compgen -G "$products/*.dSYM" >/dev/null; then
-        echo "WARNING: no dSYM next to $(basename "$APP_PATH"); crash reports from this build can't be symbolicated" >&2
-        return 0
-    fi
-    mkdir -p "$DEBUGTRACE_DSYM_DIR"
-    tmp="$slot.incoming"
-    rm -rf "$tmp"
-    mkdir -p "$tmp"
-    for dsym in "$products"/*.dSYM; do
-        cp -cR "$dsym" "$tmp/" 2>/dev/null || cp -R "$dsym" "$tmp/"
-    done
+    local build_no
     build_no=$(plutil -extract CFBundleVersion raw -o - "$APP_BUNDLE/Info.plist" 2>/dev/null \
         || plutil -extract CFBundleVersion raw -o - "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)
-    DSYM_SLOT="$tmp" DSYM_BUILD="$build_no" DSYM_KEY_ID="$TRACE_KEY_ID" DSYM_BUNDLE="$BUILD_BUNDLE_ID" \
-    DSYM_DEVICE="${DEVICE_NAME:-local}" /usr/bin/python3 -c '
-import glob, json, os, re, subprocess, time
+    DSYM_PRODUCTS="$(dirname "$APP_PATH")" DSYM_APP="$APP_PATH" DSYM_ARCHIVE="$DEBUGTRACE_DSYM_DIR" \
+    DSYM_BUILD="$build_no" DSYM_KEY_ID="$TRACE_KEY_ID" DSYM_BUNDLE="$BUILD_BUNDLE_ID" \
+    DSYM_PLATFORM="$PLATFORM" DSYM_CONFIG="$CONFIG" DSYM_DEVICE="${DEVICE_NAME:-local}" /usr/bin/python3 -c '
+import hashlib, json, os, pathlib, re, shutil, subprocess, tempfile, time, uuid
+
 e = os.environ
-uuids = {}
-for dsym in sorted(glob.glob(os.path.join(e["DSYM_SLOT"], "*.dSYM"))):
-    out = subprocess.run(["dwarfdump", "--uuid", dsym], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        m = re.match(r"UUID: ([0-9A-F-]{36}) \((\S+)\) (.+)$", line)
-        if m:
-            uuids.setdefault(m.group(1), {"arch": m.group(2), "dwarf": os.path.relpath(m.group(3), e["DSYM_SLOT"])})
-record = {"bundleId": e["DSYM_BUNDLE"], "device": e["DSYM_DEVICE"], "build": e["DSYM_BUILD"],
-          "keyId": e["DSYM_KEY_ID"], "archivedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uuids": uuids}
-json.dump(record, open(os.path.join(e["DSYM_SLOT"], "uuids.json"), "w"), indent=1)
+sources = sorted(pathlib.Path(e["DSYM_PRODUCTS"]).glob("*.dSYM"))
+if not sources:
+    print("WARNING: no dSYMs found; this build cannot be symbolicated")
+    raise SystemExit(0)
+uuid_pattern = re.compile(r"UUID: ([0-9A-Fa-f-]{36}) ")
+def binary_uuids(path):
+    output = subprocess.run(["dwarfdump", "--uuid", str(path)], check=True, capture_output=True, text=True).stdout
+    return {item.upper() for item in uuid_pattern.findall(output)}
+# The products directory can contain stale dSYMs from other targets. Keep only
+# UUIDs actually present in this app and its embedded frameworks/extensions.
+magic = {bytes.fromhex(value) for value in ("feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
+wanted = set()
+for binary in pathlib.Path(e["DSYM_APP"]).rglob("*"):
+    if binary.is_file():
+        with binary.open("rb") as handle:
+            is_macho = handle.read(4) in magic
+        if is_macho:
+            wanted.update(binary_uuids(binary))
+build_id = e["DSYM_KEY_ID"] or uuid.uuid4().hex
+bundle = e["DSYM_BUNDLE"]
+if not re.fullmatch(r"[A-Za-z0-9.-]+", bundle) or not re.fullmatch(r"[A-Za-z0-9-]+", build_id):
+    raise SystemExit("invalid symbol archive identity")
+root = pathlib.Path(e["DSYM_ARCHIVE"])
+root.mkdir(parents=True, exist_ok=True)
+slot = root / (bundle + "@" + build_id)
+stage = pathlib.Path(tempfile.mkdtemp(prefix=".incoming-", dir=root))
+try:
+    uuids = {}
+    for source in sources:
+        if not binary_uuids(source).intersection(wanted):
+            continue
+        copied = stage / source.name
+        clone = subprocess.run(["/bin/cp", "-cR", str(source), str(stage)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if clone.returncode:
+            if copied.exists():
+                shutil.rmtree(copied)
+            shutil.copytree(source, copied)
+        out = subprocess.run(["dwarfdump", "--uuid", str(copied)], check=True, capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            match = re.match(r"UUID: ([0-9A-Fa-f-]{36}) \((\S+)\) (.+)$", line)
+            if match:
+                if match.group(1).upper() not in wanted:
+                    continue
+                dwarf = pathlib.Path(match.group(3)).resolve()
+                relative = dwarf.relative_to(stage.resolve())
+                if not dwarf.is_file():
+                    raise ValueError("missing archived DWARF file")
+                digest = hashlib.sha256()
+                with dwarf.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                uuids.setdefault(match.group(1).upper(), {"arch": match.group(2), "dwarf": str(relative),
+                                 "sha256": digest.hexdigest(), "bytes": dwarf.stat().st_size})
+    if not uuids:
+        raise ValueError("no binary UUIDs found in the dSYMs")
+    record = {"format": "apparition-symbols/1", "buildId": build_id, "keyId": e["DSYM_KEY_ID"],
+              "bundleId": bundle, "device": e["DSYM_DEVICE"], "build": e["DSYM_BUILD"],
+              "platform": e["DSYM_PLATFORM"], "configuration": e["DSYM_CONFIG"],
+              "archivedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "uuids": uuids}
+    (stage / "uuids.json").write_text(json.dumps(record, indent=1))
+    if slot.exists():
+        old = json.loads((slot / "uuids.json").read_text())
+        if any(old.get(k) != record.get(k) for k in ("buildId", "bundleId", "build", "uuids")):
+            raise ValueError("refusing to overwrite a different symbol set for this build id")
+    else:
+        stage.rename(slot)
+    print("==> Kept immutable dSYMs for build " + build_id + " (" + str(len(uuids)) + " UUIDs)")
+finally:
+    if stage.exists():
+        shutil.rmtree(stage)
 '
-    # The build before this one stays as <slot>.previous: a crash is only reported on the next
-    # launch, and if the app was updated in between, that report is about the build just replaced.
-    rm -rf "$slot.previous"
-    [[ -d "$slot" ]] && mv "$slot" "$slot.previous"
-    mv "$tmp" "$slot"
-    echo "==> Kept dSYMs for $BUILD_BUNDLE_ID on ${DEVICE_NAME:-local} ($(du -sh "$slot" | cut -f1))"
 }
 
 # Step 9: Deploy to device
@@ -1410,7 +1449,7 @@ if [[ "$NO_DEPLOY" == false ]]; then
     xcrun devicectl device install app --device "$DEVICE_ID" "$SIGNED_IPA" >>"$LOG_FILE" 2>&1
     INSTALL_STATUS="installed"
 fi
-if [[ "$INSTALL_STATUS" == installed && "${HAS_DEBUGTRACE:-false}" == true && "$USE_DIST" == false \
+if [[ "${HAS_DEBUGTRACE:-false}" == true && "$USE_DIST" == false \
       && "$SIGN_ONLY" == false && -n "${APP_PATH:-}" ]]; then
     archive_dsyms || echo "WARNING: could not keep the dSYMs of this build" >&2
 fi
@@ -1612,6 +1651,7 @@ printf '  %-12s %s\n' "App:" "$BUILD_BUNDLE_ID"
 [[ -n "$EXTENSION_ID" ]] && printf '  %-12s %s\n' "Extension:" "$EXTENSION_ID"
 [[ -n "$WATCH_ID" ]] && printf '  %-12s %s\n' "Watch:" "$WATCH_ID"
 [[ -n "$GIT_STAMP" ]] && printf '  %-12s %s\n' "Build:" "$GIT_STAMP"
+[[ -n "$TRACE_KEY_ID" ]] && printf '  %-12s %s\n' "Build ID:" "$TRACE_KEY_ID"
 printf '  %-12s %s\n' "Config:" "$CONFIG"
 printf '  %-12s %s items\n' "Signed:" "$SIGNED_COUNT"
 if [[ "$MACOS_BUILD" == true ]]; then

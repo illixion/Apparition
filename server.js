@@ -615,6 +615,10 @@ async function executeBuild(job) {
       });
     });
 
+    // The public build identity links this job, its trace credential and retained
+    // symbol set without reading the secret-bearing credential from the IPA.
+    job.buildId = [...String(liveLogs.get(job.id) || '').matchAll(/^\s*Build ID:\s+([A-Za-z0-9-]+)\s*$/gm)].pop()?.[1] || null;
+
     // A Mac app is done once its zip is kept. Nothing below applies: there is
     // no IPA (a clone's build/ may still hold another platform's, which must not
     // be published as this one), no device and no install ledger.
@@ -685,7 +689,7 @@ async function executeBuild(job) {
     if (!job.altSource) {
       state.installs[job.device] = state.installs[job.device] || {};
       state.installs[job.device][job.bundleId] = {
-        repo: job.repo, branch: job.builtBranch, commit: job.commit,
+        repo: job.repo, branch: job.builtBranch, commit: job.commit, buildId: job.buildId,
         platform: job.platform, version, buildNo, at: Date.now(),
         confirmed: !job.noDeploy,
       };
@@ -1320,7 +1324,7 @@ async function receiveTrace(req) {
     createdAt: manifest.createdAt, session: manifest.session, note: manifest.note || null,
     app: manifest.app, device: manifest.device,
     build: {
-      keyId: key.keyId, repo: repoForBundle(key.bundleId), branch: key.branch || null,
+      keyId: key.keyId, buildId: key.buildId || key.keyId, repo: repoForBundle(key.bundleId), branch: key.branch || null,
       platform: key.platform || null, configuration: key.configuration || null,
       installedTo: key.device || null, builtAt: key.createdAt || null,
     },

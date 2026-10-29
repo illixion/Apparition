@@ -123,6 +123,15 @@ logs, cancellation, DebugTrace approvals and report verification use the existin
 `test/service.test.js` exercises the real HTTP authentication/route boundary and target
 validation. The frontend/controller and Rust transport tests live in Apparition.
 
+Build jobs, trace metadata and retained symbols share a public `buildId` (the per-build
+credential ID), independent of the Git SHA build number. Development source builds keep
+immutable symbols under `~/.local/state/debugtrace/dsyms/<bundleId>@<buildId>/`, including
+`--no-deploy` builds served to testers. UUIDs from the app and its embedded binaries select
+the exact DWARF files; stale symbols from sibling targets are excluded. Each archived
+DWARF file has a SHA-256 and byte count. Updating
+an app does not rotate away its older symbols. Distribution and sign-only builds remain
+excluded; no automatic symbol pruning is enabled yet.
+
 ## Debug traces
 
 Apps that link DebugTrace can upload a trace zip to `POST /api/traces`. `build-and-sign` generates
