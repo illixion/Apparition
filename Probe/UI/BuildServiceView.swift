@@ -20,12 +20,18 @@ struct BuildServiceView: View {
                         Button("Connect") {
                             let value = password
                             password = ""
-                            Task { await service.connect(password: value) }
+                            Task {
+                                if value.isEmpty { await service.connectWithRememberedPassword() }
+                                else { await service.connect(password: value) }
+                            }
                         }
-                        .disabled(service.busy || password.isEmpty || service.address.isEmpty)
-                        Text("Use the Mac service password. This is separate from the companion relay and Apple ID. Sign in again after quitting Apparition.")
+                        .disabled(service.busy || (password.isEmpty && !service.hasRememberedPassword) || service.address.isEmpty)
+                        Text("Use the Mac service password. This is separate from the companion relay and Apple ID.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                    Toggle("Remember password on this device", isOn: $service.rememberPassword)
+                    Text("Remembered passwords stay in this device's Keychain. Turning this off forgets them; Disconnect forgets the password for this service.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     if !service.message.isEmpty { Text(service.message).accessibilityIdentifier("buildServiceStatus") }
                 }
                 if service.connected {
@@ -71,6 +77,7 @@ struct BuildServiceView: View {
                 }
             }
             .navigationTitle("Developer")
+            .task { await service.restoreConnection() }
             .toolbar {
                 if service.connected { Button("Refresh", systemImage: "arrow.clockwise") { Task { await service.refresh() } } }
             }

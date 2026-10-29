@@ -227,7 +227,9 @@ Implementation order:
    projects/devices, explicit build jobs, logs and report browsing are implemented in
    desktop Apparition. The initial device Developer tab adds service sign-in, project
    and branch selection, build-only/install jobs, logs, cancellation and registered-build
-   browsing. Its credentials stay in memory and authenticated requests refuse redirects.
+   browsing. Service passwords can be remembered in this device's Keychain, separately
+   per service, for automatic reconnection. Bearer sessions stay in memory and
+   authenticated requests refuse redirects. Disconnect forgets the service password.
    Desktop Apparition can also register an existing Mac checkout and its targets.
    Next: the rest of the device reporting/install workflow.
    A Mac with Xcode executes Apple builds; other desktop platforms can connect to it.

@@ -14,6 +14,7 @@ const compiled = spawnSync('xcrun', ['swiftc', path.join(root, 'Probe/BuildServi
 if (compiled.status !== 0) process.exit(1);
 const token = 'A'.repeat(43); // Synthetic fixture value, never a real credential.
 let job = null, revoked = false, redirected = false;
+let successfulConnections = 0, expiredOnce = false;
 const requests = [];
 const server = http.createServer(async (req, res) => {
   try {
@@ -24,19 +25,26 @@ const server = http.createServer(async (req, res) => {
     const json = value => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (req.url === '/api/service/connect') {
       assert.equal(req.headers.authorization, undefined);
+      if (body.password === 'rejected') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{}'); }
       if (body.password === 'redirect') { res.writeHead(302, { Location: '/stolen' }); return res.end(); }
       if (body.password === 'oversized') {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': 9 * 1024 * 1024 });
         return res.end('{}');
       }
       assert.equal(body.password, 'fixture-password');
+      successfulConnections++;
       return json({ protocol: 'apparition-service', version: 1, token });
     }
     if (req.url === '/stolen') { redirected = true; return json({}); }
     assert.equal(req.headers.authorization, 'Bearer ' + token);
     assert.equal(revoked, false);
-    if (req.url === '/api/service/v1/state') return json({ host: 'fixture', repos: [{ name: 'Fixture', branches: [],
-      platforms: [{ platform: 'visionOS', device: 'AVP' }] }], builds: job ? [job] : [] });
+    if (req.url === '/api/service/v1/state') {
+      if (successfulConnections === 2 && !expiredOnce) {
+        expiredOnce = true; res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{}');
+      }
+      return json({ host: 'fixture', repos: [{ name: 'Fixture', branches: [],
+        platforms: [{ platform: 'visionOS', device: 'AVP' }] }], builds: job ? [job] : [] });
+    }
     if (req.url === '/api/service/v1/artifacts') return json({ builds: [] });
     if (req.url === '/api/service/v1/build') {
       assert.deepEqual(body, { repo: 'Fixture', device: 'AVP', targetPlatform: 'visionOS', branch: 'current',
@@ -55,7 +63,7 @@ server.listen(0, '127.0.0.1', async () => {
   const timer = setTimeout(() => { child.kill('SIGTERM'); process.exitCode = 1; }, 30000);
   child.on('exit', code => {
     clearTimeout(timer);
-    try { assert.equal(code, 0); assert.equal(revoked, true); assert.equal(redirected, false); assert.ok(requests.length > 8); }
+    try { assert.equal(code, 0); assert.equal(revoked, true); assert.equal(redirected, false); assert.equal(expiredOnce, true); assert.equal(successfulConnections, 3); assert.ok(requests.length > 8); }
     catch (error) { console.error(error); process.exitCode = 1; }
     server.close(); server.closeAllConnections();
   });

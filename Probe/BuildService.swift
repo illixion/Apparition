@@ -1,8 +1,41 @@
 import Foundation
 import Observation
+import Security
+
+struct BuildServicePasswords {
+    var load: (String) -> String?
+    var save: (String, String) -> Bool
+    var delete: (String?) -> Void
+
+    static let keychain: Self = {
+        let service = "com.illixion.apparition.build-service"
+        func query(_ origin: String?) -> [String: Any] {
+            var values: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                        kSecAttrService as String: service]
+            if let origin { values[kSecAttrAccount as String] = origin }
+            return values
+        }
+        return Self(load: { origin in
+            var values = query(origin)
+            values[kSecReturnData as String] = true
+            var result: CFTypeRef?
+            guard SecItemCopyMatching(values as CFDictionary, &result) == errSecSuccess,
+                  let data = result as? Data else { return nil }
+            return String(data: data, encoding: .utf8)
+        }, save: { origin, password in
+            let attributes: [String: Any] = [kSecValueData as String: Data(password.utf8),
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+            let status = SecItemUpdate(query(origin) as CFDictionary, attributes as CFDictionary)
+            if status == errSecSuccess { return true }
+            guard status == errSecItemNotFound else { return false }
+            return SecItemAdd(query(origin).merging(attributes) { _, new in new } as CFDictionary, nil) == errSecSuccess
+        }, delete: { origin in _ = SecItemDelete(query(origin) as CFDictionary) })
+    }()
+}
 
 /// A build-service session is independent of pairing, Apple ID and live debug access.
-/// Keep its bearer in memory only and never follow redirects with credentials.
+/// Keep its bearer in memory; optionally remember the password in this device's
+/// Keychain, separately for each service origin. Never follow credential redirects.
 private final class BuildServiceRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
@@ -70,15 +103,25 @@ final class BuildService {
     private(set) var artifacts: [Artifact] = []
     private(set) var detail = ""
     var message = ""
+    var rememberPassword: Bool {
+        didSet {
+            defaults.set(rememberPassword, forKey: "rememberBuildServicePassword")
+            if !rememberPassword { passwords.delete(nil) }
+        }
+    }
     @ObservationIgnored private var base: URL?
     @ObservationIgnored private var token: String?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let passwords: BuildServicePasswords
+    @ObservationIgnored private var restoreAttempted = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, passwords: BuildServicePasswords = .keychain) {
         self.defaults = defaults
+        self.passwords = passwords
         address = defaults.string(forKey: "buildServiceURL") ?? ""
+        rememberPassword = defaults.object(forKey: "rememberBuildServicePassword") as? Bool ?? true
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.httpCookieStorage = nil
@@ -89,12 +132,17 @@ final class BuildService {
     }
 
     static func serviceURL(_ value: String) throws -> URL {
-        guard let components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+        guard var components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
               components.query == nil, components.fragment == nil,
               components.path.isEmpty || components.path == "/",
               components.scheme == "https" || (components.scheme == "http" && ["localhost", "127.0.0.1", "[::1]", "::1"].contains(host)),
-              let url = components.url else { throw Failure.address }
+              components.url != nil else { throw Failure.address }
+        components.scheme = components.scheme?.lowercased()
+        components.host = host.lowercased()
+        if (components.scheme == "https" && components.port == 443) || (components.scheme == "http" && components.port == 80) { components.port = nil }
+        components.path = "/"
+        guard let url = components.url else { throw Failure.address }
         return url
     }
 
@@ -125,31 +173,77 @@ final class BuildService {
     private func authenticated<T: Decodable>(_ path: String, body: [String: Any]? = nil) async throws -> T {
         guard let base, let token, connected else { throw Failure.expired }
         let expected = generation
-        let reply: T = try await request("api/service/v1/" + path, at: base, token: token, body: body)
+        let reply: T
+        do { reply = try await request("api/service/v1/" + path, at: base, token: token, body: body) }
+        catch Failure.rejected(401) {
+            guard expected == generation else { throw Failure.expired }
+            guard rememberPassword, let password = passwords.load(base.absoluteString) else {
+                connected = false; self.token = nil
+                throw Failure.rejected(401)
+            }
+            let refreshed: String
+            do { refreshed = try await openSession(at: base, password: password) }
+            catch Failure.rejected(401) {
+                guard expected == generation else { throw Failure.expired }
+                passwords.delete(base.absoluteString); connected = false; self.token = nil
+                throw Failure.rejected(401)
+            }
+            guard expected == generation else { throw Failure.expired }
+            self.token = refreshed
+            reply = try await request("api/service/v1/" + path, at: base, token: refreshed, body: body)
+        }
         guard expected == generation else { throw Failure.expired }
         return reply
     }
 
-    func connect(password: String) async {
+    private func openSession(at url: URL, password: String) async throws -> String {
+        let reply: Connection = try await request("api/service/connect", at: url, body: ["password": password])
+        guard reply.protocol == "apparition-service", reply.version == 1,
+              reply.token.count == 43, reply.token.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }) else { throw Failure.response }
+        return reply.token
+    }
+
+    func restoreConnection() async {
+        guard !connected, !busy, !restoreAttempted, rememberPassword else { return }
+        restoreAttempted = true
+        await connectWithRememberedPassword()
+    }
+
+    var hasRememberedPassword: Bool {
+        guard rememberPassword, let url = try? Self.serviceURL(address) else { return false }
+        return passwords.load(url.absoluteString) != nil
+    }
+
+    func connectWithRememberedPassword() async {
+        guard rememberPassword else { return }
+        guard let url = try? Self.serviceURL(address), let password = passwords.load(url.absoluteString) else { return }
+        await connect(password: password, restoring: true)
+    }
+
+    func connect(password: String, restoring: Bool = false) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
         let expected = generation
         do {
             let url = try Self.serviceURL(address)
-            let reply: Connection = try await request("api/service/connect", at: url, body: ["password": password])
+            let credential = try await openSession(at: url, password: password)
             guard expected == generation else { throw Failure.expired }
-            guard reply.protocol == "apparition-service", reply.version == 1,
-                  reply.token.count == 43, reply.token.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }) else { throw Failure.response }
-            base = url; token = reply.token; connected = true
+            base = url; token = credential; connected = true; restoreAttempted = true
             defaults.set(url.absoluteString, forKey: "buildServiceURL")
-            message = "Connected."
+            let saved = !rememberPassword || passwords.save(url.absoluteString, password)
+            message = saved ? "Connected." : "Connected, but the password could not be saved in this device's Keychain."
             await refresh()
+        } catch Failure.rejected(401) {
+            if restoring, let url = try? Self.serviceURL(address) { passwords.delete(url.absoluteString) }
+            message = Failure.rejected(401).localizedDescription
         } catch { message = error.localizedDescription }
     }
 
     func disconnect() async {
         let previous = base, credential = token
+        if let origin = previous ?? (try? Self.serviceURL(address)) { passwords.delete(origin.absoluteString) }
+        restoreAttempted = true
         generation = UUID(); connected = false; token = nil; base = nil
         state = nil; artifacts = []; detail = ""; message = "Disconnected."
         if let previous, let credential {
@@ -164,7 +258,7 @@ final class BuildService {
             state = next
             let builds: Artifacts = try await authenticated("artifacts")
             artifacts = builds.builds
-        } catch { if connected { message = error.localizedDescription } }
+        } catch { message = error.localizedDescription }
     }
 
     func build(project: Project, target: Target, branch: String, deploy: Bool, launch: Bool, debug: Bool, patch: Bool) async {
