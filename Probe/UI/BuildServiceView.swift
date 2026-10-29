@@ -105,7 +105,7 @@ private struct BuildProjectView: View {
     }
 
     private var controls: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 24) {
             Picker("Target", selection: $target) {
                 ForEach(Array(project.platforms.enumerated()), id: \.offset) { index, item in
                     Text("\(item.platform) · \(item.device)").tag(index)
@@ -115,17 +115,31 @@ private struct BuildProjectView: View {
                 Text("Current checkout").tag("current")
                 ForEach((project.branches ?? []).filter { $0 != "current" }, id: \.self) { Text($0).tag($0) }
             }
-            Toggle("Launch after installation", isOn: $launch)
             Toggle("Debug access", isOn: $debug)
             Toggle("Live patching", isOn: $patch)
             Text("Live patching adds instrumentation and can reduce performance. Debug access still requires approval on the target device. These options do not enable JIT.")
                 .font(.footnote).foregroundStyle(.secondary)
-            HStack {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Build without installing").font(.headline)
                 Button("Build only") { submit(deploy: false) }
-                Button("Build & Install") { submit(deploy: true) }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("developerBuildOnly")
             }
-            .disabled(service.busy || !project.platforms.indices.contains(target))
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Install on device").font(.headline)
+                Toggle("Launch after installation", isOn: $launch)
+                Button("Build & install on \(selectedDevice)") { submit(deploy: true) }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("developerBuildAndInstall")
+            }
         }
+        .padding(.vertical, 12)
+        .disabled(service.busy || !project.platforms.indices.contains(target))
+    }
+
+    private var selectedDevice: String {
+        project.platforms.indices.contains(target) ? project.platforms[target].device : "selected device"
     }
 
     private func submit(deploy: Bool) {
