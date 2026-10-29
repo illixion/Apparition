@@ -46,6 +46,7 @@ sha2 = "0.10"
 argon2 = "0.5"
 # Official releases (release.rs): fetching them, and their SSHSIG signature.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "system-proxy"] }
+reqwest-middleware = "0.5"
 ed25519-dalek = "2"
 # The desktop front ends' shared pieces (api.rs): where they keep pairings, and mDNS.
 dirs = { version = "6", optional = true }

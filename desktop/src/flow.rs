@@ -108,22 +108,25 @@ pub struct Failure {
     slot: Option<Slot>,
     shared_certificate: bool,
     cancelled: bool,
+    /// What the page can offer for this failure (`api::failure_kind`): a retry for `"network"`,
+    /// files of the person's own for `"libraries"`, going on anyway for `"checksum"`.
+    kind: Option<&'static str>,
 }
 
 impl Failure {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         let message = message.into();
-        Self { slot: Slot::of_error(&message), message, shared_certificate: false, cancelled: false }
+        Self { slot: Slot::of_error(&message), message, shared_certificate: false, cancelled: false, kind: None }
     }
 
     fn cancelled(message: &str) -> Self {
-        Self { message: message.into(), slot: None, shared_certificate: false, cancelled: true }
+        Self { message: message.into(), slot: None, shared_certificate: false, cancelled: true, kind: None }
     }
 }
 
 impl From<Report> for Failure {
     fn from(error: Report) -> Self {
-        Self { shared_certificate: api::is_shared_certificate(&error), ..Self::new(api::describe(&error)) }
+        Self { shared_certificate: api::is_shared_certificate(&error), kind: api::failure_kind(&error), ..Self::new(api::describe(&error)) }
     }
 }
 
@@ -432,6 +435,35 @@ pub async fn apple_id_sign_in(
     .await
 }
 
+/// Takes the built-in anisette's libraries from files the person got themselves, for when Apple's
+/// CDN can't be reached: the Apple Music APK, or `libstoreservicescore.so` and `libCoreADI.so`
+/// from it. A file that isn't the version this build was tested with fails (kind `"checksum"`)
+/// unless `accept_unverified` says to go on. Returns `{services, core, unverified}`.
+#[tauri::command]
+pub async fn import_anisette_libraries(state: Shared<'_>, paths: Vec<String>, accept_unverified: bool) -> Result<Value, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+        let libraries = block_on(api::import_anisette_libraries(&state.store.apple_id_dir(), &paths, accept_unverified))?;
+        Ok(json!(libraries))
+    })
+    .await
+}
+
+/// Whether the built-in anisette runs libraries the person supplied that didn't match the
+/// checksum of the version Apparition was tested with: an unsupported setup the page warns about.
+#[tauri::command]
+pub fn anisette_unverified(state: Shared<'_>) -> bool {
+    api::anisette_libraries_unverified(&state.store.apple_id_dir())
+}
+
+/// Forgets the cached anisette libraries, supplied or fetched, so Apple's own are fetched again.
+#[tauri::command]
+pub async fn reset_anisette_libraries(state: Shared<'_>) -> Result<(), Failure> {
+    let state = state.inner().clone();
+    blocking(move || Ok(api::reset_anisette_libraries(&state.store.apple_id_dir())?)).await
+}
+
 #[tauri::command]
 pub fn sign_out(state: Shared<'_>) {
     *state.session.lock().unwrap() = None;
@@ -548,7 +580,7 @@ pub fn allow_new_certificate(state: Shared<'_>) -> Result<(), Failure> {
     Ok(())
 }
 
-/// A file picker for "ipa", "p12", "key" or "profile" (several at once). Empty when cancelled.
+/// A file picker for "ipa", "p12", "key", "profile" or "libraries" (several at once). Empty when cancelled.
 #[tauri::command]
 pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Failure> {
     blocking(move || {
@@ -567,6 +599,11 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
                 .blocking_pick_file()
                 .into_iter()
                 .collect(),
+            "libraries" => dialog
+                .set_title("Choose the Apple Music APK, or its two libraries")
+                .add_filter("Apple Music APK or libraries", &["apk", "so"])
+                .blocking_pick_files()
+                .unwrap_or_default(),
             "profile" => dialog
                 .set_title("Choose provisioning profiles")
                 .add_filter("Provisioning profiles", &["mobileprovision"])

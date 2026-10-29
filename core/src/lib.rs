@@ -293,6 +293,100 @@ pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12
 /// Apple took the password but refused the Xcode sign-in for anisette from the Android libraries.
 pub const REFUSED_ANDROID_ANISETTE: &str = "Apple took the password but refused the Xcode sign-in (-80046) for anisette made by Apple's Android libraries, which the built-in anisette uses off a Mac and Dadoum's anisette-v3-server runs, even asked for as a Mac. Use a Mac's own anisette (Apparition on a Mac with macOS 26 or earlier, or its companion) or an anisette-v3 server that doesn't use those libraries.";
 
+/// Where the built-in anisette keeps its libraries and working files, for the Apple ID folder
+/// `data_dir`: next to it, so the libraries are fetched once, not per Apple ID.
+pub fn anisette_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.parent().unwrap_or(data_dir).join("anisette")
+}
+
+/// Which of the built-in anisette's two libraries are in place (see [`import_anisette_libraries`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AnisetteLibraries {
+    pub services: bool,
+    pub core: bool,
+    /// A file didn't match the checksum and was used because the person said to.
+    pub unverified: bool,
+}
+
+/// Takes the built-in anisette's libraries from files the person got themselves, when Apple's CDN
+/// can't be reached: the Apple Music APK, or `libstoreservicescore.so` and `libCoreADI.so` from it.
+/// Each is checked against the SHA-256 of the version this build was tested with, and that is the
+/// only check made, as they are run in this process; one that doesn't match fails with a
+/// `"checksum"` [`failure_kind`] unless `accept_unverified` says to go on (Apple may update them and
+/// take the old address down). For the Apple ID folder `data_dir`, as [`sign_in`] takes it.
+pub async fn import_anisette_libraries(data_dir: &std::path::Path, paths: &[std::path::PathBuf], accept_unverified: bool) -> Result<AnisetteLibraries, Report> {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        let imported = anisette::import_libraries(&anisette_dir(data_dir), paths, accept_unverified).await?;
+        Ok(AnisetteLibraries { services: imported.services, core: imported.core, unverified: imported.unverified })
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = (data_dir, paths, accept_unverified);
+        bail!("This build has no built-in anisette provider")
+    }
+}
+
+/// Whether the built-in anisette's libraries include one supplied by the person that didn't match
+/// the checksum of the tested version (see [`import_anisette_libraries`]): an unsupported setup,
+/// which the apps keep warning about. For the Apple ID folder `data_dir`.
+pub fn anisette_libraries_unverified(data_dir: &std::path::Path) -> bool {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        anisette::libraries_unverified(&anisette_dir(data_dir))
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = data_dir;
+        false
+    }
+}
+
+/// Forgets the built-in anisette's cached libraries, supplied or fetched, so the next start fetches
+/// Apple's own. A process that already loaded them keeps them until it restarts.
+pub fn reset_anisette_libraries(data_dir: &std::path::Path) -> Result<(), Report> {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        anisette::reset_libraries(&anisette_dir(data_dir))
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = data_dir;
+        Ok(())
+    }
+}
+
+/// What kind of failure `error` is, for an app to offer the way out that fits, or `None`:
+/// - `"libraries"`: Apple's CDN couldn't be reached for the built-in anisette's libraries
+///   ([`import_anisette_libraries`] is the other way);
+/// - `"checksum"`: a library file given to [`import_anisette_libraries`] isn't the version this
+///   build was tested with; the person may go on anyway;
+/// - `"network"`: Apple's servers couldn't be reached, or turned this network away (a retry may
+///   work, on this network or another).
+pub fn failure_kind(error: &Report) -> Option<&'static str> {
+    error.iter_reports().find_map(|cause| {
+        #[cfg(all(feature = "anisette", unix))]
+        if cause.downcast_current_context::<anisette::LibraryDownload>().is_some() {
+            return Some("libraries");
+        }
+        #[cfg(all(feature = "anisette", unix))]
+        if cause.downcast_current_context::<anisette::ChecksumMismatch>().is_some() {
+            return Some("checksum");
+        }
+        if cause.downcast_current_context::<isideload::auth::edge::EdgeError>().is_some() {
+            return Some("network");
+        }
+        let unreachable = |error: &reqwest::Error| error.is_connect() || error.is_timeout();
+        if cause.downcast_current_context::<reqwest::Error>().is_some_and(unreachable) {
+            return Some("network");
+        }
+        match cause.downcast_current_context::<reqwest_middleware::Error>() {
+            Some(reqwest_middleware::Error::Reqwest(error)) if unreachable(error) => Some("network"),
+            _ => None,
+        }
+    })
+}
+
 /// The v3 server address to use for `requested`: itself, or the built-in provider's, which is
 /// started on first use and stays up for the life of the process.
 async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result<String, Report> {
@@ -304,9 +398,7 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
         static SERVER: tokio::sync::OnceCell<anisette::Server> = tokio::sync::OnceCell::const_new();
         let server = SERVER
             .get_or_try_init(|| async {
-                // Next to the Apple ID's folder, so the libraries are fetched once, not per Apple ID.
-                let dir = data_dir.parent().unwrap_or(data_dir).join("anisette");
-                anisette::start(&dir, std::net::SocketAddr::from(([127, 0, 0, 1], 0))).await
+                anisette::start(&anisette_dir(data_dir), std::net::SocketAddr::from(([127, 0, 0, 1], 0))).await
             })
             .await
             .context("Couldn't start the built-in anisette provider")?;
@@ -1136,5 +1228,106 @@ mod tests {
             .into_dynamic();
         assert_eq!(auth_code(&error), Some(-80046));
         assert_eq!(auth_code(&report!("no code here").into_dynamic()), None);
+    }
+}
+
+#[cfg(test)]
+mod failure_kind_tests {
+    use super::*;
+
+    /// A connection to a port nothing listens on, as reqwest reports it.
+    async fn refused() -> reqwest::Error {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        reqwest::Client::new().get("http://127.0.0.1:1/").send().await.unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_is_a_network_failure() {
+        let error: Report = Err::<(), _>(refused().await).context("Failed to send grandslam request").unwrap_err().into();
+        assert_eq!(failure_kind(&error), Some("network"));
+    }
+
+    #[tokio::test]
+    async fn so_is_one_that_went_through_the_middleware() {
+        let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build();
+        let error = client.get("http://127.0.0.1:1/").send().await.unwrap_err();
+        let error: Report = Err::<(), _>(error).context("Failed to send grandslam request").unwrap_err().into();
+        assert_eq!(failure_kind(&error), Some("network"));
+    }
+
+    #[test]
+    fn an_apple_refusal_is_a_network_failure() {
+        let refused = isideload::auth::edge::EdgeError::AllAvoided { host: "gsd.apple.com".into() };
+        let error: Report = Err::<(), _>(refused).context("Failed to send initial login request").unwrap_err().into();
+        assert_eq!(failure_kind(&error), Some("network"));
+    }
+
+    #[test]
+    fn a_wrong_password_is_neither() {
+        let error = report!("Auth error -20970: Your account information was entered incorrectly.");
+        assert_eq!(failure_kind(&error), None);
+    }
+
+    #[cfg(all(feature = "anisette", unix))]
+    #[test]
+    fn a_checksum_mismatch_has_its_own_kind() {
+        let error: Report = Err::<(), _>(report!(anisette::ChecksumMismatch)).context("Can't use applemusic.apk").unwrap_err().into();
+        assert_eq!(failure_kind(&error), Some("checksum"));
+    }
+
+    #[cfg(all(feature = "anisette", unix))]
+    #[test]
+    fn a_library_download_outranks_the_network_error_inside_it() {
+        let error: Report = Err::<(), _>(report!("Can't reach Apple's CDN")).context(anisette::LibraryDownload).unwrap_err().into();
+        assert_eq!(failure_kind(&error), Some("libraries"));
+    }
+}
+
+#[cfg(test)]
+mod refusal_text_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+
+    struct Local;
+
+    impl reqwest::dns::Resolve for Local {
+        fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            Box::pin(async { Ok(Box::new(std::iter::once(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))) as reqwest::dns::Addrs) })
+        }
+    }
+
+    /// What the person reads when every Apple server found refuses: sent through isideload's own
+    /// resolver and middleware, wrapped as sign-in wraps it.
+    #[tokio::test]
+    async fn every_server_refusing_reads_plainly() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        errors::install_hooks();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden");
+            }
+        });
+        let client = reqwest::Client::builder().dns_resolver(isideload::auth::edge::EdgeResolver::over(Arc::new(Local))).build().unwrap();
+        let client = reqwest_middleware::ClientBuilder::new(client).with(isideload::auth::edge::EdgeAvoidance).build();
+        let url = format!("http://refusal-text.apple.com:{port}/");
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let sent: Result<_, Report> = client.post(&url).body("x").send().await.context("Failed to send grandslam request").map_err(Into::into);
+            let error: Report = sent.context("Failed to send initial login request").context("Failed to log in to Apple ID").context("Apple ID sign-in failed").unwrap_err().into();
+            assert_eq!(failure_kind(&error), Some("network"));
+            seen.push(errors::describe(&error));
+        }
+        // The first request found the refusal itself; the second never reached the server.
+        println!("--- first attempt:\n{}\n--- second attempt (the server is avoided now):\n{}", seen[0], seen[1]);
+        assert!(seen[0].contains("turned this network away") || seen[0].contains("Every Apple server found"), "{}", seen[0]);
+        assert!(seen[1].contains("Every Apple server found"), "{}", seen[1]);
+        assert!(!seen[1].contains("error sending request for url"), "raw reqwest wording leaked: {}", seen[1]);
     }
 }

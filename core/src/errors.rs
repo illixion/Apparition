@@ -12,11 +12,50 @@ use rootcause::hooks::context_formatter::ContextFormatterHook;
 /// own (`isideload::init`) then finds hooks installed and leaves them.
 pub fn install_hooks() {
     let hooks = if cfg!(debug_assertions) { Hooks::new() } else { Hooks::new_without_locations() };
-    let _ = hooks.context_formatter::<reqwest::Error, _>(RequestError).install();
+    let _ = hooks.context_formatter::<reqwest::Error, _>(RequestError).context_formatter::<reqwest_middleware::Error, _>(RequestError).install();
 }
 
-/// reqwest's own message ("error sending request") hides the reason; add each source's.
+/// Apple's servers turning the network away, if that is what `error` or its causes say (see
+/// isideload's `edge`): reqwest buries it under "error sending request".
+fn apple_refusal<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a isideload::auth::edge::EdgeError> {
+    use isideload::auth::edge::EdgeError;
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if let Some(refusal) = error.downcast_ref::<EdgeError>() {
+            return Some(refusal);
+        }
+        if let Some(reqwest_middleware::Error::Middleware(inner)) = error.downcast_ref::<reqwest_middleware::Error>()
+            && let Some(refusal) = inner.downcast_ref::<EdgeError>()
+        {
+            return Some(refusal);
+        }
+        current = error.source();
+    }
+    None
+}
+
+/// reqwest's own message ("error sending request") hides the reason; add each source's. When the
+/// reason is Apple's servers turning the network away, say only that, in its own words.
 struct RequestError;
+
+impl RequestError {
+    fn write(
+        f: &mut std::fmt::Formatter<'_>,
+        error: &(dyn std::error::Error + 'static),
+        unhooked: impl std::fmt::Display,
+        mut source: Option<&(dyn std::error::Error + 'static)>,
+    ) -> std::fmt::Result {
+        if let Some(refusal) = apple_refusal(error) {
+            return write!(f, "{refusal}");
+        }
+        write!(f, "{unhooked}")?;
+        while let Some(cause) = source {
+            write!(f, ": {cause}")?;
+            source = cause.source();
+        }
+        Ok(())
+    }
+}
 
 impl ContextFormatterHook<reqwest::Error> for RequestError {
     fn display(
@@ -24,13 +63,17 @@ impl ContextFormatterHook<reqwest::Error> for RequestError {
         report: rootcause::ReportRef<'_, reqwest::Error, rootcause::markers::Uncloneable, rootcause::markers::Local>,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        write!(f, "{}", report.format_current_context_unhooked())?;
-        let mut source = report.current_context_error_source();
-        while let Some(cause) = source {
-            write!(f, ": {cause}")?;
-            source = cause.source();
-        }
-        Ok(())
+        Self::write(f, report.current_context(), report.format_current_context_unhooked(), report.current_context_error_source())
+    }
+}
+
+impl ContextFormatterHook<reqwest_middleware::Error> for RequestError {
+    fn display(
+        &self,
+        report: rootcause::ReportRef<'_, reqwest_middleware::Error, rootcause::markers::Uncloneable, rootcause::markers::Local>,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        Self::write(f, report.current_context(), report.format_current_context_unhooked(), report.current_context_error_source())
     }
 }
 

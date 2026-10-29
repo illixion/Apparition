@@ -13,6 +13,11 @@
 //! to another edge, from the system's answer or, when that holds only avoided ones, from
 //! DNS-over-HTTPS. After [`EDGES_PER_REQUEST`] refusing edges the request fails saying so.
 //! The connection still names the host, so TLS checks the certificate exactly as before.
+//!
+//! An edge that can't be connected to, or doesn't answer in time, gets one retry on the other
+//! edges DNS-over-HTTPS knows, for that request only: nothing is remembered, as an outage of the
+//! person's own network looks the same, and a retry later has to be able to work. An HTTP 5xx is
+//! no refusal: GrandSlam answers an occasional 503 to a request that a moment later goes through.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -27,6 +32,8 @@ use tracing::{debug, warn};
 const AVOID_FOR: Duration = Duration::from_secs(60 * 60);
 /// How long the DNS-over-HTTPS answers for a host are reused.
 const ALTERNATIVES_FOR: Duration = Duration::from_secs(5 * 60);
+/// How long a DNS-over-HTTPS lookup may take, so being offline doesn't wait long to say so.
+const DOH_TIMEOUT: Duration = Duration::from_secs(3);
 /// Edges one request tries before giving up.
 const EDGES_PER_REQUEST: usize = 3;
 
@@ -59,8 +66,12 @@ struct Edges {
     avoided: HashMap<IpAddr, Instant>,
     /// The addresses handed out per host, so a 403 through a proxy doesn't mark the proxy.
     handed_out: HashMap<String, Vec<IpAddr>>,
+    /// The addresses of the latest lookup per host, which a connection failure tried.
+    latest: HashMap<String, Vec<IpAddr>>,
     /// DNS-over-HTTPS answers per host, and when they were fetched.
     alternatives: HashMap<String, (Instant, Vec<IpAddr>)>,
+    /// Addresses a retry uses for a host in place of the system's, while it runs.
+    pinned: HashMap<String, Vec<IpAddr>>,
 }
 
 static EDGES: LazyLock<Mutex<Edges>> = LazyLock::new(Default::default);
@@ -94,6 +105,7 @@ fn avoid(ip: IpAddr, now: Instant) {
 
 fn hand_out(host: &str, addrs: &[SocketAddr]) {
     let mut edges = edges();
+    edges.latest.insert(host.to_string(), addrs.iter().map(SocketAddr::ip).collect());
     let known = edges.handed_out.entry(host.to_string()).or_default();
     for addr in addrs {
         if !known.contains(&addr.ip()) {
@@ -121,7 +133,7 @@ fn parse_doh(answer: &serde_json::Value) -> Vec<IpAddr> {
 /// A client per lookup: these are rare, and a shared one would be tied to the first lookup's
 /// runtime.
 async fn ask_doh(endpoint: &str, host: &str) -> Vec<IpAddr> {
-    let client = match reqwest::Client::builder().timeout(Duration::from_secs(5)).build() {
+    let client = match reqwest::Client::builder().timeout(DOH_TIMEOUT).build() {
         Ok(client) => client,
         Err(error) => {
             debug!("No client for DNS-over-HTTPS: {error}");
@@ -203,6 +215,12 @@ impl EdgeResolver {
 impl Resolve for EdgeResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_string();
+        let pinned = edges().pinned.get(&host).cloned();
+        if let Some(ips) = pinned {
+            let addrs: Vec<SocketAddr> = ips.into_iter().map(|ip| SocketAddr::new(ip, 0)).collect();
+            hand_out(&host, &addrs);
+            return Box::pin(async move { Ok(Box::new(addrs.into_iter()) as Addrs) });
+        }
         let resolving = self.inner.resolve(name);
         Box::pin(async move {
             let addrs: Vec<SocketAddr> = resolving.await?.collect();
@@ -239,7 +257,40 @@ fn refused_by(response: &reqwest::Response, host: &str) -> Option<IpAddr> {
     (html && was_handed_out(host, ip)).then_some(ip)
 }
 
-/// Retries a request an edge refused on another edge, avoiding the refusing one.
+/// Whether `error` is a connection that couldn't be made or didn't answer in time.
+fn is_unreachable(error: &reqwest_middleware::Error) -> bool {
+    matches!(error, reqwest_middleware::Error::Reqwest(error) if error.is_connect() || error.is_timeout())
+}
+
+/// While alive, `host` resolves to other edges than the system's.
+struct Pinned(String);
+
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        edges().pinned.remove(&self.0);
+    }
+}
+
+/// Pins `host` to the edges DNS-over-HTTPS knows apart from the ones the last lookup gave, which
+/// are the ones that just failed; `None` when there are none (being offline, say).
+async fn fall_back(host: &str) -> Option<Pinned> {
+    let now = Instant::now();
+    let tried = edges().latest.get(host).cloned().unwrap_or_default();
+    let others: Vec<IpAddr> = usable(alternatives(host, now).await.into_iter().map(|ip| SocketAddr::new(ip, 0)), now)
+        .into_iter()
+        .map(|addr| addr.ip())
+        .filter(|ip| !tried.contains(ip))
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+    warn!("{host}: no connection to its edge, trying {} others", others.len());
+    edges().pinned.insert(host.to_string(), others);
+    Some(Pinned(host.to_string()))
+}
+
+/// Retries a request an edge refused on another edge, avoiding the refusing one; and one that
+/// couldn't connect, once, on the other edges there are.
 pub struct EdgeAvoidance;
 
 #[async_trait::async_trait]
@@ -255,9 +306,24 @@ impl Middleware for EdgeAvoidance {
             return next.run(req, extensions).await;
         }
         let mut tried = 0;
+        // Held until this returns, so the other edges are used for the whole retry.
+        let mut pin: Option<Pinned> = None;
         loop {
             let retry = req.try_clone();
-            let response = next.clone().run(req, extensions).await?;
+            let response = match next.clone().run(req, extensions).await {
+                Ok(response) => response,
+                Err(error) => {
+                    let (Some(again), None, true) = (retry, pin.as_ref(), is_unreachable(&error)) else {
+                        return Err(error);
+                    };
+                    let Some(guard) = fall_back(&host).await else {
+                        return Err(error);
+                    };
+                    pin = Some(guard);
+                    req = again;
+                    continue;
+                }
+            };
             let Some(ip) = refused_by(&response, &host) else {
                 return Ok(response);
             };
@@ -373,6 +439,57 @@ mod tests {
             assert!(text.contains("AllAvoided"), "{text}");
         }
         assert_eq!(asked.load(Ordering::SeqCst), 1);
+    }
+
+    /// Where the system's edge can't be connected to, the request goes to another one DNS-over-HTTPS
+    /// knows (put in the cache here), and nothing about it is remembered afterwards.
+    #[test]
+    fn a_dead_edge_falls_back_to_another_and_forgets() {
+        use std::io::{Read, Write};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        // The server is on ::1; the system's answer, 127.0.0.1, has nothing on that port.
+        let listener = std::net::TcpListener::bind("[::1]:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            }
+        });
+        let host = "fallback-test.apple.com";
+        edges().alternatives.insert(host.to_string(), (Instant::now(), vec!["::1".parse().unwrap()]));
+        let client = reqwest::ClientBuilder::new()
+            .dns_resolver(EdgeResolver::over(Arc::new(Fixed("127.0.0.1".parse().unwrap()))))
+            .build()
+            .unwrap();
+        let client = reqwest_middleware::ClientBuilder::new(client).with(EdgeAvoidance).build();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let url = format!("http://{host}:{port}/");
+        let response = runtime.block_on(client.post(&url).body("x").send()).unwrap();
+        assert_eq!(runtime.block_on(response.text()).unwrap(), "ok");
+        assert!(!edges().pinned.contains_key(host), "the pin outlived the request");
+        // Nothing is remembered about the dead edge: the next request tries it first and falls back again.
+        let again = runtime.block_on(client.post(&url).body("x").send()).unwrap();
+        assert_eq!(again.status(), reqwest::StatusCode::OK);
+    }
+
+    /// Offline: no other edge is known, so the first error comes back unchanged.
+    #[test]
+    fn with_no_other_edge_the_connection_error_comes_back() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let host = "offline-test.apple.com";
+        // A fresh empty answer is not cached, and the lookups here have no network to reach.
+        edges().alternatives.insert(host.to_string(), (Instant::now(), vec!["127.0.0.1".parse().unwrap()]));
+        let client = reqwest::ClientBuilder::new()
+            .dns_resolver(EdgeResolver::over(Arc::new(Fixed("127.0.0.1".parse().unwrap()))))
+            .build()
+            .unwrap();
+        let client = reqwest_middleware::ClientBuilder::new(client).with(EdgeAvoidance).build();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let error = runtime.block_on(client.get(format!("http://{host}:1/")).send()).unwrap_err();
+        assert!(is_unreachable(&error), "{error:?}");
     }
 
     /// Against Apple: the system's resolver hands out 17.171.11.101, which refused every GrandSlam

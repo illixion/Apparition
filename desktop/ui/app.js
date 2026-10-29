@@ -30,6 +30,8 @@ const state = {
   handOff: true,
   /** @type {any} */ settings: {},
   builtinAnisette: false,
+  /** What the sign-in form has chosen: "builtin" or a server's address; null until it is open. @type {string|null} */ anisetteChoice: null,
+  /** The latest companion status, for the header's badge. @type {any} */ companion: null,
   busy: false,
 };
 
@@ -107,9 +109,41 @@ async function receiveNearby(root) {
   }
 }
 
+/** What the anisette choice `choice` is, in a word or three. */
+function anisetteName(/** @type {string} */ choice) {
+  if (choice === "builtin") return "built-in";
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(choice.trim()) ? "Docker / local server" : "custom server";
+}
+
+/**
+ * The badge in the header's corner: where this computer's sign-in gets anisette, what the companion
+ * offers devices, and, in red, an unsupported setup (library files the person supplied that didn't
+ * match). On every screen, so a screenshot shows how Apparition is set up.
+ */
+async function drawSetupBadge() {
+  const badge = /** @type {HTMLElement} */ (document.getElementById("setup-badge"));
+  const text = /** @type {HTMLElement} */ (document.getElementById("setup-badge-text"));
+  const saved = state.settings?.anisette;
+  const choice = state.anisetteChoice ?? saved ?? (state.builtinAnisette ? "builtin" : DEFAULT_ANISETTE);
+  const offered = state.companion?.relay?.running ? state.companion?.anisette?.offered : null;
+  const usesLibraries = state.builtinAnisette && (choice === "builtin" || offered === "builtin");
+  const unverified = usesLibraries && (await invoke("anisette_unverified").catch(() => false));
+  const parts = [`Sign-in anisette: ${anisetteName(choice)}`];
+  if (offered) parts.push(`Companion offers: ${offered === "builtin" ? "built-in" : "Docker / local server"}`);
+  if (unverified) parts.unshift("UNSUPPORTED: unverified libraries");
+  text.textContent = parts.join(" · ");
+  badge.className = `setup-badge${unverified ? " unsupported" : anisetteName(choice) === "built-in" && !offered ? "" : " attention"}`;
+  badge.hidden = false;
+}
+
+/** Forgets what the step being left kept for a retry (the signing step sets it). */
+let leaveStep = () => {};
+
 function go(/** @type {string} */ step) {
   // A wait for another device's key belongs to the step that started it.
   invoke("nearby_stop").catch(() => {});
+  leaveStep();
+  leaveStep = () => {};
   state.step = step;
   render();
   panel.scrollTop = 0;
@@ -519,13 +553,43 @@ function signing() {
     for (const role of ["anisette-server", "anisette-server-hint"]) $(appleForm, role).hidden = builtin;
     appleForm.anisette.required = !builtin;
   };
-  sourceSelect.addEventListener("change", drawSource);
+  const chooseAnisette = () => {
+    state.anisetteChoice = sourceSelect.value === "builtin" ? "builtin" : appleForm.anisette.value.trim();
+    drawSetupBadge();
+  };
+  sourceSelect.addEventListener("change", () => {
+    drawSource();
+    chooseAnisette();
+  });
+  appleForm.anisette.addEventListener("input", chooseAnisette);
   drawSource();
-  appleForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  chooseAnisette();
+  // After a failure that trying again may cure (a connection, Apple's download of its libraries),
+  // the sign-in's details are kept here, in memory only and for a few minutes, so Try again needs no
+  // retyping. Cleared by the next sign-in, by success, and when this step is left.
+  const recovery = $(panel, "recovery");
+  const ownLibraries = /** @type {HTMLDetailsElement} */ ($(panel, "own-libraries"));
+  const librariesStatus = $(panel, "libraries-status");
+  const librariesAnyway = $(panel, "libraries-anyway");
+  /** @type {{email: string, password: string, anisette: string}|null} */ let retry = null;
+  /** @type {number|undefined} */ let retryTimer;
+  /** @type {string[]} */ let libraryPaths = [];
+  const clearRecovery = () => {
+    if (retry) retry.password = "";
+    retry = null;
+    clearTimeout(retryTimer);
+    recovery.hidden = true;
+    ownLibraries.hidden = true;
+    ownLibraries.open = false;
+    librariesAnyway.hidden = true;
+    setStatus(librariesStatus, "");
+    $(panel, "libraries-name").textContent = "No file chosen";
+    libraryPaths = [];
+  };
+  leaveStep = clearRecovery;
+  const attempt = async (/** @type {{email: string, password: string, anisette: string}} */ args) => {
     const submit = /** @type {HTMLButtonElement} */ (appleForm.querySelector('[type="submit"]'));
-    const args = { email: appleForm.email.value, password: appleForm.password.value, anisette: sourceSelect.value === "builtin" ? "builtin" : appleForm.anisette.value };
-    appleForm.password.value = "";
+    clearRecovery();
     setBusy(submit, true);
     state.busy = true;
     draw();
@@ -535,15 +599,95 @@ function signing() {
       state.signing = { mode: "appleId", ...result };
       state.settings = { email: result.email, anisette: args.anisette.trim() };
       setStatus(status, "");
+      args.password = "";
+      drawSetupBadge();
     } catch (error) {
       setStatus(status, signInError(error, args.anisette !== "builtin"), error?.cancelled ? "" : "error");
-    } finally {
+      const kind = error?.kind;
+      if (kind === "network" || kind === "libraries") {
+        retry = { ...args };
+        retryTimer = setTimeout(clearRecovery, 5 * 60 * 1000);
+        recovery.hidden = false;
+        ownLibraries.hidden = kind !== "libraries";
+        if (kind === "libraries") ownLibraries.open = true;
+      }
       args.password = "";
+    } finally {
       setBusy(submit, false);
       state.busy = false;
       draw();
     }
+  };
+  appleForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const args = { email: appleForm.email.value, password: appleForm.password.value, anisette: sourceSelect.value === "builtin" ? "builtin" : appleForm.anisette.value };
+    appleForm.password.value = "";
+    attempt(args);
   });
+  $(panel, "retry").addEventListener("click", () => {
+    if (retry) attempt({ ...retry });
+    else setStatus(status, "Type your password again, then sign in.", "error");
+  });
+
+  // Said for as long as it lasts, not only when the files are taken: it is an unsupported setup.
+  const unsupported = $(panel, "unsupported");
+  const resetStatus = $(panel, "reset-status");
+  const drawUnsupported = async () => {
+    try {
+      unsupported.hidden = !(state.builtinAnisette && (await invoke("anisette_unverified")));
+    } catch {
+      unsupported.hidden = true;
+    }
+    drawSetupBadge();
+  };
+  drawUnsupported();
+  $(panel, "reset-libraries").addEventListener("click", async () => {
+    try {
+      await invoke("reset_anisette_libraries");
+      setStatus(resetStatus, "Done. Apple's own libraries are fetched again from the next start of Apparition.", "good");
+      setTimeout(() => (unsupported.hidden = true), 4000);
+      drawSetupBadge();
+    } catch (error) {
+      setStatus(resetStatus, messageOf(error), "error");
+    }
+  });
+
+  // The person's own copy of Apple's libraries
+  const useLibraries = async (/** @type {boolean} */ anyway) => {
+    const pick = /** @type {HTMLButtonElement} */ ($(panel, "pick-libraries"));
+    setBusy(pick, true);
+    librariesAnyway.hidden = true;
+    setStatus(librariesStatus, "Checking the files…");
+    try {
+      const got = await invoke("import_anisette_libraries", { paths: libraryPaths, acceptUnverified: anyway });
+      drawUnsupported();
+      const missing = !got.services ? "libstoreservicescore.so" : !got.core ? "libCoreADI.so" : "";
+      if (missing) {
+        setStatus(librariesStatus, `Got one of the two. Choose ${missing} too.`, "");
+        return;
+      }
+      setStatus(
+        librariesStatus,
+        got.unverified ? "Done. The files didn't match the version Apparition was built with and were used because you chose to. Signing in…" : "Done. Signing in…",
+        "good",
+      );
+      if (retry) attempt({ ...retry });
+      else setStatus(librariesStatus, "Done. Sign in above to continue.", "good");
+    } catch (error) {
+      setStatus(librariesStatus, messageOf(error), "error");
+      librariesAnyway.hidden = error?.kind !== "checksum";
+    } finally {
+      setBusy(pick, false);
+    }
+  };
+  $(panel, "pick-libraries").addEventListener("click", async () => {
+    const paths = await invoke("pick_file", { kind: "libraries" });
+    if (!paths.length) return;
+    libraryPaths = paths;
+    $(panel, "libraries-name").textContent = paths.map(basename).join(", ");
+    await useLibraries(false);
+  });
+  $(panel, "use-anyway").addEventListener("click", () => useLibraries(true));
 
   // Another device's certificate key, before signing in: over the network, or as a file
   $(keyForm, "nearby-receive").addEventListener("click", async () => {
@@ -1329,6 +1473,9 @@ const clock = (/** @type {number} */ seconds) => new Date(seconds * 1000).toLoca
 
 function drawCompanion(/** @type {any} */ status) {
   /** @type {HTMLElement} */ (document.getElementById("companion-dot")).hidden = !status.relay.running;
+  const before = JSON.stringify([state.companion?.relay?.running, state.companion?.anisette?.offered]);
+  state.companion = status;
+  if (before !== JSON.stringify([status.relay.running, status.anisette.offered])) drawSetupBadge();
   if (!companionPanel.firstElementChild) return;
   const relayOn = /** @type {HTMLInputElement} */ ($(companionPanel, "relay-on"));
   relayOn.checked = status.relay.on;
@@ -1392,6 +1539,9 @@ async function start() {
   document.body.classList.toggle("mac", state.info.platform === "macos-universal");
   state.settings = await invoke("saved_settings");
   state.builtinAnisette = await invoke("builtin_anisette");
+  drawSetupBadge();
+  // The companion's status only polls on its own tab; the badge needs to know on every screen.
+  setInterval(refreshCompanion, 5000);
 
   invoke("check_update")
     .then((/** @type {any} */ update) => {

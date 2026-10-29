@@ -82,5 +82,9 @@ an HTML 403 is avoided for an hour, so it isn't asked again and again, and the r
 another: one from the system's answer, else from DNS-over-HTTPS (Google with the asker's subnet
 and without, and Cloudflare). After three refusing edges, or once every edge found is avoided, the
 request fails saying Apple turned the network away and what to try. The connection still names
-the host, so the certificate is checked as before. `cargo test -p isideload --lib auth::edge --
+the host, so the certificate is checked as before. A connection to an edge that can't be made or
+doesn't answer within 10 seconds gets one retry on the other edges DNS-over-HTTPS knows, for that
+request only and with nothing remembered, so a retry later can succeed; an HTTP 5xx is no refusal
+(GrandSlam answers an occasional 503 to a request that then goes through). Core formats these
+errors plainly (`core/src/errors.rs`) and tells the apps they can be retried (`failure_kind`). `cargo test -p isideload --lib auth::edge --
 --include-ignored` runs the check against Apple, forcing the refusing edge.

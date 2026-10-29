@@ -28,6 +28,7 @@ pub use crate::{
     share::{SEALED_EXTENSION, export_apple_id_key, export_apple_id_key_sealed, import_any_signing_file, import_signing_file, sealed_from},
     BUILTIN_ANISETTE, REFUSED_ANDROID_ANISETTE, REFUSED_ANISETTE, SharedCertificate, builtin_anisette_available, is_shared_certificate, native_anisette,
     sign_in, sign_with_apple_id, sign_with_apple_id_as, capability_refusals,
+    AnisetteLibraries, anisette_dir, anisette_libraries_unverified, failure_kind, import_anisette_libraries, reset_anisette_libraries,
 };
 /// Handing the certificate key to a nearby Apparition, checked by a six-digit code (nearby.rs).
 #[cfg(feature = "desktop")]

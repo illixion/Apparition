@@ -173,6 +173,7 @@ dependencies = [
  "rand 0.8.8",
  "rcgen",
  "reqwest 0.13.5",
+ "reqwest-middleware",
  "ring",
  "rootcause",
  "rsa",

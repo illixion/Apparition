@@ -759,3 +759,36 @@ details[open] > summary { margin-bottom: .85rem; }
   .welcome .apparition { display: none; }
   .modes { grid-template-columns: minmax(0, 1fr); }
 }
+
+.recovery { display: grid; gap: .85rem; margin-top: .75rem; }
+.recovery[hidden] { display: none; }
+
+/* A setup Apparition doesn't support, said where it can't be missed. */
+.unsupported {
+  display: grid;
+  gap: .75rem;
+  max-width: var(--measure);
+  padding: 1rem 1.15rem;
+  border: 2px solid var(--danger);
+  border-radius: var(--radius-s);
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
+}
+.unsupported[hidden] { display: none; }
+.unsupported p { margin: 0; }
+.unsupported strong { color: var(--danger); }
+
+/* Where anisette comes from, in the header's corner on every screen, so a screenshot says how
+   Apparition is set up. Red when the setup isn't supported. */
+.setup-badge {
+  flex: none;
+  padding: .3rem .75rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: .8rem;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  white-space: nowrap;
+}
+.setup-badge[hidden] { display: none; }
+.setup-badge.attention { border-color: var(--lilac); color: var(--ink); }
+.setup-badge.unsupported { border: 2px solid var(--danger); color: var(--danger); font-weight: 600; }

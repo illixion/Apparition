@@ -279,6 +279,7 @@ the folder holding `apparition.exe` on your `PATH`. `apparition --version` check
 | `forget <name or UDID>` | Forgets a paired device. |
 | `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Companion tab). |
 | `anisette serve`, `up`, `down`, `compose` | Serve this computer's built-in anisette, or run the self-hosted server with your Docker. |
+| `anisette import [--accept-unverified] <file>…`, `import --reset` | Use the Apple Music APK, or its two libraries, from a file when Apple's download server can't be reached (see [Anisette](#anisette)); `--reset` goes back to fetching them. |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
 | `link` | Puts `apparition` on your `PATH` (above). |
 
@@ -512,6 +513,22 @@ refused, the router's DNS didn't). Apparition notices, avoids that server for an
 tries another, looked up over DNS-over-HTTPS (Google's and Cloudflare's) if your own DNS knows no
 other. Only that lookup goes elsewhere, never the Apple ID. If every server it finds refuses, the
 error says so; try another network, or set the computer's DNS to the router's.
+
+The libraries themselves come from Apple's download server, and when it can't be reached the app
+says so with a Try again button, and under Advanced lets you use the Apple Music APK for Android,
+or `libstoreservicescore.so` and `libCoreADI.so` from its `lib/arm64-v8a` or `lib/x86_64` folder,
+that you got from Apple some other way. On the command line, `apparition anisette import <file>…`
+does the same; what you give replaces the libraries Apparition would otherwise use, and
+`apparition anisette import --reset` goes back to fetching Apple's. Apparition runs these in its
+own process and checks one thing: that each file's SHA-256 is that of the version it was tested
+with (the APK Apple's server held on 29 October 2026). It can't tell that a file came from Apple, so
+only use ones you downloaded from Apple yourself. If Apple has updated the libraries and taken the
+old address down, so that no file matches, the app's "Use these files anyway", or
+`--accept-unverified`, uses them regardless. That is an unsupported setup, and it says so for as
+long as it lasts: in red in the desktop app's header corner and above the sign-in form, and at every
+command that starts the built-in anisette. The header's corner also always says where this
+computer's sign-in gets anisette (built-in, Docker or another server) and what the companion offers,
+so a screenshot shows the setup.
 
 ## Build
 

@@ -22,6 +22,7 @@
     <span id="update-text">A newer installer is available.</span>
     <button type="button" class="link" id="update-open">Download it</button>
   </div>
+  <div id="setup-badge" class="setup-badge" role="status" hidden><span id="setup-badge-text"></span></div>
 </header>
 
 <div class="shell" id="view-install" role="tabpanel" aria-labelledby="tab-install">
@@ -214,6 +215,12 @@
       </label>
     </div>
 
+    <div class="unsupported" data-role="unsupported" role="alert" hidden>
+      <p><strong>Unsupported setup.</strong> Apparition is using Apple library files you supplied that don't match the version it was built and tested with. Sign-in may fail or behave unpredictably, and nothing checks that these files are Apple's, though they run inside Apparition.</p>
+      <div class="row"><button type="button" class="button quiet" data-role="reset-libraries">Go back to Apple's own libraries</button></div>
+      <p class="status" data-role="reset-status" hidden></p>
+    </div>
+
     <form class="form" data-role="apple-id" hidden autocomplete="off">
       <label class="field">Apple ID<input name="email" type="email" required autocomplete="off" spellcheck="false" placeholder="you@example.com"></label>
       <label class="field">Password<input name="password" type="password" required autocomplete="off" spellcheck="false"></label>
@@ -282,6 +289,21 @@
     </div>
 
     <p class="status" data-role="status" hidden></p>
+
+    <div class="recovery" data-role="recovery" hidden>
+      <div class="row"><button type="button" class="button quiet" data-role="retry">Try again</button></div>
+      <details class="advanced" data-role="own-libraries" hidden>
+        <summary>Advanced: use Apple Music's libraries from a file</summary>
+        <p class="hint">If this computer can't download them from Apple, get the Apple Music APK for Android from Apple some other way and choose it here. Or choose <code>libstoreservicescore.so</code> and <code>libCoreADI.so</code> from inside it (its <code>lib/arm64-v8a</code> or <code>lib/x86_64</code> folder, whichever matches this computer).</p>
+        <p class="hint warning">Apparition runs these libraries inside its own process, so a bad file can do whatever this app can. The only check is that each file's SHA-256 matches the version Apparition was built with. It can't tell that a file came from Apple, so only use files you downloaded from Apple yourself. If Apple has since updated them, no file will match: you can then choose to use it anyway, which is an unsupported setup.</p>
+        <div class="file-row">
+          <button type="button" class="button quiet" data-role="pick-libraries">Choose APK or libraries…</button>
+          <span class="file-name" data-role="libraries-name">No file chosen</span>
+        </div>
+        <p class="status" data-role="libraries-status" hidden></p>
+        <div class="row" data-role="libraries-anyway" hidden><button type="button" class="button quiet" data-role="use-anyway">Use these files anyway</button></div>
+      </details>
+    </div>
 
     <div class="actions">
       <button type="button" class="button quiet" data-role="back">Back</button>

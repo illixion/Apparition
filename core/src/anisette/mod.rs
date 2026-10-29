@@ -17,4 +17,21 @@ pub mod native;
 mod server;
 mod shim;
 
+pub use apk::{ChecksumMismatch, Imported, LibraryDownload};
 pub use server::{Server, start};
+
+/// Takes the anisette libraries from files the person got themselves (see `apk::import`).
+pub async fn import_libraries(data_dir: &std::path::Path, paths: &[std::path::PathBuf], accept_unverified: bool) -> Result<Imported, rootcause::Report> {
+    apk::import(&data_dir.join("libraries"), paths, accept_unverified).await
+}
+
+/// Whether the libraries in `data_dir` include one the person supplied that didn't match the
+/// checksum: an unsupported setup.
+pub fn libraries_unverified(data_dir: &std::path::Path) -> bool {
+    apk::unverified(&data_dir.join("libraries"))
+}
+
+/// Forgets the cached libraries, so the next start fetches Apple's own.
+pub fn reset_libraries(data_dir: &std::path::Path) -> Result<(), rootcause::Report> {
+    apk::reset(&data_dir.join("libraries"))
+}

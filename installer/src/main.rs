@@ -105,6 +105,15 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       answering on port 6969 here (the Docker one); none offers nothing. Runs until Ctrl-C.
   apparition anisette serve [--port <port>]
       Serve the built-in anisette (v3) to this computer's network (port 6969 by default).
+  apparition anisette import [--accept-unverified] <Apple Music APK or .so file>...
+      When Apple's download server can't be reached: use the Apple Music APK for Android, or
+      libstoreservicescore.so and libCoreADI.so from its lib/<abi>/ folder, from Apple some other
+      way. The only check is a SHA-256 against the version this build was tested with; it can't tell
+      that a file came from Apple, and these run inside Apparition. --accept-unverified uses files
+      that differ (a newer version, say) anyway: an unsupported setup, warned about at every start.
+      What is imported replaces the libraries Apparition would otherwise use, until replaced again.
+  apparition anisette import --reset
+      Forget the cached libraries, supplied or fetched; the next sign-in fetches Apple's own.
   apparition anisette up | down | compose
       Start or stop the self-hosted anisette server with your Docker; compose prints its file.
   apparition browse
@@ -180,6 +189,14 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {}", api::describe(&error));
+            match api::failure_kind(&error) {
+                Some("libraries") => eprintln!(
+                    "Run the command again to retry. If Apple's download server stays out of reach, give Apparition the files yourself: apparition anisette import <file>... (see `apparition help`)."
+                ),
+                Some("network") => eprintln!("Run the command again to retry, or try another network."),
+                Some("checksum") => eprintln!("If you got the file from Apple and want to use it anyway, add --accept-unverified."),
+                _ => {}
+            }
             ExitCode::FAILURE
         }
     }
@@ -957,7 +974,19 @@ async fn handoff(
 
 // MARK: Apple ID and its slots
 
+/// Said at every start that uses the built-in anisette while it runs libraries the person
+/// supplied that didn't match the tested version: an unsupported setup.
+fn warn_if_unsupported() {
+    if api::anisette_libraries_unverified(&store().apple_id_dir()) {
+        eprintln!("WARNING: unsupported setup. The built-in anisette runs library files you supplied that don't match the version Apparition was built with.");
+        eprintln!("         Sign-in may fail or behave unpredictably, and nothing checks that the files are Apple's. `apparition anisette import --reset` goes back to Apple's own.");
+    }
+}
+
 async fn sign_in(email: &str, anisette: &str) -> Result<api::Session, Error> {
+    if anisette == api::BUILTIN_ANISETTE {
+        warn_if_unsupported();
+    }
     let password = ask_secret(&format!("Apple ID password for {email}: "));
     println!("Signing in…");
     let (session, _) = api::sign_in(email, password, anisette, &store().apple_id_dir(), two_factor).await?;
@@ -1153,6 +1182,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
     println!("In Apparition, use \"Find companion\" on this network, or set the relay to this computer's address, port {}.", companion.relay.port());
     match anisette.as_str() {
         "builtin" => {
+            warn_if_unsupported();
             println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
             companion.share_builtin_anisette().await?;
             println!("Offering {} on port {}.", anisette_kind(), relay::ANISETTE_PORT);
@@ -1169,6 +1199,36 @@ async fn relay(args: &[String]) -> Result<(), Error> {
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
             _ = tokio::signal::ctrl_c() => break,
         }
+    }
+    Ok(())
+}
+
+/// `anisette import`: the libraries from files the person got themselves (see
+/// `api::import_anisette_libraries`).
+async fn anisette_import(args: &[&str]) -> Result<(), Error> {
+    if args == ["--reset"] {
+        api::reset_anisette_libraries(&store().apple_id_dir())?;
+        println!("Forgot the cached libraries. The next sign-in fetches Apple's own again.");
+        return Ok(());
+    }
+    let accept_unverified = args.contains(&"--accept-unverified");
+    let paths: Vec<PathBuf> = args.iter().filter(|arg| **arg != "--accept-unverified").map(PathBuf::from).collect();
+    if paths.is_empty() {
+        return Err(fail("usage: apparition anisette import [--accept-unverified] <Apple Music APK or .so file>... | --reset"));
+    }
+    if !api::builtin_anisette_available() {
+        return Err(fail("this build has no built-in anisette to give libraries to"));
+    }
+    let libraries = api::import_anisette_libraries(&store().apple_id_dir(), &paths, accept_unverified).await?;
+    if libraries.unverified {
+        println!("WARNING: unsupported setup. A file didn't match the version Apparition was built with and was used because of --accept-unverified.");
+        println!("         Apparition can't tell whether it is Apple's, sign-in may fail, and every start using the built-in anisette says so until you run `apparition anisette import --reset`.");
+    }
+    match (libraries.services, libraries.core) {
+        (true, true) => println!("Done: both libraries are in place; the next sign-in uses them."),
+        (true, false) => println!("Saved libstoreservicescore.so. Give libCoreADI.so too (or the whole APK)."),
+        (false, true) => println!("Saved libCoreADI.so. Give libstoreservicescore.so too (or the whole APK)."),
+        (false, false) => return Err(fail("no library was saved")),
     }
     Ok(())
 }
@@ -1190,6 +1250,7 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             }
             #[cfg(any(target_os = "macos", target_os = "linux"))]
             {
+                warn_if_unsupported();
                 println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
                 let server = apparition_core::anisette::start(&anisette_dir(), SocketAddr::from(([0, 0, 0, 0], port))).await?;
                 println!("Serving {} (v3) on port {}. Ctrl-C stops it.", anisette_kind(), server.address.port());
@@ -1198,6 +1259,7 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             let _ = port;
             Ok(())
         }
+        ["import", rest @ ..] => anisette_import(rest).await,
         ["up"] | ["down"] => {
             let up = args[0] == "up";
             companion::docker_anisette(up).await?;
@@ -1210,6 +1272,6 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             print!("{}", companion::COMPOSE);
             Ok(())
         }
-        _ => Err(fail("usage: apparition anisette serve [--port <port>] | up | down | compose")),
+        _ => Err(fail("usage: apparition anisette serve [--port <port>] | import [--accept-unverified] <file>... | import --reset | up | down | compose")),
     }
 }

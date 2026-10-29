@@ -271,6 +271,8 @@ impl GrandSlam {
             .http1_title_case_headers()
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)
+            // An edge that doesn't answer is given up on, and another tried (edge.rs).
+            .connect_timeout(std::time::Duration::from_secs(10))
             // An edge that answers 403 is avoided and the request goes to another (edge.rs).
             .dns_resolver(super::edge::EdgeResolver::system())
             // .pool_max_idle_per_host(0)
