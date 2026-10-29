@@ -30,7 +30,7 @@ This takes about 20–30 minutes, most of it the macOS install. You need:
 When the VM boots into Setup Assistant, set it up as normal:
 
 - Create a local account (any name and password you like — you'll need this password once, in
-  step 4).
+  step 4). When creating the user, ensure the checkbox to allow password recovery via Apple ID is unchecked.
 - **Skip** signing in to an Apple Account, Siri, Screen Time, and analytics. None are needed.
 
 ## 3. Turn on automatic login
@@ -41,12 +41,11 @@ after a restart.
 - Open **System Settings → Users & Groups**.
 - Set **Automatically log in as** to the account you just made, and enter its password.
 
-(If that option is greyed out, it's usually because FileVault is on — a fresh UTM VM has it off,
-so you shouldn't hit this.)
+(If that option is greyed out, it's usually because FileVault was enabled during setup - disable it.)
 
 ## 4. Run the setup script in recoveryOS
 
-The script needs recoveryOS to turn off two security settings (this is safe on a throwaway VM and
+The script needs recoveryOS to turn off two security settings (this is safe on an internal VM and
 is what lets macOS run Apparition's signed anisette helper).
 
 1. Shut the VM down (**⌘Q** or Apple menu → Shut Down).
@@ -57,7 +56,7 @@ is what lets macOS run Apparition's signed anisette helper).
    ```
 3. In recoveryOS, open **Utilities → Terminal** and run:
    ```sh
-   bash -c "$(curl -fsSL https://apparition.illixion.com/anisette-vm.sh)"
+   bash -c "$(curl -fsSL https://apparition.illixion.com/avm.sh)"
    ```
 4. It will:
    - turn **SIP** off — macOS asks for a password: enter the account password from step 2;
@@ -65,18 +64,29 @@ is what lets macOS run Apparition's signed anisette helper).
    - download and install the anisette server;
    - offer to **restart**. Let it.
 
-## 5. Point Apparition at it
+## 5. Make the VM reachable
+
+By default UTM gives the VM a private address (**Shared Network**) that only the host Mac can
+reach — fine if the desktop app runs on the host and relays anisette as the companion, but not for
+pointing a device straight at the VM. To reach it directly, pick one in the VM's UTM settings
+(**Network → Network Mode**):
+
+- **Bridged** — the VM gets an address on your LAN, reachable by any device on the same Wi-Fi.
+  Simplest at home.
+- **Tailscale** — install [Tailscale](https://tailscale.com) inside the VM and sign in to your
+  tailnet. The VM is then reachable securely from anywhere, encrypted and with no ports exposed;
+  use its Tailscale address. This is also how the companion reaches it when you're away from home.
+
+## 6. Point Apparition at it
 
 After the restart the VM logs itself in and starts serving anisette on **port 6969**.
 
-1. Find the VM's address — in the VM's Terminal:
-   ```sh
-   ipconfig getifaddr en0
-   ```
+1. Find the VM's address — in the VM's Terminal (`ipconfig getifaddr en0` for a bridged LAN
+   address, or `tailscale ip -4` for its Tailscale address).
 2. In Apparition, set the anisette server to `http://<that address>:6969`:
    - **On a device:** Setup → Anisette → enter the address.
-   - **Through the companion:** the desktop app reaches the VM and offers its anisette to your
-     devices over Tailscale, so it works away from home too.
+   - **Through the companion:** the desktop app on the host reaches the VM and offers its anisette
+     to your devices over Tailscale, so it works away from home too.
 
 Keep the VM running while you sign in or refresh. In UTM you can set the VM to start automatically
 so it's always available.
