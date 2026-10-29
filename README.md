@@ -664,6 +664,21 @@ for bundle creation, NixOS/Fusion USB setup, permissions and current integration
 
 ## Anisette
 
+> **Signing in with an Apple ID now needs anisette from a real Mac or a macOS VM.** Since October
+> 2026 Apple refuses the anisette made from the Apple Music for Android libraries (what the
+> built-in provider makes on iPhone, iPad, Apple TV, Vision Pro and Linux) for sign-in. For a free
+> Apple ID, use one of:
+> - a **Mac on macOS 26 or earlier** serving its own anisette — the companion does this with no
+>   setup;
+> - a **macOS virtual machine you host** — **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)**
+>   walks through it. Nothing leaves your network;
+> - any **third-party anisette-v3 server**. These are explicitly supported — enter its URL under
+>   Anisette. Apparition ships and endorses none, and gives out no addresses; the sideloading
+>   community keeps lists.
+>
+> A **paid** developer certificate avoids sign-in, and anisette, entirely (see
+> [Your own developer certificate](#your-own-developer-certificate)).
+
 Signing in to Apple needs "anisette" data that identifies the computer. On macOS and Linux
 (arm64 and x86_64) the installer makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
 Android uses; nothing of Apple's is stored in this repository), loads them in its own process
@@ -678,15 +693,15 @@ and IP address, never the Apple ID or password, which go straight to Apple.
 to be**, and refuses the sign-in (`-80045`, "This action cannot be completed at this time")
 when it doesn't. isideload, like most sideloaders, claimed a Mac while sending the Android
 libraries' anisette. Apparition claims Android for that anisette (`core/src/claimed_platform.rs`),
-which Apple accepts. Since about 22 October Apple refuses the Xcode token to a sign-in claiming
-Android (`-80046`), but issues it when that request claims a Mac, whatever made the anisette. So
-once the password is accepted, Apparition asks for the token, and makes its developer requests,
-as a Mac (`Claim::after_sign_in`). A sign-in Apple asks a 2FA code for goes through the usual
-prompt; one it doesn't is asked for the code Apple pushes to your trusted devices if the token
-is refused (`core/vendor/isideload`, `code_after_login`).
-Dadoum's anisette-v3-server, the self-hosted one above, runs those libraries too and gets the
-same claim. Other servers make their anisette differently and say what to claim, and Apparition
-claims that (jkcoxson's native-c server reports a Mac, and Apple refuses it claiming Android).
+which Apple accepted until mid-October 2026; **since about 14 October it refuses that anisette
+outright** (an HTML 403, or a 503 to any request that declares Android), so the Android-library
+provider no longer signs in, and a Mac's anisette (above) is needed. Where the libraries are still
+used — a server that makes its anisette with them, say — the claim still follows the server
+(`Claim::after_sign_in`; Dadoum's anisette-v3-server reports a Mac but runs those libraries, so it
+gets the Android claim, while jkcoxson's native-c server reports a Mac and is claimed a Mac). A
+sign-in Apple asks a 2FA code for goes through the usual prompt; one it doesn't is asked for the
+code Apple pushes to your trusted devices if the Xcode token is refused (`core/vendor/isideload`,
+`code_after_login`).
 
 On a Mac the built-in provider asks macOS for the Mac's own anisette instead, and the sign-in
 claims a Mac and goes through the usual 2FA (`core/src/anisette/native.rs`):
@@ -695,7 +710,12 @@ claims a Mac and goes through the usual 2FA (`core/src/anisette/native.rs`):
 - **macOS 27:** only programs with AuthKit's private entitlements get it. The release ships
   `apparition-anisette-helper` signed with them, next to `apparition` and inside the app, and
   macOS runs it only with SIP off and `sudo nvram boot-args="amfi_get_out_of_my_way=1"`.
-  Otherwise the Android libraries are used, as on Linux.
+  Otherwise the Android libraries are used, which no longer sign in (above).
+
+In a **macOS virtual machine**, Apple also needs the host's attestation, which the helper forwards
+along with the rest of AuthKit's headers; it's only valid inside a desktop session, so the server
+runs as a login item. [`selfhost/macos-vm/setup.sh`](selfhost/macos-vm/setup.sh) arranges all of
+this — see **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)**.
 
 Provisioning goes through the Android libraries either way, so a device's stored identity works
 with any server. With a paid developer account there is also a route with no sign-in at all:

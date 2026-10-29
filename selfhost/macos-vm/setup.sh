@@ -1,24 +1,23 @@
 #!/bin/bash
 # setup.sh: turn a macOS virtual machine into Apparition's anisette server, the Mac's own
-# anisette that Apple accepts (core/src/anisette/native.rs). Set the VM up as usual (UTM, any
-# macOS from 26, through Setup Assistant), then restart it into recoveryOS (UTM: Start > Boot
-# into recovery, or `utmctl start --recovery <vm>`) and, in Utilities > Terminal:
+# anisette that Apple accepts (core/src/anisette/native.rs). See docs/ANISETTE.md for the full
+# walkthrough. In short: install macOS in UTM (any version from 26), go through Setup Assistant,
+# turn on automatic login, then boot the VM into recoveryOS and, in Utilities > Terminal:
 #
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/illixion/Apparition/main/selfhost/macos-vm/setup.sh)"
 #
 # A VM's sign-in needs AuthKit's attestation from its host, which only the helper signed with
-# AuthKit's private entitlements gets, and macOS runs it only with SIP off and
-# amfi_get_out_of_my_way=1: this sets both (turning SIP off takes the password of the user Setup
-# Assistant made). That attestation is only valid inside a GUI login session, so `apparition
-# anisette serve` is installed as a LaunchAgent (Aqua) and the Setup-Assistant user is set to log
-# in automatically, so the VM serves anisette on port 6969 after a restart with no one at the
-# keyboard. Only for a VM: SIP off is not something to do to the Mac you use. (A real Mac on
-# macOS 26 or earlier needs no SIP change; run this there from Terminal with sudo.)
+# AuthKit's private entitlements gets, and macOS runs that helper only with SIP off and
+# amfi_get_out_of_my_way=1: this sets both (turning SIP off asks for the password of the account
+# Setup Assistant made). That attestation is only valid inside a GUI login session, so `apparition
+# anisette serve` is installed as a LaunchAgent (Aqua): with automatic login on, the VM serves
+# anisette on port 6969 after a restart with no one at the keyboard. Only for a VM: SIP off is not
+# something to do to the Mac you use. (A real Mac on macOS 26 or earlier needs no SIP change;
+# run this there from Terminal with sudo and it stays on.)
 #
-# Uses only what recoveryOS ships (bash 3.2, curl, ditto, csrutil, nvram, defaults). Settings:
-# APPARITION_ZIP (a release zip URL or local path), APPARITION_PORT, APPARITION_USER (the account
-# to log in automatically; otherwise the only one, or it asks), APPARITION_PASSWORD (answers the
-# password prompt unattended), APPARITION_FORCE=1 (skip the SIP/NVRAM check in a normal boot).
+# Uses only what recoveryOS ships (bash 3.2, curl, ditto, csrutil, nvram). Settings:
+# APPARITION_ZIP (a release zip URL or local path), APPARITION_PORT, APPARITION_FORCE=1 (skip the
+# SIP/NVRAM check in a normal boot, to install the rest).
 set -u
 
 VERSION=0.4.1
@@ -31,12 +30,6 @@ say() { printf '\n==> %s\n' "$*"; }
 die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 # Prompts read the terminal, so `curl ... | bash` works as well as `bash -c "$(curl ...)"`.
 ask() { local reply; printf '%s' "$1" > /dev/tty; IFS= read -r reply < /dev/tty; printf '%s' "$reply"; }
-ask_secret() {
-  [ -n "${APPARITION_PASSWORD:-}" ] && { printf '%s' "$APPARITION_PASSWORD"; return; }
-  local reply; printf '%s' "$1" > /dev/tty
-  stty -echo < /dev/tty; IFS= read -r reply < /dev/tty; stty echo < /dev/tty; printf '\n' > /dev/tty
-  printf '%s' "$reply"
-}
 
 [ "$(id -u)" = 0 ] || die "run it as root (recoveryOS's Terminal is; in macOS, use sudo)"
 [ "$(uname -m)" = arm64 ] || die "this is for a macOS VM on Apple silicon"
@@ -50,40 +43,31 @@ if [ -e /System/Library/CoreServices/Finder.app ]; then
   RECOVERY=0 DATA="" version=$(sw_vers -productVersion)
 else
   RECOVERY=1 DATA="" version=""
-  find_data() {
+  # /usr/local and /Library are on the read-write Data volume (it holds dslocal); the version
+  # comes from a read-only System volume's SystemVersion.plist. Find each.
+  find_volumes() {
     for volume in /Volumes/*; do
-      [ -d "$volume/private/var/db/dslocal/nodes/Default" ] && { DATA=$volume; return; }
+      [ -z "$DATA" ] && [ -d "$volume/private/var/db/dslocal/nodes/Default" ] && DATA=$volume
+      plist="$volume/System/Library/CoreServices/SystemVersion.plist"
+      [ -z "$version" ] && [ -f "$plist" ] && version=$(grep -A1 '<key>ProductVersion</key>' "$plist" | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')
     done
   }
-  find_data
+  find_volumes
   if [ -z "$DATA" ]; then
-    # Not mounted yet (recoveryOS mounts it once something asks): mount each Data volume.
-    for device in $(diskutil list | awk '/APFS Volume .*Data/ {print $NF}'); do
+    # Not mounted yet (recoveryOS mounts it once something asks): mount each APFS volume.
+    for device in $(diskutil list | awk '/APFS Volume/ {print $NF}'); do
       diskutil mount "$device" > /dev/null 2>&1
     done
-    find_data
+    find_volumes
   fi
-  [ -n "$DATA" ] || die "found no macOS Data volume to set up (is FileVault on? unlock it in Disk Utility first)"
-  for volume in /Volumes/*; do
-    plist="$volume/System/Library/CoreServices/SystemVersion.plist"
-    [ -f "$plist" ] && { version=$(grep -A1 '<key>ProductVersion</key>' "$plist" | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p'); break; }
-  done
-fi
-
-# The directory: offline from its files in recoveryOS, through opendirectoryd otherwise.
-if [ "$RECOVERY" = 1 ]; then
-  ds() { dscl -f "$DATA/private/var/db/dslocal/nodes/Default" localonly "$@"; }
-  DS=/Local/Default
-else
-  ds() { dscl . "$@"; }
-  DS=""
+  [ -n "$DATA" ] || die "found no installed macOS to set up (is FileVault on? unlock it in Disk Utility first)"
 fi
 major=${version%%.*}
 say "Setting up $([ "$RECOVERY" = 1 ] && echo "the macOS $version on $DATA" || echo "this Mac (macOS $version)")"
 
 # ------------------------------------------------------------------ SIP and AMFI
 if [ "$VM" = 0 ] && [ -n "$major" ] && [ "$major" -le 26 ]; then
-  # A real Mac up to macOS 26 gives its anisette to any program (AOSKit).
+  # A real Mac up to macOS 26 gives its anisette to any program (AOSKit), no SIP change needed.
   echo "macOS $version gives its anisette to any program: SIP and AMFI stay on."
 elif [ "$RECOVERY" = 1 ]; then
   if csrutil status | grep -q 'disabled'; then
@@ -92,8 +76,8 @@ elif [ "$RECOVERY" = 1 ]; then
     if [ "$VM" = 0 ] && [ "$(ask "This doesn't look like a virtual machine. Turn SIP off anyway? [y/N] ")" != y ]; then
       exit 1
     fi
-    say "Turning SIP off (it asks for the password of the user Setup Assistant made)"
-    csrutil disable < /dev/tty || die "csrutil disable failed. Did Setup Assistant finish? It makes the user this needs."
+    say "Turning SIP off (it asks for the password of the account Setup Assistant made)"
+    csrutil disable < /dev/tty || die "csrutil disable failed. Did Setup Assistant finish? It makes the account this asks for."
   fi
   case "$(nvram boot-args 2>/dev/null)" in
     *"$BOOT_ARG"*) echo "AMFI is already off." ;;
@@ -108,49 +92,6 @@ elif [ "${APPARITION_FORCE:-}" != 1 ]; then
     *) die "$BOOT_ARG isn't set. Restart into recoveryOS and run this there." ;;
   esac
 fi
-
-# ------------------------------------------------------------------ the user and automatic login
-# The helper's attestation (x-apple-baa-*) is only valid inside a GUI (Aqua) login session: a
-# LaunchDaemon running as root gets -3000076 from Apple, a LaunchAgent in a logged-in session gets
-# through. So the anisette must run as a login item, and the VM must log a user in on its own.
-users=$(ds -list $DS/Users UniqueID 2>/dev/null | awk '$2 >= 501 && $2 < 1000 {print $1}')
-if [ -n "${APPARITION_USER:-}" ]; then
-  USER_NAME=$APPARITION_USER
-elif [ -z "$users" ]; then
-  die "no user account yet. Finish Setup Assistant (create an account; skip Apple Account and the rest), then run this."
-elif [ $(printf '%s\n' $users | wc -l) = 1 ]; then
-  USER_NAME=$(printf '%s' $users)
-else
-  echo "Users: $users"
-  USER_NAME=$(ask "Which one should log in automatically and run the anisette server? ")
-fi
-printf '%s\n' $users | grep -qx "$USER_NAME" || die "no user $USER_NAME on this macOS"
-owner=$(ds -read "$DS/Users/$USER_NAME" UniqueID | awk '{print $2}')
-
-say "Logging $USER_NAME in automatically (its password, for the login window)"
-PASSWORD=$(ask_secret "$USER_NAME's password: ")
-# loginwindow's autoLoginUser plus the password, obscured as /etc/kcpassword (XOR with
-# loginwindow's fixed key, padded to a multiple of 12 bytes).
-mkdir -p "$DATA/Library/Preferences"
-loginwindow="$DATA/Library/Preferences/com.apple.loginwindow"
-defaults write "$loginwindow" autoLoginUser -string "$USER_NAME" || die "couldn't set automatic login"
-plutil -convert xml1 "$loginwindow.plist" 2>/dev/null
-key="125 137 82 35 210 188 221 234 163 185 31"
-set -- $key
-length=${#PASSWORD}
-padded=$(( (length / 12 + 1) * 12 ))
-kcpassword="$DATA/private/etc/kcpassword"
-: > "$kcpassword"
-i=0
-while [ $i -lt $padded ]; do
-  if [ $i -lt "$length" ]; then byte=$(printf '%d' "'${PASSWORD:$i:1}"); else byte=0; fi
-  [ "$byte" -lt 128 ] || die "the password must be plain ASCII for automatic login"
-  k=$(( i % 11 + 1 )); eval "kb=\${$k}"
-  printf "\\$(printf '%03o' $(( byte ^ kb )))" >> "$kcpassword"
-  i=$((i + 1))
-done
-chmod 600 "$kcpassword"; chown 0:0 "$kcpassword"
-PASSWORD=""
 
 # ------------------------------------------------------------------ Apparition
 say "Installing apparition and its anisette helper"
@@ -173,7 +114,8 @@ done
 rm -rf "$work"
 
 # A LaunchAgent, not a daemon: LimitLoadToSessionType Aqua runs it in the GUI login session, the
-# only place the helper's attestation is valid.
+# only place the helper's attestation is valid (a root LaunchDaemon gets -3000076 from Apple). In
+# /Library/LaunchAgents it loads for whichever account logs in, which automatic login makes the VM.
 mkdir -p "$DATA/Library/LaunchAgents"
 agent="$DATA/Library/LaunchAgents/$LABEL.plist"
 cat > "$agent" <<EOF
@@ -203,10 +145,12 @@ chown 0:0 "$agent"
 chmod 644 "$agent"
 
 if [ "$RECOVERY" = 1 ]; then
-  say "Done. When the VM restarts it logs $USER_NAME in and serves anisette on port $PORT."
+  say "Done. With automatic login on, the VM serves anisette on port $PORT after it restarts."
+  echo "Turn automatic login on in System Settings > Users & Groups if you haven't, then restart."
   echo "Point Apparition at http://<the VM's address>:$PORT (in the VM: ipconfig getifaddr en0)."
   [ "$(ask "Restart now? [Y/n] ")" = n ] || reboot
 else
+  owner=$(stat -f%u /dev/console)
   launchctl bootstrap "gui/$owner" "$agent" 2>/dev/null || launchctl kickstart -k "gui/$owner/$LABEL" 2>/dev/null
   say "Done. Anisette is on port $PORT; log: /tmp/apparition-anisette.log"
 fi
