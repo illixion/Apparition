@@ -88,11 +88,14 @@ pub async fn usb_devices() -> Result<Vec<UsbDevice>, Report> {
     Ok(devices)
 }
 
-/// iOS 16 and earlier has no RemotePairing tunnel (CoreDevice arrived with iOS 17), so such a
-/// device is reached through usbmuxd and lockdown instead: see [`crate::legacy`]. Anything that
-/// doesn't read as a version counts as current.
-pub fn is_legacy_os(os_version: &str) -> bool {
-    os_version.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major < 17)
+/// Whether a device with lockdown's `product_type` and `os_version` predates the RemotePairing
+/// tunnel (CoreDevice arrived with iOS and tvOS 17), so it's reached through usbmuxd and lockdown
+/// instead: see [`crate::legacy`]. visionOS has had the tunnel from 1.0, and its versions only
+/// reached 26 later, so a headset never counts. Anything that doesn't read as a version counts
+/// as current.
+pub fn is_legacy_os(product_type: &str, os_version: &str) -> bool {
+    Platform::of_product(product_type) != Platform::VisionOS
+        && os_version.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major < 17)
 }
 
 /// usbmuxd's provider for `udid`: the cable when it's plugged in, else the network.
@@ -164,8 +167,8 @@ pub async fn pair_usb(
 ) -> Result<DeviceInfo, Report> {
     use idevice::{IdeviceService, remote_pairing::RemotePairingLockdownService};
     let (provider, info) = usb_identity(udid, hostname, waiting).await?;
-    if is_legacy_os(&info.os_version) {
-        bail!("{} runs iOS {}, which has no RemotePairing. Apparition installs to it over usbmuxd instead.", info.name, info.os_version);
+    if is_legacy_os(&info.product_type, &info.os_version) {
+        bail!("{} runs iOS {}, which has no RemotePairing tunnel. Apparition installs to it over usbmuxd instead.", info.name, info.os_version);
     }
     let service = RemotePairingLockdownService::connect(&provider)
         .await
@@ -768,7 +771,7 @@ mod desktop {
             let hostname = hostname();
             // iOS 16 and earlier has no RemotePairing to pair with: usbmuxd's trust is the pairing.
             let (_, info) = super::usb_identity(udid, &hostname, waiting).await?;
-            if super::is_legacy_os(&info.os_version) {
+            if super::is_legacy_os(&info.product_type, &info.os_version) {
                 let device = PairedDevice {
                     udid: info.udid.clone(),
                     name: info.name.clone(),
@@ -940,12 +943,14 @@ mod tests {
 
     #[test]
     fn legacy_os_is_before_ios_17() {
-        assert!(super::is_legacy_os("16.3.1"));
-        assert!(super::is_legacy_os("12.5.7"));
-        assert!(!super::is_legacy_os("17.0"));
-        assert!(!super::is_legacy_os("26.1"));
-        assert!(!super::is_legacy_os(""));
-        assert!(!super::is_legacy_os("beta"));
+        assert!(super::is_legacy_os("iPhone10,4", "16.3.1"));
+        assert!(super::is_legacy_os("iPad7,5", "12.5.7"));
+        assert!(super::is_legacy_os("AppleTV6,2", "16.6"));
+        assert!(!super::is_legacy_os("iPhone10,4", "17.0"));
+        assert!(!super::is_legacy_os("iPhone17,1", "26.1"));
+        assert!(!super::is_legacy_os("RealityDevice14,1", "2.4"));
+        assert!(!super::is_legacy_os("iPhone10,4", ""));
+        assert!(!super::is_legacy_os("iPhone10,4", "beta"));
     }
 
     #[cfg(feature = "desktop")]

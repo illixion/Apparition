@@ -892,6 +892,11 @@ async fn latest_apparition(site: &str, dir: &Path, platform: api::Platform) -> R
 
 async fn download_and_install(options: &mut Options, device: &Device, scratch: &Path) -> Result<(), Error> {
     if options.ipa.as_os_str().is_empty() {
+        // Refused before signing, which would spend one of a free account's App IDs on an app
+        // installd then turns down for its minimum iOS.
+        if device.legacy {
+            return Err(fail(format!("Apparition needs a newer iOS than {} runs. Give an IPA to install instead: `apparition install <app.ipa>`", device.name)));
+        }
         options.ipa = latest_apparition(&options.release_site, &scratch.join("download"), device.platform()).await?;
     }
     unpack_package(options, scratch)?;

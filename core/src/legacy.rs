@@ -1,7 +1,8 @@
 //! Devices on iOS 16 and earlier, reached through usbmuxd and lockdown.
 //!
 //! Everything else here talks to a device through its RemotePairing tunnel and RSD, which
-//! arrived with iOS 17. Before that the same services (AFC, installation_proxy) are lockdown
+//! arrived with iOS 17 (an iOS 16 device answers remotepairingdeviced's pair-setup, but its
+//! pairing info differs, and nothing past it has been tried). Before that the same services (AFC, installation_proxy) are lockdown
 //! services, so a device that trusts this computer (usbmuxd's pair record, from Finder, Apple
 //! Devices or `apparition pair --usb`) needs no pairing of its own. Over the cable, or Wi-Fi
 //! sync once the device allows it. Installing and listing work this way; JIT does not (iOS 16's
@@ -74,9 +75,8 @@ impl Legacy {
     pub async fn install(&mut self, app_path: &Path, source_ipa: Option<&Path>, detach_after_ms: u64) -> Result<Value, Report> {
         let staged = crate::ipa::Staged::pack(app_path, source_ipa)?;
         let afc = AfcClient::connect(&self.provider).await.context("AFC connect failed")?;
-        // What ideviceinstaller sends for a development-signed package.
-        let mut options = plist::Dictionary::new();
-        options.insert("PackageType".into(), "Developer".into());
-        staged.send(afc, async || self.installer().await, detach_after_ms, Some(plist::Value::Dictionary(options))).await
+        // No options, as over the tunnel: `PackageType: Developer` is for an unpacked .app folder
+        // (isideload's upload), not an IPA.
+        staged.send(afc, async || self.installer().await, detach_after_ms, None).await
     }
 }
