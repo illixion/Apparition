@@ -56,6 +56,8 @@ function setStatus(el, text, kind = "") {
   el.hidden = !text;
   el.textContent = text;
   el.className = `status ${kind}`.trim();
+  // A step can be taller than the window: bring the error into view.
+  if (kind === "error" && text) el.scrollIntoView({ block: "nearest" });
 }
 
 /** @param {HTMLButtonElement} button @param {boolean} busy */
@@ -465,6 +467,7 @@ function signing() {
   const keyForm = /** @type {HTMLFormElement} */ ($(panel, "key-import"));
   const signed = $(panel, "signed");
   const status = $(panel, "status");
+  const recovery = $(panel, "recovery");
   const continueButton = /** @type {HTMLButtonElement} */ ($(panel, "continue"));
   const manageIds = /** @type {HTMLButtonElement} */ ($(panel, "manage-app-ids"));
   const idManager = $(panel, "app-id-manager");
@@ -485,6 +488,9 @@ function signing() {
     keyForm.hidden = appleForm.hidden;
     certForm.hidden = done || state.mode !== "certificate";
     signed.hidden = !done;
+    // The status and its recovery buttons sit right under what is being used, not below the
+    // key-file form, which can push them out of the window.
+    (done ? signed : certForm.hidden ? appleForm : certForm).after(status, recovery);
     manageIds.hidden = state.signing?.mode !== "appleId";
     if (manageIds.hidden) idManager.hidden = true;
     continueButton.disabled = !done;
@@ -567,7 +573,6 @@ function signing() {
   // After a failure that trying again may cure (a connection, Apple's download of its libraries),
   // the sign-in's details are kept here, in memory only and for a few minutes, so Try again needs no
   // retyping. Cleared by the next sign-in, by success, and when this step is left.
-  const recovery = $(panel, "recovery");
   const ownLibraries = /** @type {HTMLDetailsElement} */ ($(panel, "own-libraries"));
   const librariesStatus = $(panel, "libraries-status");
   const librariesAnyway = $(panel, "libraries-anyway");
@@ -610,6 +615,8 @@ function signing() {
         recovery.hidden = false;
         ownLibraries.hidden = kind !== "libraries";
         if (kind === "libraries") ownLibraries.open = true;
+        // The error and what can be done about it, together, rather than the error alone.
+        status.scrollIntoView({ block: "start" });
       }
       args.password = "";
     } finally {
