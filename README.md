@@ -228,7 +228,8 @@ Implementation order:
    desktop Apparition. The initial device Developer tab adds service sign-in, project
    and branch selection, build-only/install jobs, logs, cancellation and registered-build
    browsing. Its credentials stay in memory and authenticated requests refuse redirects.
-   Next: direct project registration and the rest of the device reporting/install workflow.
+   Desktop Apparition can also register an existing Mac checkout and its targets.
+   Next: the rest of the device reporting/install workflow.
    A Mac with Xcode executes Apple builds; other desktop platforms can connect to it.
    Service credentials stay separate from the existing relay.
 3. **Unify build identity.** Connect projects, immutable builds, artifact digests and
@@ -260,7 +261,14 @@ state migration, or rebuild/relaunch with state restoration. Executable-memory a
 alone cannot change the layout of instances that already exist. A debugger-assisted
 backend must retain per-patch user approval before it becomes a product feature.
 
-### Registering an Xcode build
+### Registering projects and Xcode builds
+
+In desktop Apparition's Developer view, use **Register a project** to add an existing
+checkout on the Mac service host. Enter its Mac path, device names, platform aliases and
+bundle identifiers; its `build-signing.conf` must already be set up. Registration saves
+the project without building it or changing signing material. Local branch names are
+optional; the current checkout remains available. The Mac service validates the checkout
+and updates its configuration atomically, preserving existing settings.
 
 On the Mac with the complete build-tools checkout and Node 18+:
 

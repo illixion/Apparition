@@ -188,6 +188,7 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
     let get = |p: String| Ok((Method::GET, p, None));
     match name {
         "state" | "traces" | "crashlogs" | "artifacts" => get(name.into()),
+        "registerProject" => Ok((Method::POST, "projects".into(), Some(args.clone()))),
         "build" => {
             if !args["repo"].is_string() || !args["device"].is_string() {
                 return Err("Select a project and target first.".into());

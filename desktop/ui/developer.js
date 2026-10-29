@@ -48,6 +48,7 @@ export class DeveloperView {
     this.note = element('p', 'status'); this.note.setAttribute('role', 'status');
     this.content = element('div', 'service-content'); this.content.hidden = true;
     this.projects = this.section('Projects');
+    this.registration = this.registrationForm(); this.registration.hidden = true;
     this.devices = this.section('Devices');
     this.jobs = this.section('Builds');
     this.artifacts = this.section('Registered builds'); this.artifacts.hidden = true;
@@ -55,9 +56,57 @@ export class DeveloperView {
     this.debug = this.section('Running apps');
     this.detail = element('pre', 'service-detail selectable');
     this.detail.tabIndex = 0; this.detail.hidden = true;
-    this.content.append(this.projects, this.devices, this.jobs, this.artifacts, this.reports, this.debug, this.detail);
+    this.content.append(this.registration, this.projects, this.devices, this.jobs, this.artifacts, this.reports, this.debug, this.detail);
     root.append(form, this.note, this.content);
     invoke('service_settings').then(settings => { if (settings.url) this.address.value = settings.url; }).catch(() => {});
+  }
+
+  registrationForm() {
+    const container = element('details', 'group');
+    container.append(element('summary', '', 'Register a project'));
+    const form = element('form', 'service-project');
+    const input = (title, placeholder = '') => {
+      const label = element('label', '', title), field = element('input');
+      field.required = true; field.placeholder = placeholder;
+      label.append(field); form.append(label); return field;
+    };
+    const name = input('Project name', 'MyApp');
+    const path = input('Checkout path on the Mac', '~/Projects/MyApp');
+    const branches = input('Local branches, separated by commas', 'main'); branches.required = false;
+    form.append(element('p', 'hint', 'Choose an existing Git checkout with build-signing.conf already set up. Registration saves its targets; it does not build or install anything.'));
+    const targets = element('div', 'service-project'); form.append(targets);
+    const rows = [];
+    const addTarget = () => {
+      const row = element('div', 'service-row'), fields = {};
+      for (const [key, title, placeholder] of [['platform', 'Platform alias', 'visionOS'], ['device', 'Device name', 'Vision Pro'], ['bundleId', 'Bundle identifier', 'com.example.myapp']]) {
+        const label = element('label', '', title), field = element('input');
+        field.required = true; field.placeholder = placeholder; fields[key] = field;
+        label.append(field); row.append(label);
+      }
+      const entry = { row, fields }; rows.push(entry);
+      row.append(button('Remove target', () => {
+        if (rows.length === 1) return;
+        rows.splice(rows.indexOf(entry), 1); targets.replaceChildren(...rows.map(item => item.row));
+      }));
+      targets.append(row);
+    };
+    addTarget();
+    const submit = element('button', 'button primary', 'Register project'); submit.type = 'submit';
+    form.append(button('Add target', addTarget), submit);
+    form.addEventListener('submit', async event => {
+      event.preventDefault(); submit.disabled = true;
+      try {
+        const args = { name: name.value.trim(), path: path.value.trim(), platforms: rows.map(({ fields }) =>
+          Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, field.value.trim()]))) };
+        if (branches.value.trim()) args.branches = branches.value.split(',').map(value => value.trim()).filter(Boolean);
+        const reply = await this.request('registerProject', args);
+        this.status(`Registered ${reply.project.name}.`);
+        name.value = path.value = branches.value = ''; rows.length = 0; targets.replaceChildren(); addTarget();
+        container.open = false; this.projectSignature = ''; await this.refresh();
+      } catch (error) { this.status(String(error?.message || error), true); }
+      finally { submit.disabled = false; }
+    });
+    container.append(form); return container;
   }
 
   section(title) {
@@ -82,6 +131,7 @@ export class DeveloperView {
       this.connected = true;
       this.capabilities = new Set(service.capabilities || []);
       this.artifacts.hidden = !this.capabilities.has('artifact-manifests');
+      this.registration.hidden = !this.capabilities.has('project-registration');
       this.epoch += 1;
       this.address.disabled = this.password.disabled = true;
       this.connect.hidden = true; this.disconnect.hidden = false; this.content.hidden = false;

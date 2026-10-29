@@ -112,3 +112,21 @@ test('registered builds are visible without queue jobs and do not duplicate queu
   await view.artifacts.all().find(node => node.tagName === 'button' && node.textContent === 'Download').listeners.click();
   assert.deepEqual(calls[0], { command: 'service_download', args: { id: 'external' } });
 });
+
+test('project registration sends the Mac checkout and explicit targets without building', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command === 'service_settings') return {};
+    calls.push({ command, args }); return { project: { name: 'Example' } };
+  });
+  const fields = view.registration.all().filter(node => node.tagName === 'input');
+  ['Example', '~/Projects/Example', 'main, feature/ui', 'visionOS', 'AVP', 'com.example.app'].forEach((value, index) => fields[index].value = value);
+  const form = view.registration.all().find(node => node.tagName === 'form');
+  await form.listeners.submit({ preventDefault() {} });
+  assert.deepEqual(calls, [{ command: 'service_request', args: { operation: 'registerProject', arguments: {
+    name: 'Example', path: '~/Projects/Example', branches: ['main', 'feature/ui'],
+    platforms: [{ platform: 'visionOS', device: 'AVP', bundleId: 'com.example.app' }],
+  } } }]);
+  assert.match(view.note.textContent, /Registered Example/);
+  assert.equal(view.registration.open, false);
+});
