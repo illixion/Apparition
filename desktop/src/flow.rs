@@ -40,6 +40,7 @@ pub struct State {
     session: Mutex<Option<api::Session>>,
     certificate: Mutex<Option<Certificate>>,
     app: Mutex<Option<Prepared>>,
+    install_lock: Mutex<()>,
     prompt: Mutex<Option<mpsc::Sender<Answer>>>,
     /// Ends `nearby_receive`'s wait.
     nearby_stop: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -66,6 +67,7 @@ impl State {
             session: Mutex::new(None),
             certificate: Mutex::new(None),
             app: Mutex::new(None),
+            install_lock: Mutex::new(()),
             prompt: Mutex::new(None),
             nearby_stop: Mutex::new(None),
         }
@@ -156,6 +158,7 @@ pub enum Answer {
     Resend,
     /// Whether the other device shows the same code (nearby signing).
     Match { matches: bool },
+    InstallPlan { target: String, extensions: Vec<String>, #[serde(rename = "dataMode")] data_mode: String },
     Cancel,
 }
 
@@ -679,14 +682,56 @@ pub async fn prepare_local(state: Shared<'_>, path: String) -> Result<Value, Fai
     .await
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct Assignment {
+    team: String,
+    device: String,
+    source: String,
+    target: String,
+    extensions: Vec<String>,
+    #[serde(default)]
+    move_from: Option<String>,
+}
+
+impl Assignment {
+    fn claims(&self) -> Vec<String> {
+        let mut ids = vec![self.target.clone()];
+        ids.extend(self.extensions.iter().filter_map(|id| id.strip_prefix(&self.source).map(|suffix| format!("{}{suffix}", self.target))));
+        if let Some(from) = &self.move_from { if from != &self.target { ids.push(from.clone()); } }
+        ids
+    }
+}
+
+fn read_assignments(path: &std::path::Path) -> Result<Vec<Assignment>, Failure> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let records: Vec<Assignment> = serde_json::from_slice(&bytes).map_err(|e| Failure::new(format!("Cannot read App ID assignments: {e}")))?;
+            for (i, a) in records.iter().enumerate() {
+                if records[..i].iter().any(|b| a.team == b.team && a.device == b.device && (a.source == b.source || a.claims().iter().any(|id| b.claims().contains(id)))) {
+                    return Err(Failure::new("Conflicting App ID assignments; repair the database before installing"));
+                }
+            }
+            Ok(records)
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn save_assignments(path: &std::path::Path, assignments: &[Assignment]) -> Result<(), Failure> {
+    std::fs::create_dir_all(path.parent().ok_or("No assignments directory")?)?;
+    let temporary = path.with_extension("pending");
+    std::fs::write(&temporary, serde_json::to_vec_pretty(assignments).map_err(|e| Failure::new(e.to_string()))?)?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}
+
 // MARK: Install
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallOptions {
     udid: String,
-    #[serde(default)]
-    keep_extensions: bool,
     #[serde(default = "yes")]
     hand_off: bool,
 }
@@ -701,11 +746,12 @@ fn stage(app: &AppHandle, name: &str, detail: Value) {
 
 /// Connects, signs the prepared app for the device and installs it, then (for Apparition)
 /// hands it what signed it. Stages arrive as `stage` events. A full certificate or App ID
-/// slot fails with `slot` set; nothing is revoked or deleted here.
+/// slot fails with `slot` set. Data removal follows the explicit install-review choice.
 #[tauri::command]
 pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions) -> Result<Value, Failure> {
     let state = state.inner().clone();
     blocking(move || {
+        let _install_guard = state.install_lock.try_lock().map_err(|_| Failure::new("An installation is already running"))?;
         let device = state.store.device(&options.udid).ok_or("That device isn't paired any more. Pair it again.")?;
         let prepared = state.app.lock().unwrap().clone().ok_or("Choose what to install first.")?;
         let certificate = state.certificate.lock().unwrap().clone();
@@ -724,18 +770,82 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
         let result = block_on(async {
             let mut tunnel = state.store.connect(&device, pin).await?;
             let info = tunnel.device_info().await?;
-            let strip = !options.keep_extensions;
-
+            let inventory = apparition_core::install_plan::inspect(&prepared.path)?;
+            let is_apparition = inventory.id == APPARITION_ID;
+            let assignment_path = state.store.dir.join("app-id-assignments.json");
+            let mut assignments = read_assignments(&assignment_path).map_err(|e| rootcause::report!("{}", e.message))?;
+            let (team, ids) = {
+                let mut guard = state.session.lock().unwrap();
+                match guard.as_mut().filter(|_| certificate.is_none()) {
+                    Some(session) => (session.team_id().to_string(), api::list_app_ids(session).await?),
+                    None => (String::new(), json!({"appIds": []})),
+                }
+            };
+            let previous = assignments.iter().find(|a| a.team == team && a.device == info.udid && a.source == inventory.id).cloned();
+            let default_target = previous.as_ref().map(|a| a.target.clone()).unwrap_or_else(|| format!("{}.{}", inventory.id, team));
+            let mut candidates = Vec::new();
+            for id in ids["appIds"].as_array().into_iter().flatten() {
+                let Some(identifier) = id["identifier"].as_str() else { continue };
+                let installed = tunnel.installed_app(identifier).await?;
+                let owner = assignments.iter().find(|a| a.team == team && a.device == info.udid && a.claims().contains(&identifier.to_string()));
+                let reserved_child = owner.is_some_and(|a| a.source != inventory.id && a.target != identifier);
+                candidates.push(json!({"id": identifier, "name": id["name"], "installed": installed, "owner": owner.map(|a| &a.source), "reservedChild": reserved_child}));
+            }
+            let usual_id = format!("{}.{}", inventory.id, team);
+            let data_source = previous.as_ref().and_then(|a| a.move_from.clone().or_else(|| Some(a.target.clone())));
+            let data_source = match data_source {
+                Some(id) => Some(id),
+                None if certificate.is_none()
+                    && !assignments.iter().any(|a| a.team == team && a.device == info.udid && a.source != inventory.id && a.claims().contains(&usual_id))
+                    && tunnel.installed_app(&usual_id).await?.is_some() => Some(usual_id.clone()),
+                None => None,
+            };
+            let (target, extensions, data_mode) = match state.ask(&app, json!({
+                "kind": "installPlan", "inventory": inventory, "appleId": certificate.is_none(),
+                "candidates": candidates, "defaultTarget": default_target,
+                "previous": previous.as_ref().map(|a| &a.target),
+                "selected": previous.as_ref().map(|a| a.extensions.clone()).unwrap_or_default(),
+                "available": ids["availableQuantity"], "dataSource": data_source
+            })) {
+                Answer::InstallPlan { target, extensions, data_mode } => (target, extensions, data_mode),
+                _ => return Err(rootcause::report!("Installation cancelled before signing")),
+            };
+            if !["keep", "discard"].contains(&data_mode.as_str()) { return Err(rootcause::report!("Choose whether to keep or discard app data")); }
+            if certificate.is_none() && target != default_target && !candidates.iter().any(|c| c["id"].as_str() == Some(&target)) {
+                return Err(rootcause::report!("Choose an App ID from this account"));
+            }
+            if certificate.is_none() && inventory.extensions.iter().any(|e| e.extension_kit && extensions.contains(&e.id)) {
+                return Err(rootcause::report!("ExtensionKit helpers are not supported by Apple ID signing yet"));
+            }
+            if assignments.iter().any(|a| a.team == team && a.device == info.udid && a.source != inventory.id && a.target != target && a.claims().contains(&target)) {
+                return Err(rootcause::report!("This identifier belongs to another app's extension or pending data transfer"));
+            }
+            let move_from = data_source.filter(|id| id != &target);
+            for extension in inventory.extensions.iter().filter(|e| extensions.contains(&e.id)) {
+                let suffix = extension.id.strip_prefix(&inventory.id).filter(|s| s.starts_with('.')).ok_or_else(|| rootcause::report!("Extension {} does not belong to this app", extension.name))?;
+                let child = format!("{target}{suffix}");
+                if assignments.iter().any(|a| a.team == team && a.device == info.udid && a.source != inventory.id && a.claims().contains(&child)) {
+                    return Err(rootcause::report!("Extension {child} is assigned to another app. Deselect it before proceeding"));
+                }
+            }
+            let selected_app = apparition_core::install_plan::select(&prepared.path, &extensions)?;
+            let stripped: Vec<_> = inventory.extensions.iter().filter(|e| !extensions.contains(&e.id)).map(|e| &e.name).collect();
+            // Reserve before signing: a failed install can still have registered portal IDs.
+            if certificate.is_none() {
+                assignments.retain(|a| !(a.team == team && a.device == info.udid && (a.source == inventory.id || a.target == target)));
+                assignments.push(Assignment { team: team.clone(), device: info.udid.clone(), source: inventory.id.clone(), target: target.clone(), extensions: extensions.clone(), move_from: move_from.clone() });
+                save_assignments(&assignment_path, &assignments).map_err(|e| rootcause::report!("{}", e.message))?;
+            }
             stage(&app, "signing", json!(info.name));
             let mut apple_id: Option<(String, String)> = None;
             let signed = match &certificate {
                 Some(cert) => api::sign_offline(
                     &cert.dir,
-                    prepared.path.clone(),
+                    selected_app.clone(),
                     &cert.id,
                     None,
                     &info.udid,
-                    strip,
+                    false,
                     None,
                     api::Platform::of_product(&info.product_type),
                 )?,
@@ -743,23 +853,50 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                     let mut guard = state.session.lock().unwrap();
                     let session = guard.as_mut().ok_or_else(|| rootcause::report!("Sign in with your Apple ID first"))?;
                     apple_id = Some((session.email().to_string(), session.team_id().to_string()));
-                    api::sign_with_apple_id(session, prepared.path.clone(), &info.udid, &info.name, strip, api::Platform::of_product(&info.product_type)).await?
+                    api::sign_with_apple_id_as(session, selected_app.clone(), &info.udid, &info.name, false, api::Platform::of_product(&info.product_type), Some(&target)).await?
                 }
             };
             let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| rootcause::report!("Signing returned no app"))?);
             let bundle_id = api::bundle_id(&signed_path).ok_or_else(|| rootcause::report!("The signed app has no bundle ID"))?;
 
+            if certificate.is_none() && bundle_id != target { return Err(rootcause::report!("Signer changed the assigned App ID")); }
             let existing = tunnel.installed_app(&bundle_id).await?;
-            stage(&app, "installing", json!({ "device": info.name, "update": existing.is_some() }));
+            if data_mode == "discard" && existing.is_some() {
+                tunnel.uninstall(&bundle_id).await?;
+            }
+            stage(&app, "installing", json!({ "device": info.name, "update": existing.is_some() && data_mode != "discard" }));
             let source = prepared.path.is_file().then_some(prepared.path.as_path());
             // An update of an app that's open waits in installd until it closes, so only an
             // update stops waiting after 20 s; a new install, however large, is waited for.
-            let reply = tunnel.install(&signed_path, source, if existing.is_some() { 20_000 } else { 0 }).await?;
+            let reply = tunnel.install(&signed_path, source, if existing.is_some() && data_mode != "discard" { 20_000 } else { 0 }).await?;
 
+            let mut migration = Value::Null;
+            let mut migration_pending = false;
+            if data_mode == "keep" && let Some(from) = &move_from && from != &bundle_id
+                && tunnel.installed_app(from).await?.is_some() {
+                migration_pending = true;
+                if reply["queued"].as_bool() != Some(true) {
+                    match tunnel.migrate_data(from, &bundle_id).await {
+                        Ok(copied) => {
+                            let complete = copied["failed"].as_array().is_some_and(|f| f.is_empty());
+                            migration = copied;
+                            if complete {
+                                tunnel.uninstall(from).await?;
+                                migration_pending = false;
+                            }
+                        }
+                        Err(error) => migration = json!({"error": error.to_string()}),
+                    }
+                }
+            }
+            if !migration_pending && certificate.is_none() {
+                if let Some(record) = assignments.iter_mut().find(|a| a.team == team && a.device == info.udid && a.source == inventory.id) { record.move_from = None; }
+                save_assignments(&assignment_path, &assignments).map_err(|e| rootcause::report!("{}", e.message))?;
+            }
             let mut handoff = Value::Null;
             let mut handoff_error = Value::Null;
             let mut pairing_handed_over = false;
-            if options.hand_off && bundle_id.starts_with(APPARITION_ID) {
+            if options.hand_off && is_apparition {
                 stage(&app, "handoff", Value::Null);
                 // An iPhone or iPad paired over USB: Apparition gets its own pairing record.
                 match state.store.hand_over_pairing(&mut tunnel, &bundle_id, &info.udid).await {
@@ -782,10 +919,13 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             Ok::<_, Report>(json!({
                 "bundleId": bundle_id,
                 "deviceName": info.name,
-                "update": existing.is_some(),
+                "update": existing.is_some() && data_mode != "discard",
                 "seconds": reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0,
                 "queued": reply["queued"].as_bool() == Some(true),
-                "strippedExtensions": signed["strippedExtensions"],
+                "strippedExtensions": stripped,
+                "isApparition": is_apparition,
+                "migration": migration,
+                "migrationPending": migration_pending,
                 "handoff": handoff,
                 "handoffError": handoff_error,
                 "pairingHandedOver": pairing_handed_over,
@@ -847,4 +987,30 @@ pub async fn delete_app_id(state: Shared<'_>, app_id_id: String, confirmation: S
         api::delete_app_id(session, &app_id_id).await.map(|_| ())
     })
     .await
+}
+
+#[cfg(test)]
+mod assignment_tests {
+    use super::*;
+
+    #[test]
+    fn database_roundtrip_preserves_pending_migrations_and_blocks_overlapping_ids() {
+        let dir = std::env::temp_dir().join(format!("apparition-assignment-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let path = dir.join("assignments.json");
+        assert!(read_assignments(&path).unwrap().is_empty());
+        let a = Assignment { team: "TEAM".into(), device: "device".into(), source: "org.app".into(), target: "org.pool.one".into(), extensions: vec!["org.app.share".into()], move_from: Some("org.old".into()) };
+        save_assignments(&path, &[a.clone()]).unwrap();
+        let read = read_assignments(&path).unwrap();
+        assert_eq!(read[0].move_from.as_deref(), Some("org.old"));
+        assert!(read[0].claims().contains(&"org.pool.one.share".to_string()));
+        let mut b = a.clone(); b.source = "org.other".into(); b.target = "org.pool.one.share".into(); b.move_from = None; b.extensions.clear();
+        save_assignments(&path, &[a.clone(), b.clone()]).unwrap();
+        assert!(read_assignments(&path).is_err());
+        b.device = "another device".into();
+        save_assignments(&path, &[a,b]).unwrap();
+        assert_eq!(read_assignments(&path).unwrap().len(), 2);
+        std::fs::write(&path, b"broken database").unwrap();
+        assert!(read_assignments(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

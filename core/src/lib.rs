@@ -31,6 +31,7 @@ mod identity;
 mod ipa;
 mod migrate;
 pub mod package;
+pub mod install_plan;
 mod jit;
 mod tunnel;
 pub mod stop;
@@ -426,12 +427,31 @@ pub async fn sign_with_apple_id(
     strip_extensions: bool,
     platform: identity::Platform,
 ) -> Result<Value, Report> {
+    sign_with_apple_id_as(session, app_path, udid, device_name, strip_extensions, platform, None).await
+}
+
+/// Signs under an explicitly assigned portal identifier, preserving the source app's special handling.
+pub async fn sign_with_apple_id_as(
+    session: &mut Session, app_path: PathBuf, udid: &str, device_name: &str,
+    strip_extensions: bool, platform: identity::Platform, assigned_id: Option<&str>,
+) -> Result<Value, Report> {
     identity::check_app_platform(&app_path, platform)?;
     let mut app_path = app_path;
     let mut stripped = Vec::new();
     if strip_extensions {
         (app_path, stripped) = extract_without_extensions(&app_path)?;
     }
+    // A self-refresh may carry a pooled identifier, including one whose portal entry expired.
+    // Retain it only when its embedded profile claims this exact identifier for our team.
+    let retained_id = if assigned_id.is_none() && app_path.is_dir() {
+        api::bundle_id(&app_path).filter(|id| {
+            std::fs::read(app_path.join("embedded.mobileprovision")).ok()
+                .and_then(|bytes| apparition_signer::ProvisioningProfile::parse(&bytes).ok())
+                .is_some_and(|profile| profile.entitlements().get("application-identifier").and_then(plist::Value::as_string)
+                    == Some(format!("{}.{id}", session.team.team_id).as_str()))
+        })
+    } else { None };
+    let assigned_id = assigned_id.or(retained_id.as_deref());
     let team = session.team.clone();
     // Entitlements the app asks for that only a capability on its App ID puts in the profile.
     let asked = identity::app_entitlements(&app_path).unwrap_or_default();
@@ -456,7 +476,7 @@ pub async fn sign_with_apple_id(
     let had_key = share::stored_public_key(&session.data_dir, &session.email).is_some();
     let signed = session
         .sideloader
-        .sign_app(app_path, Some(team.clone()), &capabilities, None::<fn(f32) -> std::future::Ready<()>>, None, Some(udid))
+        .sign_app(app_path, Some(team.clone()), &capabilities, None::<fn(f32) -> std::future::Ready<()>>, None, Some(udid), assigned_id)
         .await;
     if let Err(error) = &signed
         && !had_key

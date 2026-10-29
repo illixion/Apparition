@@ -38,10 +38,11 @@ struct SelfApp: Sendable {
     }
 
     /// The bundle ID to hand the Apple ID signer, which appends the team ID itself: the
-    /// installed ID without that suffix, so signing gives back the installed ID.
+    /// installed ID without that suffix, so signing gives back the installed ID. A pooled
+    /// ID without the suffix is passed intact; core retains registered identifiers.
     func appleIDBaseBundleId(team: String) -> String? {
         let suffix = ".\(team)"
-        guard bundleId.hasSuffix(suffix), bundleId.count > suffix.count else { return nil }
+        guard bundleId.hasSuffix(suffix), bundleId.count > suffix.count else { return bundleId }
         return String(bundleId.dropLast(suffix.count))
     }
 
@@ -53,6 +54,14 @@ struct SelfApp: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let copy = directory.appendingPathComponent(Bundle.main.bundleURL.lastPathComponent)
         try FileManager.default.copyItem(at: source, to: copy)
+        // An unsigned update has no profile. Carry this install's identity into core so
+        // an assigned bundle ID without the usual team suffix survives self-updates too.
+        if source != Bundle.main.bundleURL {
+            let profile = Bundle.main.bundleURL.appendingPathComponent("embedded.mobileprovision")
+            if FileManager.default.fileExists(atPath: profile.path) {
+                try Data(contentsOf: profile).write(to: copy.appendingPathComponent("embedded.mobileprovision"))
+            }
+        }
         if let bundleId {
             let plist = copy.appendingPathComponent("Info.plist")
             var format = PropertyListSerialization.PropertyListFormat.binary

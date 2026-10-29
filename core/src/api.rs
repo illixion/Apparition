@@ -27,7 +27,7 @@ pub use crate::{
     identity::{Platform, import_identity, import_profile, sign_offline},
     share::{SEALED_EXTENSION, export_apple_id_key, export_apple_id_key_sealed, import_any_signing_file, import_signing_file, sealed_from},
     BUILTIN_ANISETTE, REFUSED_ANDROID_ANISETTE, REFUSED_ANISETTE, SharedCertificate, builtin_anisette_available, is_shared_certificate, native_anisette,
-    sign_in, sign_with_apple_id, capability_refusals,
+    sign_in, sign_with_apple_id, sign_with_apple_id_as, capability_refusals,
 };
 /// Handing the certificate key to a nearby Apparition, checked by a six-digit code (nearby.rs).
 #[cfg(feature = "desktop")]
@@ -271,6 +271,17 @@ impl Tunnel {
             product_type: value("ProductType").await?,
             os_version: value("ProductVersion").await?,
         })
+    }
+
+    /// Removes an installed copy and its app container. Keychain and shared groups may remain.
+    pub async fn uninstall(&mut self, bundle_id: &str) -> Result<(), Report> {
+        let mut installer = idevice::installation_proxy::InstallationProxyClient::connect_rsd(&mut self.adapter, &mut self.handshake).await?;
+        installer.uninstall(bundle_id.to_string(), None).await?;
+        Ok(())
+    }
+
+    pub async fn migrate_data(&mut self, from: &str, to: &str) -> Result<Value, Report> {
+        crate::migrate::migrate_container(&mut self.adapter, &mut self.handshake, from, to).await
     }
 
     /// The display name of `bundle_id` if it's installed, from installation_proxy.

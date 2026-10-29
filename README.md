@@ -390,6 +390,25 @@ headset paired with one is paired with both. Passwords go from the app's own fie
 core and nowhere else. On launch it checks the release site for a newer installer and links to
 it; it never replaces itself.
 
+Before signing, the desktop installer lists the IPA's embedded extensions and lets you
+choose which to include. Apple ID installs show the number of new App IDs needed and let
+you reuse an existing registration by installing under its bundle identifier. Assignments
+and extension choices are saved per team, device and source app in
+`app-id-assignments.json` beside the desktop's pairing database, including reservations
+made before an install fails. An occupied identifier replaces the app already using it.
+
+The review asks whether to keep existing app data or uninstall the destination first.
+Uninstalling discards its app container before the new install, so a failed installation
+leaves the old app removed. When an app moves from a known previous identifier, Keep
+copies Documents and Library using the same migration code as changing its signer on the
+device. The source is removed only after every file arrives. Incomplete or queued transfers
+keep the source and can be retried. Keychain items and shared app group containers cannot
+be migrated or cleared by this choice. Registrations may also be used by other devices or
+installers; the local assignment database cannot determine that account-wide ownership.
+ExtensionKit helpers are currently unavailable with Apple ID signing; imported profiles
+can still sign selected helpers when they cover them. Ordinary app extensions each need
+a compatible registration; the installer reuses matching child identifiers where present.
+
 After Apple ID sign-in, **Manage App IDs** is available on the signing and install
 screens. It shows Apple's remaining allowance, registered bundle identifiers and expiry
 dates, with search, refresh and deletion after confirmation. Deleting an ID may not

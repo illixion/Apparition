@@ -27,7 +27,6 @@ const state = {
   /** What the backend has prepared to install: "latest" or a local path. @type {string|null} */ prepared: null,
   /** @type {any} */ release: null,
   /** @type {any} */ result: null,
-  keepExtensions: false,
   handOff: true,
   /** @type {any} */ settings: {},
   builtinAnisette: false,
@@ -726,13 +725,10 @@ function install() {
   const advanced = $(panel, "advanced");
   const what = /** @type {NodeListOf<HTMLInputElement>} */ (panel.querySelectorAll('input[name="what"]'));
   const handoff = /** @type {HTMLInputElement} */ ($(panel, "handoff"));
-  const extensions = /** @type {HTMLInputElement} */ ($(panel, "extensions"));
 
   back.addEventListener("click", () => go("signing"));
   handoff.checked = state.handOff;
-  extensions.checked = state.keepExtensions;
   handoff.addEventListener("change", () => (state.handOff = handoff.checked));
-  extensions.addEventListener("change", () => (state.keepExtensions = extensions.checked));
 
   const describe = () => {
     what.forEach((w) => (w.checked = w.value === state.what));
@@ -833,7 +829,7 @@ function install() {
       }
 
       const result = await invoke("install", {
-        options: { udid: state.device.udid, keepExtensions: state.keepExtensions, handOff: state.handOff },
+        options: { udid: state.device.udid, handOff: state.handOff },
       });
       for (const s of ["connecting", "signing", "installing"]) mark(s, "done");
       mark("handoff", result.handoff ? "done" : result.handoffError ? "failed" : "skipped");
@@ -1032,7 +1028,7 @@ async function showSlots(box, slot, retry, sample, manager = false) {
 function done() {
   panel.append(template("t-done"));
   const result = state.result ?? {};
-  const isApparition = (result.bundleId ?? "").startsWith("com.illixion.apparition");
+  const isApparition = result.isApparition ?? (result.bundleId ?? "").startsWith("com.illixion.apparition");
   const name = isApparition ? "Apparition" : result.label ?? result.bundleId;
   $(panel, "title").textContent = `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your device"}.`;
   $(panel, "lede").textContent = result.queued
@@ -1058,8 +1054,9 @@ function done() {
 
   const extra = $(panel, "extra");
   const notes = [];
+  if (result.migrationPending) notes.push("The new app is installed, but its data transfer is incomplete. The old copy was kept. Install again with Keep existing app data to retry.");
   if (result.handoffError) notes.push(`Couldn't share the signing with Apparition (${result.handoffError}). Sign in there yourself instead.`);
-  if (result.strippedExtensions?.length) notes.push(`Left out extensions no profile covers: ${result.strippedExtensions.join(", ")}.`);
+  if (result.strippedExtensions?.length) notes.push(`Left out extensions: ${result.strippedExtensions.join(", ")}.`);
   extra.hidden = !notes.length;
   extra.textContent = notes.join(" ");
 
@@ -1074,10 +1071,85 @@ const promptCode = /** @type {HTMLInputElement} */ (document.getElementById("pro
 const promptError = /** @type {HTMLElement} */ (document.getElementById("prompt-error"));
 const promptSms = /** @type {HTMLElement} */ (document.getElementById("prompt-sms"));
 /** @type {any} */ let promptKind = null;
+let installPlanReply = null;
+
+/** Review before provisioning: no IDs are registered while this dialog is open. */
+function installPlanPrompt(prompt) {
+  const box = promptSms;
+  box.hidden = false;
+  box.style.display = "block";
+  box.style.maxHeight = "55vh";
+  box.style.overflowY = "auto";
+  const label = document.createElement("label");
+  label.textContent = "Install using App ID";
+  const select = document.createElement("select");
+  select.style.width = "100%";
+  const option = (id, text) => { const o = document.createElement("option"); o.value = id; o.textContent = text; select.append(o); return o; };
+  option(prompt.defaultTarget, `${prompt.defaultTarget} (saved or usual assignment)`);
+  for (const c of prompt.candidates) {
+    if (c.id !== prompt.defaultTarget) {
+      const o = option(c.id, `${c.id} — ${c.installed ?? c.owner ?? c.name ?? "registered"}${c.reservedChild ? " (reserved)" : ""}`);
+      o.disabled = Boolean(c.reservedChild);
+    }
+  }
+  select.hidden = !prompt.appleId;
+  label.hidden = !prompt.appleId;
+  label.append(select);
+  box.append(label);
+  const notice = document.createElement("p");
+  box.append(notice);
+  const selected = new Set(prompt.selected);
+  const inputs = [];
+  for (const extension of prompt.inventory.extensions) {
+    const row = document.createElement("label");
+    row.className = "check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = extension.id;
+    input.checked = selected.has(extension.id);
+    input.disabled = prompt.appleId && extension.extensionKit;
+    if (input.disabled) input.checked = false;
+    inputs.push(input);
+    row.append(input, document.createTextNode(`${extension.name} (${extension.id})${input.disabled ? " — ExtensionKit not supported with Apple ID signing" : ""}`));
+    box.append(row);
+  }
+  if (!inputs.length) box.append(document.createTextNode("This app has no embedded extensions."));
+  const quota = document.createElement("p");
+  box.append(quota);
+  const transfer = document.createElement("p");
+  box.append(transfer);
+  const data = document.createElement("select");
+  data.setAttribute("aria-label", "Existing app data");
+  data.style.width = "100%";
+  for (const [value, text] of [["", "Choose how to handle app data"], ["keep", "Keep existing app data"], ["discard", "Discard destination app data"]]) {
+    const o = document.createElement("option"); o.value = value; o.textContent = text; data.append(o);
+  }
+  box.append(data);
+  const warning = document.createElement("p");
+  warning.textContent = "An App ID identifies an installed app. Reusing an occupied ID replaces that app. Keeping its data can give the new app access to its container. Discarding uninstalls it before installation; a failed install leaves it uninstalled. Keychain and shared app group data may remain. Data copied from another ID includes Documents and Library only.";
+  box.append(warning);
+  const update = () => {
+    transfer.textContent = prompt.dataSource && prompt.dataSource !== select.value ? `Keep will copy Documents and Library from ${prompt.dataSource}, then remove that copy only after every file arrives.` : "Keep retains the destination app’s current data container.";
+    const candidate = prompt.candidates.find(c => c.id === select.value);
+    notice.textContent = candidate?.installed ? `Replaces ${candidate.installed} on this device.` : "An account registration may also be in use on another device or by another installer.";
+    const requested = [select.value, ...inputs.filter(i => i.checked).map(i => select.value + i.value.slice(prompt.inventory.id.length))];
+    const count = requested.filter(id => !prompt.candidates.some(c => c.id === id)).length;
+    quota.textContent = prompt.appleId ? `${count} new App ID${count === 1 ? "" : "s"} required. Apple reports ${prompt.available ?? "unknown"} available.` : "Uses your imported provisioning profiles.";
+  };
+  select.addEventListener("change", () => { data.value = ""; update(); });
+  inputs.forEach(i => i.addEventListener("change", update));
+  update();
+  installPlanReply = () => {
+    if (!data.value) { data.focus(); return null; }
+    return { kind: "installPlan", target: select.value, extensions: inputs.filter(i => i.checked).map(i => i.value), dataMode: data.value };
+  };
+}
 
 /** @param {any} prompt */
 function openPrompt(prompt) {
   promptKind = prompt.kind;
+  installPlanReply = null;
+  promptSms.removeAttribute("style");
   promptCode.value = "";
   promptSms.replaceChildren();
   promptSms.hidden = true;
@@ -1092,7 +1164,12 @@ function openPrompt(prompt) {
   promptCode.hidden = comparing;
   submit.textContent = comparing ? "It matches" : "Continue";
   cancel.textContent = comparing ? "It's different" : "Cancel";
-  if (comparing) {
+  if (prompt.kind === "installPlan") {
+    title.textContent = `Review ${prompt.inventory.name}`;
+    text.textContent = "Choose extensions and a stable App ID before signing. Apple ID assignments and extension choices are remembered on this computer.";
+    promptCode.hidden = true;
+    installPlanPrompt(prompt);
+  } else if (comparing) {
     title.textContent = `Does ${prompt.peer} show this code?`;
     text.textContent = "Check the six digits on both screens. A different code means something else on the network answered: nothing is handed over unless both of you confirm.";
     shown.textContent = `${prompt.code.slice(0, 3)} ${prompt.code.slice(3)}`;
@@ -1134,7 +1211,7 @@ function openPrompt(prompt) {
     promptSms.append(resend);
   }
   if (!dialog.open) dialog.showModal();
-  if (comparing) submit.focus();
+  if (comparing || prompt.kind === "installPlan") submit.focus();
   else promptCode.focus();
 }
 
@@ -1146,6 +1223,7 @@ function answer(/** @type {any} */ reply) {
 
 promptForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (promptKind === "installPlan") { const reply = installPlanReply?.(); if (reply) answer(reply); return; }
   if (promptKind === "nearbyCode") return answer({ kind: "match", matches: true });
   const code = promptCode.value.replace(/\D/g, "");
   if (!code) return promptCode.focus();

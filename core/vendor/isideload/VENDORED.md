@@ -66,3 +66,8 @@ account's client for a Mac-claiming one once the password is accepted, for the t
 developer requests (core/src/lib.rs, `Claim::after_sign_in`). Checked 2026-10-24 on one account
 with the built-in Android anisette: the token request claiming Android got -80046 whatever else
 changed, claiming a Mac got the token, and the developer services then listed the certificates.
+
+A ninth change: `sign_app` accepts an optional assigned portal identifier, used instead of
+appending the team suffix. Special-app detection happens before renaming, and child bundle
+identifiers keep their suffixes under the assigned parent. Desktop records assignments
+before signing so registrations remain associated with an app even if installation fails.

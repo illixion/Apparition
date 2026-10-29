@@ -81,6 +81,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
         progress_callback: Option<F>,
         pairing_file: Option<&[u8]>,
         device_udid: Option<&str>,
+        assigned_id: Option<&str>,
     ) -> Result<(PathBuf, Option<SpecialApp>), Report>
     where
         F: Fn(f32) -> Fut,
@@ -117,7 +118,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
 
         let main_bundle_id = app.main_bundle_id()?;
         let main_app_name = app.main_app_name()?;
-        let main_app_id_str = format!("{}.{}", main_bundle_id, team.team_id);
+        let main_app_id_str = assigned_id.map(str::to_owned).unwrap_or_else(|| format!("{}.{}", main_bundle_id, team.team_id));
         app.update_bundle_id(&main_bundle_id, &main_app_id_str)?;
 
         let extensions_behavior = self
@@ -322,6 +323,7 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
                 progress_callback,
                 pairing_file,
                 Some(&device_info.udid),
+                None,
             )
             .await?;
 
