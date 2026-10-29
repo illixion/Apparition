@@ -88,19 +88,15 @@ pub async fn usb_devices() -> Result<Vec<UsbDevice>, Report> {
     Ok(devices)
 }
 
-/// Pairs with `udid` through usbmuxd and lockdown: remotepairingdeviced's lockdown service
-/// creates the RemotePairing record (no PIN). It needs usbmuxd's lockdown pair record for the
-/// device; when there's none (Linux, where nothing makes one), this computer asks the device
-/// to trust it first, and `waiting` hears once that it's waiting for the user to tap Trust.
-/// Fills in `pairing`, the same record the PIN flow makes, so every later connection is over
-/// the network. Returns the device's identity, read over the same lockdown connection.
-pub async fn pair_usb(
-    udid: &str,
-    hostname: &str,
-    pairing: &mut RpPairingFile,
-    waiting: &(dyn Fn(&str) + Send + Sync),
-) -> Result<DeviceInfo, Report> {
-    use idevice::{IdeviceService, provider::IdeviceProvider, remote_pairing::RemotePairingLockdownService};
+/// iOS 16 and earlier has no RemotePairing tunnel (CoreDevice arrived with iOS 17), so such a
+/// device is reached through usbmuxd and lockdown instead: see [`crate::legacy`]. Anything that
+/// doesn't read as a version counts as current.
+pub fn is_legacy_os(os_version: &str) -> bool {
+    os_version.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major < 17)
+}
+
+/// usbmuxd's provider for `udid`: the cable when it's plugged in, else the network.
+pub(crate) async fn usb_provider(udid: &str) -> Result<idevice::provider::UsbmuxdProvider, Report> {
     let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.context("Can't reach usbmuxd")?;
     let devices = usbmuxd.get_devices().await?;
     // Prefer the cable: lockdown services that set up pairing may refuse the network.
@@ -109,17 +105,30 @@ pub async fn pair_usb(
         .filter(|d| d.udid == udid)
         .min_by_key(|d| !matches!(d.connection_type, idevice::usbmuxd::Connection::Usb))
         .ok_or_else(|| report!("{udid} isn't connected. Plug it in with a cable (or turn on its Wi-Fi sync in Finder or Apple Devices) and unlock it."))?;
-    let provider = device.to_provider(idevice::usbmuxd::UsbmuxdAddr::default(), "apparition");
+    Ok(device.to_provider(idevice::usbmuxd::UsbmuxdAddr::default(), "apparition"))
+}
+
+/// The lockdown identity of `udid` over usbmuxd. When there's no usbmuxd pair record for it
+/// (Linux, where nothing makes one), this computer asks the device to trust it first, and
+/// `waiting` hears once that it's waiting for the user to tap Trust.
+pub async fn usb_identity(
+    udid: &str,
+    hostname: &str,
+    waiting: &(dyn Fn(&str) + Send + Sync),
+) -> Result<(idevice::provider::UsbmuxdProvider, DeviceInfo), Report> {
+    use idevice::{IdeviceService, provider::IdeviceProvider};
+    let provider = usb_provider(udid).await?;
     let pairing_file = match provider.get_pairing_file().await {
         Ok(file) => file,
         #[cfg(feature = "desktop")]
         Err(_) => {
+            let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.context("Can't reach usbmuxd")?;
             trust(&mut usbmuxd, &provider, udid, hostname, waiting).await?;
             provider_pairing_file(&provider).await?
         }
         #[cfg(not(feature = "desktop"))]
         Err(_) => {
-            let _ = waiting;
+            let _ = (hostname, waiting);
             provider_pairing_file(&provider).await?
         }
     };
@@ -139,6 +148,25 @@ pub async fn pair_usb(
             os_version: value("ProductVersion").await?,
         }
     };
+    Ok((provider, info))
+}
+
+/// Pairs with `udid` through usbmuxd and lockdown: remotepairingdeviced's lockdown service
+/// creates the RemotePairing record (no PIN). It needs usbmuxd's lockdown pair record for the
+/// device (see [`usb_identity`], which makes one when there's none).
+/// Fills in `pairing`, the same record the PIN flow makes, so every later connection is over
+/// the network. Returns the device's identity, read over the same lockdown connection.
+pub async fn pair_usb(
+    udid: &str,
+    hostname: &str,
+    pairing: &mut RpPairingFile,
+    waiting: &(dyn Fn(&str) + Send + Sync),
+) -> Result<DeviceInfo, Report> {
+    use idevice::{IdeviceService, remote_pairing::RemotePairingLockdownService};
+    let (provider, info) = usb_identity(udid, hostname, waiting).await?;
+    if is_legacy_os(&info.os_version) {
+        bail!("{} runs iOS {}, which has no RemotePairing. Apparition installs to it over usbmuxd instead.", info.name, info.os_version);
+    }
     let service = RemotePairingLockdownService::connect(&provider)
         .await
         .context("The device didn't start its pairing service (remotepairingdeviced)")?;
@@ -257,6 +285,62 @@ pub struct DeviceInfo {
     pub os_version: String,
 }
 
+/// The display name of `bundle_id` in an installation_proxy lookup, if it's there.
+pub(crate) fn installed_name(apps: &std::collections::HashMap<String, plist::Value>, bundle_id: &str) -> Option<String> {
+    apps.get(bundle_id).map(|info| {
+        let info = info.as_dictionary();
+        let name = |key: &str| info.and_then(|i| i.get(key)).and_then(plist::Value::as_string);
+        name("CFBundleDisplayName").or_else(|| name("CFBundleName")).unwrap_or(bundle_id).to_string()
+    })
+}
+
+/// The bundle IDs in an installation_proxy lookup that are `id` or start with `id.`, sorted.
+pub(crate) fn installed_ids(apps: &std::collections::HashMap<String, plist::Value>, id: &str) -> Vec<String> {
+    let prefix = format!("{id}.");
+    let mut found: Vec<String> = apps.keys().filter(|app| *app == id || app.starts_with(&prefix)).cloned().collect();
+    found.sort();
+    found
+}
+
+/// What a computer reaches a device through: the RemotePairing tunnel (iOS 17 and later,
+/// visionOS, tvOS), or usbmuxd and lockdown for iOS 16 and earlier. The legacy one only does
+/// what lockdown can without a debugger: list, install and remove apps.
+pub enum Connection {
+    Tunnel(Tunnel),
+    Legacy(crate::legacy::Legacy),
+}
+
+impl Connection {
+    pub async fn device_info(&mut self) -> Result<DeviceInfo, Report> {
+        match self {
+            Connection::Tunnel(tunnel) => tunnel.device_info().await,
+            Connection::Legacy(device) => device.device_info().await,
+        }
+    }
+
+    pub async fn installed_app(&mut self, bundle_id: &str) -> Result<Option<String>, Report> {
+        match self {
+            Connection::Tunnel(tunnel) => tunnel.installed_app(bundle_id).await,
+            Connection::Legacy(device) => device.installed_app(bundle_id).await,
+        }
+    }
+
+    pub async fn install(&mut self, app_path: &Path, source_ipa: Option<&Path>, detach_after_ms: u64) -> Result<Value, Report> {
+        match self {
+            Connection::Tunnel(tunnel) => tunnel.install(app_path, source_ipa, detach_after_ms).await,
+            Connection::Legacy(device) => device.install(app_path, source_ipa, detach_after_ms).await,
+        }
+    }
+
+    /// The tunnel, for what only it can do (JIT, handing Apparition its pairing and signing).
+    pub fn tunnel(&mut self) -> Option<&mut Tunnel> {
+        match self {
+            Connection::Tunnel(tunnel) => Some(tunnel),
+            Connection::Legacy(_) => None,
+        }
+    }
+}
+
 impl Tunnel {
     pub async fn device_info(&mut self) -> Result<DeviceInfo, Report> {
         let mut lockdown = LockdownClient::connect_rsd(&mut self.adapter, &mut self.handshake)
@@ -292,11 +376,7 @@ impl Tunnel {
                 .await
                 .context("installation_proxy connect failed")?;
         let apps = installer.get_apps(Some("User"), Some(vec![bundle_id.to_string()])).await?;
-        Ok(apps.get(bundle_id).map(|info| {
-            let info = info.as_dictionary();
-            let name = |key: &str| info.and_then(|i| i.get(key)).and_then(plist::Value::as_string);
-            name("CFBundleDisplayName").or_else(|| name("CFBundleName")).unwrap_or(bundle_id).to_string()
-        }))
+        Ok(installed_name(&apps, bundle_id))
     }
 
     /// The user apps installed whose bundle ID is `id` or starts with `id.`, sorted.
@@ -306,10 +386,7 @@ impl Tunnel {
                 .await
                 .context("installation_proxy connect failed")?;
         let apps = installer.get_apps(Some("User"), None).await?;
-        let prefix = format!("{id}.");
-        let mut found: Vec<String> = apps.keys().filter(|app| *app == id || app.starts_with(&prefix)).cloned().collect();
-        found.sort();
-        Ok(found)
+        Ok(installed_ids(&apps, id))
     }
 
     /// The pid of `bundle_id`'s running process, if it runs.
@@ -541,6 +618,10 @@ mod desktop {
         /// before iPhone and iPad could pair, which were all headsets.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub product_type: Option<String>,
+        /// iOS 16 or earlier, reached through usbmuxd and lockdown ([`crate::legacy`]): it has no
+        /// RemotePairing, so `address`, `port` and `pairing` mean nothing.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pub legacy: bool,
     }
 
     impl PairedDevice {
@@ -590,7 +671,7 @@ mod desktop {
         /// Devices list until it's removed there.
         pub fn forget(&self, udid: &str) -> std::io::Result<()> {
             let mut devices = self.devices();
-            if let Some(device) = devices.iter().find(|d| d.udid == udid) {
+            if let Some(device) = devices.iter().find(|d| d.udid == udid && !d.legacy) {
                 let _ = std::fs::remove_file(self.dir.join("pairings").join(&device.pairing));
             }
             let _ = std::fs::remove_file(self.dir.join("pairings").join(format!("{udid}.app.plist")));
@@ -633,6 +714,7 @@ mod desktop {
                 port: TUNNEL_PORT,
                 pairing: file,
                 product_type: Some(info.product_type.clone()),
+                legacy: false,
             };
             let mut devices = self.devices();
             devices.retain(|d| d.udid != info.udid);
@@ -645,6 +727,9 @@ mod desktop {
         /// to pair again; an iPhone or iPad has no PIN screen, so a pairing it turns down is an
         /// error saying to pair again over usbmuxd.
         pub async fn connect(&self, device: &PairedDevice, pin: impl Fn() -> String) -> Result<Tunnel, Report> {
+            if device.legacy {
+                bail!("{} runs iOS 16 or earlier, which has no tunnel. Install to it with the command line (`apparition install`), which reaches it over usbmuxd.", device.name);
+            }
             let data = std::fs::read(self.dir.join("pairings").join(&device.pairing))
                 .context(format!("The pairing with {} is missing; pair again", device.name))?;
             let mut pairing = RpPairingFile::from_bytes(&data)?;
@@ -662,6 +747,14 @@ mod desktop {
             }
         }
 
+        /// Opens what reaches `device`: a tunnel, or usbmuxd for a [`PairedDevice::legacy`] one.
+        pub async fn open(&self, device: &PairedDevice, pin: impl Fn() -> String) -> Result<super::Connection, Report> {
+            if device.legacy {
+                return Ok(super::Connection::Legacy(crate::legacy::Legacy::connect(&device.udid).await?));
+            }
+            Ok(super::Connection::Tunnel(self.connect(device, pin).await?))
+        }
+
         /// Pairs with an iPhone or iPad over usbmuxd (it has no PIN screen; if it doesn't trust
         /// this computer yet, it's asked to, and `waiting` hears what to do on it), then finds its own `_remotepairing._tcp` service over mDNS (its
         /// port isn't fixed as on visionOS) by trying each until one answers to the new record.
@@ -673,6 +766,24 @@ mod desktop {
             waiting: &(dyn Fn(&str) + Send + Sync),
         ) -> Result<(PairedDevice, super::DeviceInfo), Report> {
             let hostname = hostname();
+            // iOS 16 and earlier has no RemotePairing to pair with: usbmuxd's trust is the pairing.
+            let (_, info) = super::usb_identity(udid, &hostname, waiting).await?;
+            if super::is_legacy_os(&info.os_version) {
+                let device = PairedDevice {
+                    udid: info.udid.clone(),
+                    name: info.name.clone(),
+                    address: std::net::Ipv4Addr::UNSPECIFIED.into(),
+                    port: 0,
+                    pairing: String::new(),
+                    product_type: Some(info.product_type.clone()),
+                    legacy: true,
+                };
+                let mut devices = self.devices();
+                devices.retain(|d| d.udid != info.udid);
+                devices.push(device.clone());
+                self.save(&devices)?;
+                return Ok((device, info));
+            }
             let mut pairing = RpPairingFile::generate(&hostname);
             let info = super::pair_usb(udid, &hostname, &mut pairing, waiting).await?;
             // Apparition on the device can't pair with its own device either, so it gets a
@@ -710,6 +821,7 @@ mod desktop {
                 port,
                 pairing: file,
                 product_type: Some(info.product_type.clone()),
+                legacy: false,
             };
             let mut devices = self.devices();
             devices.retain(|d| d.udid != info.udid);
@@ -824,6 +936,26 @@ mod tests {
         assert_eq!(Slot::of_error("Not enough available app IDs"), Some(Slot::AppIds));
         assert_eq!(Slot::of_error("Cannot create more than 10 App IDs"), Some(Slot::AppIds));
         assert_eq!(Slot::of_error("Device registration failed"), None);
+    }
+
+    #[test]
+    fn legacy_os_is_before_ios_17() {
+        assert!(super::is_legacy_os("16.3.1"));
+        assert!(super::is_legacy_os("12.5.7"));
+        assert!(!super::is_legacy_os("17.0"));
+        assert!(!super::is_legacy_os("26.1"));
+        assert!(!super::is_legacy_os(""));
+        assert!(!super::is_legacy_os("beta"));
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn paired_device_records_from_before_legacy_load_as_current() {
+        let old = r#"[{"udid":"u","name":"n","address":"192.168.1.5","port":49152,"pairing":"u.plist"}]"#;
+        let devices: Vec<super::PairedDevice> = serde_json::from_str(old).unwrap();
+        assert!(!devices[0].legacy);
+        let saved = serde_json::to_string(&devices).unwrap();
+        assert!(!saved.contains("legacy"), "{saved}");
     }
 
     #[cfg(feature = "desktop")]

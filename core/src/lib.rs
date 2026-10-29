@@ -29,6 +29,7 @@ mod share;
 mod nearby;
 mod identity;
 mod ipa;
+pub mod legacy;
 mod migrate;
 pub mod package;
 pub mod install_plan;

@@ -73,6 +73,13 @@ computer at all.
    - **iPhone or iPad:** plug it into the computer with a USB cable and unlock it, then tap
      Trust and enter its passcode if it asks. There's no code to type. You only need the cable
      until the device trusts the computer: after that, pairing it again works over Wi-Fi.
+  - **iPhone or iPad on iOS 16 or earlier:** there's no RemotePairing before iOS 17, so the
+    computer reaches the device through usbmuxd (the cable, or Wi-Fi sync) instead. Pairing is
+    the same trust prompt, and `apparition install` can then install and refresh apps. JIT, the
+    desktop app's installs, and handing Apparition its pairing aren't available there, and
+    Apparition itself needs a newer iOS. This route is new and hasn't been tried on a real
+    iOS 16 device yet: [open an issue](https://github.com/illixion/Apparition/issues) with what
+    happens.
 3. Sign in with your Apple ID, or choose your own certificate and profile, and install.
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
    signing it used.

@@ -456,7 +456,11 @@ async fn devices() -> Result<(), Error> {
     if !paired.is_empty() {
         println!("Paired with this computer:");
         for device in &paired {
-            println!("  {} ({}) at {}", device.name, device.udid, device.address);
+            if device.legacy {
+                println!("  {} ({}) over usbmuxd (iOS 16 or earlier)", device.name, device.udid);
+            } else {
+                println!("  {} ({}) at {}", device.name, device.udid, device.address);
+            }
         }
     }
     println!("Looking on this network for 3 seconds…");
@@ -524,7 +528,11 @@ async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
     };
     println!("Pairing with {udid} as \"{}\"…", api::hostname());
     let (device, info) = store().pair_usb(&udid, &|what| println!("{what}")).await?;
-    println!("Paired with {} ({} {}), reached at {}:{}.", info.name, info.product_type, info.os_version, device.address, device.port);
+    if device.legacy {
+        println!("Paired with {} ({} {}) over usbmuxd. iOS 16 and earlier has no RemotePairing, so installing and removing apps work and JIT doesn't.", info.name, info.product_type, info.os_version);
+    } else {
+        println!("Paired with {} ({} {}), reached at {}:{}.", info.name, info.product_type, info.os_version, device.address, device.port);
+    }
     Ok(())
 }
 
@@ -889,16 +897,19 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
     unpack_package(options, scratch)?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The headset wants to pair again. PIN: ");
-    let mut tunnel = store().connect(device, pin).await?;
-    let info = tunnel.device_info().await?;
+    let mut connection = store().open(device, pin).await?;
+    let info = connection.device_info().await?;
+    if matches!(connection, api::Connection::Legacy(_)) {
+        println!("{} runs iOS {}: installing over usbmuxd, which has no JIT and is untested on this iOS. Developer Mode must be on (Settings > Privacy & Security) to open the app.", info.name, info.os_version);
+    }
     let strip = !options.keep_extensions;
-    sign_and_install(options, &info, &mut tunnel, scratch, strip).await
+    sign_and_install(options, &info, &mut connection, scratch, strip).await
 }
 
 async fn sign_and_install(
     options: &Options,
     info: &api::DeviceInfo,
-    tunnel: &mut api::Tunnel,
+    connection: &mut api::Connection,
     scratch: &Path,
     strip: bool,
 ) -> Result<(), Error> {
@@ -922,7 +933,7 @@ async fn sign_and_install(
     let installed_id = api::bundle_id(&signed_path).ok_or_else(|| fail("the signed app has no bundle ID"))?;
 
     // installd holds an update of an open app until it closes.
-    let installed = tunnel.installed_app(&installed_id).await?;
+    let installed = connection.installed_app(&installed_id).await?;
     if let Some(name) = &installed {
         println!("{name} is already on {}. If it's open there, close it so the update can finish.", info.name);
     }
@@ -931,7 +942,7 @@ async fn sign_and_install(
     // Only an update can be held for an open app, so only an update stops waiting after 20 s;
     // a new install, however large, is waited for.
     let detach_after_ms = if installed.is_some() { 20_000 } else { 0 };
-    let reply = tunnel.install(&signed_path, source, detach_after_ms).await?;
+    let reply = connection.install(&signed_path, source, detach_after_ms).await?;
     let seconds = reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0;
     if reply["queued"].as_bool() == Some(true) {
         println!(
@@ -943,6 +954,8 @@ async fn sign_and_install(
     }
 
     if options.handoff && installed_id.starts_with(APPARITION_ID) {
+        // The handoff goes through the tunnel, which a device on iOS 16 or earlier doesn't have.
+        let Some(tunnel) = connection.tunnel() else { return Ok(()) };
         if store().hand_over_pairing(tunnel, &installed_id, &info.udid).await? {
             println!("Gave Apparition its pairing with this device.");
         }

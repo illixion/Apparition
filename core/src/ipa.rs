@@ -173,58 +173,93 @@ pub async fn install(
     source: Option<&Path>,
     detach_after_ms: u64,
 ) -> Result<serde_json::Value, Report> {
-    let started = Instant::now();
-    let out = std::env::temp_dir().join(format!(
-        "{}.ipa",
-        app_path.file_stem().ok_or_else(|| report!("bad app path"))?.to_string_lossy()
-    ));
-    let packed = pack(app_path, source, &out).context("Packing the IPA failed")?;
-    let pack_ms = started.elapsed().as_millis() as u64;
-    tracing::info!("packed {} files ({} reused) into {} bytes in {pack_ms} ms", packed.files, packed.reused, packed.bytes);
+    let staged = Staged::pack(app_path, source)?;
+    let afc = AfcClient::connect_rsd(adapter, handshake).await?;
+    let installer = async || Ok(InstallationProxyClient::connect_rsd(adapter, handshake).await?);
+    staged.send(afc, installer, detach_after_ms, None).await
+}
 
-    let result = async {
-        let staged = format!("PublicStaging/{}", out.file_name().unwrap().to_string_lossy());
-        let mut afc = AfcClient::connect_rsd(adapter, handshake).await?;
-        let _ = afc.mk_dir("PublicStaging").await;
-        let mut file = afc.open(staged.clone(), AfcFopenMode::WrOnly).await?;
-        let mut input = BufReader::new(File::open(&out)?);
-        let mut buffer = vec![0u8; UPLOAD_CHUNK];
-        loop {
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            file.write_entire(&buffer[..read]).await?;
-        }
-        file.close().await?;
-        let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
+/// An app packed into an IPA in the temp folder, waiting to be sent to a device.
+pub struct Staged {
+    out: PathBuf,
+    packed: Packed,
+    pack_ms: u64,
+    started: Instant,
+}
 
-        let mut installer = InstallationProxyClient::connect_rsd(adapter, handshake).await?;
-        if detach_after_ms == 0 {
-            installer.install(staged, None).await.context("Install failed")?;
-            return Ok::<_, Report>((upload_ms, false));
-        }
-        match tokio::time::timeout(std::time::Duration::from_millis(detach_after_ms), installer.install(staged, None)).await {
-            Ok(done) => {
-                done.context("Install failed")?;
-                Ok((upload_ms, false))
-            }
-            Err(_) => {
-                tracing::info!("install still waiting after {detach_after_ms} ms; leaving it queued");
-                Ok((upload_ms, true))
-            }
-        }
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.out);
     }
-    .await;
-    let _ = std::fs::remove_file(&out);
-    let (upload_ms, queued) = result?;
-    Ok(json!({
-        "elapsedMs": started.elapsed().as_millis() as u64,
-        "packMs": pack_ms,
-        "uploadMs": upload_ms,
-        "bytes": packed.bytes,
-        "files": packed.files,
-        "reused": packed.reused,
-        "queued": queued,
-    }))
+}
+
+impl Staged {
+    /// Packs `app_path` (see [`pack`]), before any connection is opened so none sits idle.
+    pub fn pack(app_path: &Path, source: Option<&Path>) -> Result<Staged, Report> {
+        let started = Instant::now();
+        let out = std::env::temp_dir().join(format!(
+            "{}.ipa",
+            app_path.file_stem().ok_or_else(|| report!("bad app path"))?.to_string_lossy()
+        ));
+        let packed = pack(app_path, source, &out).context("Packing the IPA failed")?;
+        let pack_ms = started.elapsed().as_millis() as u64;
+        tracing::info!("packed {} files ({} reused) into {} bytes in {pack_ms} ms", packed.files, packed.reused, packed.bytes);
+        Ok(Staged { out, packed, pack_ms, started })
+    }
+
+    /// Uploads the IPA through `afc` and installs it through `installer`, which is connected only
+    /// once the upload is done, so it doesn't sit idle through it. Any connection will do: the
+    /// RemotePairing tunnel's, or lockdown's. `options` are installation_proxy's ClientOptions.
+    pub async fn send(
+        self,
+        mut afc: AfcClient,
+        installer: impl AsyncFnOnce() -> Result<InstallationProxyClient, Report>,
+        detach_after_ms: u64,
+        options: Option<plist::Value>,
+    ) -> Result<serde_json::Value, Report> {
+        let (out, pack_ms, started) = (self.out.clone(), self.pack_ms, self.started);
+        let result = async {
+            let staged = format!("PublicStaging/{}", out.file_name().unwrap().to_string_lossy());
+            let _ = afc.mk_dir("PublicStaging").await;
+            let mut file = afc.open(staged.clone(), AfcFopenMode::WrOnly).await?;
+            let mut input = BufReader::new(File::open(&out)?);
+            let mut buffer = vec![0u8; UPLOAD_CHUNK];
+            loop {
+                let read = input.read(&mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                file.write_entire(&buffer[..read]).await?;
+            }
+            file.close().await?;
+            let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
+
+            let mut installer = installer().await?;
+            if detach_after_ms == 0 {
+                installer.install(staged, options).await.context("Install failed")?;
+                return Ok::<_, Report>((upload_ms, false));
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(detach_after_ms), installer.install(staged, options)).await {
+                Ok(done) => {
+                    done.context("Install failed")?;
+                    Ok((upload_ms, false))
+                }
+                Err(_) => {
+                    tracing::info!("install still waiting after {detach_after_ms} ms; leaving it queued");
+                    Ok((upload_ms, true))
+                }
+            }
+        }
+        .await;
+        let (upload_ms, queued) = result?;
+        Ok(json!({
+            "elapsedMs": started.elapsed().as_millis() as u64,
+            "packMs": pack_ms,
+            "uploadMs": upload_ms,
+            "bytes": self.packed.bytes,
+            "files": self.packed.files,
+            "reused": self.packed.reused,
+            "queued": queued,
+        }))
+    }
 }
