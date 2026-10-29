@@ -25,6 +25,20 @@ const os = require('node:os');
 const path = require('node:path');
 const { normalizeExcludes, cloneTree } = require('../server');
 
+test('a build clone excludes a live source index lock without removing it', async () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'clone-lock-src-'));
+  const dst = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'clone-lock-dst-')), 'repo');
+  fs.mkdirSync(path.join(src, '.git', 'objects'), { recursive: true });
+  fs.writeFileSync(path.join(src, '.git', 'index.lock'), 'active source writer');
+  fs.writeFileSync(path.join(src, '.git', 'index'), 'index');
+  fs.writeFileSync(path.join(src, '.git', 'objects', 'object'), 'object');
+  await cloneTree(src, dst, [], async (from, to) => fs.cpSync(from, to, { recursive: true }));
+  assert.equal(fs.readFileSync(path.join(src, '.git', 'index.lock'), 'utf8'), 'active source writer');
+  assert.ok(!fs.existsSync(path.join(dst, '.git', 'index.lock')));
+  assert.equal(fs.readFileSync(path.join(dst, '.git', 'index'), 'utf8'), 'index');
+  assert.equal(fs.readFileSync(path.join(dst, '.git', 'objects', 'object'), 'utf8'), 'object');
+});
+
 test('cloneExclude paths are cleaned and anything outside the repo is dropped', () => {
   assert.deepEqual(normalizeExcludes(['build', './target/', 'clients//android', '../x', '.git', '', 3, '/abs']),
     ['build', 'target', 'clients/android', 'abs']);

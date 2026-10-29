@@ -190,6 +190,11 @@ function normalizeExcludes(list) {
 // Clone `src` to `dst`, whole where nothing beneath it is excluded. Pure given the
 // copy function, for test/.
 async function cloneTree(src, dst, excludes, copy, rel = '') {
+  if (!rel) {
+    try {
+      if (fs.statSync(path.join(src, '.git')).isDirectory()) excludes = [...excludes, '.git/index.lock'];
+    } catch { /* source without a Git directory */ }
+  }
   if (!excludes.some(x => x.startsWith(rel ? rel + '/' : ''))) return copy(src, dst);
   fs.mkdirSync(dst, { recursive: true });
   const names = fs.readdirSync(src);
