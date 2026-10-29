@@ -448,7 +448,7 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDe
   if (!rc.platforms?.length) throw new Error(`${repo} has no device platforms to deploy to`);
   const targetList = (targets && targets.length) ? targets : [{ device: device || rc.platforms[0].device, branch }];
   const jobs = targetList.map(t => {
-    const pc = rc.platforms.find(p => p.device === t.device) || rc.platforms[0];
+    const pc = rc.platforms.find(p => p.device === t.device && (!t.platform || p.platform === t.platform)) || rc.platforms[0];
     return {
       id: state.nextBuildId++,
       batchId: null,
@@ -1128,6 +1128,7 @@ fs.mkdirSync(TRACE_DIR, { recursive: true });
 const { createAuth, parseCookies } = require('./lib/auth');
 const { createDebug } = require('./lib/debug');
 const auth = createAuth(DATA_DIR);
+const service = require('./lib/service').createService({ auth, config: () => CONFIG, json, readBody });
 const debug = createDebug({ tool: () => CONFIG.debugtraceTool, keyDir: TRACE_KEY_DIR, log: m => console.log(m) });
 
 class TraceError extends Error {
@@ -1512,6 +1513,9 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   try {
     if (crossSite(req)) return json(res, 403, { error: 'cross-site request refused' });
+    const native = await service(req, res, url);
+    if (native.handled) return;
+    if (native.path) url.pathname = native.path;
 
     // ---- reachable without a session ----
     if (url.pathname === '/api/login' && req.method === 'POST') {
@@ -1592,7 +1596,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 404, { error: 'not found' });
     }
 
-    if (!traceUpload && !otaFile && !macSigned && !signedIn(req)) {
+    if (!native.authorized && !traceUpload && !otaFile && !macSigned && !signedIn(req)) {
       if (url.pathname.startsWith('/api/')) return json(res, 401, { error: 'sign in first', login: '/login' });
       res.writeHead(302, { Location: `/login?next=${encodeURIComponent(url.pathname + url.search)}` });
       return res.end();
@@ -1683,7 +1687,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, await stateBundle());
     }
     if (url.pathname === '/api/build' && req.method === 'POST') {
-      const body = await readBody(req);
+      const body = native.body || await readBody(req);
       const jobs = enqueueBuild(body);
       return json(res, 200, { jobs: jobs.map(publicBuild) });
     }

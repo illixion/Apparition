@@ -95,6 +95,34 @@ Discovery uses DebugTrace's `Tools/debugtrace-mcp discover`, so set `debugtraceT
 The page never sees an app's address or token: it names the app by its build's key id, and the
 server looks up the address from discovery and the token from the key ledger.
 
+## Apparition desktop service
+
+Apparition's Developer view uses the versioned native API alongside the existing web UI.
+Set a password with `node server.js set-password`; native connections require one even if
+the web UI is otherwise running in open mode. Use localhost on this Mac, or expose it
+through the existing HTTPS/tailnet setup. Native clients refuse HTTP credentials to remote
+hosts and do not follow redirects. Restart the service after updating the server code;
+check that no build is active before restarting.
+
+- `GET /api/service` advertises protocol `apparition-service`, version 1, and capabilities.
+- `POST /api/service/connect {password}` returns a bearer session without a web cookie.
+  Session tokens are hashed in the existing session store; password changes invalidate them.
+- Authenticated operations use `/api/service/v1/`: `state`, `build`, `builds/<id>/log`,
+  `builds/<id>/cancel`, `traces`, trace files, `crashlogs`, crash files, `debug/apps`, and
+  an app's `help`/`call`. Other methods/paths, report deletion and web authentication
+  operations are excluded. Native bearer credentials are not accepted at the old API paths.
+- `POST /api/service/v1/disconnect` revokes that session. The desktop app keeps it only in
+  Rust memory and remembers only the service URL between launches.
+
+A native build request is `{repo, device, targetPlatform, branch, run, mcp, inject,
+buildDebug, deploy}`. The last five fields are optional booleans. The project, platform,
+device and branch (`current` or a configured branch) must match the configuration. The
+platform is retained even when a single device has several platform aliases. All builds,
+logs, cancellation, DebugTrace approvals and report verification use the existing backend.
+
+`test/service.test.js` exercises the real HTTP authentication/route boundary and target
+validation. The frontend/controller and Rust transport tests live in Apparition.
+
 ## Debug traces
 
 Apps that link DebugTrace can upload a trace zip to `POST /api/traces`. `build-and-sign` generates
