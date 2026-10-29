@@ -70,9 +70,14 @@ final class AccountModel {
     var anisetteURL: String = UserDefaults.standard.string(forKey: "anisetteURL") ?? "" {
         didSet {
             UserDefaults.standard.set(anisetteURL, forKey: "anisetteURL")
-            if anisetteURL != oldValue { anisetteProblem = nil }
+            if anisetteURL != oldValue {
+                anisetteProblem = nil
+                anisetteChanged?()
+            }
         }
     }
+    /// Told when the address changes, so the Library can drop failures that blamed the old one.
+    @ObservationIgnored var anisetteChanged: (() -> Void)?
     /// The anisette server the last sign-in couldn't get its data from, so the Library can say
     /// so; nil after a sign-in gets through, or once the address changes.
     private(set) var anisetteProblem: AnisetteProblem?

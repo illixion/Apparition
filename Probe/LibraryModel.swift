@@ -24,7 +24,10 @@ final class LibraryModel {
         var installedBundleId: String?
         var signedAt: String?
         var expiresAt: String?
-        var lastError: String?
+        /// The last failure, kept until a refresh succeeds; `lastErrorAt` says when it happened
+        /// (nil in records saved before it was kept).
+        var lastError: String? { didSet { lastErrorAt = lastError == nil ? nil : DebugTime.iso(Date()) } }
+        var lastErrorAt: String?
         /// What signs it: `SigningStore.appleID`, an imported certificate's id, or nil for the default.
         var signWith: String?
         /// What signed the installed copy, for the card: "Apple ID" or the certificate's name.
@@ -46,7 +49,8 @@ final class LibraryModel {
     struct SelfRecord: Codable, Sendable {
         var signedAt: String?
         var signedWith: String?
-        var lastError: String?
+        var lastError: String? { didSet { lastErrorAt = lastError == nil ? nil : DebugTime.iso(Date()) } }
+        var lastErrorAt: String?
         /// Set when the update is handed to installd. installd holds an update of the running
         /// app until it closes (as for App Store updates), so the next launch finishes the record.
         var pending: PendingSelfRefresh?
@@ -168,7 +172,38 @@ final class LibraryModel {
             selfRecord = stored.selfRecord ?? SelfRecord()
         }
         finishPendingSelfRefresh()
+        dropAnisetteErrors(changed: false)
+        account.anisetteChanged = { [weak self] in self?.dropAnisetteErrors(changed: true) }
         probe.appName = { [weak self] bundleId in self?.displayName(of: bundleId) ?? bundleId }
+    }
+
+    /// The address an anisette error names ("…the anisette server at host:port, which…").
+    nonisolated static func anisetteHost(in error: String) -> String? {
+        guard let marker = error.range(of: "anisette server at ") else { return nil }
+        let host = error[marker.upperBound...].prefix { !$0.isWhitespace && $0 != "," }
+        return host.isEmpty ? nil : String(host)
+    }
+
+    /// A saved failure that blamed an anisette server stops being true once the address changes,
+    /// and it would otherwise stay on the card until the next refresh succeeds. With `changed`,
+    /// every such error goes; at launch, only one that names another address than the one set now.
+    private func dropAnisetteErrors(changed: Bool) {
+        let current = AccountModel.AnisetteProblem(url: account.anisetteURL, unreachable: false).host
+        func stale(_ error: String?) -> Bool {
+            guard let error, error.localizedCaseInsensitiveContains("anisette") else { return false }
+            if changed { return true }
+            return Self.anisetteHost(in: error).map { $0 != current } ?? false
+        }
+        var dropped = false
+        for index in installed.indices where stale(installed[index].lastError) {
+            installed[index].lastError = nil
+            dropped = true
+        }
+        if stale(selfRecord.lastError) {
+            selfRecord.lastError = nil
+            dropped = true
+        }
+        if dropped { save() }
     }
 
     private func save() {

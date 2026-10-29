@@ -346,6 +346,7 @@ struct LibraryView: View {
                     Note(text: "The refreshed copy is ready. Close Apparition to apply it, then open it again.", kind: .info)
                 } else if let error = library.selfRecord.lastError {
                     Note(text: error, kind: .error).lineLimit(4)
+                    FailureAge(at: library.selfRecord.lastErrorAt)
                 } else if let signed = Date.iso(library.selfRecord.signedAt) {
                     Note(text: "Refreshed itself \(signed.relativeToNow)" + (library.selfRecord.signedWith.map { " with \($0)" } ?? ""), kind: .success)
                 }
@@ -446,6 +447,7 @@ struct LibraryView: View {
         if let error = app.lastError {
             Note(text: error, kind: .error)
                 .lineLimit(4)
+            FailureAge(at: app.lastErrorAt)
             if DeveloperSlots.isSlotError(error) {
                 SlotErrorActions(account: account, library: library, error: error, onSetup: onSetup) {
                     Task { await library.refresh(appId: app.id) }
@@ -564,5 +566,16 @@ struct LibraryView: View {
         }
         .buttonBorderShape(.circle)
         .help("More")
+    }
+}
+
+/// When a failure shown on a card happened: it stays until a refresh succeeds, so it can be old.
+private struct FailureAge: View {
+    let at: String?
+
+    var body: some View {
+        Text(Date.iso(at).map { "Failed \($0.relativeToNow)" } ?? "Failed earlier")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 }
