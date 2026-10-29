@@ -405,6 +405,16 @@ once a forgotten copy is gone. Failed replacements retain old extension reservat
 installation succeeds. These databases are local to each installation;
 assignments are not synchronized between computers and devices.
 
+Assignments are per device, so one registered App ID can serve different apps on different
+devices (and platforms): the same bundle identifier can be the target of one app on a Vision Pro
+and of another on an Apple TV or iPhone, and one app can get a different identifier on each
+device. Apparition only looks for conflicts within one team and device. An identifier that is
+occupied replaces the app using it on the device being installed to, never on another device.
+Apple registers one App ID per team, not per platform, so these share its capabilities (App
+Groups, for one) and its free-account limits. Because each computer keeps its own assignments,
+and none of them can see what other devices or installers use, Apparition cannot warn that an
+identifier is already in use somewhere else; reusing one across devices is your call.
+
 The review asks whether to keep existing app data or uninstall the destination first.
 Uninstalling discards its app container before the new install, so a failed installation
 leaves the old app removed. When an app moves from a known previous identifier, Keep
