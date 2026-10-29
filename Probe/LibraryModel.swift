@@ -239,9 +239,13 @@ final class LibraryModel {
     /// or the same link under StikDebug's schemes (`stikdebug`, `stikjit`), which apps such as
     /// Madeira open. Without a pid, the app's running process is used.
     struct JITRequest: Identifiable, Equatable {
-        var id: String { "\(bundleId)|\(pid)" }
+        var id: String { "\(bundleId)|\(pid)|\(script?.utf8.count ?? 0)" }
         let bundleId: String
+        /// 0: the link named no process, so the app is launched anew under the debugger, as
+        /// StikDebug does (LiveContainer then starts the app it was asked to run).
         let pid: Int
+        /// A StikDebug JIT script (JavaScript) to be the app's debugger, from `script-data`.
+        var script: String? = nil
     }
 
     /// An enable-jit link from an app Apparition didn't install, waiting to be allowed.
@@ -257,7 +261,17 @@ final class LibraryModel {
         }
         guard let bundleId = value("bundle-id", "bundleId", "bundleID", "bundle_id"), !bundleId.isEmpty else { return nil }
         let pid = value("pid").flatMap(Int.init) ?? 0
-        return JITRequest(bundleId: bundleId, pid: max(pid, 0))
+        let script = value("script-data", "scriptData", "script_data").flatMap(jitScript)
+        return JITRequest(bundleId: bundleId, pid: max(pid, 0), script: script)
+    }
+
+    /// A `script-data` value: base64 or base64url of UTF-8 JavaScript, as StikDebug reads it.
+    nonisolated static func jitScript(_ value: String) -> String? {
+        var base64 = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+        guard let data = Data(base64Encoded: base64), let script = String(data: data, encoding: .utf8),
+              !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return script
     }
 
     /// An app Apparition installed asks without a question; any other app's request waits for

@@ -38,7 +38,10 @@ computer at all.
   they are, at home or away from it through the companion. An app can also ask for JIT for
   itself while it runs, with an `apparition://enable-jit?bundle-id=…&pid=…` link (the
   `stikdebug://` link works too, so Madeira's Enable JIT button finds Apparition); Apparition
-  then stays its debugger until the app closes. On iPhone and iPad it keeps running in the
+  then stays its debugger until the app closes. A link without a `pid` launches the app anew
+  under the debugger, as StikDebug does. One with a StikDebug JIT script (`script-data`, as
+  LiveContainer sends) runs the script as the app's debugger, after asking you: a script can
+  read and change everything in the app. On iPhone and iPad it keeps running in the
   background by keeping coarse location updates on, which it drops unread: allow location
   while using the app when asked. From a computer,
   `apparition jit <bundle ID> [--attach]` does the same. Tested on Vision Pro with UTM (an

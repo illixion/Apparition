@@ -1125,17 +1125,77 @@ pub unsafe extern "C" fn apparition_attach_jit(
         let bundle_id = if bundle_id.is_null() { None } else { Some(unsafe { text(bundle_id) }?) };
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        runtime().block_on(async {
-            let pid = match (pid, &bundle_id) {
-                (0, Some(bundle_id)) => jit::running_pid(adapter, handshake, bundle_id)
-                    .await?
-                    .ok_or_else(|| report!("{bundle_id} isn't running"))?,
-                (0, None) => bail!("no process to attach to"),
-                (pid, _) => pid,
-            };
-            let target = jit::Target::Attach { pid, bring_back: bundle_id.as_deref() };
-            jit::serve(adapter, handshake, target, wait_seconds, &mut |_| {}).await
-        })
+        let target = jit::Target::Attach { pid, bring_back: bundle_id.as_deref() };
+        runtime().block_on(jit::serve(adapter, handshake, target, wait_seconds, &mut |_| {}))
+    })())
+}
+
+/// A debugserver session lent to a StikDebug JIT script (see `jit::Script`).
+pub struct JitScript(jit::Script);
+
+/// Opens a script session for `bundle_id`: launched anew and suspended with `launch`, else the
+/// running process `pid` (0: `bundle_id`'s running process), which is brought back to the
+/// front. Fills `out`; the tunnel must outlive it. Returns `{ok, pid}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_open(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    pid: u64,
+    bundle_id: *const c_char,
+    launch: bool,
+    out: *mut *mut JitScript,
+) -> *mut c_char {
+    reply((|| {
+        if adapter.is_null() || handshake.is_null() || out.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = if bundle_id.is_null() { None } else { Some(unsafe { text(bundle_id) }?) };
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let script = runtime().block_on(jit::Script::open(adapter, handshake, pid, bundle_id.as_deref(), launch))?;
+        let pid = script.pid();
+        unsafe { *out = Box::into_raw(Box::new(JitScript(script))) };
+        Ok(json!({ "pid": pid }))
+    })())
+}
+
+/// Sends one gdb-remote packet (unframed) for the script. Returns `{ok, reply}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_send(script: *mut JitScript, command: *const c_char) -> *mut c_char {
+    reply((|| {
+        if script.is_null() {
+            bail!("missing session");
+        }
+        let command = unsafe { text(command) }?;
+        let script = unsafe { &mut (*script).0 };
+        let reply = runtime().block_on(script.send(&command))?;
+        Ok(json!({ "reply": reply }))
+    })())
+}
+
+/// Makes `length` bytes at `address` executable for the app. Returns `{ok, pages}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_prepare(script: *mut JitScript, address: u64, length: u64) -> *mut c_char {
+    reply((|| {
+        if script.is_null() {
+            bail!("missing session");
+        }
+        let script = unsafe { &mut (*script).0 };
+        let pages = runtime().block_on(script.prepare(address, length))?;
+        Ok(json!({ "pages": pages }))
+    })())
+}
+
+/// Ends and frees the session, detaching from a process still attached. Returns
+/// `{ok, pid, events, preparedBytes, detached, ended}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_close(script: *mut JitScript) -> *mut c_char {
+    reply((|| {
+        if script.is_null() {
+            bail!("missing session");
+        }
+        let script = unsafe { Box::from_raw(script) }.0;
+        Ok(runtime().block_on(script.close()))
     })())
 }
 

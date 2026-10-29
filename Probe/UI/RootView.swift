@@ -92,7 +92,7 @@ struct RootView: View {
                         // Nothing to connect with: say so, instead of asking or "debugging".
                         model.jitFailure = ProbeModel.JITFailure(bundleId: request.bundleId,
                                                                  message: PairingRecord.message(.missing), problem: .missing)
-                    } else if library.isManaged(request.bundleId) {
+                    } else if !request.needsAsking(managed: library.isManaged(request.bundleId)) {
                         attach(request)
                     } else {
                         library.pendingJITRequest = request
@@ -134,7 +134,7 @@ struct RootView: View {
                 Button("Enable JIT") { attach(request) }
                 Button("Cancel", role: .cancel) {}
             } message: { request in
-                Text(LibraryModel.JITRequest.message(request))
+                Text(LibraryModel.JITRequest.message(request, managed: library.isManaged(request.bundleId)))
             }
             #endif
             .panel(isPresented: Binding(get: { library.incoming != nil }, set: { if !$0 { library.discardIncoming() } })) {
@@ -195,7 +195,7 @@ struct RootView: View {
     #endif
 
     private func attach(_ request: LibraryModel.JITRequest) {
-        Task { await model.attachJIT(request) }
+        Task { await model.answerJIT(request) }
     }
 
     #if os(visionOS)

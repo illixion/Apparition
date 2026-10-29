@@ -100,6 +100,15 @@ We ran Delta in it on an iPhone 15 Pro Max with iOS 27.0.1.
 4. **Add an app** to LiveContainer with its own + button and an IPA, then tap Run. LiveContainer
    closes and reopens into the app; that is how it starts one, not a crash.
 
+**JIT for an app inside LiveContainer:** set LiveContainer's JIT enabler to StikDebug (Settings),
+then turn on Launch with JIT in the app's settings. Apparition answers LiveContainer's link:
+it launches LiveContainer again under the debugger, which then starts the app. An app that asks
+for JIT itself (the JIT26 request) is served as it would be outside LiveContainer, with no
+script. An app made for a StikDebug JIT script of its own (Geode's, for one) needs that script
+added to it in LiveContainer. Apparition then runs the script as the app's debugger, and asks
+you first each time, because a script can read and change everything in the app. Requires
+Apparition 0.4.1 or later. Not yet tested on a device.
+
 Refresh LiveContainer in Apparition like any other app; the apps inside it keep their data. If
 Apparition's certificate changes (one revoked, or a new one made), export and import it again.
 Delete the `.p12` from Files once LiveContainer has it: with its password, anyone can sign apps as

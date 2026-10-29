@@ -530,8 +530,8 @@ final class ProbeModel {
         log.info("jit stop asked: \(reply["stopped"] as? Bool == true ? "stopping" : "no session", privacy: .public)")
     }
 
-    func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int) async {
-        await serveJIT(host: host, port: port, bundleId: bundleId) { target, file, box in
+    func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int, reportsFailure: Bool = false) async {
+        await serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: reportsFailure) { target, file, box in
             try IDevice.launchJIT(target: target, hostname: Self.hostname, file: file,
                                   pin: nil, context: box,
                                   bundleId: bundleId, waitSeconds: UInt32(waitSeconds))
@@ -558,6 +558,16 @@ final class ProbeModel {
             try IDevice.attachJIT(target: target, hostname: Self.hostname, file: file,
                                   pin: nil, context: box,
                                   pid: UInt64(max(pid, 0)), bundleId: bundleId, waitSeconds: 0)
+        }
+    }
+
+    /// Lets a StikDebug JIT script `script` be `bundleId`'s debugger until it returns: for a
+    /// new launch with `launch`, else for the running process `pid`, brought back to the front.
+    func runJITScript(host: String, port: Int, bundleId: String, pid: Int, launch: Bool, script: String) async {
+        await serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: true) { target, file, box in
+            try IDevice.runJITScript(target: target, hostname: Self.hostname, file: file,
+                                     pin: nil, context: box,
+                                     pid: UInt64(max(pid, 0)), bundleId: bundleId, launch: launch, script: script)
         }
     }
 
