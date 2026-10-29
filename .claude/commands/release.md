@@ -46,20 +46,26 @@ Check with `git diff`: exactly five lines change. Also grep for the old version 
 
 Wait for it in the background (`gh run watch <id> -R illixion/Apparition --exit-status --interval 60`, run_in_background). It takes about 45 minutes. Do not poll. If it fails, read the failing job's log (`gh run view <id> --log-failed`), report it, and stop. Do not publish a partial release.
 
-## 5. Check and create the GitHub release
+## 5. Check the build and create the draft release
+
+The release stays a **draft** until it is blessed: a draft is private, and (with immutable releases on) a published release's files and tag can never change, so nothing may go public before every file, including the signature, is on it.
 
 - `gh run download <id> -R illixion/Apparition -n release-vx.y.z -D build/release/x.y.z` (the artifact is named after the tag, with its `v`)
 - `for f in build/release/x.y.z/Apparition-*; do gh attestation verify "$f" -R illixion/Apparition; done`. Every file must verify.
 - Draft the release notes from the commit summary and show them to the user for approval.
-- `gh release create vx.y.z build/release/x.y.z/Apparition-* -R illixion/Apparition --title "Apparition x.y.z" --notes "<approved notes>"`. Add `--target <full sha>` if the tag is not yet on the remote.
+- `gh release create vx.y.z build/release/x.y.z/Apparition-* -R illixion/Apparition --draft --verify-tag --title "Apparition x.y.z" --notes "<approved notes>"`. For a run started by hand (no tag yet) use `--target <full sha>` instead of `--verify-tag`.
+- Download the draft's assets back (`gh release download vx.y.z -R illixion/Apparition -D <empty dir>`, which works for a draft) and check each file's `sha256sum` against the build's. Once published the files can't be replaced, so a wrong upload is found here or not at all.
 
-## 6. Publish to the release site (blessing)
+## 6. Bless, then publish
 
 In `~/Projects/apparition.illixion.com` (check `git status` is clean and `git pull` is current):
 
 - Run the script with `python3`, not directly: `scripts/publish.py` is committed without its executable bit, so `scripts/publish.py` fails with "Permission denied". `python3 scripts/publish.py add x.y.z ../Apparition/build/release/x.y.z --url-base https://github.com/illixion/Apparition/releases/download/vx.y.z --notes "<approved notes>"`. This hashes the files, then calls `scripts/bless.sh`, which signs `SHA256SUMS` with the YubiKey.
 - The YubiKey needs a PIN and a touch, and runs in the foreground with `--gpg-agent` (the plain agent path is refused for the YubiKey). If it does not respond (no prompt, timeout, or agent error), stop and pause: tell the user to touch the YubiKey or run the command with the `!` prefix, then wait for their reply before retrying. Do not fall back to any other key.
-- Then `python3 scripts/publish.py verify x.y.z --download`. Every URL must serve its signed file.
+- Add the signed manifest to the draft: `gh release upload vx.y.z Website/releases/x.y.z/SHA256SUMS Website/releases/x.y.z/SHA256SUMS.sig -R illixion/Apparition` (run from the site repo). Without `--clobber`: an existing file with that name is an error to look at.
+- **Immutable releases.** Check `gh api repos/illixion/Apparition/immutable-releases`. If `enabled` is false and the user wants it on, **USER:** turn it on (Settings > General > Releases, or ask) before the next step, since it only applies to releases published afterwards. Do not turn it on yourself.
+- Publish: `gh release edit vx.y.z -R illixion/Apparition --draft=false`. From here nothing on the release can change, so stop and ask the user first if anything above was off.
+- Then `python3 scripts/publish.py verify x.y.z --download`, from the site repo. Every URL must serve its signed file; it can only work now, because a draft's URLs aren't public.
 - `git add -A && git commit -m "List Apparition x.y.z"`, signed, then `git push`. Updating the website is automatic: the push deploys it, so do not ask first.
 
 ## 7. Report
