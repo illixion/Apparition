@@ -148,11 +148,13 @@ targets:
         SWIFT_STRICT_CONCURRENCY: minimal
   ApparitionLab:
     type: application
-    platform: iOS
+    platform: auto
+    supportedDestinations: [iOS, visionOS]
     sources:
       - path: Lab
         excludes:
           - Info.plist
+          - Patches
     info:
       path: Lab/Info.plist
       properties:
@@ -168,7 +170,7 @@ targets:
         # units: never let LTO fold the harness's calls into constants.
         GCC_OPTIMIZATION_LEVEL: "2"
         LLVM_LTO: "NO"
-        TARGETED_DEVICE_FAMILY: "1,2"
+        TARGETED_DEVICE_FAMILY: "1,2,7"
         SWIFT_OBJC_BRIDGING_HEADER: Lab/ApparitionLab-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: minimal
   # The smallest JIT26 client, for testing JIT through Apparition or inside LiveContainer.

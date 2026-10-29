@@ -255,6 +255,50 @@ redirection and the stale-inline limitation. It does **not** yet demonstrate Swi
 patching, dynamically generated replacement code, arbitrary type changes, or an alternative
 to DebugTrace's current injection backend. Ordinary-launch controls also remain unpatched.
 
+### Native Swift entry-patch experiment
+
+The lab also tests optimized native Swift entries with a separately compiled, development-
+signed dylib delivered into its Documents directory after the app build. It runs before the
+C experiments detach the debugger. Only the dylib's address getters have a C ABI; patched
+functions use Swift's native calling convention, without `-enable-implicit-dynamic` or
+`@_dynamicReplacement`.
+
+```sh
+python3 scripts/run-swift-entry-lab.py --platform visionOS --device AVP
+# For a paired iPhone instead:
+python3 scripts/run-swift-entry-lab.py --platform iOS --device ixPhone
+```
+
+The runner builds and installs only `com.illixion.apparition.lab`, compiles and signs the
+replacement, copies it to the device, launches through Apparition JIT, and validates both
+the patched run and an ordinary-launch control. `--skip-build` reuses an already installed
+lab of the selected platform. It overwrites the device report with a pending marker before
+each launch, so a crash cannot reuse an old success. Reports stay under ignored
+`build/swift-entry-lab/<platform>/`. Runtime checkpoints are in
+`Documents/swift-entry-steps.txt`.
+
+Verified on physical Vision Pro, 2026-10-29, both native visionOS and iOS compatibility builds:
+
+- A native Swift integer entry returned `[11,17,11]` before patching, after patching and
+  after restoration. Both a Swift function reference and a normal compiled Swift call
+  observed the replacement. The latter reads an opaque runtime input on every call to
+  prevent constant specialization and reuse of a pure function's earlier result.
+- A native `String -> String` entry returned `original:hello`, `replacement:hello`, then
+  `original:hello`. All 1,000 heap-backed String calls matched the replacement result.
+- All entry/island writes and restorations succeeded. The native visionOS replacement
+  was 155,582,456 bytes away, beyond a direct ARM64 branch's range: a reserved nearby
+  island successfully redirected the entry through an absolute jump.
+- An ordinary launch returned original results without sending any debugger requests.
+
+This is a single-threaded, ARM64 lab proof using signed dylib loading. It has no general
+function discovery or dependency tracking, does not allocate anonymous JIT code, and does
+not test custom app types, generics, async/throwing methods, pointer authentication, active
+stack frames or concurrent patch publication. Existing inlined or constant-folded results
+can still retain old behavior. Keep the dylib loaded for the process lifetime. Production
+adoption needs thread coordination, ABI validation, compiler dependency handling and the
+same per-patch device approval as DebugTrace injection. No application performance claim
+follows from these correctness tests.
+
 ## Shortcuts automation
 
 Background refresh is not reliable, so the dependable way to keep apps signed is a

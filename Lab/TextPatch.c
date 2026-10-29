@@ -56,6 +56,12 @@ __asm__(
     "    ret\n"
     ".p2align 14\n");
 
+// A near island allows a single atomic-width entry branch even when dyld places
+// the replacement beyond B's +/-128 MiB range. Never execute this unpatched.
+extern void lab_swift_patch_island(void);
+__asm__(".text\n.p2align 3\n.globl _lab_swift_patch_island\n"
+        "_lab_swift_patch_island:\n nop\n nop\n nop\n nop\n");
+
 // Apparition's experimental JIT26 command: copy len bytes from src to dst. Returns 0 on success.
 __attribute__((naked, noinline)) static uint64_t jit26_write(void *dst, const void *src, uint64_t len) {
     __asm__ volatile("mov x16, #0x4150\n"
@@ -106,6 +112,56 @@ static uint64_t patch(void *site, uint32_t instruction) {
     uint64_t result = jit26_write(site, &instruction, sizeof instruction);
     sys_icache_invalidate(site, sizeof instruction);
     return result;
+}
+
+int lab_debugger_attached(void) { return traced(); }
+
+const void *lab_opaque_pointer(const void *pointer) { return pointer; }
+
+uint64_t lab_runtime_input(void) {
+    // Unknown to the Swift optimizer on every call: do not let it reuse a pure
+    // call's old result across the otherwise invisible code modification.
+    static volatile uint64_t value = 10;
+    return value;
+}
+
+static void *swift_entry;
+static uint32_t swift_original;
+static uint32_t island_original[4];
+
+int lab_entry_restore(void) {
+    if (!swift_entry) return 2;
+    if (traced() != 1) return 1;
+    // Restore entry first, so it cannot branch into a partly restored island.
+    if (patch(swift_entry, swift_original) != 0) return 3;
+    void *island = (void *)lab_swift_patch_island;
+    if (jit26_write(island, island_original, sizeof island_original) != 0) return 3;
+    sys_icache_invalidate(island, sizeof island_original);
+    swift_entry = NULL;
+    return 0;
+}
+
+int lab_entry_patch(const void *entry, const void *replacement) {
+    if (traced() != 1) return 1;
+    uintptr_t site = (uintptr_t)entry, destination = (uintptr_t)replacement;
+    void *island = (void *)lab_swift_patch_island;
+    int64_t distance = (int64_t)(uintptr_t)island - (int64_t)site;
+    if (swift_entry || !site || !destination || (site & 3) || (destination & 3) ||
+        distance < -134217728 || distance >= 134217728) return 2;
+    memcpy(&swift_original, entry, sizeof swift_original);
+    memcpy(island_original, island, sizeof island_original);
+    // ldr x16, [pc, #8]; br x16; .quad replacement (x16 is ABI scratch).
+    uint32_t code[4] = {0x58000050, 0xd61f0200, 0, 0};
+    memcpy(&code[2], &destination, sizeof destination);
+    if (jit26_write(island, code, sizeof code) != 0) return 3;
+    sys_icache_invalidate(island, sizeof code);
+    swift_entry = (void *)entry;
+    uint32_t branch = 0x14000000 | ((uint32_t)(distance / 4) & 0x03ffffff);
+    if (patch(swift_entry, branch) != 0) {
+        lab_entry_restore();
+        return 3;
+    }
+    return 0;
 }
 
 void text_patch_run(const char *breadcrumbs, char *report, size_t capacity) {
