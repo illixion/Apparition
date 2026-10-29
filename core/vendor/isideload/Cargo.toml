@@ -68,6 +68,10 @@ apparition-signer = { path = "../../signer" }
 # There is a bug in rustls-platform-verifier that causes an invalid certificate error with apple's root cert.
 # It has been fixed already but I am waiting for a new release before I can update the dependency.
 # Using native-tls avoids the issue.
+# The system's resolver under the edge avoidance (src/auth/edge.rs).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.49", features = ["net"] }
+
 [target.'cfg(windows)'.dependencies]
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "gzip", "native-tls", "http2", "charset", "system-proxy"] }
 

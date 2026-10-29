@@ -18,7 +18,7 @@ use crate::sideload::cert_identity::APPLE_ROOT;
 
 /// gsd.apple.com (machine provisioning) chains to this root, which Linux's and Windows' trust
 /// stores may not have; macOS's does.
-const APPLE_ROOT_G3: &[u8] = include_bytes!("../assets/AppleRootCA-G3.cer");
+pub(crate) const APPLE_ROOT_G3: &[u8] = include_bytes!("../assets/AppleRootCA-G3.cer");
 use crate::{SideloadError, anisette::AnisetteClientInfo, util::plist::PlistDataExtract};
 
 const URL_BAG: &str = "https://gsa.apple.com/grandslam/GsService2/lookup";
@@ -271,12 +271,16 @@ impl GrandSlam {
             .http1_title_case_headers()
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)
+            // An edge that answers 403 is avoided and the request goes to another (edge.rs).
+            .dns_resolver(super::edge::EdgeResolver::system())
             // .pool_max_idle_per_host(0)
             .build()?;
         #[cfg(feature = "wasm")]
         let client = ClientBuilder::new().build()?;
 
         let builder = MwClientBuilder::new(client);
+        #[cfg(not(feature = "wasm"))]
+        let builder = builder.with(super::edge::EdgeAvoidance);
         let builder = if let Some(proxy_url) = proxy_url {
             builder.with(WasmProxyMiddleware::new(proxy_url))
         } else {

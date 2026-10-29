@@ -506,6 +506,13 @@ Desktop, OrbStack or Colima), from the desktop app's Companion tab or `apparitio
 --anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
 anisette server" next to the companion; nothing switches on its own.
 
+Some of Apple's servers turn some networks away: sign-in then fails "403 Forbidden", and which
+server you reach depends on your DNS (from one network, Cloudflare's 1.1.1.1 led to one that
+refused, the router's DNS didn't). Apparition notices, avoids that server for an hour and
+tries another, looked up over DNS-over-HTTPS (Google's and Cloudflare's) if your own DNS knows no
+other. Only that lookup goes elsewhere, never the Apple ID. If every server it finds refuses, the
+error says so; try another network, or set the computer's DNS to the router's.
+
 ## Build
 
     scripts/build-core.sh      # builds the Rust core (isideload + idevice) for visionOS and iOS

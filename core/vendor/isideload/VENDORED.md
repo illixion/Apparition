@@ -5,7 +5,7 @@ LICENSE alongside), used as core's `isideload` dependency by path. `readme` in C
 at this folder's README.md instead of the repository's. Moved up from 0bee45d (0.4.4) with
 `git merge-file`, upstream's 0bee45d..fc7a81a over this copy.
 
-Eight changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Ten changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -71,3 +71,16 @@ A ninth change: `sign_app` accepts an optional assigned portal identifier, used 
 appending the team suffix. Special-app detection happens before renaming, and child bundle
 identifiers keep their suffixes under the assigned parent. Desktop records assignments
 before signing so registrations remain associated with an app even if installation fails.
+
+A tenth change: the GrandSlam client avoids an Apple edge server that turns the network away
+(src/auth/edge.rs, wired in `build_reqwest_client`; tokio's `net` feature off wasm). Which edge
+an Apple host resolves to depends on the resolver: on 2026-10-29, from one home network, Cloudflare's
+1.1.1.1 always gave `gsd.apple.com` 17.171.11.101, which answers every GrandSlam request with an
+HTML 403 before Apple reads it, so sign-in failed "403 Forbidden" there. The router's resolver and
+Google's gave edges that answer. The system's resolver is still used first. An edge that answers
+an HTML 403 is avoided for an hour, so it isn't asked again and again, and the request goes to
+another: one from the system's answer, else from DNS-over-HTTPS (Google with the asker's subnet
+and without, and Cloudflare). After three refusing edges, or once every edge found is avoided, the
+request fails saying Apple turned the network away and what to try. The connection still names
+the host, so the certificate is checked as before. `cargo test -p isideload --lib auth::edge --
+--include-ignored` runs the check against Apple, forcing the refusing edge.
