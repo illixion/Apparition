@@ -50,7 +50,8 @@ pub fn pack(app: &Path, source_ipa: Option<&Path>, out: &Path) -> Result<Packed,
     if let Some(archive) = source.as_mut() {
         for i in 0..archive.len() {
             let entry = archive.by_index_raw(i)?;
-            let name = entry.name().to_string();
+            // A name that isn't valid in its encoding just isn't reused.
+            let Ok(name) = entry.name().map(|n| n.into_owned()) else { continue };
             if entry.is_dir() {
                 continue;
             }

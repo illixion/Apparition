@@ -24,7 +24,7 @@ async-trait = "0.1"
 tokio = { version = "1.49", features = ["rt-multi-thread", "sync", "macros", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
-zip = { version = "8.3", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # Apps published as a .deb (package.rs): its tar, and the xz, gzip and zstd the tar comes in.
 tar = { version = "0.4", default-features = false }
 xz2 = "0.1"

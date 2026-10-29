@@ -88,3 +88,7 @@ request only and with nothing remembered, so a retry later can succeed; an HTTP 
 (GrandSlam answers an occasional 503 to a request that then goes through). Core formats these
 errors plainly (`core/src/errors.rs`) and tells the apps they can be retried (`failure_kind`). `cargo test -p isideload --lib auth::edge --
 --include-ignored` runs the check against Apple, forcing the refusing edge.
+
+Not a change to its code: Cargo.toml asks for `zip` 9.0.5 rather than 8.3, matching core, for the
+"zip cloaking" advisory (dual-header parser differential, fixed in 9.0.5). isideload's own code
+compiles unchanged against zip 9.
