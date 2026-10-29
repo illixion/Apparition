@@ -70,6 +70,19 @@ Extensions and watch apps need their own profiles when the profile isn't a wildc
 
 ## How it works
 
+### Xcode products
+
+Apparition's `apparition xcode register --app PRODUCT.app --project REPO --symbols PRODUCT.app.dSYM`
+uses `bin/xcode-handoff` to retain an already-built product, its signature and exact matching
+symbols in the build registry. It never rebuilds, re-signs, installs or attaches a debugger.
+Unsigned products remain unsigned. A separate optional XcodeGen spec generated with
+`apparition xcode configure --spec project.yml --target TARGET` adds pre/post build actions
+to capture source context and register the result; the original spec is unchanged.
+Without that context, source observed at registration is explicitly separate from compile
+provenance. Stop Xcode debugging before choosing a separate Apparition JIT session.
+
+### Service builds
+
 - Builds are serialized per repo and parallel across repos. A branch other than the one checked
   out is built from a disposable copy-on-write clone, so your working tree is never touched.
 - Dev builds stamp the git short SHA into `CFBundleVersion`. The UI compares the SHA on the
