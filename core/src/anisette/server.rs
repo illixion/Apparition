@@ -153,6 +153,15 @@ impl Drop for Scratch {
 
 async fn client_info(State(shared): State<Arc<Shared>>) -> Json<Value> {
     use crate::claimed_platform::{Served, USER_AGENT};
+    // AuthKit's whole set of headers, from the helper, is claimed as this Mac (see
+    // `native::client_info`): a VM is refused claiming another. AOSKit's two headers keep the
+    // usual Mac claim, which a real Mac's sign-in gets through with more often (2026-10-30: 6 of
+    // 10 init requests answered 503 claiming an Intel MacBook Pro as it was, 1 of 6 as Mac15,7).
+    #[cfg(target_os = "macos")]
+    if shared.native && super::native::source() == Some(super::native::Source::Helper) {
+        let (client_info, user_agent) = super::native::client_info();
+        return Json(json!({ "client_info": client_info, "user_agent": user_agent, "apparition_anisette": Served::Mac.name() }));
+    }
     let served = if shared.native { Served::Mac } else { Served::Android };
     Json(json!({ "client_info": served.client_info(), "user_agent": USER_AGENT, "apparition_anisette": served.name() }))
 }
@@ -185,12 +194,16 @@ async fn headers_for(shared: &Arc<Shared>, request: HeadersRequest) -> Result<Va
     #[cfg(target_os = "macos")]
     if shared.native {
         let headers = tokio::task::spawn_blocking(super::native::headers).await.context("the native anisette task failed")??;
-        return Ok(json!({
+        let mut reply = json!({
             "result": "Headers",
             "X-Apple-I-MD-M": headers.machine_id,
             "X-Apple-I-MD": headers.one_time_password,
             "X-Apple-I-MD-RINFO": RINFO,
-        }));
+        });
+        for (key, value) in headers.extra {
+            reply[key] = Value::String(value);
+        }
+        return Ok(reply);
     }
     let identifier = identifier_from(&request.identifier).ok_or_else(|| report!("the identifier isn't 16 bytes of base64"))?;
     let adi_pb = B64.decode(&request.adi_pb).context("adi_pb isn't base64")?;

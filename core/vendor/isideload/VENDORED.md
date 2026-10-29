@@ -5,7 +5,7 @@ LICENSE alongside), used as core's `isideload` dependency by path. `readme` in C
 at this folder's README.md instead of the repository's. Moved up from 0bee45d (0.4.4) with
 `git merge-file`, upstream's 0bee45d..fc7a81a over this copy.
 
-Ten changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Eleven changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -88,6 +88,14 @@ request only and with nothing remembered, so a retry later can succeed; an HTTP 
 (GrandSlam answers an occasional 503 to a request that then goes through). Core formats these
 errors plainly (`core/src/errors.rs`) and tells the apps they can be retried (`failure_kind`). `cargo test -p isideload --lib auth::edge --
 --include-ignored` runs the check against Apple, forcing the refusing edge.
+
+An eleventh change: forward every anisette header the server gives, not just the two
+(`src/anisette/mod.rs`, `src/anisette/remote_v3/mod.rs`). The `Headers` reply keeps any extra
+fields (`#[serde(flatten)]`) and `get_headers` sends them along with `X-Apple-I-MD-RINFO`. Since
+about 2026-10-29 Apple answers a macOS virtual machine's sign-in with `-3000076` unless the
+request carries the host's attestation (`x-apple-baa-*`), which AuthKit puts on the request and
+Apparition's server (core/src/anisette/server.rs, from the entitled helper) now passes through.
+A real Mac's anisette, which has no such headers, is unaffected.
 
 Not a change to its code: Cargo.toml asks for `zip` 9.0.5 rather than 8.3, matching core, for the
 "zip cloaking" advisory (dual-header parser differential, fixed in 9.0.5). isideload's own code

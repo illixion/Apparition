@@ -25,6 +25,8 @@ pub struct AnisetteData {
     _device_description: String,
     device_unique_identifier: String,
     _local_user_id: String,
+    /// Headers beyond these that the server gave (see remote_v3's `extra`).
+    pub extra: HashMap<String, String>,
     generated_at: SystemTime,
 }
 
@@ -33,7 +35,11 @@ impl AnisetteData {
     pub fn get_headers(&self) -> HashMap<String, String> {
         //let dt: DateTime<Utc> = Utc::now().round_subsecs(0);
 
-        HashMap::from_iter([
+        let mut headers = self.extra.clone();
+        if !self.extra.is_empty() {
+            headers.insert("X-Apple-I-MD-RINFO".to_string(), self.routing_info.clone());
+        }
+        headers.extend([
             // (
             //     "X-Apple-I-Client-Time".to_string(),
             //     dt.format("%+").to_string().replace("+00:00", "Z"),
@@ -53,7 +59,8 @@ impl AnisetteData {
             //     "X-Mme-Client-Info".to_string(),
             //     self.device_description.clone(),
             // ),
-        ])
+        ]);
+        headers
     }
 
     pub fn get_header_map(&self) -> Result<HeaderMap, Report> {

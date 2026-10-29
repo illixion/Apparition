@@ -1,6 +1,7 @@
 mod state;
 mod websocket;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use web_time::SystemTime;
 
@@ -187,6 +188,7 @@ impl RemoteV3AnisetteProvider {
                 machine_id,
                 one_time_password,
                 routing_info,
+                extra,
             } => Ok(AnisetteDataResponse::Data(AnisetteData {
                 machine_id,
                 one_time_password,
@@ -194,6 +196,7 @@ impl RemoteV3AnisetteProvider {
                 _device_description: client_info.client_info.clone(),
                 device_unique_identifier: state.get_device_id(),
                 _local_user_id: hex::encode(state.get_md_lu()),
+                extra: extra.into_iter().filter_map(|(key, value)| Some((key, value.as_str()?.to_string()))).collect(),
                 generated_at: SystemTime::now(),
             })),
             AnisetteHeaders::GetHeadersError { message } => {
@@ -444,5 +447,9 @@ enum AnisetteHeaders {
         one_time_password: String,
         #[serde(rename = "X-Apple-I-MD-RINFO")]
         routing_info: String,
+        /// Any other headers the server gives, such as a Mac's own device identifiers and
+        /// attestation, sent along as they are.
+        #[serde(flatten)]
+        extra: HashMap<String, serde_json::Value>,
     },
 }
