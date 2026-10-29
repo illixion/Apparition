@@ -5,6 +5,7 @@ import SwiftUI
 enum AppTab: String, CaseIterable {
     case library = "Library"
     case browse = "Browse"
+    case developer = "Developer"
     case setup = "Setup"
     case settings = "Settings"
     case diagnostics = "Diagnostics"
@@ -13,6 +14,7 @@ enum AppTab: String, CaseIterable {
         switch self {
         case .library: "square.grid.2x2"
         case .browse: "magnifyingglass"
+        case .developer: "hammer"
         case .setup: "checklist"
         case .settings: "gearshape"
         case .diagnostics: "stethoscope"
@@ -37,6 +39,7 @@ struct RootView: View {
     let account: AccountModel
     let library: LibraryModel
     let companions: CompanionFinder
+    @State private var buildService = BuildService()
 
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @AppStorage(RootView.setupFinishedKey) private var setupFinished = false
@@ -233,6 +236,8 @@ struct RootView: View {
                             onBrowse: { tab = .browse }, onSetup: openSetup)
             case .browse:
                 BrowseView(model: model, account: account, library: library, onSetup: openSetup)
+            case .developer:
+                BuildServiceView(service: buildService)
             case .setup:
                 SetupView(model: model, account: account, companions: companions) {
                     setupFinished = true

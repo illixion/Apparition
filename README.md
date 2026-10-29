@@ -225,7 +225,10 @@ Implementation order:
    and representative workloads. Retain signed-dylib injection while investigating.
 2. **Connect the build service.** Authenticated version 1 service access, configured
    projects/devices, explicit build jobs, logs and report browsing are implemented in
-   desktop Apparition. Next: direct project registration and the device frontend.
+   desktop Apparition. The initial device Developer tab adds service sign-in, project
+   and branch selection, build-only/install jobs, logs, cancellation and registered-build
+   browsing. Its credentials stay in memory and authenticated requests refuse redirects.
+   Next: direct project registration and the rest of the device reporting/install workflow.
    A Mac with Xcode executes Apple builds; other desktop platforms can connect to it.
    Service credentials stay separate from the existing relay.
 3. **Unify build identity.** Connect projects, immutable builds, artifact digests and
