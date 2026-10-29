@@ -279,7 +279,7 @@ the folder holding `apparition.exe` on your `PATH`. `apparition --version` check
 | `forget <name or UDID>` | Forgets a paired device. |
 | `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Companion tab). |
 | `anisette serve`, `up`, `down`, `compose` | Serve this computer's built-in anisette, or run the self-hosted server with your Docker. |
-| `anisette import [--accept-unverified] <file>…`, `import --reset` | Use the Apple Music APK, or its two libraries, from a file when Apple's download server can't be reached (see [Anisette](#anisette)); `--reset` goes back to fetching them. |
+| `anisette import [--accept-unverified] <file>…`, `anisette import --reset` | Troubleshooting, for "Couldn't fetch Apple's anisette libraries": use the Apple Music APK, or its two libraries, from a file you got from Apple, in place of the download. `--accept-unverified` uses files that don't match the tested version (an unsupported setup, warned about everywhere). `--reset` goes back to fetching Apple's. Steps in [When Apparition can't fetch Apple's libraries](#when-apparition-cant-fetch-apples-libraries). |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
 | `link` | Puts `apparition` on your `PATH` (above). |
 
@@ -514,21 +514,56 @@ tries another, looked up over DNS-over-HTTPS (Google's and Cloudflare's) if your
 other. Only that lookup goes elsewhere, never the Apple ID. If every server it finds refuses, the
 error says so; try another network, or set the computer's DNS to the router's.
 
-The libraries themselves come from Apple's download server, and when it can't be reached the app
-says so with a Try again button, and under Advanced lets you use the Apple Music APK for Android,
-or `libstoreservicescore.so` and `libCoreADI.so` from its `lib/arm64-v8a` or `lib/x86_64` folder,
-that you got from Apple some other way. On the command line, `apparition anisette import <file>…`
-does the same; what you give replaces the libraries Apparition would otherwise use, and
-`apparition anisette import --reset` goes back to fetching Apple's. Apparition runs these in its
-own process and checks one thing: that each file's SHA-256 is that of the version it was tested
-with (the APK Apple's server held on 29 October 2026). It can't tell that a file came from Apple, so
-only use ones you downloaded from Apple yourself. If Apple has updated the libraries and taken the
-old address down, so that no file matches, the app's "Use these files anyway", or
-`--accept-unverified`, uses them regardless. That is an unsupported setup, and it says so for as
-long as it lasts: in red in the desktop app's header corner and above the sign-in form, and at every
-command that starts the built-in anisette. The header's corner also always says where this
-computer's sign-in gets anisette (built-in, Docker or another server) and what the companion offers,
-so a screenshot shows the setup.
+The header corner of the desktop app always says where this computer's sign-in gets its anisette
+(built-in, Docker or another server) and what the companion offers, so a screenshot shows the
+setup.
+
+### When Apparition can't fetch Apple's libraries
+
+The built-in anisette needs two libraries, `libstoreservicescore.so` and `libCoreADI.so`, from
+Apple's CDN (`apps.mzstatic.com`), once. Where that fails (a firewall or proxy, no route to the
+CDN, Apple moving the file), signing in stops with "Couldn't fetch Apple's anisette libraries from
+Apple's CDN". Work through this in order:
+
+1. **Try again.** The desktop app shows a Try again button, which keeps what you typed for five
+   minutes; on the command line run the command again. Most failures are the network. Check that
+   `apps.mzstatic.com` opens from this computer, and a VPN or proxy that blocks it.
+2. **Give Apparition the files yourself.** Only after step 1 fails does the desktop app show
+   "Advanced: use Apple Music's libraries from a file", under the Try again button; it isn't there
+   on a working setup, so nobody is sent looking for files they don't need. On the command line
+   it is always available:
+
+       apparition anisette import ~/Downloads/applemusic.apk
+       apparition anisette import libstoreservicescore.so libCoreADI.so
+
+   Either the Apple Music APK for Android, or both libraries from its `lib/arm64-v8a` or
+   `lib/x86_64` folder (the one for this computer's processor). What you give replaces what
+   Apparition would otherwise use, until you replace it again.
+3. **Where to get them.** From Apple only. The APK is at
+   `https://apps.mzstatic.com/content/android-apple-music-apk/applemusic.apk`, the address
+   Apple's own Android page links to; download it on a network that reaches it, such as a phone's
+   hotspot, and import it. Or copy the two libraries from another computer where Apparition has
+   already signed in: they are in the `anisette` folder beside its `apple-id` folder (macOS
+   `~/Library/Application Support/Apparition Installer/anisette`, Linux
+   `~/.local/share/Apparition Installer/anisette`, in the Flatpak
+   `~/.var/app/com.illixion.apparition.desktop/data/Apparition Installer/anisette`). Don't use an APK
+   from anywhere else: these libraries run inside Apparition, with everything Apparition can do,
+   and the app can't tell that a file came from Apple.
+4. **If no file matches.** Apparition checks one thing: each file's SHA-256 against the version it
+   was tested with (the APK Apple's CDN held on 29 October 2026), and refuses a mismatch with
+   "isn't the version of the libraries Apparition was built with". If Apple has updated the
+   libraries and taken the old address down, the desktop app offers "Use these files anyway", and
+   on the command line `--accept-unverified` does the same:
+
+       apparition anisette import --accept-unverified libstoreservicescore.so libCoreADI.so
+
+   It still checks that each is a 64-bit library for this computer's processor, under the right name.
+   This is an **unsupported setup**, and says so for as long as it lasts: in red in the desktop
+   app's header corner and above the sign-in form, and at every command that starts the built-in
+   anisette. Sign-in may fail or behave unpredictably; please say so in any bug report.
+5. **Going back.** `apparition anisette import --reset` (the desktop app's "Go back to Apple's own
+   libraries", on the red banner) forgets the cached libraries, supplied or fetched, and the next
+   sign-in fetches Apple's own.
 
 ## Build
 
