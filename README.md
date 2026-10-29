@@ -237,9 +237,10 @@ Implementation order:
    and verified downloads are now implemented and tested through a real service build.
    Next: remaining installation/session relationships and report patch history. Distinguish
    dirty local iterations from published builds.
-4. **Add Xcode handoff.** Let Xcode register its product and symbols or let Apparition
-   build it, without nested builds. Preserve suitable existing signatures. Add an
-   optional generated scheme and CLI workflow with explicit debugger ownership:
+4. **Add Xcode handoff.** The CLI can now retain an existing Xcode product and matching
+   symbols without rebuilding or changing its signature. An optional generated XcodeGen
+   scheme captures source context before building and registers the completed product.
+   Keep debugger ownership explicit:
    Xcode/LLDB and Apparition must not compete for the same process. JIT preparation
    and Swift patching remain separately selectable capabilities.
 5. **Close the reporting loop.** Add reviewed user submissions to Apparition, then
@@ -255,6 +256,29 @@ Structural Swift changes need a separate approach: recreate a component with sel
 state migration, or rebuild/relaunch with state restoration. Executable-memory access
 alone cannot change the layout of instances that already exist. A debugger-assisted
 backend must retain per-patch user approval before it becomes a product feature.
+
+### Registering an Xcode build
+
+On the Mac with the complete build-tools checkout and Node 18+:
+
+```sh
+apparition xcode register --app /path/to/Products/MyApp.app --project /path/to/repo \
+  --symbols /path/to/Products/MyApp.app.dSYM
+apparition xcode configure --spec project.yml --target MyApp
+```
+
+`configure` writes `project.apparition.yml` and generates a `MyApp (Apparition)` scheme.
+Use that spec for subsequent XcodeGen runs; the original spec stays intact. Set
+`APPARITION_CLI` if the CLI is outside PATH and `APPARITION_BUILD_TOOLS` if the tools
+are outside the packaged location or the checkout behind `build-and-sign` on PATH.
+The scheme performs one normal Xcode build, then retains its artifact and UUID-matched
+symbols in the same registry the developer service exposes. Registration without a
+pre-build context records observed source separately; it cannot establish what source
+was compiled. Unsigned products remain unsigned and need signing before installation.
+
+Registration does not install, launch or attach a debugger. Stop an Xcode debug session
+before asking Apparition to own JIT for that process. This handoff does not replace the
+device's approvals for live inspection or code changes.
 
 ### Optimized entry-patch experiment
 

@@ -26,6 +26,7 @@ use apparition_core::{
     release,
 };
 use rootcause::prelude::*;
+mod xcode;
 
 const USAGE: &str = "\
 Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
@@ -74,6 +75,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       What uses up a free account's two certificates and ten App IDs a week, and freeing
       one you choose (after you confirm). Revoking a certificate stops the apps signed with
       it until they are signed again: share Apparition's instead (`signing`, below).
+  apparition xcode register --app PRODUCT.app [--project DIR] [--symbols PRODUCT.app.dSYM]
+  apparition xcode configure --spec project.yml --target TARGET
+      Register Xcode products or generate an optional handoff scheme on a Mac, preserving
+      existing signatures. No rebuild, re-sign, launch or debugger attachment at registration.
+      apparition xcode --help lists the local build-tools setup and source capture command.
 
   Sharing one certificate between your devices and computers. A free account holds two, so
   each Apparition signs with the same one rather than making its own: once one has signed,
@@ -161,6 +167,7 @@ async fn main() -> ExitCode {
         Some("install") => install(&args[1..]).await,
         Some("sign") => sign(&args[1..]).await,
         Some("jit") => jit(&args[1..]).await,
+        Some("xcode") => xcode::run(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("signing") => signing(&args[1..]).await,
         Some("pairing") => pairing(&args[1..]).await,
