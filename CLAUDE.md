@@ -14,7 +14,7 @@ It orchestrates two external tools: `bin/build-and-sign` (xcodebuild + codesign 
 - Runs as a launchd LaunchAgent you install yourself (see the README) with `KeepAlive` — so it auto-restarts on crash or when you kill it. Point the agent's stdout/stderr at a log file.
 - **After editing `server.js`:** restart the agent — `launchctl kickstart -k gui/$(id -u)/<agent label>` (or just `kill <pid>` and KeepAlive respawns it with the new code). Do **not** launch `node server.js` manually to test — the agent already holds the port and your process will die with `EADDRINUSE`.
 - **After editing anything in `public/`:** no restart needed — static files are read from disk on every request. Just reload the page.
-- Listens on `127.0.0.1` only, on `config.json`'s `port` (currently 8484). **`config.json` changes require a restart.**
+- Listens on `127.0.0.1` only, on `config.json`'s `port` (currently 8484). Project settings reload live; changes to the listening port or runtime directory paths still require a restart. The watcher watches the parent directory so atomic config replacements remain visible.
 - Before restarting, check `GET /api/state` for `activeBuild`/`queued` — a restart marks any in-flight build as failed.
 
 ## Configuration (`config.json`)

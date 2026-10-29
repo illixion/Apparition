@@ -80,6 +80,40 @@ test('cross-site requests cannot establish or use a native session', async () =>
     headers: { Origin: 'https://unrelated.example' } })).status, 403);
 });
 
+test('project registration requires a native session and immediately updates state without losing config', async () => {
+  const project = path.join(dir, 'Registered'); fs.mkdirSync(project);
+  const { execFileSync } = require('node:child_process');
+  execFileSync('git', ['init', '-b', 'main', project], { stdio: 'ignore' });
+  fs.writeFileSync(path.join(project, 'build-signing.conf'), 'exit 77 # not executed\n');
+  const body = { name: 'Registered', path: project, branches: [], platforms: [
+    { platform: 'visionOS', bundleId: 'com.example.registered', device: 'AVP' },
+  ] };
+  assert.equal((await request('/api/service/v1/projects', { method: 'POST', body })).status, 401);
+  const token = await connect();
+  const added = await request('/api/service/v1/projects', { method: 'POST', token, body });
+  assert.equal(added.status, 200); assert.equal(added.body.project.name, 'Registered');
+  const state = await request('/api/service/v1/state', { token });
+  assert.ok(state.body.repos.some(repo => repo.name === 'Registered'));
+  assert.equal((await request('/api/service/v1/projects', { method: 'POST', token, body })).status, 409);
+  const persisted = JSON.parse(fs.readFileSync(path.join(dir, 'config.json')));
+  assert.ok(persisted.passwordHash); assert.equal(persisted.buildManifestDir, 'artifacts');
+  assert.equal(persisted.repos.length, 1);
+  // Atomic registration replaces the inode. The watcher must still notice
+  // later external edits, including a second replacement of that file.
+  for (const mcp of [false, true]) {
+    const config = path.join(dir, 'config.json'), temporary = config + '.external';
+    const next = { ...JSON.parse(fs.readFileSync(config)), deployDefaults: { mcp } };
+    fs.writeFileSync(temporary, JSON.stringify(next)); fs.renameSync(temporary, config);
+    let reloaded = false;
+    for (let attempt = 0; attempt < 30; ++attempt) {
+      const current = await request('/api/service/v1/state', { token });
+      if (current.body.repos[0].deployDefaults.mcp === mcp) { reloaded = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(reloaded, true, 'configuration replacement must remain watched');
+  }
+});
+
 test('artifact manifests and exact downloads require the native session', async () => {
   const buildId = 'fixture-build', content = Buffer.from('immutable test artifact');
   const sha256 = crypto.createHash('sha256').update(content).digest('hex');

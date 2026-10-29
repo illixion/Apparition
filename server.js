@@ -35,7 +35,8 @@ let BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
 
 // Watch config.json for changes and reload it
 let configReloadTimer = null;
-const watchConfig = () => fs.watch(CONFIG_PATH, (eventType, filename) => {
+const watchConfig = () => fs.watch(path.dirname(CONFIG_PATH), (eventType, filename) => {
+  if (filename && String(filename) !== path.basename(CONFIG_PATH)) return;
   // Debounce rapid writes
   if (configReloadTimer) return;
   configReloadTimer = setTimeout(() => {
@@ -1104,7 +1105,13 @@ fs.mkdirSync(TRACE_DIR, { recursive: true });
 const { createAuth, parseCookies } = require('./lib/auth');
 const { createDebug } = require('./lib/debug');
 const auth = createAuth(DATA_DIR);
-const service = require('./lib/service').createService({ auth, config: () => CONFIG, json, readBody });
+const service = require('./lib/service').createService({ auth, config: () => CONFIG, json, readBody,
+  registerProject: input => {
+    const result = require('./lib/project-registration').registerProject(CONFIG_PATH, input);
+    CONFIG = result.config;
+    BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
+    return result.project;
+  } });
 const debug = createDebug({ tool: () => CONFIG.debugtraceTool, keyDir: TRACE_KEY_DIR, log: m => console.log(m) });
 
 class TraceError extends Error {

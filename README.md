@@ -83,6 +83,13 @@ provenance. Stop Xcode debugging before choosing a separate Apparition JIT sessi
 
 ### Service builds
 
+Authenticated Apparition clients can register an existing Git checkout with
+`POST /api/service/v1/projects` (`name`, Mac `path`, optional `branches`, and
+`platforms: [{platform, device, bundleId}]`). The checkout must already have
+`build-signing.conf`; registration never executes it. Duplicate names, duplicate
+checkout paths and invalid targets/branches are refused. Registration atomically adds
+the project to `config.json`, preserves other settings, and makes it available immediately.
+
 - Builds are serialized per repo and parallel across repos. A branch other than the one checked
   out is built from a disposable copy-on-write clone, so your working tree is never touched.
 - Dev builds stamp the git short SHA into `CFBundleVersion`. The UI compares the SHA on the
