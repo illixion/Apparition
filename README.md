@@ -107,6 +107,26 @@ certificate ("Maximum number of certificates reached") with only one listed, pos
 counts a certificate that free accounts can't list. If so, try again later, or share the
 certificate you already have from another device.
 
+## Developer builds and reports
+
+The desktop app's **Developer** view connects to an [appstore](https://github.com/illixion/appstore)
+Mac build service. Set a password on that service with `node server.js set-password`, then
+enter its address and password in Apparition. Use `http://localhost:8484` on the Mac that
+runs it, or its HTTPS address from another computer. The service needs the new
+`apparition-service` version 1 API; older servers need updating first.
+
+Projects and device targets currently come from the service's `config.json`. Choose a
+project's branch and exact platform/device target, then **Build & Install**. Launch, debug
+access, live patching and Debug configuration are separate options. The view shows queued
+and running jobs, cancellation, build logs, uploaded DebugTrace files, crash reports and
+basic inspection of discovered apps. Device debug access still asks for approval on the
+device; connecting to the service does not grant it.
+
+Only the service address is remembered on disk. The service password field clears when
+connecting; its session credential stays in Rust memory, outside the page. Disconnect
+revokes that session. After quitting Apparition, connect again. This connection is separate
+from the companion relay and does not share its signing credentials.
+
 ## Away from home, over Tailscale
 
 Apparition's companion works over [Tailscale](https://tailscale.com), so a computer left at
@@ -189,14 +209,15 @@ progress, errors and cancellation to Apparition. Keep the Node backend initially
 
 Implementation order:
 
-1. **Establish patching limits on hardware.** Compare an optimized function entry patch
-   with an inlined caller. Follow with Swift-native entry points, real compiled
-   replacement code, calling-convention and metadata handling, and representative
-   workloads. Retain signed-dylib injection while investigating this alternative.
-2. **Connect the build service.** Add authenticated service connection and capability
-   discovery to desktop Apparition, then projects, devices, explicit build jobs and
-   report browsing. A Mac with Xcode executes Apple builds; other desktop platforms
-   can connect to it. Keep service credentials separate from the existing relay.
+1. **Establish patching limits on hardware.** Optimized entry patches, stale-inline
+   controls and compiled Swift scalar/String replacements now pass on the headset.
+   Next: shared app types, calling-convention and metadata handling, thread coordination
+   and representative workloads. Retain signed-dylib injection while investigating.
+2. **Connect the build service.** Authenticated version 1 service access, configured
+   projects/devices, explicit build jobs, logs and report browsing are implemented in
+   desktop Apparition. Next: direct project registration and the device frontend.
+   A Mac with Xcode executes Apple builds; other desktop platforms can connect to it.
+   Service credentials stay separate from the existing relay.
 3. **Unify build identity.** Connect projects, immutable builds, artifact digests and
    binary UUIDs to signed installations, sessions, patch history and reports. Preserve
    original and installed bundle IDs. Retain symbols by build/UUID rather than replacing

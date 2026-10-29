@@ -1,4 +1,5 @@
 // @ts-check
+import { DeveloperView } from './developer.js';
 // Apparition's page: the install wizard and the Companion view. Every action is a Rust command
 // (see src/flow.rs and src/companion.rs); this page only shows steps and collects answers. Passwords are read from their field, sent with the
 // command and cleared from the field at once; nothing here stores them.
@@ -1397,15 +1398,21 @@ const companionView = /** @type {HTMLElement} */ (document.getElementById("view-
 const companionPanel = /** @type {HTMLElement} */ (document.getElementById("companion-panel"));
 const tabInstall = /** @type {HTMLButtonElement} */ (document.getElementById("tab-install"));
 const tabCompanion = /** @type {HTMLButtonElement} */ (document.getElementById("tab-companion"));
+const developerView = /** @type {HTMLElement} */ (document.getElementById("view-developer"));
+const tabDeveloper = /** @type {HTMLButtonElement} */ (document.getElementById("tab-developer"));
+const developer = new DeveloperView(document.getElementById("developer-panel"), invoke);
 /** @type {number|undefined} */ let companionTimer;
 /** What an action in progress, or one that just failed, has to say. @type {{text: string, kind?: "error"|"good"|""}|null} */
 let companionNote = null;
 
-function showView(/** @type {"install"|"companion"} */ view) {
+function showView(/** @type {"install"|"companion"|"developer"} */ view) {
   const companion = view === "companion";
-  installView.hidden = companion;
+  installView.hidden = view !== "install";
   companionView.hidden = !companion;
-  tabInstall.setAttribute("aria-selected", String(!companion));
+  tabInstall.setAttribute("aria-selected", String(view === "install"));
+  developerView.hidden = view !== "developer";
+  tabDeveloper.setAttribute("aria-selected", String(view === "developer"));
+  developer.show(view === "developer");
   tabCompanion.setAttribute("aria-selected", String(companion));
   clearInterval(companionTimer);
   if (companion) {
@@ -1417,6 +1424,7 @@ function showView(/** @type {"install"|"companion"} */ view) {
 }
 tabInstall.addEventListener("click", () => showView("install"));
 tabCompanion.addEventListener("click", () => showView("companion"));
+tabDeveloper.addEventListener("click", () => showView("developer"));
 
 function buildCompanion() {
   companionPanel.append(template("t-companion"));

@@ -12,6 +12,7 @@
 
 mod companion;
 mod flow;
+mod service;
 
 use std::sync::Arc;
 
@@ -31,7 +32,12 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .manage(companion_state.clone())
+        .manage(service::BuildService::default())
         .invoke_handler(tauri::generate_handler![
+            service::service_settings,
+            service::service_connect,
+            service::service_disconnect,
+            service::service_request,
             flow::app_info,
             flow::check_update,
             flow::open_downloads,

@@ -17,6 +17,7 @@
   <div class="views" role="tablist" aria-label="Views">
     <button type="button" role="tab" id="tab-install" aria-selected="true" aria-controls="view-install">Install</button>
     <button type="button" role="tab" id="tab-companion" aria-selected="false" aria-controls="view-companion">Companion <span class="tab-dot" id="companion-dot" hidden></span></button>
+    <button type="button" role="tab" id="tab-developer" aria-selected="false" aria-controls="view-developer">Developer</button>
   </div>
   <div id="update" class="update" hidden>
     <span id="update-text">A newer installer is available.</span>
@@ -48,6 +49,9 @@
 </div>
 
 <!-- ============================================================ steps -->
+<div class="companion-view" id="view-developer" role="tabpanel" aria-labelledby="tab-developer" hidden>
+  <main class="panel developer-panel" id="developer-panel" tabindex="-1"></main>
+</div>
 
 <template id="t-companion">
   <section class="step companion">
