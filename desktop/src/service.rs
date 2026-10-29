@@ -3,7 +3,10 @@
 use apparition_core::api::DeviceStore;
 use reqwest::{Client, Method, Url};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::io::Write;
 use std::{sync::Mutex, time::Duration};
+use tauri_plugin_dialog::DialogExt;
 
 #[derive(Clone)]
 struct Session {
@@ -184,7 +187,7 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
     };
     let get = |p: String| Ok((Method::GET, p, None));
     match name {
-        "state" | "traces" | "crashlogs" => get(name.into()),
+        "state" | "traces" | "crashlogs" | "artifacts" => get(name.into()),
         "build" => {
             if !args["repo"].is_string() || !args["device"].is_string() {
                 return Err("Select a project and target first.".into());
@@ -227,6 +230,7 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
             get(url.path().trim_start_matches('/').to_string())
         }
         "debugApps" => get("debug/apps".into()),
+        "artifactManifest" => get(format!("artifacts/{}/manifest", key()?)),
         "debugHelp" => get(format!("debug/{}/help", key()?)),
         "debugCall" => Ok((
             Method::POST,
@@ -235,6 +239,132 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
         )),
         _ => Err("Unknown service operation.".into()),
     }
+}
+
+async fn download_to(
+    session: &Session,
+    id: &str,
+    artifact: &Value,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    let expected_bytes = artifact["bytes"]
+        .as_u64()
+        .ok_or("The artifact size is missing.")?;
+    let expected_hash = artifact["sha256"]
+        .as_str()
+        .filter(|hash| hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit()))
+        .ok_or("The artifact digest is missing.")?;
+    let url = session
+        .base
+        .join(&format!("api/service/v1/artifacts/{id}/download"))
+        .map_err(|_| "Invalid build identity.")?;
+    let mut reply = session
+        .client
+        .get(url)
+        .bearer_auth(&session.token)
+        .timeout(Duration::from_secs(30 * 60))
+        .send()
+        .await
+        .map_err(|_| "The artifact download could not connect.".to_string())?;
+    if !reply.status().is_success() {
+        return Err(
+            "The service refused the artifact download. Connect again if the session expired."
+                .into(),
+        );
+    }
+    let mut file = tempfile::NamedTempFile::new_in(
+        destination.parent().ok_or("Choose a destination folder.")?,
+    )
+    .map_err(|_| "Couldn't create the download file.".to_string())?;
+    let mut count = 0u64;
+    let mut hash = Sha256::new();
+    while let Some(chunk) = reply
+        .chunk()
+        .await
+        .map_err(|_| "The artifact download was interrupted.".to_string())?
+    {
+        count = count
+            .checked_add(chunk.len() as u64)
+            .ok_or("The artifact size overflowed.")?;
+        if count > expected_bytes {
+            return Err("The downloaded artifact is larger than its manifest.".into());
+        }
+        file.write_all(&chunk)
+            .map_err(|_| "Couldn't write the downloaded artifact.".to_string())?;
+        hash.update(&chunk);
+    }
+    if count != expected_bytes || format!("{:x}", hash.finalize()) != expected_hash.to_lowercase() {
+        return Err(
+            "The artifact does not match its manifest. The destination file was preserved.".into(),
+        );
+    }
+    file.as_file()
+        .sync_all()
+        .map_err(|_| "Couldn't save the completed artifact.".to_string())?;
+    file.persist(destination)
+        .map_err(|_| "Couldn't move the verified artifact to its destination.".to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn service_download(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BuildService>,
+    id: String,
+) -> Result<Value, String> {
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    {
+        return Err("Invalid build identity.".into());
+    }
+    let session = state
+        .session
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("Connect to a build service first.")?;
+    let manifest = response(
+        session
+            .client
+            .get(
+                session
+                    .base
+                    .join(&format!("api/service/v1/artifacts/{id}/manifest"))
+                    .unwrap(),
+            )
+            .bearer_auth(&session.token),
+    )
+    .await?;
+    if manifest["format"] != "apparition-build/1" || manifest["buildId"] != id {
+        return Err("The service returned a different build identity.".into());
+    }
+    let extension = match manifest["artifact"]["kind"].as_str() {
+        Some("ipa") => "ipa",
+        Some("app.zip") => "app.zip",
+        _ => return Err("Unknown artifact type.".into()),
+    };
+    let name = manifest["app"]["name"]
+        .as_str()
+        .unwrap_or("App")
+        .chars()
+        .take(60)
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let filename = format!("{name}-{id}.{extension}");
+    let destination = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Save build artifact")
+            .set_file_name(&filename)
+            .blocking_save_file()
+            .and_then(|file| file.into_path().ok())
+    })
+    .await
+    .map_err(|_| "Couldn't open the save dialog.".to_string())?;
+    let Some(destination) = destination else {
+        return Ok(json!({"cancelled":true}));
+    };
+    download_to(&session, &id, &manifest["artifact"], &destination).await?;
+    Ok(json!({"path": destination.to_string_lossy(), "sha256": manifest["artifact"]["sha256"]}))
 }
 
 #[tauri::command]
@@ -269,6 +399,53 @@ pub async fn service_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verified_download_preserves_destination_on_corruption() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        apparition_core::api::init();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("artifact.ipa");
+        for (corrupt, expected_bytes) in [(true, 5), (false, 4), (false, 6), (false, 5)] {
+            std::fs::write(&destination, b"existing user file").unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = [0; 4096];
+                let count = socket.read(&mut request).unwrap();
+                assert!(
+                    String::from_utf8_lossy(&request[..count])
+                        .contains("GET /api/service/v1/artifacts/build/download")
+                );
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                    )
+                    .unwrap();
+            });
+            let artifact = json!({"bytes":expected_bytes,"sha256":format!("{:x}", Sha256::digest(if corrupt { b"other" } else { b"hello" }))});
+            let session = Session {
+                base,
+                token: "fixture-token".into(),
+                client: client().unwrap(),
+            };
+            let result = runtime.block_on(download_to(&session, "build", &artifact, &destination));
+            server.join().unwrap();
+            if corrupt || expected_bytes != 5 {
+                assert!(result.is_err());
+                assert_eq!(std::fs::read(&destination).unwrap(), b"existing user file");
+            } else {
+                assert!(result.is_ok());
+                assert_eq!(std::fs::read(&destination).unwrap(), b"hello");
+            }
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
     #[test]
     fn transport_reads_json_and_text_and_refuses_redirects_and_expired_sessions() {
         use std::io::{Read, Write};

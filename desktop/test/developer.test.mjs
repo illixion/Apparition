@@ -83,3 +83,32 @@ test('debug inspection uses the public app identifier and respects unattachable 
   await buttons[0].listeners.click();
   assert.deepEqual(calls[0], { operation: 'debugCall', arguments: { id: 'public-key-id', endpoint: '_info', arguments: {} } });
 });
+
+test('artifact downloads pass only the build identity through the native bridge', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command === 'service_settings') return {};
+    calls.push({ command, args }); return { path: '/chosen/app.ipa' };
+  });
+  const download = view.downloadButton('build-id');
+  await download.listeners.click();
+  assert.deepEqual(calls, [{ command: 'service_download', args: { id: 'build-id' } }]);
+  assert.equal(download.disabled, false);
+  assert.equal(download.textContent, 'Download');
+  assert.match(view.note.textContent, /Saved verified artifact/);
+});
+
+test('registered builds are visible without queue jobs and do not duplicate queued identities', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command === 'service_settings') return {};
+    calls.push({ command, args }); return { path: '/chosen/app.ipa' };
+  });
+  view.renderArtifacts({ status: 'fulfilled', value: { builds: [
+    { buildId: 'in-queue', app: { name: 'Queued' } }, { buildId: 'external', app: { name: 'Xcode build' } },
+  ] } }, [{ buildId: 'in-queue' }]);
+  assert.ok(view.artifacts.textContent.includes('Xcode build'));
+  assert.ok(!view.artifacts.textContent.includes('Queued'));
+  await view.artifacts.all().find(node => node.tagName === 'button' && node.textContent === 'Download').listeners.click();
+  assert.deepEqual(calls[0], { command: 'service_download', args: { id: 'external' } });
+});

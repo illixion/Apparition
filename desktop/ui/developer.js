@@ -23,6 +23,7 @@ export class DeveloperView {
     this.selectedLog = null;
     this.projectSignature = '';
     this.epoch = 0;
+    this.capabilities = new Set();
     root.append(element('h1', '', 'Developer'));
     root.append(element('p', 'lede', 'Build on your Mac, install on your devices, and bring diagnostics back to the same project.'));
     const form = element('form', 'group service-connect');
@@ -49,11 +50,12 @@ export class DeveloperView {
     this.projects = this.section('Projects');
     this.devices = this.section('Devices');
     this.jobs = this.section('Builds');
+    this.artifacts = this.section('Registered builds'); this.artifacts.hidden = true;
     this.reports = this.section('Reports');
     this.debug = this.section('Running apps');
     this.detail = element('pre', 'service-detail selectable');
     this.detail.tabIndex = 0; this.detail.hidden = true;
-    this.content.append(this.projects, this.devices, this.jobs, this.reports, this.debug, this.detail);
+    this.content.append(this.projects, this.devices, this.jobs, this.artifacts, this.reports, this.debug, this.detail);
     root.append(form, this.note, this.content);
     invoke('service_settings').then(settings => { if (settings.url) this.address.value = settings.url; }).catch(() => {});
   }
@@ -78,6 +80,8 @@ export class DeveloperView {
     try {
       const service = await this.invoke('service_connect', { url: this.address.value, password });
       this.connected = true;
+      this.capabilities = new Set(service.capabilities || []);
+      this.artifacts.hidden = !this.capabilities.has('artifact-manifests');
       this.epoch += 1;
       this.address.disabled = this.password.disabled = true;
       this.connect.hidden = true; this.disconnect.hidden = false; this.content.hidden = false;
@@ -128,14 +132,20 @@ export class DeveloperView {
         const row = element('div', 'service-row');
         row.append(element('span', '', `#${job.id} ${job.repo} · ${job.platform} · ${job.device || ''} · ${job.status}`));
         row.append(button('Log', async () => { this.selectedLog = job.id; await this.read('buildLog', { id: job.id }, `Build #${job.id}`); }));
+        if (job.buildId && job.artifact) {
+          row.append(button('Build details', () => { this.selectedLog = null; this.read('artifactManifest', { id: job.buildId }, `Build ${job.buildId}`); }));
+          row.append(this.downloadButton(job.buildId));
+        }
         if (['queued', 'running'].includes(job.status)) row.append(button('Cancel', () => this.action('cancel', { id: job.id })));
         return row;
       });
       this.items(this.jobs).replaceChildren(...(jobs.length ? jobs : [element('p', 'hint', 'No builds yet.')]));
-      const results = await Promise.allSettled([this.request('traces'), this.request('crashlogs'), this.request('debugApps')]);
+      const results = await Promise.allSettled([this.request('traces'), this.request('crashlogs'), this.request('debugApps'),
+        this.capabilities.has('artifact-manifests') ? this.request('artifacts') : Promise.resolve({ builds: [] })]);
       if (!this.connected || !this.visible || epoch !== this.epoch) return;
       this.renderReports(results[0], results[1]);
       this.renderDebug(results[2]);
+      this.renderArtifacts(results[3], state.builds || []);
       if (this.selectedLog) {
         const logId = this.selectedLog;
         const log = await this.request('buildLog', { id: logId });
@@ -181,12 +191,41 @@ export class DeveloperView {
     });
     this.items(this.projects).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'Add a project to the Mac service configuration to start building.')]));
   }
+  downloadButton(id) {
+    const download = button('Download', async () => {
+      download.disabled = true; download.textContent = 'Downloading…';
+      try {
+        const result = await this.invoke('service_download', { id });
+        if (!result.cancelled) this.status(`Saved verified artifact to ${result.path}`);
+      } catch (error) { this.status(String(error?.message || error), true); }
+      finally { download.disabled = false; download.textContent = 'Download'; }
+    });
+    return download;
+  }
+  renderArtifacts(result, jobs) {
+    const rows = [];
+    if (result.status === 'fulfilled') {
+      const inJobs = new Set(jobs.map(job => job.buildId).filter(Boolean));
+      for (const build of result.value.builds || []) {
+        if (inJobs.has(build.buildId)) continue;
+        const row = element('div', 'service-row');
+        row.append(element('span', '', `${build.app?.name || build.app?.bundleId || 'App'} · ${build.platform || ''} · ${build.app?.build || build.buildId}`));
+        row.append(button('Build details', () => { this.selectedLog = null; this.read('artifactManifest', { id: build.buildId }, `Build ${build.buildId}`); }));
+        row.append(this.downloadButton(build.buildId));
+        rows.push(row);
+      }
+    } else rows.push(element('p', 'error', 'Registered builds could not be loaded.'));
+    this.items(this.artifacts).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No additional registered builds.')]));
+  }
   renderReports(traces, crashes) {
     const rows = [];
     if (traces.status === 'fulfilled') {
       for (const trace of traces.value.traces || []) {
         const row = element('details', 'service-project');
         row.append(element('summary', '', `${trace.app?.name || trace.app?.bundleId || 'App'} · ${trace.app?.build || ''} · ${trace.note || 'Debug trace'}`));
+        if (trace.build?.buildId) row.append(button('Build details', () => {
+          this.selectedLog = null; this.read('artifactManifest', { id: trace.build.buildId }, `Build ${trace.build.buildId}`);
+        }));
         for (const file of trace.files || []) row.append(button(file.path, () => {
           this.selectedLog = null; this.read('traceFile', { id: trace.id, path: file.path }, file.path);
         }));

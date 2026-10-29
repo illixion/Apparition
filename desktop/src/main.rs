@@ -38,6 +38,7 @@ fn main() {
             service::service_connect,
             service::service_disconnect,
             service::service_request,
+            service::service_download,
             flow::app_info,
             flow::check_update,
             flow::open_downloads,

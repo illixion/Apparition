@@ -24,6 +24,8 @@ rootcause = "0.12.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "http2", "system-proxy"] }
+sha2 = "0.10"
+tempfile = "3"
 
 # The core's patches apply only where it is the root, so they're repeated here.
 [patch.crates-io]

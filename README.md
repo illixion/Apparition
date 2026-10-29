@@ -119,13 +119,23 @@ Projects and device targets currently come from the service's `config.json`. Cho
 project's branch and exact platform/device target, then **Build & Install**. Launch, debug
 access, live patching and Debug configuration are separate options. The view shows queued
 and running jobs, cancellation, build logs, uploaded DebugTrace files, crash reports and
-basic inspection of discovered apps. Device debug access still asks for approval on the
-device; connecting to the service does not grant it.
+basic inspection of discovered apps. New builds offer **Build details** and **Download**:
+the saved artifact is checked against its manifest's SHA-256 and size before replacing
+your chosen destination file. **Registered builds** also shows artifacts created outside
+the service queue, such as terminal builds. Manifests record bundle identities, binary UUIDs, symbols,
+toolchain and before/after source/dependency fingerprints. Device debug access still asks
+for approval on the device; connecting to the service does not grant it.
 
 Only the service address is remembered on disk. The service password field clears when
 connecting; its session credential stays in Rust memory, outside the page. Disconnect
 revokes that session. After quitting Apparition, connect again. This connection is separate
 from the companion relay and does not share its signing credentials.
+
+With the native build prerequisites ready, `node scripts/verify-build-service.cjs` runs a
+real build-only integration check through an isolated authenticated service, then verifies
+the manifest and downloaded artifact. It never installs or launches an app. It uses the
+sibling appstore checkout by default (`APPARITION_SERVICE_DIR` overrides it), keeps its
+private temporary config/logs under ignored `build/`, and stops its own service afterward.
 
 ## Away from home, over Tailscale
 
@@ -223,8 +233,10 @@ Implementation order:
    original and installed bundle IDs. Public build IDs now join jobs, installed-build
    ledger entries, traces and immutable symbol sets; symbols are selected by the app's
    actual binary UUIDs and retained across updates, including builds not yet deployed.
-   Next: artifact digests, source/dependency fingerprints and the remaining installation
-   and session relationships. Distinguish dirty local iterations from published builds.
+   Immutable artifact digests, binary identities, before/after source/dependency snapshots
+   and verified downloads are now implemented and tested through a real service build.
+   Next: remaining installation/session relationships and report patch history. Distinguish
+   dirty local iterations from published builds.
 4. **Add Xcode handoff.** Let Xcode register its product and symbols or let Apparition
    build it, without nested builds. Preserve suitable existing signatures. Add an
    optional generated scheme and CLI workflow with explicit debugger ownership:
