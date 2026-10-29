@@ -167,3 +167,25 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_OBJC_BRIDGING_HEADER: Lab/ApparitionLab-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: minimal
+  # The smallest JIT26 client, for testing JIT through Apparition or inside LiveContainer.
+  JITProbe:
+    type: application
+    platform: auto
+    supportedDestinations: [iOS, visionOS]
+    sources:
+      - path: JITProbe
+        excludes:
+          - Info.plist
+    info:
+      path: JITProbe/Info.plist
+      properties:
+        CFBundleDisplayName: JIT Probe
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.jitprobe
+        TARGETED_DEVICE_FAMILY: "1,2,7"
+        SWIFT_OBJC_BRIDGING_HEADER: JITProbe/JITProbe-Bridging-Header.h
+        SWIFT_STRICT_CONCURRENCY: minimal
