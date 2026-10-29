@@ -107,7 +107,8 @@ for JIT itself (the JIT26 request) is served as it would be outside LiveContaine
 script. An app made for a StikDebug JIT script of its own (Geode's, for one) needs that script
 added to it in LiveContainer. Apparition then runs the script as the app's debugger, and asks
 you first each time, because a script can read and change everything in the app. Requires
-Apparition 0.4.1 or later. Not yet tested on a device.
+Apparition 0.4.1 or later. Tested on an iPhone 15 Pro Max (iOS 27.0.1) with LiveContainer
+Nightly and a minimal JIT26 test app, both without a script and with StikDebug's `universal.js`.
 
 Refresh LiveContainer in Apparition like any other app; the apps inside it keep their data. If
 Apparition's certificate changes (one revoked, or a new one made), export and import it again.
