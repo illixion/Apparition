@@ -17,10 +17,12 @@ computer at all.
 > [!IMPORTANT]
 > **Signing in with a free Apple ID needs a Mac's anisette since October 2026.** Apple now refuses
 > the anisette Apparition's built-in provider makes on iPhone, iPad, Apple TV, Vision Pro and
-> Linux. Fix it by serving anisette from a Mac on macOS 26 or earlier, or from a macOS VM you
-> host yourself: **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)** takes about 20
-> minutes. Details and other options under [Anisette](#anisette). A paid developer certificate
-> doesn't sign in at all, so it isn't affected.
+> Linux. Two ways to fix it, in [Anisette](#anisette):
+> - **Quick:** enter the URL of a third-party anisette server. Works today, but could stop.
+> - **Reliable:** serve anisette from a macOS VM you host
+>   ([guide, about 20 minutes](docs/ANISETTE_VM.md)), or from a Mac on macOS 26 or earlier.
+>
+> A paid developer certificate doesn't sign in at all, so it isn't affected.
 
 ## What it does
 
@@ -673,17 +675,25 @@ for bundle creation, NixOS/Fusion USB setup, permissions and current integration
 ## Anisette
 
 > [!IMPORTANT]
-> **Signing in with an Apple ID now needs anisette from a real Mac or a macOS VM.** Since October
-> 2026 Apple refuses the anisette made from the Apple Music for Android libraries (what the
-> built-in provider makes on iPhone, iPad, Apple TV, Vision Pro and Linux) for sign-in. For a free
-> Apple ID, use one of:
-> - a **Mac on macOS 26 or earlier** serving its own anisette — the companion does this with no
->   setup;
-> - a **macOS virtual machine you host** — **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)**
->   walks through it. Nothing leaves your network;
-> - any **third-party anisette-v3 server**. These are explicitly supported — enter its URL under
->   Anisette. Apparition ships and endorses none, and gives out no addresses; the sideloading
->   community keeps lists.
+> **A free Apple ID's sign-in now needs anisette that Apple accepts, and Apparition's built-in
+> provider no longer makes it.** Since about 14 October 2026 Apple refuses the anisette made
+> from the Apple Music for Android libraries (the built-in provider on iPhone, iPad, Apple TV,
+> Vision Pro and Linux; it is still in the app, and still used where Apple accepts it). Pick one
+> of two paths:
+>
+> **1. A third-party anisette server: quick, but it may stop working.** Enter the URL of an
+> anisette-v3 server under Anisette (Setup on a device, or the desktop app). Servers built on
+> Apple's own Mac library work today and take a minute to set up. Apple has tightened
+> what it accepts several times this month, so one could stop signing in with no warning, and
+> you rely on someone else's server (it sees this device's anisette identity and IP address,
+> never your Apple ID or password). Apparition ships and endorses none and gives out no
+> addresses; the sideloading community keeps lists.
+>
+> **2. Your own macOS VM: the most reliable, but it takes about 20 minutes to set up.**
+> **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)** walks through it. It's a
+> real Mac's anisette on your own machine, so nothing leaves your network and no one else's
+> server has to keep working. A **Mac on macOS 26 or earlier** can skip the VM and serve its
+> own anisette: the companion does it with no setup.
 >
 > A **paid** developer certificate avoids sign-in, and anisette, entirely (see
 > [Your own developer certificate](#your-own-developer-certificate)).
