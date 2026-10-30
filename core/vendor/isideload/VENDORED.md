@@ -106,3 +106,7 @@ A real Mac's anisette, which has no such headers, is unaffected.
 Not a change to its code: Cargo.toml asks for `zip` 9.0.5 rather than 8.3, matching core, for the
 "zip cloaking" advisory (dual-header parser differential, fixed in 9.0.5). isideload's own code
 compiles unchanged against zip 9.
+
+A twelfth change: developer-services requests send `Content-Type` and `Accept` as
+`text/x-xml-plist` (`src/dev/developer_session.rs`). These requests POST XML property lists, and
+Apple's `listTeams` endpoint returned HTTP 415 when the media type was omitted.
