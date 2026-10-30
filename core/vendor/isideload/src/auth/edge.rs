@@ -1,18 +1,24 @@
-//! Apple's edge servers, for when one of them turns a network away.
+//! Retrying a request Apple's edge turned away, or couldn't be reached, on another edge.
 //!
-//! Which edge an Apple host resolves to depends on the resolver asking. Checked 2026-10-29 from one
-//! home network: the router's resolver and Google's (8.8.8.8) gave edges for `gsd.apple.com` that
-//! answer, Cloudflare's (1.1.1.1) always gave 17.171.11.101, which answers every GrandSlam request
-//! with an HTML `403 Forbidden` before Apple reads it. Cloudflare passes on no client subnet, so
-//! which edge it hands out depends on where its own server is, and any resolver can land someone
-//! on a refusing edge.
+//! A request to an Apple host can fail for a reason that belongs to the one server that answered:
+//! it refuses with an HTML `403 Forbidden` before Apple reads the request, or it doesn't answer at
+//! all. The same request often goes through on another of the servers the host's name stands for,
+//! so the retry is simply "ask again, somewhere else": the only thing that changes between
+//! attempts is which address the connection goes to. The connection still names the host, so TLS
+//! checks the certificate exactly as before.
 //!
-//! So the system's resolver is still asked first (it is right for nearly everyone, and a VPN or
-//! a workplace network expects it), and only an edge that refuses like that changes anything: it
-//! is avoided for an hour, so a sign-in doesn't knock on it again and again, and the request goes
-//! to another edge, from the system's answer or, when that holds only avoided ones, from
-//! DNS-over-HTTPS. After [`EDGES_PER_REQUEST`] refusing edges the request fails saying so.
-//! The connection still names the host, so TLS checks the certificate exactly as before.
+//! Why it exists (2026-10-29): which edge `gsd.apple.com` resolved to depended on the resolver
+//! asking, and one of them (17.171.11.101, what Cloudflare's 1.1.1.1 always gave) answered every
+//! GrandSlam request with that 403. The cause turned out to be an edge WAF rule on the request's
+//! `Content-Type` (see `grandslam.rs`), which was on some edges first and on all of them a day
+//! later; with the right content type no edge refuses, and this layer does nothing. It stays as the
+//! general answer to one edge misbehaving, whatever the reason.
+//!
+//! The system's resolver is asked first (it is right for nearly everyone, and a VPN or a workplace
+//! network expects it). An edge that refuses is avoided for an hour, so a sign-in doesn't knock on
+//! it again and again, and the request goes to another edge, from the system's answer or, when that
+//! holds only avoided ones, from DNS-over-HTTPS. After [`EDGES_PER_REQUEST`] refusing edges the
+//! request fails saying so.
 //!
 //! An edge that can't be connected to, or doesn't answer in time, gets one retry on the other
 //! edges DNS-over-HTTPS knows, for that request only: nothing is remembered, as an outage of the
@@ -51,11 +57,11 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, thiserror::Error)]
 pub enum EdgeError {
     #[error(
-        "Apple's servers for {host} turned this network away ({tried} answered 403 Forbidden). Try again in an hour, on another network, or with this computer's DNS set to the router's."
+        "Apple's servers for {host} refused the request ({tried} answered 403 Forbidden). Try again in a little while or on another network."
     )]
     Refused { host: String, tried: usize },
     #[error(
-        "Every Apple server found for {host} turned this network away in the last hour. Try again later, on another network, or with this computer's DNS set to the router's."
+        "Every Apple server found for {host} refused a request in the last hour. Try again later or on another network."
     )]
     AllAvoided { host: String },
 }
@@ -492,23 +498,23 @@ mod tests {
         assert!(is_unreachable(&error), "{error:?}");
     }
 
-    /// Against Apple: the system's resolver hands out 17.171.11.101, which refused every GrandSlam
-    /// request from a home network in Riga on 2026-10-29. The request should land on another edge
-    /// and get Apple's own answer. Needs that edge to still refuse from where it runs.
+    /// Against Apple: 17.171.11.101 answered 403 to every request with the legacy `text/x-xml-plist`
+    /// Content-Type on 2026-10-29 and, a day later, so did every other edge. With `text/xml` (what
+    /// GrandSlam sends now) that same edge answers, and nothing is avoided.
     ///
-    ///     cargo test -p isideload --lib refusing_edge -- --ignored
+    ///     cargo test -p isideload --lib content_type_clears -- --ignored
     #[test]
     #[ignore = "talks to Apple"]
-    fn refusing_edge_is_avoided_and_another_answers() {
+    fn content_type_clears_the_edge_that_refused() {
         use crate::auth::grandslam::APPLE_ROOT_G3;
         use crate::sideload::cert_identity::APPLE_ROOT;
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let refusing: IpAddr = "17.171.11.101".parse().unwrap();
+        let edge: IpAddr = "17.171.11.101".parse().unwrap();
         let client = reqwest::ClientBuilder::new()
             .add_root_certificate(reqwest::Certificate::from_der(APPLE_ROOT).unwrap())
             .add_root_certificate(reqwest::Certificate::from_der(APPLE_ROOT_G3).unwrap())
             .http1_title_case_headers()
-            .dns_resolver(EdgeResolver::over(Arc::new(Fixed(refusing))))
+            .dns_resolver(EdgeResolver::over(Arc::new(Fixed(edge))))
             .build()
             .unwrap();
         let client = reqwest_middleware::ClientBuilder::new(client).with(EdgeAvoidance).build();
@@ -518,7 +524,7 @@ mod tests {
             .block_on(
                 client
                     .post("https://gsd.apple.com/grandslam/GsService2")
-                    .header("Content-Type", "text/x-xml-plist")
+                    .header("Content-Type", "text/xml")
                     .header("Accept", "text/x-xml-plist")
                     .header("X-Xcode-Version", "27.0 (27A5218g)")
                     .header("X-Apple-App-Info", "com.apple.gs.xcode.auth")
@@ -532,8 +538,8 @@ mod tests {
                     .send(),
             )
             .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        assert_ne!(response.remote_addr().map(|addr| addr.ip()), Some(refusing));
-        assert!(edges().avoided.contains_key(&refusing));
+        assert_ne!(response.status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(response.remote_addr().map(|addr| addr.ip()), Some(edge));
+        assert!(!edges().avoided.contains_key(&edge));
     }
 }

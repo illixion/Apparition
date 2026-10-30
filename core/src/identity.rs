@@ -452,7 +452,7 @@ pub(crate) fn app_entitlements(app: &Path) -> Option<Dictionary> {
         return signed_entitlements(app);
     }
     let mut zip = zip::ZipArchive::new(std::fs::File::open(app).ok()?).ok()?;
-    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let names: Vec<String> = zip.file_names().filter_map(|name| name.ok().map(|n| n.into_owned())).collect();
     let mut read = |name: &str| {
         let mut data = Vec::new();
         std::io::Read::read_to_end(&mut zip.by_name(name).ok()?, &mut data).ok()?;
@@ -476,7 +476,7 @@ fn app_info(app: &Path) -> Option<Dictionary> {
         return plist::from_file(app.join("Info.plist")).ok();
     }
     let mut zip = zip::ZipArchive::new(std::fs::File::open(app).ok()?).ok()?;
-    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let names: Vec<String> = zip.file_names().filter_map(|name| name.ok().map(|n| n.into_owned())).collect();
     let mut data = Vec::new();
     std::io::Read::read_to_end(&mut zip.by_name(main_info_plist(&names)?).ok()?, &mut data).ok()?;
     plist::from_bytes(&data).ok()

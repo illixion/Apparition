@@ -362,7 +362,7 @@ pub fn reset_anisette_libraries(data_dir: &std::path::Path) -> Result<(), Report
 ///   ([`import_anisette_libraries`] is the other way);
 /// - `"checksum"`: a library file given to [`import_anisette_libraries`] isn't the version this
 ///   build was tested with; the person may go on anyway;
-/// - `"network"`: Apple's servers couldn't be reached, or turned this network away (a retry may
+/// - `"network"`: Apple's servers couldn't be reached, or refused a request (a retry may
 ///   work, on this network or another).
 pub fn failure_kind(error: &Report) -> Option<&'static str> {
     error.iter_reports().find_map(|cause| {
@@ -420,6 +420,57 @@ fn auth_code(error: &Report) -> Option<i64> {
     })
 }
 
+/// Apple's GrandSlam service can transiently return 503 during either SRP request. Retry only
+/// those two transport failures; authentication rejections and all later stages stay single-shot.
+fn is_transient_srp_503(error: &Report) -> bool {
+    let srp_request = error.iter_reports().any(|cause| {
+        matches!(
+            cause.format_current_context().to_string().as_str(),
+            "Failed to send initial login request" | "Failed to send proof login request"
+        )
+    });
+    let service_unavailable = error.iter_reports().any(|cause| {
+        if let Some(error) = cause.downcast_current_context::<reqwest::Error>() {
+            return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        }
+        if let Some(reqwest_middleware::Error::Reqwest(error)) =
+            cause.downcast_current_context::<reqwest_middleware::Error>()
+        {
+            return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        }
+        false
+    });
+    srp_request && service_unavailable
+}
+
+/// The Xcode app-token request is read-only and can be repeated when GrandSlam returns 503.
+async fn developer_session_with_retry(account: &mut AppleAccount) -> Result<DeveloperSession, Report> {
+    match DeveloperSession::from_account(account).await {
+        Ok(session) => Ok(session),
+        Err(error)
+            if error.iter_reports().any(|cause| {
+                cause.format_current_context().to_string() == "Failed to send app token request"
+            })
+                && error.iter_reports().any(|cause| {
+                    if let Some(error) = cause.downcast_current_context::<reqwest::Error>() {
+                        return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+                    }
+                    if let Some(reqwest_middleware::Error::Reqwest(error)) =
+                        cause.downcast_current_context::<reqwest_middleware::Error>()
+                    {
+                        return error.status() == Some(reqwest::StatusCode::SERVICE_UNAVAILABLE);
+                    }
+                    false
+                }) =>
+        {
+            tracing::warn!("GrandSlam returned HTTP 503 during Xcode token request; retrying once after 10 seconds");
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            DeveloperSession::from_account(account).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Signs in with an Apple ID (anisette from the v3 server at `anisette_url`, or the built-in
 /// provider for [`BUILTIN_ANISETTE`]; state kept in `<data_dir>/storage.json`) and opens a
 /// developer session. `two_factor` answers 2FA.
@@ -454,8 +505,15 @@ pub async fn sign_in(
             error.context("Apple ID sign-in failed").into_dynamic()
         }
     };
-    let mut account =
-        AppleAccount::builder(email).anisette_provider(anisette).login(&password, callback).await.map_err(refused)?;
+    let mut account = AppleAccount::builder(email).anisette_provider(anisette).build().await.map_err(refused)?;
+    if let Err(error) = account.login(&password, callback).await {
+        if !is_transient_srp_503(&error) {
+            return Err(refused(error));
+        }
+        tracing::warn!("GrandSlam returned HTTP 503 during SRP; retrying once after 10 seconds");
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        account.login(&password, callback).await.map_err(refused)?;
+    }
 
     // The Xcode token, and the developer requests made with it, may need another claim than the
     // sign-in (claimed_platform, `after_sign_in`).
@@ -466,7 +524,7 @@ pub async fn sign_in(
         }
     };
     claim_after_sign_in(&mut account);
-    let session = match DeveloperSession::from_account(&mut account).await {
+    let session = match developer_session_with_retry(&mut account).await {
         Ok(session) => session,
         // Claiming Android, a sign-in Apple doesn't trust yet got no 2FA step and no Xcode
         // token (-22411) until the code it pushes to the trusted devices was checked: sign in
@@ -476,7 +534,7 @@ pub async fn sign_in(
             account.code_after_login = true;
             account.login(&password, callback).await.map_err(refused)?;
             claim_after_sign_in(&mut account);
-            DeveloperSession::from_account(&mut account).await.context("Failed to open a developer session")?
+            developer_session_with_retry(&mut account).await.context("Failed to open a developer session")?
         }
         Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-80046) => {
             return Err(error.context(REFUSED_ANDROID_ANISETTE).into_dynamic());
@@ -1034,6 +1092,9 @@ pub unsafe extern "C" fn apparition_list_apps(
                         "bundleId": bundle_id,
                         "name": string(&info, "CFBundleDisplayName").or_else(|| string(&info, "CFBundleName")).unwrap_or_else(|| bundle_id.clone()),
                         "version": string(&info, "CFBundleShortVersionString"),
+                        "build": string(&info, "CFBundleVersion"),
+                        "deviceFamily": info.get("UIDeviceFamily").and_then(plist::Value::as_array)
+                            .map(|families| families.iter().filter_map(plist::Value::as_unsigned_integer).collect::<Vec<_>>()),
                         "debuggable": entitlement("get-task-allow").and_then(plist::Value::as_boolean).unwrap_or(false),
                         "teamId": entitlement("com.apple.developer.team-identifier").and_then(plist::Value::as_string),
                         "signer": string(&info, "SignerIdentity"),
@@ -1126,17 +1187,77 @@ pub unsafe extern "C" fn apparition_attach_jit(
         let bundle_id = if bundle_id.is_null() { None } else { Some(unsafe { text(bundle_id) }?) };
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        runtime().block_on(async {
-            let pid = match (pid, &bundle_id) {
-                (0, Some(bundle_id)) => jit::running_pid(adapter, handshake, bundle_id)
-                    .await?
-                    .ok_or_else(|| report!("{bundle_id} isn't running"))?,
-                (0, None) => bail!("no process to attach to"),
-                (pid, _) => pid,
-            };
-            let target = jit::Target::Attach { pid, bring_back: bundle_id.as_deref() };
-            jit::serve(adapter, handshake, target, wait_seconds, &mut |_| {}).await
-        })
+        let target = jit::Target::Attach { pid, bring_back: bundle_id.as_deref() };
+        runtime().block_on(jit::serve(adapter, handshake, target, wait_seconds, &mut |_| {}))
+    })())
+}
+
+/// A debugserver session lent to a StikDebug JIT script (see `jit::Script`).
+pub struct JitScript(jit::Script);
+
+/// Opens a script session for `bundle_id`: launched anew and suspended with `launch`, else the
+/// running process `pid` (0: `bundle_id`'s running process), which is brought back to the
+/// front. Fills `out`; the tunnel must outlive it. Returns `{ok, pid}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_open(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    pid: u64,
+    bundle_id: *const c_char,
+    launch: bool,
+    out: *mut *mut JitScript,
+) -> *mut c_char {
+    reply((|| {
+        if adapter.is_null() || handshake.is_null() || out.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = if bundle_id.is_null() { None } else { Some(unsafe { text(bundle_id) }?) };
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let script = runtime().block_on(jit::Script::open(adapter, handshake, pid, bundle_id.as_deref(), launch))?;
+        let pid = script.pid();
+        unsafe { *out = Box::into_raw(Box::new(JitScript(script))) };
+        Ok(json!({ "pid": pid }))
+    })())
+}
+
+/// Sends one gdb-remote packet (unframed) for the script. Returns `{ok, reply}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_send(script: *mut JitScript, command: *const c_char) -> *mut c_char {
+    reply((|| {
+        if script.is_null() {
+            bail!("missing session");
+        }
+        let command = unsafe { text(command) }?;
+        let script = unsafe { &mut (*script).0 };
+        let reply = runtime().block_on(script.send(&command))?;
+        Ok(json!({ "reply": reply }))
+    })())
+}
+
+/// Makes `length` bytes at `address` executable for the app. Returns `{ok, pages}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_prepare(script: *mut JitScript, address: u64, length: u64) -> *mut c_char {
+    reply((|| {
+        if script.is_null() {
+            bail!("missing session");
+        }
+        let script = unsafe { &mut (*script).0 };
+        let pages = runtime().block_on(script.prepare(address, length))?;
+        Ok(json!({ "pages": pages }))
+    })())
+}
+
+/// Ends and frees the session, detaching from a process still attached. Returns
+/// `{ok, pid, events, preparedBytes, detached, ended}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_jit_script_close(script: *mut JitScript) -> *mut c_char {
+    reply((|| {
+        if script.is_null() {
+            bail!("missing session");
+        }
+        let script = unsafe { Box::from_raw(script) }.0;
+        Ok(runtime().block_on(script.close()))
     })())
 }
 
@@ -1327,7 +1448,7 @@ mod refusal_text_tests {
         }
         // The first request found the refusal itself; the second never reached the server.
         println!("--- first attempt:\n{}\n--- second attempt (the server is avoided now):\n{}", seen[0], seen[1]);
-        assert!(seen[0].contains("turned this network away") || seen[0].contains("Every Apple server found"), "{}", seen[0]);
+        assert!(seen[0].contains("refused the request") || seen[0].contains("Every Apple server found"), "{}", seen[0]);
         assert!(seen[1].contains("Every Apple server found"), "{}", seen[1]);
         assert!(!seen[1].contains("error sending request for url"), "raw reqwest wording leaked: {}", seen[1]);
     }

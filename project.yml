@@ -12,7 +12,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     # The release version (scripts/package-release.sh checks it matches the one asked for);
     # the build number is the commit count, passed in at packaging.
-    MARKETING_VERSION: "0.4.0"
+    MARKETING_VERSION: "0.4.4"
     CURRENT_PROJECT_VERSION: "1"
 packages:
   DebugTrace:
@@ -148,11 +148,13 @@ targets:
         SWIFT_STRICT_CONCURRENCY: minimal
   ApparitionLab:
     type: application
-    platform: iOS
+    platform: auto
+    supportedDestinations: [iOS, visionOS]
     sources:
       - path: Lab
         excludes:
           - Info.plist
+          - Patches
     info:
       path: Lab/Info.plist
       properties:
@@ -164,6 +166,32 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.lab
-        TARGETED_DEVICE_FAMILY: "1,2"
+        # The entry-patch experiment needs optimized code and separate translation
+        # units: never let LTO fold the harness's calls into constants.
+        GCC_OPTIMIZATION_LEVEL: "2"
+        LLVM_LTO: "NO"
+        TARGETED_DEVICE_FAMILY: "1,2,7"
         SWIFT_OBJC_BRIDGING_HEADER: Lab/ApparitionLab-Bridging-Header.h
+        SWIFT_STRICT_CONCURRENCY: minimal
+  # The smallest JIT26 client, for testing JIT through Apparition or inside LiveContainer.
+  JITProbe:
+    type: application
+    platform: auto
+    supportedDestinations: [iOS, visionOS]
+    sources:
+      - path: JITProbe
+        excludes:
+          - Info.plist
+    info:
+      path: JITProbe/Info.plist
+      properties:
+        CFBundleDisplayName: JIT Probe
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.jitprobe
+        TARGETED_DEVICE_FAMILY: "1,2,7"
+        SWIFT_OBJC_BRIDGING_HEADER: JITProbe/JITProbe-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: minimal

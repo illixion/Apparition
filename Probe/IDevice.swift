@@ -156,6 +156,28 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and lends a debugserver session for `bundleId` to a StikDebug JIT script
+    /// (JITScript), which serves the app from then on: a new launch with `launch`, else the
+    /// running process `pid` (0: the app's running process). Returns the session's reply, with
+    /// the script's `log` lines added to its events.
+    static func runJITScript(target: Target, hostname: String, file: PairingFile,
+                             pin: PinCallback?, context: UnsafeMutableRawPointer,
+                             pid: UInt64, bundleId: String, launch: Bool, script: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            var session: OpaquePointer?
+            let opened = AccountModel.call(apparition_jit_script_open(adapter, handshake, pid, bundleId, launch, &session))
+            guard opened["ok"] as? Bool == true, let session else { return opened }
+            let outcome = JITScript.run(script, session: session, pid: opened["pid"] as? Int ?? 0)
+            var reply = AccountModel.call(apparition_jit_script_close(session))
+            var events = reply["events"] as? [String] ?? []
+            events += outcome.lines.map { "script: \($0)" }
+            if outcome.droppedLines > 0 { events.append("script: (\(outcome.droppedLines) more lines not kept)") }
+            if let exception = outcome.exception { events.append("script threw: \(exception)") }
+            reply["events"] = events
+            return reply
+        }
+    }
+
     /// Opens a tunnel and installs the signed app at `appPath` through it, as one IPA
     /// (apparition_install_ipa, reusing `sourceIPA`'s unchanged files), or file by file
     /// (apparition_install) when `asIPA` is off.

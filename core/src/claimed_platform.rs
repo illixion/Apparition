@@ -82,15 +82,23 @@ impl Claim {
 
     /// The claim for a server's `/v3/client_info` reply and its `Implementation-Version` header.
     fn from_reply(reply: &serde_json::Value, implementation: Option<&str>) -> Claim {
+        let text = |key| reply.get(key).and_then(|value| value.as_str()).filter(|text| !text.is_empty() && !text.contains(['\r', '\n']));
         match reply.get("apparition_anisette").and_then(|value| value.as_str()) {
-            Some("mac") => return Claim::of(Served::Mac),
+            // Our server on a Mac says which Mac it is: a VM's sign-in is refused claiming another.
+            Some("mac") => {
+                return match (text("client_info"), text("user_agent")) {
+                    (Some(client_info), Some(user_agent)) if !client_info.contains("<Android") => {
+                        Claim { served: Served::Mac, client_info: client_info.to_string(), user_agent: user_agent.to_string() }
+                    }
+                    _ => Claim::of(Served::Mac),
+                };
+            }
             Some(_) => return Claim::of(Served::Android),
             None => {}
         }
         if implementation.is_some_and(|name| name.starts_with("anisette-v3-server v")) {
             return Claim::of(Served::Android);
         }
-        let text = |key| reply.get(key).and_then(|value| value.as_str()).filter(|text| !text.is_empty() && !text.contains(['\r', '\n']));
         match (text("client_info"), text("user_agent")) {
             (Some(client_info), Some(user_agent)) => Claim {
                 served: if client_info.contains("<Android") { Served::Android } else { Served::Mac },
@@ -160,7 +168,10 @@ mod tests {
     #[test]
     fn our_server_says_what_it_serves() {
         let claim = |value| Claim::from_reply(&value, None);
-        assert_eq!(claim(json!({ "client_info": "x", "user_agent": "y", "apparition_anisette": "mac" })), Claim::of(Served::Mac));
+        let vm = "<VirtualMac2,1> <macOS;27.0;26A428> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        let mac = claim(json!({ "client_info": vm, "user_agent": "akd/1.0 CFNetwork/3896.100.1.1.1 Darwin/27.0.0", "apparition_anisette": "mac" }));
+        assert_eq!((mac.served, mac.client_info.as_str()), (Served::Mac, vm));
+        assert_eq!(claim(json!({ "apparition_anisette": "mac" })), Claim::of(Served::Mac));
         assert_eq!(claim(json!({ "client_info": "x", "user_agent": "y", "apparition_anisette": "android" })), Claim::of(Served::Android));
         assert!(ANDROID_CLIENT_INFO.contains("<Android; "));
         assert!(MAC_CLIENT_INFO.contains("<macOS;"));

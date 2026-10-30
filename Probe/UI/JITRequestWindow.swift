@@ -1,23 +1,43 @@
 import SwiftUI
 
 extension ProbeModel {
-    /// Becomes the requesting app's debugger; the app comes back to the front once attached.
-    func attachJIT(_ request: LibraryModel.JITRequest) async {
-        await attachJIT(host: defaultTunnelHost, port: defaultTunnelPort,
-                        bundleId: request.bundleId, pid: request.pid)
+    /// Becomes the requesting app's debugger, as StikDebug would: a request naming a process
+    /// is attached to, and that app comes back to the front; one naming none launches the app
+    /// anew under the debugger. With a script, the script is the debugger.
+    func answerJIT(_ request: LibraryModel.JITRequest) async {
+        if let script = request.script {
+            await runJITScript(host: defaultTunnelHost, port: defaultTunnelPort, bundleId: request.bundleId,
+                               pid: request.pid, launch: request.pid == 0, script: script)
+        } else if request.pid == 0 {
+            await launchJIT(host: defaultTunnelHost, port: defaultTunnelPort, bundleId: request.bundleId,
+                            waitSeconds: 0, reportsFailure: true)
+        } else {
+            await attachJIT(host: defaultTunnelHost, port: defaultTunnelPort,
+                            bundleId: request.bundleId, pid: request.pid)
+        }
     }
 }
 
 extension LibraryModel.JITRequest {
+    /// Whether the person is asked first. A script is: it can read and change everything in
+    /// the app, and any app can send one, naming any app.
+    func needsAsking(managed: Bool) -> Bool {
+        !managed || script != nil
+    }
+
     /// What the prompt asks of someone: the app's name and why it needs allowing.
-    static func message(_ request: LibraryModel.JITRequest) -> String {
-        "\(request.bundleId) asks Apparition to be its debugger, which lets it run code it makes. Apparition didn't install it."
+    static func message(_ request: LibraryModel.JITRequest, managed: Bool) -> String {
+        let installed = managed ? "" : " Apparition didn't install it."
+        guard request.script != nil else {
+            return "\(request.bundleId) asks Apparition to be its debugger, which lets it run code it makes.\(installed)"
+        }
+        return "A JIT script for \(request.bundleId) asks to be its debugger. The script can read and change everything in the app, so allow it only if you added it yourself, as in LiveContainer.\(installed)"
     }
 }
 
 #if os(visionOS)
 
-/// The "Enable JIT?" prompt for an app Apparition didn't install, in a utility window. A
+/// The "Enable JIT?" prompt for an app Apparition didn't install, or a JIT script, in a utility window. A
 /// confirmation dialog on visionOS is a popover anchored to the main window, which could land far
 /// to its right and out of reach, leaving the request to time out. iOS and tvOS keep the dialog.
 /// It also says why a request couldn't be served (no pairing, a pairing the headset turned down,
@@ -71,14 +91,14 @@ private struct JITRequestView: View {
                 Text("Enable JIT for \(library.displayName(of: request.bundleId))?")
                     .font(.title2.bold())
                     .multilineTextAlignment(.center)
-                Text(LibraryModel.JITRequest.message(request))
+                Text(LibraryModel.JITRequest.message(request, managed: library.isManaged(request.bundleId)))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                 VStack(spacing: 10) {
                     Button("Enable JIT") {
                         library.pendingJITRequest = nil
                         dismissWindow(id: JITRequestWindow.windowID)
-                        Task { await model.attachJIT(request) }
+                        Task { await model.answerJIT(request) }
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("enableJIT")

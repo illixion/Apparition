@@ -103,15 +103,20 @@ impl DeveloperSession {
 
         let body = base.into_iter().chain(body.into_iter()).collect();
 
+        // Developer services expect the request body as an XML property list. Without an
+        // explicit media type, the request is rejected with HTTP 415 before Apple parses it.
+        let mut headers = self
+            .get_headers()
+            .await
+            .context("Failed to get anisette headers")?;
+        headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
+        headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
+
         let text = self
             .client
             .post(url)?
             .body(plist_to_xml_string(&body))
-            .headers(
-                self.get_headers()
-                    .await
-                    .context("Failed to get anisette headers")?,
-            )
+            .headers(headers)
             .send()
             .await?
             .error_for_status()

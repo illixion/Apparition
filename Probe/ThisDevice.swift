@@ -14,6 +14,18 @@ enum ThisDevice {
     static let home = "Home View"
     /// The text the name of UTM's release asset for this platform contains.
     static let utmAssetPattern = "visionOS"
+    static func appCompatibilityLabel(deviceFamily: [Int]?) -> String {
+        if deviceFamily?.contains(7) == true { return "visionOS app" }
+        if deviceFamily?.contains(2) == true { return "iPad app · compatibility mode" }
+        if deviceFamily?.contains(1) == true { return "iPhone app · compatibility mode" }
+        return "Compatible app"
+    }
+    static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [String] {
+        if deviceFamily?.contains(7) == true { return ["visionos", "xros"] }
+        if deviceFamily?.contains(2) == true { return ["ipad", "ios"] }
+        if deviceFamily?.contains(1) == true { return ["ios", "iphone"] }
+        return []
+    }
     #elseif os(tvOS)
     static let noun = "Apple TV"
     static let title = "Apple TV"
@@ -21,6 +33,8 @@ enum ThisDevice {
     static let os = "tvOS"
     static let home = "Home Screen"
     static let utmAssetPattern = "tvOS"
+    static func appCompatibilityLabel(deviceFamily: [Int]?) -> String { "tvOS app" }
+    static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [String] { ["tvos"] }
     #else
     static var noun: String { isPad ? "iPad" : "iPhone" }
     static var title: String { noun }
@@ -28,6 +42,27 @@ enum ThisDevice {
     static var os: String { isPad ? "iPadOS" : "iOS" }
     static let home = "Home Screen"
     static let utmAssetPattern = "UTM.ipa"
+
+    static func appCompatibilityLabel(deviceFamily: [Int]?) -> String {
+        if isPad {
+            if deviceFamily?.contains(2) == true { return "iPad app" }
+            if deviceFamily == [1] || (deviceFamily?.contains(1) == true && deviceFamily?.contains(2) != true) {
+                return "iPhone app · compatibility mode"
+            }
+            return "iPad-compatible app"
+        }
+        return "iPhone app"
+    }
+
+    static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [String] {
+        if isPad {
+            if deviceFamily == [1] || (deviceFamily?.contains(1) == true && deviceFamily?.contains(2) != true) {
+                return ["ios", "iphone"]
+            }
+            if deviceFamily?.contains(2) == true { return ["ipad", "ios"] }
+        }
+        return ["ios", "iphone"]
+    }
 
     private static var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
     #endif

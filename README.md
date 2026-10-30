@@ -38,7 +38,10 @@ computer at all.
   they are, at home or away from it through the companion. An app can also ask for JIT for
   itself while it runs, with an `apparition://enable-jit?bundle-id=…&pid=…` link (the
   `stikdebug://` link works too, so Madeira's Enable JIT button finds Apparition); Apparition
-  then stays its debugger until the app closes. On iPhone and iPad it keeps running in the
+  then stays its debugger until the app closes. A link without a `pid` launches the app anew
+  under the debugger, as StikDebug does. One with a StikDebug JIT script (`script-data`, as
+  LiveContainer sends) runs the script as the app's debugger, after asking you: a script can
+  read and change everything in the app. On iPhone and iPad it keeps running in the
   background by keeping coarse location updates on, which it drops unread: allow location
   while using the app when asked. From a computer,
   `apparition jit <bundle ID> [--attach]` does the same. Tested on Vision Pro with UTM (an
@@ -111,6 +114,36 @@ certificate ("Maximum number of certificates reached") with only one listed, pos
 counts a certificate that free accounts can't list. If so, try again later, or share the
 certificate you already have from another device.
 
+## Developer builds and reports
+
+The desktop app's **Developer** view connects to an [appstore](https://github.com/illixion/appstore)
+Mac build service. Set a password on that service with `node server.js set-password`, then
+enter its address and password in Apparition. Use `http://localhost:8484` on the Mac that
+runs it, or its HTTPS address from another computer. The service needs the new
+`apparition-service` version 1 API; older servers need updating first.
+
+Projects and device targets currently come from the service's `config.json`. Choose a
+project's branch and exact platform/device target, then **Build & Install**. Launch, debug
+access, live patching and Debug configuration are separate options. The view shows queued
+and running jobs, cancellation, build logs, uploaded DebugTrace files, crash reports and
+basic inspection of discovered apps. New builds offer **Build details** and **Download**:
+the saved artifact is checked against its manifest's SHA-256 and size before replacing
+your chosen destination file. **Registered builds** also shows artifacts created outside
+the service queue, such as terminal builds. Manifests record bundle identities, binary UUIDs, symbols,
+toolchain and before/after source/dependency fingerprints. Device debug access still asks
+for approval on the device; connecting to the service does not grant it.
+
+Only the service address is remembered on disk. The service password field clears when
+connecting; its session credential stays in Rust memory, outside the page. Disconnect
+revokes that session. After quitting Apparition, connect again. This connection is separate
+from the companion relay and does not share its signing credentials.
+
+With the native build prerequisites ready, `node scripts/verify-build-service.cjs` runs a
+real build-only integration check through an isolated authenticated service, then verifies
+the manifest and downloaded artifact. It never installs or launches an app. It uses the
+sibling appstore checkout by default (`APPARITION_SERVICE_DIR` overrides it), keeps its
+private temporary config/logs under ignored `build/`, and stops its own service afterward.
+
 ## Away from home, over Tailscale
 
 Apparition's companion works over [Tailscale](https://tailscale.com), so a computer left at
@@ -182,6 +215,186 @@ Its first experiment (2026-10-11, visionOS 27.2): bytes the debugger writes into
 app's own signed `__TEXT` keep running after it detaches, including code first run
 only after the detach and a site rewritten to branch to a trampoline. Apparition serves
 this through an experimental JIT26 command, `x16 = 0x4150` (copy x2 bytes from x1 to x0).
+
+### Developer workflow integration (in progress)
+
+The intended product is Apparition for building, installing, running and diagnosing apps.
+The `appstore` Mac service supplies build jobs, artifacts and report storage; its
+`build-and-sign` remains the build executor. DebugTrace stays an independent SDK. The
+existing AltStore feed remains compatible, while an explicit job API will expose build
+progress, errors and cancellation to Apparition. Keep the Node backend initially.
+
+Implementation order:
+
+1. **Establish patching limits on hardware.** Optimized entry patches, stale-inline
+   controls and compiled Swift scalar/String replacements now pass on the headset.
+   Next: shared app types, calling-convention and metadata handling, thread coordination
+   and representative workloads. Retain signed-dylib injection while investigating.
+2. **Connect the build service.** Authenticated version 1 service access, configured
+   projects/devices, explicit build jobs, logs and report browsing are implemented in
+   desktop Apparition. The initial device Developer tab adds service sign-in, project
+   and branch selection, build-only/install jobs, logs, cancellation and registered-build
+   browsing. Service passwords can be remembered in this device's Keychain, separately
+   per service, for automatic reconnection. Bearer sessions stay in memory and
+   authenticated requests refuse redirects. Disconnect forgets the service password.
+   Desktop Apparition can also register an existing Mac checkout and its targets.
+   The Library matches installed debuggable apps against configured project bundle IDs.
+   Matching cards prefer the service target configured for the paired device, and use
+   `UIDeviceFamily` to identify iPhone/iPad apps running in compatibility mode. They show
+   project/platform, installed and retained build identity, build-only and separately
+   labelled device-install actions, JIT launch, and reports filtered to the installed
+   `CFBundleVersion`. A retained build can be downloaded into Apparition's normal
+   install review and signing flow without rebuilding it. Per-app automatic update
+   preparation watches retained artifacts while the service refreshes, downloads a newer
+   build and opens that same review; installation still requires confirmation. Crash text
+   and trace text files can be opened and closed on device.
+   Apps without a project match stay in Other Apps. Next: finish installation/session
+   relationships and round out device-side report navigation.
+   A Mac with Xcode executes Apple builds; other desktop platforms can connect to it.
+   Service credentials stay separate from the existing relay.
+3. **Unify build identity.** Connect projects, immutable builds, artifact digests and
+   binary UUIDs to signed installations, sessions, patch history and reports. Preserve
+   original and installed bundle IDs. Public build IDs now join jobs, installed-build
+   ledger entries, traces and immutable symbol sets; symbols are selected by the app's
+   actual binary UUIDs and retained across updates, including builds not yet deployed.
+   Immutable artifact digests, binary identities, before/after source/dependency snapshots
+   and verified downloads are now implemented and tested through a real service build.
+   Next: remaining installation/session relationships and report patch history. Distinguish
+   dirty local iterations from published builds.
+4. **Add Xcode handoff.** The CLI can now retain an existing Xcode product and matching
+   symbols without rebuilding or changing its signature. An optional generated XcodeGen
+   scheme captures source context before building and registers the completed product.
+   Keep debugger ownership explicit:
+   Xcode/LLDB and Apparition must not compete for the same process. JIT preparation
+   and Swift patching remain separately selectable capabilities.
+5. **Close the reporting loop.** Add reviewed user submissions to Apparition, then
+   connect other apps' DebugTrace reports to their exact builds. Add a portable report
+   envelope for Rust/Tauri failures, build registration and scoped external submission
+   credentials. Keep unverified imports separately classified. Report upload never
+   grants live debug access; preserve device approvals for inspection and code changes.
+6. **Consolidate packaging.** Once the connected workflows pass on real devices, move
+   appstore/build-and-sign into Apparition, manage the service from the desktop app,
+   migrate configs and ledgers, and retain the existing CLI and headless web access.
+
+Structural Swift changes need a separate approach: recreate a component with selected
+state migration, or rebuild/relaunch with state restoration. Executable-memory access
+alone cannot change the layout of instances that already exist. A debugger-assisted
+backend must retain per-patch user approval before it becomes a product feature.
+
+### Registering projects and Xcode builds
+
+In desktop Apparition's Developer view, use **Register a project** to add an existing
+checkout on the Mac service host. Enter its Mac path, device names, platform aliases and
+bundle identifiers; its `build-signing.conf` must already be set up. Registration saves
+the project without building it or changing signing material. Local branch names are
+optional; the current checkout remains available. The Mac service validates the checkout
+and updates its configuration atomically, preserving existing settings.
+
+When the device build service is connected, the Library matches installed debuggable apps
+against configured project target bundle IDs. Matching cards keep build-only separate from
+installing to the project's configured device, and show retained artifacts and reports for
+the installed build number when available. Apps with no configured project match remain in
+Other Apps. The service connection is shared with Developer.
+
+On the Mac with the complete build-tools checkout and Node 18+:
+
+```sh
+apparition xcode register --app /path/to/Products/MyApp.app --project /path/to/repo \
+  --symbols /path/to/Products/MyApp.app.dSYM
+apparition xcode configure --spec project.yml --target MyApp
+```
+
+`configure` writes `project.apparition.yml` and generates a `MyApp (Apparition)` scheme.
+Use that spec for subsequent XcodeGen runs; the original spec stays intact. Set
+`APPARITION_CLI` if the CLI is outside PATH and `APPARITION_BUILD_TOOLS` if the tools
+are outside the packaged location or the checkout behind `build-and-sign` on PATH.
+The scheme performs one normal Xcode build, then retains its artifact and UUID-matched
+symbols in the same registry the developer service exposes. Registration without a
+pre-build context records observed source separately; it cannot establish what source
+was compiled. Unsigned products remain unsigned and need signing before installation.
+
+Registration does not install, launch or attach a debugger. Stop an Xcode debug session
+before asking Apparition to own JIT for that process. This handoff does not replace the
+device's approvals for live inspection or code changes.
+
+### Optimized entry-patch experiment
+
+The lab now runs a second experiment **before** the original experiment detaches. It
+branches from an optimized compiler-generated C function to a replacement already linked
+in the app, then restores the original instruction. A caller in the target's translation
+unit deliberately inlines the original function. The harness is in a separate translation
+unit, and the Lab target explicitly enables optimization and disables LTO.
+
+Build and install the isolated lab, then launch it through Apparition's debugger:
+
+```sh
+xcodegen
+SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab \
+  BUILD_BUNDLE_ID=com.illixion.apparition.lab \
+  ~/bin/build-and-sign --platform iOS --device AVP
+apparition jit com.illixion.apparition.lab --device AVP --wait 60
+xcrun devicectl device copy from --device AVP \
+  --domain-type appDataContainer --domain-identifier com.illixion.apparition.lab \
+  --source Documents/optimized-patch-report.json \
+  --destination build/optimized-patch-report.json
+```
+
+The report records baseline/patched/restored return values, loop checksums, write results,
+and five timings per phase in nanoseconds per call. Breadcrumbs are synced before risky
+steps to `Documents/optimized-patch-steps.txt`. A normal launch reports `not-traced` and
+does not issue debugger requests. Use a fresh launch for each experiment.
+
+Verified on a physical Vision Pro on 2026-10-29: writes succeeded, ordinary calls returned
+`[11,17,11]`, and the inlined caller returned `[11,11,11]`; loop checksums matched all three
+phases. Tiny-function timings varied substantially, including after restoration, so they
+establish no application-level performance improvement. This proves optimized entry
+redirection and the stale-inline limitation. It does **not** yet demonstrate Swift-native
+patching, dynamically generated replacement code, arbitrary type changes, or an alternative
+to DebugTrace's current injection backend. Ordinary-launch controls also remain unpatched.
+
+### Native Swift entry-patch experiment
+
+The lab also tests optimized native Swift entries with a separately compiled, development-
+signed dylib delivered into its Documents directory after the app build. It runs before the
+C experiments detach the debugger. Only the dylib's address getters have a C ABI; patched
+functions use Swift's native calling convention, without `-enable-implicit-dynamic` or
+`@_dynamicReplacement`.
+
+```sh
+python3 scripts/run-swift-entry-lab.py --platform visionOS --device AVP
+# For a paired iPhone instead:
+python3 scripts/run-swift-entry-lab.py --platform iOS --device ixPhone
+```
+
+The runner builds and installs only `com.illixion.apparition.lab`, compiles and signs the
+replacement, copies it to the device, launches through Apparition JIT, and validates both
+the patched run and an ordinary-launch control. `--skip-build` reuses an already installed
+lab of the selected platform. It overwrites the device report with a pending marker before
+each launch, so a crash cannot reuse an old success. Reports stay under ignored
+`build/swift-entry-lab/<platform>/`. Runtime checkpoints are in
+`Documents/swift-entry-steps.txt`.
+
+Verified on physical Vision Pro, 2026-10-29, both native visionOS and iOS compatibility builds:
+
+- A native Swift integer entry returned `[11,17,11]` before patching, after patching and
+  after restoration. Both a Swift function reference and a normal compiled Swift call
+  observed the replacement. The latter reads an opaque runtime input on every call to
+  prevent constant specialization and reuse of a pure function's earlier result.
+- A native `String -> String` entry returned `original:hello`, `replacement:hello`, then
+  `original:hello`. All 1,000 heap-backed String calls matched the replacement result.
+- All entry/island writes and restorations succeeded. The native visionOS replacement
+  was 155,582,456 bytes away, beyond a direct ARM64 branch's range: a reserved nearby
+  island successfully redirected the entry through an absolute jump.
+- An ordinary launch returned original results without sending any debugger requests.
+
+This is a single-threaded, ARM64 lab proof using signed dylib loading. It has no general
+function discovery or dependency tracking, does not allocate anonymous JIT code, and does
+not test custom app types, generics, async/throwing methods, pointer authentication, active
+stack frames or concurrent patch publication. Existing inlined or constant-folded results
+can still retain old behavior. Keep the dylib loaded for the process lifetime. Production
+adoption needs thread coordination, ABI validation, compiler dependency handling and the
+same per-patch device approval as DebugTrace injection. No application performance claim
+follows from these correctness tests.
 
 ## Shortcuts automation
 
@@ -475,6 +688,15 @@ for bundle creation, NixOS/Fusion USB setup, permissions and current integration
 
 ## Anisette
 
+> [!NOTE]
+> **Sign-in works with the built-in anisette again (from 0.4.3).** From 29 October 2026 Apple
+> refused it, and for a day or so nothing but a Mac's anisette signed in. The anisette was never
+> the problem: Apple had put a firewall rule in front of its sign-in servers that rejected the
+> `Content-Type` sideloaders have always sent, so the request was turned away before Apple looked
+> at it. Apparition sends `text/xml` now and Apple accepts the Android libraries' anisette as
+> before. A Mac's anisette, a macOS VM or a third-party server still work, if you prefer one.
+> Details [below](#why-sign-in-stopped-in-october-2026).
+
 Signing in to Apple needs "anisette" data that identifies the computer. On macOS and Linux
 (arm64 and x86_64) the installer makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
 Android uses; nothing of Apple's is stored in this repository), loads them in its own process
@@ -483,21 +705,20 @@ wherever you prefer it, use a server: Apparition ships none, so enter the URL of
 any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
 up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
 digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
-and IP address, never the Apple ID or password, which go straight to Apple.
+and IP address, never the Apple ID or password, which go straight to Apple. A third-party
+server is optional now; use one only if you'd rather not have the built-in one.
 
 **Since 12 October 2026 Apple checks that the anisette matches the device the sign-in claims
 to be**, and refuses the sign-in (`-80045`, "This action cannot be completed at this time")
 when it doesn't. isideload, like most sideloaders, claimed a Mac while sending the Android
 libraries' anisette. Apparition claims Android for that anisette (`core/src/claimed_platform.rs`),
-which Apple accepts. Since about 22 October Apple refuses the Xcode token to a sign-in claiming
-Android (`-80046`), but issues it when that request claims a Mac, whatever made the anisette. So
-once the password is accepted, Apparition asks for the token, and makes its developer requests,
-as a Mac (`Claim::after_sign_in`). A sign-in Apple asks a 2FA code for goes through the usual
-prompt; one it doesn't is asked for the code Apple pushes to your trusted devices if the token
-is refused (`core/vendor/isideload`, `code_after_login`).
-Dadoum's anisette-v3-server, the self-hosted one above, runs those libraries too and gets the
-same claim. Other servers make their anisette differently and say what to claim, and Apparition
-claims that (jkcoxson's native-c server reports a Mac, and Apple refuses it claiming Android).
+which Apple accepts. Where the libraries are used — a server that makes its anisette with them,
+say — the claim still follows the server
+(`Claim::after_sign_in`; Dadoum's anisette-v3-server reports a Mac but runs those libraries, so it
+gets the Android claim, while jkcoxson's native-c server reports a Mac and is claimed a Mac). A
+sign-in Apple asks a 2FA code for goes through the usual prompt; one it doesn't is asked for the
+code Apple pushes to your trusted devices if the Xcode token is refused (`core/vendor/isideload`,
+`code_after_login`).
 
 On a Mac the built-in provider asks macOS for the Mac's own anisette instead, and the sign-in
 claims a Mac and goes through the usual 2FA (`core/src/anisette/native.rs`):
@@ -506,7 +727,12 @@ claims a Mac and goes through the usual 2FA (`core/src/anisette/native.rs`):
 - **macOS 27:** only programs with AuthKit's private entitlements get it. The release ships
   `apparition-anisette-helper` signed with them, next to `apparition` and inside the app, and
   macOS runs it only with SIP off and `sudo nvram boot-args="amfi_get_out_of_my_way=1"`.
-  Otherwise the Android libraries are used, as on Linux.
+  Otherwise the Android libraries are used, which sign in as before.
+
+In a **macOS virtual machine**, Apple also needs the host's attestation, which the helper forwards
+along with the rest of AuthKit's headers; it's only valid inside a desktop session, so the server
+runs as a login item. [`selfhost/macos-vm/setup.sh`](selfhost/macos-vm/setup.sh) arranges all of
+this — see **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)**.
 
 Provisioning goes through the Android libraries either way, so a device's stored identity works
 with any server. With a paid developer account there is also a route with no sign-in at all:
@@ -524,16 +750,29 @@ Desktop, OrbStack or Colima), from the desktop app's Companion tab or `apparitio
 --anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
 anisette server" next to the companion; nothing switches on its own.
 
-Some of Apple's servers turn some networks away: sign-in then fails "403 Forbidden", and which
-server you reach depends on your DNS (from one network, Cloudflare's 1.1.1.1 led to one that
-refused, the router's DNS didn't). Apparition notices, avoids that server for an hour and
-tries another, looked up over DNS-over-HTTPS (Google's and Cloudflare's) if your own DNS knows no
-other. Only that lookup goes elsewhere, never the Apple ID. If every server it finds refuses, the
-error says so; try another network, or set the computer's DNS to the router's.
+Apple's servers sometimes refuse a request that another one would take: sign-in then fails "403
+Forbidden". Apparition retries on another server (`core/vendor/isideload/src/auth/edge.rs`): it
+avoids the server that refused for an hour and asks another, looked up over DNS-over-HTTPS (Google's
+and Cloudflare's) if your own DNS knows no other, and does the same once when a server can't be
+connected to. Only that lookup goes elsewhere, never the Apple ID. If every server it finds
+refuses, the error says so; try again later or on another network.
 
 The header corner of the desktop app always says where this computer's sign-in gets its anisette
 (built-in, Docker or another server) and what the companion offers, so a screenshot shows the
 setup.
+
+### Why sign-in stopped in October 2026
+
+From about 29 October Apple refused the anisette the built-in provider makes: provisioning
+(`gsd.apple.com`) and sign-in (`gsa.apple.com`) answered an HTML `403 Forbidden` with no Apple
+error code. It looked like Apple had stopped accepting the Android libraries' anisette, and for
+a day it was worked around by choosing a different Apple server, since the first servers to
+refuse were only some of them. On 30 October it was traced to the request's `Content-Type`:
+Apple's servers reject the legacy `text/x-xml-plist` at provisioning, and (the opposite way)
+`application/x-xml-plist` at sign-in. `text/xml` passes both, Apple parses the body the same and
+answers as usual. With that one header the same anisette is accepted, so it never was the
+anisette, the serial or the network. Apple may change the rule again; the same symptom would be
+a 403 before any Apple error code.
 
 ### When Apparition can't fetch Apple's libraries
 

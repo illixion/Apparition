@@ -391,7 +391,7 @@ mod tests {
                 let mut entry = archive.by_index(i).unwrap();
                 let mut data = Vec::new();
                 entry.read_to_end(&mut data).unwrap();
-                (entry.name().to_string(), data, entry.unix_mode())
+                (entry.name().unwrap().into_owned(), data, entry.unix_mode())
             })
             .collect()
     }

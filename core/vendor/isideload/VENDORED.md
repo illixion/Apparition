@@ -5,7 +5,7 @@ LICENSE alongside), used as core's `isideload` dependency by path. `readme` in C
 at this folder's README.md instead of the repository's. Moved up from 0bee45d (0.4.4) with
 `git merge-file`, upstream's 0bee45d..fc7a81a over this copy.
 
-Ten changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
+Eleven changes. The first, for sign-in claiming Android (core/src/claimed_platform.rs): since 2026-10-12 Apple
 refuses (-80045) anisette whose platform doesn't match the claimed one, and the Android
 libraries' anisette must claim Android. Such a sign-in gets no 2FA step and no Xcode token
 (-22411) until the code Apple pushes to the trusted devices is checked, and the trusted-device
@@ -72,7 +72,13 @@ appending the team suffix. Special-app detection happens before renaming, and ch
 identifiers keep their suffixes under the assigned parent. Desktop records assignments
 before signing so registrations remain associated with an app even if installation fails.
 
-A tenth change: the GrandSlam client avoids an Apple edge server that turns the network away
+An eleventh change: GrandSlam requests send `Content-Type: text/xml` (src/auth/grandslam.rs
+`base_headers`). From about 2026-10-29 an Apple edge firewall 403s `text/x-xml-plist` on `gsd.apple.com`
+and `application/x-xml-plist` on `gsa.apple.com`; `text/xml` passes both. The next paragraph's edge
+retry was the same-day workaround while the rule was on some edges only, and is now a general
+retry on another edge.
+
+A tenth change: the GrandSlam client retries a request an Apple edge server refused or couldn't be reached on another
 (src/auth/edge.rs, wired in `build_reqwest_client`; tokio's `net` feature off wasm). Which edge
 an Apple host resolves to depends on the resolver: on 2026-10-29, from one home network, Cloudflare's
 1.1.1.1 always gave `gsd.apple.com` 17.171.11.101, which answers every GrandSlam request with an
@@ -87,4 +93,20 @@ doesn't answer within 10 seconds gets one retry on the other edges DNS-over-HTTP
 request only and with nothing remembered, so a retry later can succeed; an HTTP 5xx is no refusal
 (GrandSlam answers an occasional 503 to a request that then goes through). Core formats these
 errors plainly (`core/src/errors.rs`) and tells the apps they can be retried (`failure_kind`). `cargo test -p isideload --lib auth::edge --
---include-ignored` runs the check against Apple, forcing the refusing edge.
+--include-ignored` runs the check against Apple (the edge that refused, now answering with `text/xml`).
+
+An eleventh change: forward every anisette header the server gives, not just the two
+(`src/anisette/mod.rs`, `src/anisette/remote_v3/mod.rs`). The `Headers` reply keeps any extra
+fields (`#[serde(flatten)]`) and `get_headers` sends them along with `X-Apple-I-MD-RINFO`. Since
+about 2026-10-29 Apple answers a macOS virtual machine's sign-in with `-3000076` unless the
+request carries the host's attestation (`x-apple-baa-*`), which AuthKit puts on the request and
+Apparition's server (core/src/anisette/server.rs, from the entitled helper) now passes through.
+A real Mac's anisette, which has no such headers, is unaffected.
+
+Not a change to its code: Cargo.toml asks for `zip` 9.0.5 rather than 8.3, matching core, for the
+"zip cloaking" advisory (dual-header parser differential, fixed in 9.0.5). isideload's own code
+compiles unchanged against zip 9.
+
+A twelfth change: developer-services requests send `Content-Type` and `Accept` as
+`text/x-xml-plist` (`src/dev/developer_session.rs`). These requests POST XML property lists, and
+Apple's `listTeams` endpoint returned HTTP 415 when the media type was omitted.

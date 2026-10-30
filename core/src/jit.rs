@@ -6,6 +6,9 @@
 //! - universal `brk #0xf00d` (x16 = 1 prepare x0/x1, x16 = 0 detach; StikDebug's JIT26). Its
 //!   x16 = 2 (a script for StikDebug to run) and unknown commands are skipped.
 //!
+//! A StikDebug JIT script sent with the request (`script-data`) is run by the app instead,
+//! against a `Script` session: then the script, not `serve`, answers the app.
+//!
 //! Everything else the app does goes on as it would without a debugger, which is what Wine
 //! (Madeira) needs: it signals and faults constantly and handles both itself.
 //! - debugserver doesn't catch EXC_BAD_ACCESS or EXC_BAD_INSTRUCTION (`QSetIgnoredExceptions`),
@@ -20,6 +23,7 @@
 
 use std::{
     collections::HashMap,
+    future::Future,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -40,8 +44,9 @@ const EVENT_BUDGET: usize = 200;
 pub enum Target<'a> {
     /// Launch the app suspended (ending a running instance) and attach before it runs.
     Launch(&'a str),
-    /// Attach to the running process `pid`. With `bring_back`, that app is brought to the
-    /// front again afterwards: it asked from its own screen, and opening Apparition left it.
+    /// Attach to the running process `pid` (0: `bring_back`'s running process). With
+    /// `bring_back`, that app is brought to the front again afterwards: it asked from its own
+    /// screen, and opening Apparition left it.
     Attach { pid: u64, bring_back: Option<&'a str> },
 }
 
@@ -72,6 +77,19 @@ impl Registration {
             stops.insert(key.clone(), notify.clone());
         }
         Registration(keys)
+    }
+
+    fn add(&mut self, key: String, notify: &Arc<tokio::sync::Notify>) {
+        STOPS.lock().unwrap().get_or_insert_with(HashMap::new).insert(key.clone(), notify.clone());
+        self.0.push(key);
+    }
+}
+
+/// `work`, unless the session is asked to stop first (None).
+async fn unless_stopped<T>(stop: &tokio::sync::Notify, work: impl Future<Output = Result<T, Report>>) -> Option<Result<T, Report>> {
+    tokio::select! {
+        result = work => Some(result),
+        _ = stop.notified() => None,
     }
 }
 
@@ -117,55 +135,73 @@ pub async fn serve(
     let started = Instant::now();
     let mut events = Events { lines: Vec::new(), dropped: 0, started, on_event };
 
-    let (pid, bring_back, bundle_id) = match target {
-        Target::Launch(bundle_id) => {
-            let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
-                .await
-                .context("appservice connect failed")?;
-            let launched = apps
-                .launch_application(bundle_id, &[], true, true, None, None, None)
-                .await
-                .context("launch failed")?;
-            events.log(format!("launched suspended, pid {}", launched.pid));
-            (launched.pid as u64, None, Some(bundle_id))
-        }
-        Target::Attach { pid, bring_back } => (pid, bring_back, bring_back),
+    let (target_pid, bring_back, bundle_id) = match target {
+        Target::Launch(bundle_id) => (None, None, Some(bundle_id)),
+        Target::Attach { pid, bring_back } => (Some(pid), bring_back, bring_back),
     };
     let stop_requested = Arc::new(tokio::sync::Notify::new());
-    let _registration = Registration::new(
-        std::iter::once(pid.to_string()).chain(bundle_id.map(str::to_string)).collect(),
-        &stop_requested,
-    );
+    // Registered before anything that can wait (the launch, finding the process, attaching), so
+    // Stop works while the session is still starting, too.
+    let mut registration = Registration::new(bundle_id.map(str::to_string).into_iter().collect(), &stop_requested);
+    let setup = unless_stopped(&stop_requested, async {
+        let pid = match (target_pid, bundle_id) {
+            (None, Some(bundle_id)) => {
+                let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
+                    .await
+                    .context("appservice connect failed")?;
+                let launched = apps
+                    .launch_application(bundle_id, &[], true, true, None, None, None)
+                    .await
+                    .context("launch failed")?;
+                events.log(format!("launched suspended, pid {}", launched.pid));
+                launched.pid as u64
+            }
+            (Some(0), Some(bundle_id)) => running_pid(adapter, handshake, bundle_id)
+                .await?
+                .ok_or_else(|| report!("{bundle_id} isn't running"))?,
+            (Some(pid), _) if pid != 0 => pid,
+            _ => bail!("no process to attach to"),
+        };
 
-    let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("debugproxy connect failed")?;
-    let mut gdb = Gdb { proxy };
-    gdb.proxy.send_raw(b"+").await?;
-    gdb.proxy.send_raw(&Gdb::frame("QStartNoAckMode")).await?;
-    let ack = gdb.proxy.read_response().await?;
-    gdb.proxy.set_ack_mode(false);
-    events.log(format!("no-ack mode: {}", ack.unwrap_or_default()));
-    gdb.request("QThreadSuffixSupported").await?;
-    // Before attaching: debugserver refuses it (E35) once it has a process. Best effort, as
-    // an older one may not know it; the fault handling below works either way. debugserver
-    // has no QPassSignals, so signals still stop here and are passed on below.
-    let ignored = gdb.request("QSetIgnoredExceptions:EXC_BAD_ACCESS|EXC_BAD_INSTRUCTION").await?;
-    let attach = gdb.request(&format!("vAttach;{pid:x}")).await?;
-    if !attach.starts_with('T') && !attach.starts_with('S') {
-        bail!("debugserver couldn't attach to pid {pid}: {attach} (is the app development-signed, and still running?)");
-    }
-    events.log(format!("attached to pid {pid}; faults left to the app: {}", or_none(&ignored)));
-
-    if let Some(bundle_id) = bring_back {
-        let reply = async {
-            let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake).await?;
-            apps.launch_application(bundle_id, &[], false, false, None, None, None).await
+        let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("debugproxy connect failed")?;
+        let mut gdb = Gdb { proxy };
+        gdb.proxy.send_raw(b"+").await?;
+        gdb.proxy.send_raw(&Gdb::frame("QStartNoAckMode")).await?;
+        let ack = gdb.proxy.read_response().await?;
+        gdb.proxy.set_ack_mode(false);
+        events.log(format!("no-ack mode: {}", ack.unwrap_or_default()));
+        gdb.request("QThreadSuffixSupported").await?;
+        // Before attaching: debugserver refuses it (E35) once it has a process. Best effort, as
+        // an older one may not know it; the fault handling below works either way. debugserver
+        // has no QPassSignals, so signals still stop here and are passed on below.
+        let ignored = gdb.request("QSetIgnoredExceptions:EXC_BAD_ACCESS|EXC_BAD_INSTRUCTION").await?;
+        let attach = gdb.request(&format!("vAttach;{pid:x}")).await?;
+        if !attach.starts_with('T') && !attach.starts_with('S') {
+            bail!("debugserver couldn't attach to pid {pid}: {attach} (is the app development-signed, and still running?)");
         }
-        .await;
-        events.log(match reply {
-            Ok(_) => format!("brought {bundle_id} back to the front"),
-            Err(error) => format!("couldn't bring {bundle_id} back to the front: {error}"),
-        });
-    }
+        events.log(format!("attached to pid {pid}; faults left to the app: {}", or_none(&ignored)));
+
+        if let Some(bundle_id) = bring_back {
+            let reply = async {
+                let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake).await?;
+                apps.launch_application(bundle_id, &[], false, false, None, None, None).await
+            }
+            .await;
+            events.log(match reply {
+                Ok(_) => format!("brought {bundle_id} back to the front"),
+                Err(error) => format!("couldn't bring {bundle_id} back to the front: {error}"),
+            });
+        }
+        Ok((pid, gdb))
+    })
+    .await;
+    let Some(setup) = setup else {
+        // Nothing attached yet, or debugserver drops the process with the connection.
+        events.log("asked to stop before the debugger attached".into());
+        return Ok(json!({ "pid": 0, "events": events.lines, "preparedBytes": 0, "detached": true, "ended": "stopped" }));
+    };
+    let (pid, mut gdb) = setup?;
+    registration.add(pid.to_string(), &stop_requested);
 
     let mut prepared_bytes = 0u64;
     let mut detached = false;
@@ -201,8 +237,13 @@ pub async fn serve(
                     "asked to stop; detaching".into()
                 });
                 gdb.proxy.send_raw(&[0x03]).await?;
-                gdb.read().await?;
-                gdb.request("D").await.ok();
+                // Bounded: a process that died meanwhile may never answer.
+                let _ = tokio::time::timeout(CLOSE_WAIT, gdb.read()).await;
+                events.log(match tokio::time::timeout(CLOSE_WAIT, gdb.request("D")).await {
+                    Ok(Ok(reply)) => format!("detached: {reply}"),
+                    Ok(Err(error)) => format!("detach failed: {error}"),
+                    Err(_) => "detach timed out".into(),
+                });
                 detached = true;
                 break ended;
             }
@@ -507,9 +548,230 @@ impl Gdb {
     }
 }
 
+// MARK: Scripts
+
+/// A debugserver connection lent to a StikDebug JIT script (an `enable-jit` link's
+/// `script-data`), which the app runs in JavaScriptCore: the script attaches, continues and
+/// answers the app's breakpoints itself, through `send` and `prepare`. Like StikDebug, the
+/// connection is only put in no-ack mode; everything else is the script's.
+///
+/// It may attach only to the process it was opened for, and once that process exits or is
+/// detached, or the session is stopped, every further call fails, which ends a script that
+/// loops on `c`.
+pub struct Script {
+    gdb: Gdb,
+    pid: u64,
+    stop_requested: Arc<tokio::sync::Notify>,
+    _registration: Registration,
+    started: Instant,
+    events: Vec<String>,
+    prepared_bytes: u64,
+    /// Why the session ended, once it has.
+    ended: Option<&'static str>,
+}
+
+/// How long closing waits for debugserver to answer an interrupt or a detach.
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
+
+impl Script {
+    /// Connects to debugserver for `bundle_id`'s process: a new one launched suspended with
+    /// `launch` (ending a running instance; the script then attaches), else `pid`, or the app's
+    /// running process when that is 0. An app that's attached to while it runs is brought
+    /// back to the front: it asked from its own screen, and opening Apparition left it.
+    pub async fn open(
+        adapter: &mut AdapterHandle,
+        handshake: &mut RsdHandshake,
+        pid: u64,
+        bundle_id: Option<&str>,
+        launch: bool,
+    ) -> Result<Script, Report> {
+        let started = Instant::now();
+        let mut events = Vec::new();
+        let mut log = |line: String| {
+            let line = format!("{:>7.3}s {line}", started.elapsed().as_secs_f64());
+            tracing::info!("jit script: {line}");
+            events.push(line);
+        };
+        let stop_requested = Arc::new(tokio::sync::Notify::new());
+        // Registered before anything that can wait, so Stop works while it starts, too.
+        let mut registration = Registration::new(bundle_id.map(str::to_string).into_iter().collect(), &stop_requested);
+        let setup = unless_stopped(&stop_requested, async {
+            let pid = match (launch, pid, bundle_id) {
+                (true, _, Some(bundle_id)) => {
+                    let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
+                        .await
+                        .context("appservice connect failed")?;
+                    let launched = apps
+                        .launch_application(bundle_id, &[], true, true, None, None, None)
+                        .await
+                        .context("launch failed")?;
+                    log(format!("launched suspended, pid {}", launched.pid));
+                    launched.pid as u64
+                }
+                (true, _, None) => bail!("nothing to launch"),
+                (false, 0, Some(bundle_id)) => running_pid(adapter, handshake, bundle_id)
+                    .await?
+                    .ok_or_else(|| report!("{bundle_id} isn't running"))?,
+                (false, 0, None) => bail!("no process to attach to"),
+                (false, pid, _) => pid,
+            };
+
+            let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("debugproxy connect failed")?;
+            let mut gdb = Gdb { proxy };
+            gdb.proxy.send_raw(b"+").await?;
+            gdb.proxy.send_raw(&Gdb::frame("QStartNoAckMode")).await?;
+            let ack = gdb.proxy.read_response().await?;
+            gdb.proxy.set_ack_mode(false);
+            log(format!("no-ack mode: {}", ack.unwrap_or_default()));
+
+            if let (false, Some(bundle_id)) = (launch, bundle_id) {
+                let reply = async {
+                    let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake).await?;
+                    apps.launch_application(bundle_id, &[], false, false, None, None, None).await
+                }
+                .await;
+                log(match reply {
+                    Ok(_) => format!("brought {bundle_id} back to the front"),
+                    Err(error) => format!("couldn't bring {bundle_id} back to the front: {error}"),
+                });
+            }
+            Ok((pid, gdb))
+        })
+        .await;
+        let (pid, gdb) = setup.ok_or_else(|| report!("Apparition stopped this JIT session"))??;
+        registration.add(pid.to_string(), &stop_requested);
+        Ok(Script { gdb, pid, stop_requested, _registration: registration, started, events, prepared_bytes: 0, ended: None })
+    }
+
+    pub fn pid(&self) -> u64 {
+        self.pid
+    }
+
+    fn log(&mut self, line: String) {
+        let line = format!("{:>7.3}s {line}", self.started.elapsed().as_secs_f64());
+        tracing::info!("jit script: {line}");
+        if self.events.len() < EVENT_BUDGET {
+            self.events.push(line);
+        }
+    }
+
+    fn check_running(&self) -> Result<(), Report> {
+        match self.ended {
+            None => Ok(()),
+            Some("exited") => bail!("the app exited"),
+            Some("detached") => bail!("the debugger has detached"),
+            Some(_) => bail!("Apparition stopped this JIT session"),
+        }
+    }
+
+    /// Sends one gdb-remote packet (without its `$…#xx` framing) and returns the reply,
+    /// skipping the app's forwarded output. A resume waits for the app's next stop, however
+    /// long, unless the session is stopped meanwhile: the app is then interrupted and
+    /// detached, and this fails.
+    pub async fn send(&mut self, command: &str) -> Result<String, Report> {
+        self.check_running()?;
+        if let Some(target) = attach_target(command)
+            && target != Some(self.pid)
+        {
+            bail!("this session may only attach to pid {}", self.pid);
+        }
+        self.gdb.proxy.send_raw(&Gdb::frame(command)).await?;
+        let reply = tokio::select! {
+            reply = self.gdb.read() => reply?,
+            _ = self.stop_requested.notified() => {
+                self.log("asked to stop; detaching".into());
+                self.interrupt_and_detach().await;
+                self.ended = Some("stopped");
+                bail!("Apparition stopped this JIT session");
+            }
+        };
+        if reply.starts_with('W') || reply.starts_with('X') {
+            self.log(format!("process exited: {reply}"));
+            self.ended = Some("exited");
+        } else if command == "D" && reply == "OK" {
+            self.log("the script detached".into());
+            self.ended = Some("detached");
+        } else if command == "k" {
+            self.log("the script killed the app".into());
+            self.ended = Some("exited");
+        }
+        Ok(reply)
+    }
+
+    /// Makes [address, address + length) executable for the app (StikDebug's
+    /// `prepare_memory_region`). Returns the number of pages written.
+    pub async fn prepare(&mut self, address: u64, length: u64) -> Result<usize, Report> {
+        self.check_running()?;
+        let t = Instant::now();
+        let pages = self.gdb.prepare(address, length).await?;
+        self.prepared_bytes += length;
+        self.log(format!("prepared {} KiB at {address:#x} ({pages} pages) in {:.3}s",
+                         length >> 10, t.elapsed().as_secs_f64()));
+        Ok(pages)
+    }
+
+    /// Ends the session once the script has returned, as StikDebug does: a process still
+    /// attached is interrupted and detached, and keeps running. Returns
+    /// `{pid, events, preparedBytes, detached, ended}`.
+    pub async fn close(mut self) -> Value {
+        let ended = match self.ended {
+            Some(ended) => ended,
+            None => {
+                self.log("script finished; detaching".into());
+                self.interrupt_and_detach().await;
+                "detached"
+            }
+        };
+        json!({
+            "pid": self.pid,
+            "events": self.events,
+            "preparedBytes": self.prepared_bytes,
+            "detached": ended != "exited",
+            "ended": ended,
+        })
+    }
+
+    /// Best effort, bounded: the app may be stopped already (no reply to the interrupt) or
+    /// gone.
+    async fn interrupt_and_detach(&mut self) {
+        if self.gdb.proxy.send_raw(&[0x03]).await.is_ok() {
+            let _ = tokio::time::timeout(CLOSE_WAIT, self.gdb.read()).await;
+        }
+        let reply = tokio::time::timeout(CLOSE_WAIT, self.gdb.request("D")).await;
+        self.log(match reply {
+            Ok(Ok(reply)) => format!("detached: {reply}"),
+            Ok(Err(error)) => format!("detach failed: {error}"),
+            Err(_) => "detach timed out".into(),
+        });
+    }
+}
+
+/// For a packet that attaches debugserver to a process: the pid it names (None when it names
+/// none, as `vAttachName` and `vRun` do). None for any other packet.
+fn attach_target(command: &str) -> Option<Option<u64>> {
+    if let Some(pid) = command.strip_prefix("vAttach;") {
+        return Some(u64::from_str_radix(pid, 16).ok());
+    }
+    ["vAttach", "vRun", "A"].iter().any(|prefix| command.starts_with(prefix)).then_some(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_attach_targets() {
+        assert_eq!(attach_target("vAttach;1a2b"), Some(Some(0x1a2b)));
+        assert_eq!(attach_target("vAttach;zz"), Some(None));
+        assert_eq!(attach_target("vAttachName;4c697665"), Some(None));
+        assert_eq!(attach_target("vAttachWait;4c697665"), Some(None));
+        assert_eq!(attach_target("vRun;2f62696e"), Some(None));
+        assert_eq!(attach_target("A10,0,2f62696e"), Some(None));
+        assert_eq!(attach_target("c"), None);
+        assert_eq!(attach_target("vCont;c"), None);
+        assert_eq!(attach_target("m1000,4"), None);
+        assert_eq!(attach_target("P20=0010000000000000;thread:1a;"), None);
+    }
 
     #[test]
     fn reads_stop_reply_fields() {

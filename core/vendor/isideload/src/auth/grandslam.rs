@@ -219,7 +219,17 @@ impl GrandSlam {
     ) -> Result<reqwest::header::HeaderMap, Report> {
         let mut headers = reqwest::header::HeaderMap::new();
         if !sms {
-            headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
+            // Around 2026-10-29 Apple put edge WAF rules on GrandSlam that answer a request with a bare
+            // HTML 403 before Apple reads it, keyed on the request's Content-Type — and the two hosts
+            // block opposite values (measured 2026-10-30): gsd.apple.com (machine provisioning,
+            // MidService) rejects `text/…plist` (so the legacy `text/x-xml-plist` the SideStore tooling
+            // lineage has always sent), while gsa.apple.com (sign-in / URL bag) rejects
+            // `application/x-xml-plist`. `text/xml` is the one value that clears both — the request body
+            // is XML either way and Apple parses it the same, returning its usual `text/x-xml-plist`
+            // plist. So this legacy content-type, not the anisette values or a missing hardware serial,
+            // is what Apple began turning the Android anisette away over. (`Accept` isn't matched by the
+            // rules, so it stays as Apple's own response type.)
+            headers.insert("Content-Type", HeaderValue::from_static("text/xml"));
             headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
         } else {
             headers.insert("Content-Type", HeaderValue::from_static("application/json"));

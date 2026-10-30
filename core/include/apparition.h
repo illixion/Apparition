@@ -127,6 +127,22 @@ char *apparition_jit_stop(const char *key);
 char *apparition_attach_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                         unsigned long long pid, const char *bundle_id, unsigned int wait_seconds);
 
+// A debugserver session lent to a StikDebug JIT script, which the caller runs: the script
+// attaches (only to this session's process), continues and answers breakpoints itself.
+typedef struct JitScript JitScript;
+// Opens one for bundle_id: launched anew and suspended with launch, else the running process
+// pid (0: bundle_id's running process), which is brought back to the front. Fills out; the
+// tunnel must outlive it. {ok, pid}. apparition_jit_stop(bundle_id) ends it: the call waiting
+// on the app then fails, as does every later one.
+char *apparition_jit_script_open(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                 unsigned long long pid, const char *bundle_id, bool launch, JitScript **out);
+// Sends one unframed gdb-remote packet and waits for its reply: {ok, reply}.
+char *apparition_jit_script_send(JitScript *script, const char *command);
+// Makes length bytes at address executable for the app: {ok, pages}.
+char *apparition_jit_script_prepare(JitScript *script, unsigned long long address, unsigned long long length);
+// Ends and frees the session, detaching if still attached: {ok, pid, events, preparedBytes, detached, ended}.
+char *apparition_jit_script_close(JitScript *script);
+
 // Opens the RemotePairing tunnel at device_host:device_port, or, when relay ("ip:port") is
 // non-null, through a companion (Apparition on a computer) that connects back to this device (device_host is
 // then ignored). Fills the same handles as idevice's tunnel_create_rppairing; free them with
