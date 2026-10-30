@@ -20,8 +20,7 @@
 # SIP/NVRAM check in a normal boot, to install the rest).
 set -u
 
-VERSION=0.4.1
-ZIP=${APPARITION_ZIP:-https://github.com/illixion/Apparition/releases/download/v$VERSION/Apparition-Installer-$VERSION-macos-universal.zip}
+REPO=https://github.com/illixion/Apparition
 PORT=${APPARITION_PORT:-6969}
 LABEL=com.illixion.apparition.anisette
 BOOT_ARG=amfi_get_out_of_my_way=1
@@ -95,6 +94,14 @@ fi
 
 # ------------------------------------------------------------------ Apparition
 say "Installing apparition and its anisette helper"
+if [ -z "${APPARITION_ZIP:-}" ]; then
+  # The latest release: GitHub redirects /releases/latest to .../tag/vX.Y.Z.
+  tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$REPO/releases/latest" | sed 's|.*/||')
+  [ -n "$tag" ] || die "couldn't find the latest Apparition release"
+  ZIP=$REPO/releases/download/$tag/Apparition-Installer-${tag#v}-macos-universal.zip
+else
+  ZIP=$APPARITION_ZIP
+fi
 dest="$DATA/usr/local/apparition"
 mkdir -p "$dest"
 work=$(mktemp -d /tmp/apparition.XXXXXX)
