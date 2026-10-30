@@ -233,6 +233,8 @@ struct RootView: View {
             switch shown {
             case .library:
                 LibraryView(model: model, account: account, library: library,
+                            service: buildService,
+                            onDeveloper: { tab = .developer },
                             onBrowse: { tab = .browse }, onSetup: openSetup)
             case .browse:
                 BrowseView(model: model, account: account, library: library, onSetup: openSetup)

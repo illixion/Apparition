@@ -176,6 +176,8 @@ final class ProbeModel {
         let bundleId: String
         let name: String
         let version: String?
+        let build: String?
+        let deviceFamily: [Int]?
         /// Signed with get-task-allow, so it can be launched with JIT.
         let debuggable: Bool
         let teamId: String?

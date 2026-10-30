@@ -47,6 +47,7 @@ final class BuildService {
     struct Target: Decodable, Hashable {
         let platform: String
         let device: String
+        let bundleId: String?
     }
     struct Project: Decodable, Identifiable {
         var id: String { name }
@@ -69,13 +70,40 @@ final class BuildService {
         let builds: [Job]
     }
     struct Artifact: Decodable, Identifiable {
-        struct App: Decodable { let name: String?; let bundleId: String; let build: String? }
+        struct App: Decodable { let name: String?; let bundleId: String; let originalBundleId: String?; let build: String?; let version: String? }
         var id: String { buildId }
         let buildId: String
         let platform: String
+        let project: String?
+        let createdAt: String?
         let app: App
     }
     private struct Artifacts: Decodable { let builds: [Artifact] }
+    struct Trace: Decodable, Identifiable {
+        struct App: Decodable { let name: String?; let bundleId: String; let version: String?; let build: String? }
+        struct Build: Decodable { let buildId: String?; let repo: String?; let platform: String? }
+        struct File: Decodable, Identifiable { let path: String; let bytes: Int; var id: String { path } }
+        let id: String
+        let receivedAt: Double?
+        let createdAt: String?
+        let app: App
+        let build: Build?
+        let files: [File]
+    }
+    struct CrashLog: Decodable, Identifiable {
+        let id: String
+        let bundleId: String
+        let appName: String?
+        let version: String?
+        let build: String?
+        let exception: String?
+        let device: String?
+        let capturedAt: Double?
+        let symbolicated: String?
+        let traceId: String?
+    }
+    private struct Traces: Decodable { let traces: [Trace] }
+    private struct CrashLogs: Decodable { let crashLogs: [CrashLog] }
     private struct Connection: Decodable {
         let `protocol`: String
         let version: Int
@@ -101,7 +129,12 @@ final class BuildService {
     private(set) var busy = false
     private(set) var state: State?
     private(set) var artifacts: [Artifact] = []
+    private(set) var traces: [Trace] = []
+    private(set) var crashLogs: [CrashLog] = []
     private(set) var detail = ""
+    private(set) var reportDetail = ""
+    private(set) var reportDetailOwnerBundleId: String?
+    private(set) var reportDetailID: String?
     var message = ""
     var rememberPassword: Bool {
         didSet {
@@ -247,7 +280,7 @@ final class BuildService {
         if let origin = previous ?? (try? Self.serviceURL(address)) { passwords.delete(origin.absoluteString) }
         restoreAttempted = true
         generation = UUID(); connected = false; token = nil; base = nil
-        state = nil; artifacts = []; detail = ""; message = "Disconnected."
+        state = nil; artifacts = []; traces = []; crashLogs = []; detail = ""; reportDetail = ""; reportDetailOwnerBundleId = nil; reportDetailID = nil; message = "Disconnected."
         if let previous, let credential {
             let _: OK? = try? await request("api/service/v1/disconnect", at: previous, token: credential, body: [:])
         }
@@ -260,7 +293,134 @@ final class BuildService {
             state = next
             let builds: Artifacts = try await authenticated("artifacts")
             artifacts = builds.builds
+            let submitted: Traces = try await authenticated("traces")
+            traces = submitted.traces
+            let crashes: CrashLogs = try await authenticated("crashlogs")
+            crashLogs = crashes.crashLogs
         } catch { message = error.localizedDescription }
+    }
+
+    /// Downloads one immutable appstore artifact with the service bearer. The caller hands this
+    /// IPA to LibraryModel, which keeps it and runs the usual signing and install review.
+    func download(_ artifact: Artifact) async throws -> URL {
+        guard let base, let token, connected else { throw Failure.expired }
+        guard let id = artifact.buildId.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-"))),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { throw Failure.response }
+        let prefix = components.percentEncodedPath.hasSuffix("/") ? components.percentEncodedPath : components.percentEncodedPath + "/"
+        components.percentEncodedPath = prefix + "api/service/v1/artifacts/\(id)/download"
+        guard let url = components.url else { throw Failure.response }
+        var request = URLRequest(url: url)
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (temporary, response) = try await session.download(for: request)
+        guard let response = response as? HTTPURLResponse else { throw Failure.response }
+        guard response.statusCode == 200 else { throw Failure.rejected(response.statusCode) }
+        let values = try temporary.resourceValues(forKeys: [.fileSizeKey])
+        guard let size = values.fileSize, size > 0, size <= 2_000_000_000 else { throw Failure.response }
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("appstore-\(id).ipa")
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: temporary, to: destination)
+        return destination
+    }
+
+    func matchingProject(for bundleId: String, deviceFamily: [Int]?, preferredDevice: String?) -> (project: Project, target: Target)? {
+        let matches = (state?.repos ?? []).flatMap { project in
+            project.platforms.filter { $0.bundleId == bundleId }.map { (project, $0) }
+        }
+        if let preferredDevice,
+           let local = matches.first(where: { $0.1.device.caseInsensitiveCompare(preferredDevice) == .orderedSame }) {
+            return local
+        }
+        let preferred = ThisDevice.preferredBuildPlatforms(deviceFamily: deviceFamily)
+        for platform in preferred {
+            if let match = matches.first(where: { $0.1.platform.lowercased() == platform }) { return match }
+        }
+        return matches.first
+    }
+
+    func artifact(for bundleId: String, installedBuild: String?) -> Artifact? {
+        let candidates = artifacts.filter { $0.app.bundleId == bundleId || $0.app.originalBundleId == bundleId }
+        if let installedBuild, let exact = candidates.first(where: { $0.app.build == installedBuild }) { return exact }
+        return candidates.first
+    }
+
+    func latestArtifact(project: Project, target: Target, bundleId: String) -> Artifact? {
+        artifacts.filter {
+            ($0.app.bundleId == bundleId || $0.app.originalBundleId == bundleId) &&
+            ($0.project == nil || $0.project == project.name) &&
+            $0.platform.caseInsensitiveCompare(target.platform) == .orderedSame
+        }.sorted { ($0.createdAt ?? "") > ($1.createdAt ?? "") }.first
+    }
+
+    func traces(for bundleId: String, installedBuild: String?) -> [Trace] {
+        let candidates = traces.filter { $0.app.bundleId == bundleId }
+        guard let installedBuild else { return candidates }
+        return candidates.filter { $0.app.build == installedBuild }
+    }
+
+    func crashLogs(for bundleId: String, installedBuild: String?) -> [CrashLog] {
+        let candidates = crashLogs.filter { $0.bundleId == bundleId }
+        guard let installedBuild else { return candidates }
+        return candidates.filter { $0.build == installedBuild }
+    }
+
+    func readCrash(_ crash: CrashLog) async {
+        let id = "crash:\(crash.id)"
+        guard reportDetailID != id else { closeReport(); return }
+        reportDetailID = id; reportDetailOwnerBundleId = crash.bundleId
+        guard crash.symbolicated != nil else { reportDetail = "No symbolicated report is available."; return }
+        reportDetail = "Loading report…"
+        do {
+            let text = try await authenticatedText("crashlogs/\(crash.id)/symbolicated")
+            if reportDetailID == id { reportDetail = text }
+        } catch { if reportDetailID == id { reportDetail = error.localizedDescription } }
+    }
+
+    func readTraceFile(_ trace: Trace, file: Trace.File) async {
+        let id = "trace:\(trace.id):\(file.path)"
+        guard reportDetailID != id else { closeReport(); return }
+        reportDetailID = id; reportDetailOwnerBundleId = trace.app.bundleId
+        reportDetail = "Loading report…"
+        let encoded = file.path.split(separator: "/", omittingEmptySubsequences: false)
+            .map { String($0).addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? "" }
+            .joined(separator: "/")
+        do {
+            let text = try await authenticatedText("traces/\(trace.id)/files/\(encoded)")
+            if reportDetailID == id { reportDetail = text }
+        } catch { if reportDetailID == id { reportDetail = error.localizedDescription } }
+    }
+
+    func closeReport() {
+        reportDetailID = nil; reportDetailOwnerBundleId = nil; reportDetail = ""
+    }
+
+    private func authenticatedText(_ path: String) async throws -> String {
+        guard let base, let token, connected else { throw Failure.expired }
+        let expected = generation
+        let text = try await requestText("api/service/v1/" + path, at: base, token: token)
+        guard expected == generation else { throw Failure.expired }
+        return text
+    }
+
+    private func requestText(_ path: String, at base: URL, token: String) async throws -> String {
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { throw Failure.address }
+        let prefix = components.percentEncodedPath.hasSuffix("/") ? components.percentEncodedPath : components.percentEncodedPath + "/"
+        components.percentEncodedPath = prefix + path
+        guard let url = components.url else { throw Failure.address }
+        var request = URLRequest(url: url)
+        request.setValue("text/plain", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw Failure.response }
+        let limit = 8 * 1024 * 1024
+        guard response.expectedContentLength <= limit else { throw Failure.response }
+        var data = Data()
+        for try await byte in bytes {
+            guard data.count < limit else { throw Failure.response }
+            data.append(byte)
+        }
+        guard let text = String(data: data, encoding: .utf8) else { throw Failure.response }
+        return text
     }
 
     func build(project: Project, target: Target, branch: String, deploy: Bool, launch: Bool, debug: Bool, patch: Bool) async {

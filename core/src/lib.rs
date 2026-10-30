@@ -1091,6 +1091,9 @@ pub unsafe extern "C" fn apparition_list_apps(
                         "bundleId": bundle_id,
                         "name": string(&info, "CFBundleDisplayName").or_else(|| string(&info, "CFBundleName")).unwrap_or_else(|| bundle_id.clone()),
                         "version": string(&info, "CFBundleShortVersionString"),
+                        "build": string(&info, "CFBundleVersion"),
+                        "deviceFamily": info.get("UIDeviceFamily").and_then(plist::Value::as_array)
+                            .map(|families| families.iter().filter_map(plist::Value::as_unsigned_integer).collect::<Vec<_>>()),
                         "debuggable": entitlement("get-task-allow").and_then(plist::Value::as_boolean).unwrap_or(false),
                         "teamId": entitlement("com.apple.developer.team-identifier").and_then(plist::Value::as_string),
                         "signer": string(&info, "SignerIdentity"),

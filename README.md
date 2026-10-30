@@ -231,7 +231,18 @@ Implementation order:
    per service, for automatic reconnection. Bearer sessions stay in memory and
    authenticated requests refuse redirects. Disconnect forgets the service password.
    Desktop Apparition can also register an existing Mac checkout and its targets.
-   Next: the rest of the device reporting/install workflow.
+   The Library matches installed debuggable apps against configured project bundle IDs.
+   Matching cards prefer the service target configured for the paired device, and use
+   `UIDeviceFamily` to identify iPhone/iPad apps running in compatibility mode. They show
+   project/platform, installed and retained build identity, build-only and separately
+   labelled device-install actions, JIT launch, and reports filtered to the installed
+   `CFBundleVersion`. A retained build can be downloaded into Apparition's normal
+   install review and signing flow without rebuilding it. Per-app automatic update
+   preparation watches retained artifacts while the service refreshes, downloads a newer
+   build and opens that same review; installation still requires confirmation. Crash text
+   and trace text files can be opened and closed on device.
+   Apps without a project match stay in Other Apps. Next: finish installation/session
+   relationships and round out device-side report navigation.
    A Mac with Xcode executes Apple builds; other desktop platforms can connect to it.
    Service credentials stay separate from the existing relay.
 3. **Unify build identity.** Connect projects, immutable builds, artifact digests and
@@ -271,6 +282,12 @@ bundle identifiers; its `build-signing.conf` must already be set up. Registratio
 the project without building it or changing signing material. Local branch names are
 optional; the current checkout remains available. The Mac service validates the checkout
 and updates its configuration atomically, preserving existing settings.
+
+When the device build service is connected, the Library matches installed debuggable apps
+against configured project target bundle IDs. Matching cards keep build-only separate from
+installing to the project's configured device, and show retained artifacts and reports for
+the installed build number when available. Apps with no configured project match remain in
+Other Apps. The service connection is shared with Developer.
 
 On the Mac with the complete build-tools checkout and Node 18+:
 
