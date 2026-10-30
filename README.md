@@ -14,6 +14,14 @@ computer at all.
   <img src="docs/images/desktop.png" height="420" alt="The desktop app's welcome screen">
 </p>
 
+> [!IMPORTANT]
+> **Signing in with a free Apple ID needs a Mac's anisette since October 2026.** Apple now refuses
+> the anisette Apparition's built-in provider makes on iPhone, iPad, Apple TV, Vision Pro and
+> Linux. Fix it by serving anisette from a Mac on macOS 26 or earlier, or from a macOS VM you
+> host yourself: **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)** takes about 20
+> minutes. Details and other options under [Anisette](#anisette). A paid developer certificate
+> doesn't sign in at all, so it isn't affected.
+
 ## What it does
 
 - **Install apps** from AltStore and SideStore sources, from a GitHub project's releases
@@ -664,6 +672,7 @@ for bundle creation, NixOS/Fusion USB setup, permissions and current integration
 
 ## Anisette
 
+> [!IMPORTANT]
 > **Signing in with an Apple ID now needs anisette from a real Mac or a macOS VM.** Since October
 > 2026 Apple refuses the anisette made from the Apple Music for Android libraries (what the
 > built-in provider makes on iPhone, iPad, Apple TV, Vision Pro and Linux) for sign-in. For a free
