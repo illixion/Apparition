@@ -76,6 +76,7 @@ pub struct CompanionState {
 struct TrayItems {
     relay: MenuItem<Wry>,
     anisette: MenuItem<Wry>,
+    update: MenuItem<Wry>,
 }
 
 type Shared<'a> = tauri::State<'a, Arc<CompanionState>>;
@@ -215,8 +216,9 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
     let anisette = MenuItem::with_id(app, "anisette", "Anisette", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Apparition", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Apparition", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&relay, &anisette, &PredefinedMenuItem::separator(app)?, &open, &quit])?;
-    *state.tray.lock().unwrap() = Some(TrayItems { relay, anisette });
+    let update = MenuItem::with_id(app, "update", "Check for Updates...", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&relay, &anisette, &PredefinedMenuItem::separator(app)?, &open, &update, &quit])?;
+    *state.tray.lock().unwrap() = Some(TrayItems { relay, anisette, update });
     // A template image on macOS, which draws it in the menu bar's colour; the colour icon
     // elsewhere, where a black ghost would vanish on a dark panel or taskbar.
     #[cfg(target_os = "macos")]
@@ -231,6 +233,10 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_window(app),
+            "update" => {
+                show_window(app);
+                crate::updater::request_check(app);
+            }
             "quit" => app.exit(0),
             _ => {}
         })
@@ -252,6 +258,40 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
         }
     });
     Ok(())
+}
+
+/// Keep the announcement visible even while the companion's window is closed.
+pub fn update_available(app: &AppHandle, version: Option<&str>) {
+    let state = app.state::<Arc<CompanionState>>();
+    if let Some(items) = &*state.tray.lock().unwrap() {
+        let text = version.map(|v| format!("Apparition {v} available - Open to Update")).unwrap_or_else(|| "Check for Updates...".into());
+        let _ = items.update.set_text(text);
+    }
+    if let Some(tray) = app.tray_by_id("main") {
+        let tooltip = version.map(|v| format!("Apparition {v} available")).unwrap_or_else(|| "Apparition".into());
+        let _ = tray.set_tooltip(Some(tooltip));
+        #[cfg(target_os = "macos")]
+        let bytes = include_bytes!("../icons/tray.png").as_slice();
+        #[cfg(not(target_os = "macos"))]
+        let bytes = include_bytes!("../icons/32x32.png").as_slice();
+        if let Ok(icon) = tauri::image::Image::from_bytes(bytes) {
+            let mut pixels = icon.rgba().to_vec();
+            if version.is_some() {
+                let (width, height) = (icon.width() as i32, icon.height() as i32);
+                let radius = (width / 6).max(2);
+                let (cx, cy) = (width - radius - 1, radius);
+                for y in 0..height {
+                    for x in 0..width {
+                        if (x - cx).pow(2) + (y - cy).pow(2) <= radius.pow(2) {
+                            let offset = ((y * width + x) * 4) as usize;
+                            pixels[offset..offset + 4].copy_from_slice(if cfg!(target_os = "macos") { &[0, 0, 0, 255] } else { &[235, 65, 80, 255] });
+                        }
+                    }
+                }
+            }
+            let _ = tray.set_icon(Some(tauri::image::Image::new_owned(pixels, icon.width(), icon.height())));
+        }
+    }
 }
 
 /// Shows the window (and, on macOS, the Dock icon).

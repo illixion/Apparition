@@ -472,7 +472,9 @@ That makes `~/.local/bin/apparition`, a symlink into the app, and says what to a
 points at the app's location, so run `link` again if you move the app. The command inside the
 app is called `apparition-cli` because a Mac treats `apparition` and the app's own `Apparition`
 as one name. On Linux, `link` does the same for wherever you unpacked the tarball; on Windows, put
-the folder holding `apparition.exe` on your `PATH`. `apparition --version` checks it worked.
+the folder holding `apparition-cli.exe` on your `PATH` and run `apparition-cli --version`.
+The Windows command line needs a distinct name too: `apparition.exe` collides with the
+desktop's `Apparition.exe` on a case-insensitive filesystem.
 
 #### Every command
 
@@ -601,8 +603,34 @@ Apparition its signing at the end. When a free account's certificate or App ID s
 it lists them and frees one only after you type `revoke` or `delete`. It drives the same
 `apparition_core::api` as the command line and shares its pairings and Apple ID data, so a
 headset paired with one is paired with both. Passwords go from the app's own fields to the
-core and nowhere else. On launch it checks the release site for a newer installer and links to
-it; it never replaces itself.
+core and nowhere else.
+
+The desktop app checks for updates on launch and every six hours, including while running
+from the tray. A badge on its tray/menu-bar icon, an entry in that menu, and a persistent
+banner in every app view announce an update. **Update & restart** downloads and installs
+it only when clicked; the companion briefly stops while restarting. **Check for Updates**
+in the tray menu retries a check manually. Development builds are never replaced.
+
+Updates use the existing GitHub Releases assets and release workflow: the pinned release
+keys must verify the YubiKey-signed `SHA256SUMS` SSH signature, then the downloaded file must
+match that signed hash **before it is extracted or installed**. Version, OS, architecture
+and package format are bound to the signed filename; older or equal versions are refused.
+An app-only release does not hide a newer desktop release.
+
+On macOS the whole ad-hoc-signed `.app` (including its CLI and entitled anisette helper) is
+staged beside the installed app, its code-signing seal is checked, and the bundles are
+atomically exchanged. The Applications folder must be writable by your account; use
+`~/Applications` if necessary. Updating does not re-sign the helper or require a new
+quarantine exception. On Windows the portable app, `apparition-cli.exe` and
+`WebView2Loader.dll` update together: a Windows PowerShell helper waits for the app to
+exit, replaces the files, restarts it, and rolls back if installation or launch fails.
+Keep all three in a user-writable folder. On Linux an AppImage replaces itself atomically and keeps
+its executable permissions. A Debian installation instead asks for system authorization
+through PolicyKit and installs the verified `.deb` with `dpkg`; it needs `pkexec` and a
+desktop authorization agent. If `dpkg` reports missing dependencies, repair them with
+your package manager before retrying. The unpublished Flatpak prototype has no update
+repository and must still be updated manually. Settings, pairings and signing credentials
+stay outside these application packages and are not replaced.
 
 Before signing, the desktop installer and native iPhone/iPad, Vision Pro and Apple TV apps
 list the IPA's embedded extensions and let you choose which to include. Apple ID installs show the number of new App IDs needed and let

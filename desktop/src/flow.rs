@@ -172,7 +172,7 @@ fn digits(text: &str) -> String {
 // MARK: The app and its updates
 
 /// The asset platform of this build, as the release site names installers.
-fn installer_platform() -> &'static str {
+pub(crate) fn installer_platform() -> &'static str {
     if cfg!(target_os = "macos") {
         "macos-universal"
     } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
@@ -211,19 +211,6 @@ pub fn app_info() -> Value {
         "computerName": api::hostname(),
         "preview": preview,
     })
-}
-
-/// A newer installer for this platform on the release site, verified, or null. Never
-/// downloads or replaces anything: the page links to the site.
-#[tauri::command]
-pub async fn check_update() -> Result<Option<Value>, Failure> {
-    blocking(|| {
-        let verified = block_on(latest_release())?;
-        let newer = verified.asset("installer", installer_platform()).is_some()
-            && release::is_newer(&verified.release.version, VERSION);
-        Ok(newer.then(|| json!({ "version": verified.release.version, "date": verified.release.date })))
-    })
-    .await
 }
 
 #[tauri::command]

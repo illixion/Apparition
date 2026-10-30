@@ -194,16 +194,20 @@ code { font: .875em/1.4 var(--mono); }
 .connections td.open { color: var(--glow); }
 
 .update {
-  display: inline-flex;
+  flex: none;
+  display: flex;
   align-items: center;
-  gap: .6rem;
-  padding: .35rem .5rem .35rem .9rem;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 1.75rem .5rem;
+  padding: .6rem .9rem;
   border: 1px solid color-mix(in srgb, var(--glow) 55%, var(--line));
-  border-radius: 999px;
+  border-radius: .6rem;
   font-size: .875rem;
   color: var(--ink);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
 }
+.update button { flex: none; }
 .update[hidden] { display: none; }
 
 .shell {

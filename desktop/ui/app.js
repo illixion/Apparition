@@ -1,5 +1,6 @@
 // @ts-check
 import { DeveloperView } from './developer.js';
+import { UpdateBanner } from './updater.js';
 // Apparition's page: the install wizard and the Companion view. Every action is a Rust command
 // (see src/flow.rs and src/companion.rs); this page only shows steps and collects answers. Passwords are read from their field, sent with the
 // command and cleared from the field at once; nothing here stores them.
@@ -1558,15 +1559,11 @@ async function start() {
   // The companion's status only polls on its own tab; the badge needs to know on every screen.
   setInterval(refreshCompanion, 5000);
 
-  invoke("check_update")
-    .then((/** @type {any} */ update) => {
-      if (!update) return;
-      const box = /** @type {HTMLElement} */ (document.getElementById("update"));
-      /** @type {HTMLElement} */ (document.getElementById("update-text")).textContent = `Apparition ${update.version} is available.`;
-      box.hidden = false;
-      document.getElementById("update-open")?.addEventListener("click", () => invoke("open_downloads"));
-    })
-    .catch(() => {});
+  const updates = new UpdateBanner(
+    /** @type {HTMLElement} */ (document.getElementById("update")), invoke, () => state.busy || dialog.open,
+  );
+  await listen("desktop-update", (/** @type {any} */ e) => updates.draw(e.payload));
+  updates.draw(await invoke("update_status"));
 
   refreshCompanion();
   if (state.info.preview === "companion") {

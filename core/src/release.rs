@@ -93,15 +93,24 @@ impl Verified {
 fn http() -> Result<reqwest::Client, Report> {
     Ok(reqwest::Client::builder()
         .user_agent(concat!("Apparition/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(30))
         .build()?)
 }
 
 async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Report> {
-    let response = client.get(url).send().await.context(format!("Can't reach {url}"))?;
+    let mut response = client.get(url).timeout(std::time::Duration::from_secs(30)).send().await.context(format!("Can't reach {url}"))?;
     if !response.status().is_success() {
         bail!("{url}: {}", response.status());
     }
-    Ok(response.bytes().await?.to_vec())
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > 8 * 1024 * 1024 {
+            bail!("The release metadata is too large");
+        }
+        bytes.extend(chunk);
+    }
+    Ok(bytes)
 }
 
 /// The latest release at `site` (normally [`SITE`]), verified. Fails rather than returning
@@ -112,6 +121,17 @@ pub async fn latest(site: &str) -> Result<Verified, Report> {
 
 /// [`latest`] with other keys than the compiled-in ones, for testing against a scratch site.
 pub async fn latest_signed_by(site: &str, signers: &str) -> Result<Verified, Report> {
+    let (site, client, index) = index(site).await?;
+    let release = index
+        .releases
+        .iter()
+        .find(|r| r.version == index.latest)
+        .ok_or_else(|| report!("release.json names {} as latest but doesn't list it", index.latest))?
+        .clone();
+    verify_remote(&site, &client, release, signers).await
+}
+
+async fn index(site: &str) -> Result<(reqwest::Url, reqwest::Client, Index), Report> {
     let site = reqwest::Url::parse(site).context("bad release site URL")?;
     let client = http()?;
     let index: Index = serde_json::from_slice(&fetch(&client, site.join("release.json")?.as_str()).await?)
@@ -119,15 +139,45 @@ pub async fn latest_signed_by(site: &str, signers: &str) -> Result<Verified, Rep
     if index.format != "apparition-releases" || index.version != 1 {
         bail!("release.json is format {} {}, which this version can't read", index.format, index.version);
     }
-    let release = index
-        .releases
-        .iter()
-        .find(|r| r.version == index.latest)
-        .ok_or_else(|| report!("release.json names {} as latest but doesn't list it", index.latest))?
-        .clone();
-    let sums = fetch(&client, site.join(&release.sums)?.as_str()).await?;
-    let signature = fetch(&client, site.join(&release.signature)?.as_str()).await?;
+    Ok((site, client, index))
+}
+
+async fn verify_remote(site: &reqwest::Url, client: &reqwest::Client, release: Release, signers: &str) -> Result<Verified, Report> {
+    let sums = fetch(client, site.join(&release.sums)?.as_str()).await?;
+    let signature = fetch(client, site.join(&release.signature)?.as_str()).await?;
     verify_release(release, &sums, &String::from_utf8_lossy(&signature), signers)
+}
+
+/// Latest desktop installer of this exact format, not necessarily the latest phone-app
+/// release. Bind platform, format and version to the signed filename, not unsigned labels.
+pub async fn latest_installer(site: &str, platform: &str, extension: &str, current: &str) -> Result<Option<(Verified, Asset)>, Report> {
+    let (site, client, index) = index(site).await?;
+    let Some(release) = installer_release(&index, platform, extension, current) else {
+        return Ok(None);
+    };
+    let verified = verify_remote(&site, &client, release.clone(), SIGNERS).await?;
+    let name = installer_name(&verified.release.version, platform, extension);
+    let asset = verified.release.assets.iter().find(|asset| asset.name == name).unwrap().clone();
+    Ok(Some((verified, asset)))
+}
+
+fn installer_name(version: &str, platform: &str, extension: &str) -> String {
+    format!("Apparition-Installer-{version}-{platform}.{extension}")
+}
+
+fn installer_release<'a>(index: &'a Index, platform: &str, extension: &str, current: &str) -> Option<&'a Release> {
+    index.releases.iter().filter(|release| {
+        is_newer(&release.version, current)
+            && release.assets.iter().any(|asset| asset.name == installer_name(&release.version, platform, extension))
+    }).max_by(|a, b| {
+        if is_newer(&a.version, &b.version) {
+            std::cmp::Ordering::Greater
+        } else if is_newer(&b.version, &a.version) {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    })
 }
 
 /// Checks `sums` against `signature` and `signers`, then `release`'s assets against `sums`.
@@ -215,6 +265,7 @@ async fn download_one(
         progress(received, size);
     }
     file.flush()?;
+    file.sync_all()?;
     let got = hex(&hash.finalize());
     if got != expected {
         bail!("its SHA-256 is {got}, not the signed {expected}");
@@ -569,5 +620,74 @@ mod tests {
         assert!(parse_sums("").is_err());
         assert!(parse_sums(&format!("{hash}  a\n{hash}  a\n")).is_err());
         assert!(parse_sums("xyz  a\n").is_err());
+    }
+
+    #[test]
+    fn installer_selection_skips_app_only_releases_and_binds_the_signed_filename() {
+        let desktop = |version: &str, suffix: &str| {
+            let mut r = release(&[(&format!("Apparition-Installer-{version}-{suffix}"), &"ab".repeat(32))]);
+            r.version = version.into();
+            // These unsigned labels deliberately lie. Only the signed name identifies
+            // a format and architecture safely.
+            r.assets[0].kind = "app".into();
+            r.assets[0].platform = "macos-universal".into();
+            r
+        };
+        let mut phone = release(&[]);
+        phone.version = "2.0.0".into();
+        let index = Index {
+            format: "apparition-releases".into(), version: 1, latest: "2.0.0".into(),
+            releases: vec![
+                desktop("1.9.0", "linux-x86_64.AppImage"),
+                phone,
+                desktop("1.10.0", "linux-x86_64.AppImage"),
+                desktop("1.11.0", "linux-arm64.AppImage"),
+                desktop("1.12.0", "linux-x86_64.deb"),
+            ],
+        };
+        assert_eq!(installer_release(&index, "linux-x86_64", "AppImage", "1.8.0").unwrap().version, "1.10.0");
+        assert_eq!(installer_release(&index, "linux-x86_64", "deb", "1.8.0").unwrap().version, "1.12.0");
+        assert!(installer_release(&index, "macos-universal", "zip", "1.8.0").is_none());
+        assert!(installer_release(&index, "linux-x86_64", "AppImage", "1.10.0").is_none());
+        assert!(installer_release(&index, "linux-x86_64", "AppImage", "3.0.0").is_none());
+    }
+
+    #[tokio::test]
+    async fn downloads_only_bytes_authenticated_by_the_release_signature() {
+        use std::{io::Read, net::TcpListener};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = std::env::temp_dir().join(format!("apparition-release-download-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let payload = b"genuine desktop update";
+        let hash = hex(&Sha256::digest(payload));
+        let name = "Apparition-Installer-1.2.0-windows-x86_64.zip";
+        let sums = format!("{hash}  {name}\n");
+        let (signature, signers) = sign(&dir, sums.as_bytes(), NAMESPACE).expect("ssh-keygen is required");
+        let verified = verify_release(release(&[(name, &hash)]), sums.as_bytes(), &signature, &signers).unwrap();
+        for bytes in [payload.as_slice(), b"tampered desktop file".as_slice()] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let body = bytes.to_vec();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                stream.read(&mut request).unwrap();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
+            });
+            let mut asset = verified.release.assets[0].clone();
+            asset.urls = vec![format!("http://{address}/{name}")];
+            let out = dir.join(if bytes == payload { "good" } else { "bad" });
+            let result = download(&verified, &asset, &out, |_, _| {}).await;
+            server.join().unwrap();
+            if bytes == payload {
+                assert_eq!(std::fs::read(result.unwrap()).unwrap(), payload);
+            } else {
+                assert!(result.is_err());
+                assert!(!out.join(name).exists());
+                assert!(!out.join(format!("{name}.partial")).exists());
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

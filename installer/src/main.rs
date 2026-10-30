@@ -279,7 +279,7 @@ fn path_hint(dir: &Path) -> Result<(), Error> {
 
 #[cfg(not(unix))]
 fn link(_args: &[String]) -> Result<(), Error> {
-    Err(fail("link is for macOS and Linux; on Windows, put the folder holding apparition.exe on PATH"))
+    Err(fail("link is for macOS and Linux; on Windows, put the folder holding apparition-cli.exe on PATH"))
 }
 
 // MARK: Sharing the Apple ID's certificate key

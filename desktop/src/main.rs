@@ -13,6 +13,7 @@
 mod companion;
 mod flow;
 mod service;
+mod updater;
 
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ fn main() {
         .manage(state)
         .manage(companion_state.clone())
         .manage(service::BuildService::default())
+        .manage(updater::Updates::default())
         .invoke_handler(tauri::generate_handler![
             service::service_settings,
             service::service_connect,
@@ -40,7 +42,9 @@ fn main() {
             service::service_request,
             service::service_download,
             flow::app_info,
-            flow::check_update,
+            updater::check_update,
+            updater::update_status,
+            updater::install_update,
             flow::open_downloads,
             flow::open_help,
             flow::paired_devices,
@@ -87,6 +91,7 @@ fn main() {
                 let _ = window.set_title("Apparition");
             }
             companion::setup(app.handle(), companion_state)?;
+            updater::setup(app.handle());
             // Started at login: straight to the tray.
             if std::env::args().any(|arg| arg == companion::HIDDEN) {
                 companion::hide_window(app.handle());

@@ -295,12 +295,14 @@ if has windows; then
   echo "==> installer for Windows (x86_64)"
   cargo build -q --release --target x86_64-pc-windows-gnu
   mkdir -p "$WORK/windows"
-  cp "target/x86_64-pc-windows-gnu/release/$bin.exe" "$WORK/windows/"
+  # Windows is case-insensitive: apparition.exe collides with the desktop's Apparition.exe.
+  cp "target/x86_64-pc-windows-gnu/release/$bin.exe" "$WORK/windows/$bin-cli.exe"
   echo "==> desktop app for Windows (x86_64)"
   (cd "$ROOT/desktop" && cargo build -q --release --features custom-protocol --target x86_64-pc-windows-gnu)
   cp "$ROOT/desktop/target/x86_64-pc-windows-gnu/release/apparition-app.exe" "$WORK/windows/$app_name.exe"
-  readme "$WORK/windows" "$bin.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have)."
-  (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin.exe" "$app_name.exe" README.txt)
+  cp "$ROOT/desktop/target/x86_64-pc-windows-gnu/release/WebView2Loader.dll" "$WORK/windows/"
+  readme "$WORK/windows" "$bin-cli.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have). Keep WebView2Loader.dll beside it. The command line is $bin-cli.exe; its name must differ from the desktop app on Windows."
+  (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin-cli.exe" "$app_name.exe" WebView2Loader.dll README.txt)
 
 fi
 

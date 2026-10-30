@@ -19,12 +19,13 @@
     <button type="button" role="tab" id="tab-companion" aria-selected="false" aria-controls="view-companion">Companion <span class="tab-dot" id="companion-dot" hidden></span></button>
     <button type="button" role="tab" id="tab-developer" aria-selected="false" aria-controls="view-developer">Developer</button>
   </div>
-  <div id="update" class="update" hidden>
-    <span id="update-text">A newer installer is available.</span>
-    <button type="button" class="link" id="update-open">Download it</button>
-  </div>
   <div id="setup-badge" class="setup-badge" role="status" hidden><span id="setup-badge-text"></span></div>
 </header>
+
+<div id="update" class="update" role="status" aria-live="polite" hidden>
+  <span id="update-text"></span>
+  <button type="button" class="button quiet small" id="update-open">Update &amp; restart</button>
+</div>
 
 <div class="shell" id="view-install" role="tabpanel" aria-labelledby="tab-install">
   <nav class="trail" aria-label="Steps">
