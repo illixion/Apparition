@@ -15,14 +15,15 @@ export class UpdateBanner {
 
   draw(/** @type {any} */ status) {
     this.status = status;
-    this.root.hidden = !status.version && !["error", "current"].includes(status.phase);
+    // No update (and no failed check): nothing to show.
+    this.root.hidden = !status.version && status.phase !== "error";
     const working = ["downloading", "installing"].includes(status.phase);
     this.text.textContent = [
       status.version ? `Apparition ${status.version} is available.` : "",
       status.message,
     ].filter(Boolean).join(" ");
     this.button.disabled = working;
-    this.button.textContent = working ? "Updating..." : !status.version ? status.phase === "current" ? "Check again" : "Retry check"
+    this.button.textContent = working ? "Updating..." : !status.version ? "Retry check"
       : status.canInstall ? "Update & restart" : "Downloads";
   }
 

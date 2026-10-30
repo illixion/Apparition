@@ -142,3 +142,13 @@ test('failed consent writes restore the controls and a failed one-time check all
   f.dialog.close();
   await starting;
 });
+
+test('a check that finds nothing hides the banner; only a failed check keeps a retry', () => {
+  const { banner, root, button } = fixture();
+  banner.draw(available);
+  banner.draw({ phase: '', message: '', canInstall: false });
+  assert.equal(root.hidden, true);
+  banner.draw({ phase: 'error', message: "Couldn't check for updates: offline", canInstall: false });
+  assert.equal(root.hidden, false);
+  assert.equal(button.textContent, 'Retry check');
+});

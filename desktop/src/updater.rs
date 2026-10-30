@@ -3,8 +3,11 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
-    time::Duration,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, SystemTime},
 };
 
 use apparition_core::{api, release};
@@ -19,6 +22,10 @@ use crate::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const RETRY_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// Monotonic timers stop while a laptop sleeps, so the schedule is wall-clock time
+/// re-read at this tick.
+const SCHEDULE_TICK: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Finish {
@@ -36,11 +43,49 @@ pub struct Status {
     can_install: bool,
 }
 
-#[derive(Default)]
 pub struct Updates {
     status: Mutex<Status>,
     candidate: Mutex<Option<(release::Verified, release::Asset)>>,
+    /// Held by a check or an installation, so neither sees the other's half-published state.
     operation: tokio::sync::Mutex<()>,
+    installing: AtomicBool,
+    next_check: Mutex<SystemTime>,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self {
+            status: Mutex::default(),
+            candidate: Mutex::default(),
+            operation: tokio::sync::Mutex::default(),
+            installing: AtomicBool::new(false),
+            next_check: Mutex::new(SystemTime::UNIX_EPOCH),
+        }
+    }
+}
+
+impl Updates {
+    /// Due when the time has come, or the clock went back past a whole interval.
+    fn due(&self, now: SystemTime) -> bool {
+        let next = *self.next_check.lock().unwrap();
+        now >= next
+            || next
+                .duration_since(now)
+                .is_ok_and(|ahead| ahead > CHECK_INTERVAL)
+    }
+
+    fn schedule(&self, after: Duration) {
+        *self.next_check.lock().unwrap() = SystemTime::now() + after;
+    }
+}
+
+/// Clears `installing` if installation stops without restarting the app.
+struct Installing<'a>(&'a AtomicBool);
+
+impl Drop for Installing<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -128,12 +173,35 @@ fn publish(app: &AppHandle, status: Status) {
     let _ = app.emit("desktop-update", status);
 }
 
+/// A manual check waits for one already running (often an automatic check after waking from
+/// sleep) and then makes its own, so its answer is never an earlier, stale result.
 async fn check(app: &AppHandle, manual: bool) -> Result<(), Report> {
     let state = app.state::<Updates>();
-    let Ok(_guard) = state.operation.try_lock() else {
+    if state.installing.load(Ordering::SeqCst) {
+        if manual {
+            bail!("An update is being installed");
+        }
         return Ok(());
+    }
+    let _guard = if manual {
+        state.operation.lock().await
+    } else {
+        let Ok(guard) = state.operation.try_lock() else {
+            return Ok(());
+        };
+        guard
     };
-    if !manual && !app.state::<std::sync::Arc<companion::CompanionState>>().auto_updates() {
+    if state.installing.load(Ordering::SeqCst) {
+        if manual {
+            bail!("An update is being installed");
+        }
+        return Ok(());
+    }
+    if !manual
+        && !app
+            .state::<std::sync::Arc<companion::CompanionState>>()
+            .auto_updates()
+    {
         return Ok(());
     }
     let installation = installation(app)?;
@@ -144,7 +212,13 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), Report> {
         installation.extension(),
         VERSION,
     )
-    .await?;
+    .await;
+    state.schedule(if candidate.is_ok() {
+        CHECK_INTERVAL
+    } else {
+        RETRY_INTERVAL
+    });
+    let candidate = candidate?;
     if let Some((verified, asset)) = candidate {
         let mut status = Status {
             version: Some(verified.release.version.clone()),
@@ -169,15 +243,10 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), Report> {
         }
         *state.candidate.lock().unwrap() = Some((verified, asset));
         publish(app, status);
-    } else if manual && state.candidate.lock().unwrap().is_none() {
-        publish(
-            app,
-            Status {
-                phase: "current",
-                message: "Apparition is up to date.".into(),
-                ..Default::default()
-            },
-        );
+    } else {
+        // Nothing newer (or a listed update was withdrawn): no banner, no badge.
+        *state.candidate.lock().unwrap() = None;
+        publish(app, Status::default());
     }
     Ok(())
 }
@@ -206,20 +275,10 @@ pub fn setup(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            let _ = check(&app, false).await;
-            tokio::time::sleep(CHECK_INTERVAL).await;
-        }
-    });
-}
-
-pub fn request_check(app: &AppHandle) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = check(&app, true).await {
-            let mut status = app.state::<Updates>().status.lock().unwrap().clone();
-            status.phase = "error";
-            status.message = format!("Couldn't check for updates: {}", api::describe(&error));
-            publish(&app, status);
+            if app.state::<Updates>().due(SystemTime::now()) {
+                let _ = check(&app, false).await;
+            }
+            tokio::time::sleep(SCHEDULE_TICK).await;
         }
     });
 }
@@ -251,10 +310,12 @@ pub async fn check_update(app: AppHandle) -> Result<Status, Failure> {
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), Failure> {
     let state = app.state::<Updates>();
-    let _guard = state
-        .operation
-        .try_lock()
-        .map_err(|_| Failure::new("An update operation is already running."))?;
+    if state.installing.swap(true, Ordering::SeqCst) {
+        return Err(Failure::new("The update is already being installed."));
+    }
+    let _installing = Installing(&state.installing);
+    // A check in progress finishes first, then can't start until this one ends.
+    let _guard = state.operation.lock().await;
     let installation = installation(&app)?;
     if let Installation::Unsupported(reason) = installation {
         return Err(Failure::new(reason));
@@ -303,11 +364,15 @@ pub async fn install_update(app: AppHandle) -> Result<(), Failure> {
         #[cfg(windows)]
         Ok(Finish::ExitForHelper) => app.exit(0),
         Err(error) => {
+            let reason = api::describe(&error);
             status.phase = "error";
-            status.message = format!(
-                "Update failed: {}. You can retry; your settings are unchanged.",
-                api::describe(&error)
-            );
+            if reason.contains(WINDOWS_BLOCKED) {
+                status.can_install = false;
+                status.message = format!("Update failed. {reason}");
+            } else {
+                status.message =
+                    format!("Update failed: {reason}. You can retry; your settings are unchanged.");
+            }
             publish(&app, status);
             return Err(error.into());
         }
@@ -419,6 +484,7 @@ fn install_mac(_: &Path, _: &Path) -> Result<(), Report> {
 
 #[cfg(windows)]
 fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
+    use base64::prelude::*;
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use std::{
@@ -477,29 +543,58 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
     let plan = json!({ "pid": std::process::id(), "directory": parent, "executable": current, "arguments": arguments,
         "version": version, "files": files, "result": result });
     std::fs::write(stage.join("plan.json"), serde_json::to_vec(&plan)?)?;
-    let script = stage.join("update.ps1");
-    std::fs::write(&script, include_str!("update-windows.ps1"))?;
     let powershell = PathBuf::from(
         std::env::var_os("SystemRoot").ok_or_else(|| report!("SystemRoot is missing"))?,
     )
     .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut child = Command::new(powershell)
+    // An encoded command, not a .ps1 file: a Group Policy execution policy (AllSigned,
+    // Restricted) governs script files and overrides -ExecutionPolicy Bypass, but not this.
+    let stage_text = stage
+        .to_str()
+        .ok_or_else(|| report!("The staging path isn't valid Unicode"))?;
+    // Tests reproduce an AppLocker/WDAC lockdown in the helper's own session; Windows 11
+    // ignores the old __PSLockdownPolicy switch.
+    #[cfg(test)]
+    let lockdown = if std::env::var_os("APPARITION_TEST_CONSTRAINED").is_some() {
+        "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\n"
+    } else {
+        ""
+    };
+    #[cfg(not(test))]
+    let lockdown = "";
+    let command = format!(
+        "{lockdown}& {{\n{}\n}} -Stage '{}'",
+        include_str!("update-windows.ps1"),
+        stage_text.replace('\'', "''")
+    );
+    let encoded = BASE64_STANDARD.encode(
+        command
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<u8>>(),
+    );
+    let errors = std::fs::File::create(stage.join("errors.txt"))?;
+    let mut child = match Command::new(powershell)
         .env_remove("PSModulePath")
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
-            "-File",
+            "-EncodedCommand",
         ])
-        .arg(&script)
-        .arg("-Stage")
-        .arg(stage)
+        .arg(encoded)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(errors)
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => bail!(
+            "{WINDOWS_BLOCKED}: Windows wouldn't start PowerShell ({error}). {WINDOWS_MANUAL}"
+        ),
+    };
     for _ in 0..600 {
         if stage.join("ready").exists() {
             std::fs::write(stage.join("go"), b"go")?;
@@ -507,13 +602,21 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
         }
         if child.try_wait()?.is_some() {
             let result = take_windows_result();
-            bail!(
-                "The Windows updater couldn't prepare the installation: {}",
-                result
-                    .as_ref()
-                    .and_then(|v| v["error"].as_str())
-                    .unwrap_or("PowerShell could not start")
-            );
+            let reason = result
+                .as_ref()
+                .and_then(|v| v["error"].as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    std::fs::read_to_string(stage.join("errors.txt"))
+                        .ok()
+                        .map(|text| text.trim().lines().take(3).collect::<Vec<_>>().join(" "))
+                        .filter(|text| !text.is_empty())
+                })
+                .unwrap_or_else(|| "PowerShell exited without saying why".into());
+            if result.as_ref().is_some_and(|v| v["blocked"] == true) {
+                bail!("{WINDOWS_BLOCKED}: {reason} {WINDOWS_MANUAL}");
+            }
+            bail!("The Windows updater couldn't prepare the installation: {reason}");
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -521,6 +624,11 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
     let _ = child.wait();
     bail!("The Windows updater did not become ready; no files were replaced")
 }
+
+/// Starts the message of a failure no retry fixes, so the banner offers the download instead.
+const WINDOWS_BLOCKED: &str = "This computer's policy blocks the updater";
+#[cfg(windows)]
+const WINDOWS_MANUAL: &str = "Download the update instead, and replace Apparition.exe, apparition-cli.exe and WebView2Loader.dll with the new ones.";
 
 #[cfg(windows)]
 fn windows_result_path() -> PathBuf {
@@ -699,6 +807,54 @@ mod tests {
             "1.0.0",
         )
         .unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore] // Invoked only by the parent test below, with PowerShell locked down.
+    fn windows_blocked_child() {
+        let Err(error) = install_windows(
+            Path::new(&std::env::var_os("APPARITION_TEST_UPDATE").unwrap()),
+            "1.0.0",
+        ) else {
+            panic!("the updater ran under Constrained Language mode");
+        };
+        let error = error.to_string();
+        assert!(error.contains(WINDOWS_BLOCKED), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reports_constrained_language_mode_as_blocked_by_policy() {
+        use std::io::Write;
+        let download = tempfile::tempdir().unwrap();
+        let archive = download.path().join("update.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        for name in ["Apparition.exe", "apparition-cli.exe", "WebView2Loader.dll"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"new").unwrap();
+        }
+        zip.finish().unwrap();
+        let result = download.path().join("result.json");
+        // A disposable copy: if the lockdown went unnoticed, the helper would replace it.
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("Apparition.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &installed).unwrap();
+        assert!(
+            std::process::Command::new(&installed)
+                .args([
+                    "--exact",
+                    "updater::tests::windows_blocked_child",
+                    "--ignored"
+                ])
+                .env("APPARITION_TEST_CONSTRAINED", "1")
+                .env("APPARITION_TEST_UPDATE", &archive)
+                .env("APPARITION_TEST_UPDATE_RESULT", &result)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 
     #[cfg(windows)]

@@ -4,6 +4,13 @@ $parentExited = $false
 $changed = @()
 $work = $null
 $plan = Get-Content -Raw -LiteralPath (Join-Path $Stage 'plan.json') | ConvertFrom-Json
+# Device Guard / AppLocker policies run PowerShell in Constrained Language mode, where the
+# .NET calls below are refused. Say so plainly, before anything changes.
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    @{ version = $plan.version; blocked = $true; error = "Windows policy runs PowerShell in $($ExecutionContext.SessionState.LanguageMode) mode, which the updater needs to be unrestricted." } |
+        ConvertTo-Json | Set-Content -LiteralPath $plan.result -Encoding UTF8
+    exit 1
+}
 function Start-App {
     $options = @{ FilePath = $plan.executable; WorkingDirectory = $plan.directory; PassThru = $true }
     if ($plan.arguments) { $options.ArgumentList = $plan.arguments }

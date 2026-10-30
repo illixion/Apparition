@@ -11,7 +11,7 @@ use apparition_core::companion::{self, AnisetteSource, Companion};
 use apparition_core::relay::{self, ANISETTE_PORT, RELAY_PORT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_autostart::ManagerExt;
@@ -77,7 +77,9 @@ pub struct CompanionState {
 struct TrayItems {
     relay: MenuItem<Wry>,
     anisette: MenuItem<Wry>,
+    /// "No Updates", greyed out, until an update is available to open.
     update: MenuItem<Wry>,
+    auto_updates: CheckMenuItem<Wry>,
 }
 
 type Shared<'a> = tauri::State<'a, Arc<CompanionState>>;
@@ -236,9 +238,22 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
     let anisette = MenuItem::with_id(app, "anisette", "Anisette", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Apparition", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Apparition", true, None::<&str>)?;
-    let update = MenuItem::with_id(app, "update", "Check for Updates...", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&relay, &anisette, &PredefinedMenuItem::separator(app)?, &open, &update, &quit])?;
-    *state.tray.lock().unwrap() = Some(TrayItems { relay, anisette, update });
+    let update = MenuItem::with_id(app, "update", "No Updates", false, None::<&str>)?;
+    let auto_updates = CheckMenuItem::with_id(
+        app,
+        "auto-updates",
+        "Check Automatically",
+        true,
+        state.auto_updates(),
+        None::<&str>,
+    )?;
+    let separator = || PredefinedMenuItem::separator(app);
+    // The updates section: its state, then the setting.
+    let menu = Menu::with_items(
+        app,
+        &[&relay, &anisette, &separator()?, &update, &auto_updates, &separator()?, &open, &quit],
+    )?;
+    *state.tray.lock().unwrap() = Some(TrayItems { relay, anisette, update, auto_updates });
     // A template image on macOS, which draws it in the menu bar's colour; the colour icon
     // elsewhere, where a black ghost would vanish on a dark panel or taskbar.
     #[cfg(target_os = "macos")]
@@ -253,9 +268,19 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_window(app),
-            "update" => {
-                show_window(app);
-                crate::updater::request_check(app);
+            "update" => show_window(app),
+            "auto-updates" => {
+                let state = app.state::<Arc<CompanionState>>();
+                // The menu toggled its check mark already; that is the requested state.
+                let on = state
+                    .tray
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|items| items.auto_updates.is_checked().ok());
+                if let Some(on) = on {
+                    let _ = change_auto_updates(app, &state, on);
+                }
             }
             "quit" => app.exit(0),
             _ => {}
@@ -284,8 +309,10 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
 pub fn update_available(app: &AppHandle, version: Option<&str>) {
     let state = app.state::<Arc<CompanionState>>();
     if let Some(items) = &*state.tray.lock().unwrap() {
-        let text = version.map(|v| format!("Apparition {v} available - Open to Update")).unwrap_or_else(|| "Check for Updates...".into());
-        let _ = items.update.set_text(text);
+        let _ = items
+            .update
+            .set_text(version.map_or("No Updates".into(), |v| format!("Update to {v}...")));
+        let _ = items.update.set_enabled(version.is_some());
     }
     if let Some(tray) = app.tray_by_id("main") {
         let tooltip = version.map(|v| format!("Apparition {v} available")).unwrap_or_else(|| "Apparition".into());
@@ -343,12 +370,23 @@ pub fn auto_updates(state: Shared<'_>) -> bool {
 
 #[tauri::command]
 pub fn set_auto_updates(app: AppHandle, state: Shared<'_>, on: bool) -> Result<bool, Failure> {
-    state.set_auto_updates(on)?;
-    let _ = app.emit("auto-updates-changed", on);
-    if on {
-        crate::updater::request_automatic_check(&app);
-    }
+    change_auto_updates(&app, &state, on)?;
     Ok(on)
+}
+
+/// From the page or the tray: saves the choice, then brings the other one in line.
+fn change_auto_updates(app: &AppHandle, state: &CompanionState, on: bool) -> Result<(), Failure> {
+    let result = state.set_auto_updates(on);
+    let saved = state.auto_updates();
+    if let Some(items) = &*state.tray.lock().unwrap() {
+        let _ = items.auto_updates.set_checked(saved);
+    }
+    let _ = app.emit("auto-updates-changed", saved);
+    result?;
+    if on {
+        crate::updater::request_automatic_check(app);
+    }
+    Ok(())
 }
 
 #[tauri::command]

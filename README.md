@@ -607,13 +607,16 @@ core and nowhere else.
 
 Desktop update checks are **off by default**, including for existing installations.
 Choose automatic checks on step 6, **Done**, or with the **Companion > Updates** toggle.
-When enabled, the app contacts apparition.illixion.com on launch and every six hours,
-including while running from the tray, for releases hosted on GitHub. When off, **Get started**
+When enabled, the app contacts apparition.illixion.com on launch and every six hours of
+wall-clock time (a laptop that slept past a check catches up on wake), including while
+running from the tray, for releases hosted on GitHub. A failed check retries after 15 minutes. When off, **Get started**
 offers a one-time check without enabling future checks; declining makes no update request.
-A badge on its tray/menu-bar icon, an entry in that menu, and a persistent
-banner in every app view announce an update. **Update & restart** downloads and installs
-it only when clicked; the companion briefly stops while restarting. **Check for Updates**
-in the tray menu retries a check manually. Development builds are never replaced.
+The tray/menu-bar menu has an updates section: a greyed-out **No Updates** line, which becomes
+**Update to x.y.z...** when one is available, and a **Check Automatically** checkbox mirroring
+the setting. A badge on the icon and a banner in every app view also announce an update;
+the banner disappears once a check finds nothing newer. **Update & restart** downloads and
+installs it only when clicked; the companion briefly stops while restarting. Development
+builds are never replaced.
 
 Updates use the existing GitHub Releases assets and release workflow: the pinned release
 keys must verify the YubiKey-signed `SHA256SUMS` SSH signature, then the downloaded file must
@@ -628,6 +631,10 @@ atomically exchanged. The Applications folder must be writable by your account; 
 quarantine exception. On Windows the portable app, `apparition-cli.exe` and
 `WebView2Loader.dll` update together: a Windows PowerShell helper waits for the app to
 exit, replaces the files, restarts it, and rolls back if installation or launch fails.
+The helper is passed to PowerShell as a command, not a script file, so a Group Policy
+execution policy doesn't block it. PowerShell locked to Constrained Language mode
+(AppLocker or WDAC) does: the banner then says the computer's policy blocks the updater
+and links to the Releases page for a manual download.
 Keep all three in a user-writable folder. On Linux an AppImage replaces itself atomically and keeps
 its executable permissions. A Debian installation instead asks for system authorization
 through PolicyKit and installs the verified `.deb` with `dpkg`; it needs `pkexec` and a
