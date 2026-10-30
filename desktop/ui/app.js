@@ -1,9 +1,12 @@
 // @ts-check
 import { DeveloperView } from './developer.js';
 import { UpdateBanner, UpdatePreferences } from './updater.js';
+import { guardRepeatedActivation } from './clicks.js';
 // Apparition's page: the install wizard and the Companion view. Every action is a Rust command
 // (see src/flow.rs and src/companion.rs); this page only shows steps and collects answers. Passwords are read from their field, sent with the
 // command and cleared from the field at once; nothing here stores them.
+
+guardRepeatedActivation(window);
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -200,9 +203,17 @@ function render() {
 function welcome() {
   const view = template("t-welcome");
   panel.append(view);
+  let starting = false;
   panel.querySelector('[data-go="headset"]')?.addEventListener("click", async () => {
-    await updatePreferences.beforeStart();
-    go("headset");
+    // A second press while the update prompt is open must not advance twice.
+    if (starting) return;
+    starting = true;
+    try {
+      await updatePreferences.beforeStart();
+      go("headset");
+    } finally {
+      starting = false;
+    }
   });
 }
 
