@@ -85,9 +85,27 @@ pub struct Verified {
 }
 
 impl Verified {
-    pub fn asset(&self, kind: &str, platform: &str) -> Option<&Asset> {
-        self.release.assets.iter().find(|a| a.kind == kind && a.platform == platform)
+    /// `platform`'s app, identified by its signed file name: release.json's `kind` and
+    /// `platform` labels are unsigned, so they could point a device at another platform's IPA.
+    pub fn app(&self, platform: &str) -> Option<&Asset> {
+        app_asset(&self.release, platform)
     }
+}
+
+/// The signed file name of `platform`'s app ("visionos" -> `Apparition-1.2.0-visionOS.ipa`).
+fn app_name(version: &str, platform: &str) -> Option<String> {
+    let os = match platform {
+        "visionos" => "visionOS",
+        "ios" => "iOS",
+        "tvos" => "tvOS",
+        _ => return None,
+    };
+    Some(format!("Apparition-{version}-{os}.ipa"))
+}
+
+fn app_asset<'a>(release: &'a Release, platform: &str) -> Option<&'a Asset> {
+    let name = app_name(&release.version, platform)?;
+    release.assets.iter().find(|asset| asset.name == name)
 }
 
 fn http() -> Result<reqwest::Client, Report> {
@@ -145,7 +163,7 @@ pub async fn latest_app_signed_by(site: &str, platform: &str, signers: &str) -> 
 
 fn app_release<'a>(index: &'a Index, platform: &str) -> Option<&'a Release> {
     index.releases.iter()
-        .filter(|release| release.assets.iter().any(|asset| asset.kind == "app" && asset.platform == platform))
+        .filter(|release| app_asset(release, platform).is_some())
         .max_by(|a, b| {
             if is_newer(&a.version, &b.version) {
                 std::cmp::Ordering::Greater
@@ -472,7 +490,7 @@ pub unsafe extern "C" fn apparition_release_latest(
         let (site, signers) = (unsafe { site_arg(site) }?, unsafe { signers_arg(signers) }?);
         let platform = unsafe { text(platform) }?;
         let verified = runtime().block_on(latest_app_signed_by(&site, &platform, &signers))?;
-        let asset = verified.asset("app", &platform).map(|a| json!({"name": a.name, "size": a.size}));
+        let asset = verified.app(&platform).map(|a| json!({"name": a.name, "size": a.size}));
         let release = &verified.release;
         Ok(json!({
             "version": release.version, "build": release.build, "date": release.date,
@@ -498,7 +516,7 @@ pub unsafe extern "C" fn apparition_release_download_app(
         let (verified, ipa) = runtime().block_on(crate::stop::stoppable(async {
             let verified = latest_app_signed_by(&site, &platform, &signers).await?;
             let asset = verified
-                .asset("app", &platform)
+                .app(&platform)
                 .ok_or_else(|| report!("Apparition {} has no {platform} app", verified.release.version))?
                 .clone();
             let ipa = download(&verified, &asset, &dir, |_, _| {}).await?;
@@ -531,7 +549,7 @@ mod local {
         let out = std::path::PathBuf::from(std::env::var("APPARITION_RELEASE_OUT").unwrap());
         let verified = super::latest_signed_by(&site, &signers).await.map_err(|e| e.to_string()).unwrap();
         println!("{} signed by {}", verified.release.version, verified.signer);
-        let asset = verified.asset("app", "visionos").unwrap().clone();
+        let asset = verified.app("visionos").unwrap().clone();
         let path = super::download(&verified, &asset, &out, |_, _| {}).await.map_err(|e| e.to_string());
         println!("{path:?}");
     }
@@ -543,22 +561,27 @@ mod tests {
     use std::process::Command;
 
     #[test]
-    fn app_selection_survives_installer_only_and_platform_partial_releases() {
-        let mut old = release(&[("Apparition-1.2.0-visionOS.ipa", "aa")]);
-        old.assets[0].platform = "visionos".into();
-        let mut ios = old.clone();
-        ios.version = "1.3.0".into();
-        ios.assets[0].platform = "ios".into();
-        let mut installer = old.clone();
-        installer.version = "1.4.0".into();
-        installer.assets[0].kind = "installer".into();
+    fn app_selection_survives_partial_releases_and_binds_the_signed_filename() {
+        let named = |version: &str, names: &[&str]| {
+            let mut r = release(&names.iter().map(|n| (*n, "aa")).collect::<Vec<_>>());
+            r.version = version.into();
+            r
+        };
+        let old = named("1.2.0", &["Apparition-1.2.0-visionOS.ipa"]);
+        let ios = named("1.3.0", &["Apparition-1.3.0-iOS.ipa"]);
+        let installer = named("1.4.0", &["Apparition-Installer-1.4.0-linux-x86_64.AppImage"]);
+        // Unsigned labels claim visionOS apps; only the signed names say otherwise.
+        let mislabelled = named("1.5.0", &["Apparition-1.5.0-tvOS.ipa", "Apparition-1.4.0-visionOS.ipa"]);
         let index = Index {
-            format: "apparition-releases".into(), version: 1, latest: "1.4.0".into(),
-            releases: vec![installer, old, ios],
+            format: "apparition-releases".into(), version: 1, latest: "1.5.0".into(),
+            releases: vec![installer, old, mislabelled.clone(), ios],
         };
         assert_eq!(app_release(&index, "visionos").unwrap().version, "1.2.0");
         assert_eq!(app_release(&index, "ios").unwrap().version, "1.3.0");
-        assert!(app_release(&index, "tvos").is_none());
+        assert_eq!(app_release(&index, "tvos").unwrap().version, "1.5.0");
+        assert_eq!(app_asset(&mislabelled, "tvos").unwrap().name, "Apparition-1.5.0-tvOS.ipa");
+        assert!(app_asset(&mislabelled, "visionos").is_none());
+        assert!(app_asset(&mislabelled, "macos").is_none());
     }
 
     /// A throwaway ed25519 key and ssh-keygen's signature over `data`, or None without

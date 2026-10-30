@@ -466,7 +466,7 @@ pub async fn download_apparition_for(
     progress: impl Fn(u64, u64),
 ) -> Result<std::path::PathBuf, Report> {
     let asset = verified
-        .asset("app", release_platform(platform))
+        .app(release_platform(platform))
         .ok_or_else(|| report!("Apparition {} has no {} build", verified.release.version, platform.os_name()))?
         .clone();
     crate::release::download(verified, &asset, dir, progress).await

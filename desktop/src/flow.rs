@@ -652,7 +652,7 @@ pub async fn prepare_latest(app: AppHandle, state: Shared<'_>, udid: String) -> 
             *state.app.lock().unwrap() = None;
             let verified = latest_release(platform).await?;
             let release = &verified.release;
-            let size = verified.asset("app", api::release_platform(platform)).map(|a| a.size);
+            let size = verified.app(api::release_platform(platform)).map(|a| a.size);
             let summary = json!({
                 "version": release.version, "signer": verified.signer, "date": release.date,
                 "notes": release.notes, "size": size, "platform": platform.os_name(),
