@@ -78,4 +78,17 @@ impl AnisetteState {
     pub fn get_device_id(&self) -> String {
         Uuid::from_bytes(self.keychain_identifier).to_string()
     }
+
+    /// A stable, per-install stand-in for `X-Mme-Legacy-Device-Id`, derived from our own random
+    /// seed — never a real Mac/Windows serial, so it can't collide with a genuine device. Apple's
+    /// own Windows client (AuthKitWin) sends this field, built from the machine's volume serial +
+    /// CPU; macOS instead sends `X-Apple-I-SRL-NO`/`MLB`/`ROM`, which we deliberately never fake.
+    /// Shaped like the Windows value: 20 bytes, uppercase hex (40 chars).
+    pub fn get_legacy_device_id(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(b"apparition-legacy-device-id");
+        hasher.update(self.keychain_identifier);
+        let digest: [u8; 32] = hasher.finalize().into();
+        hex::encode_upper(&digest[..20])
+    }
 }

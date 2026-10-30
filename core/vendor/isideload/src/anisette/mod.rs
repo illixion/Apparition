@@ -24,7 +24,10 @@ pub struct AnisetteData {
     pub routing_info: String,
     _device_description: String,
     device_unique_identifier: String,
-    _local_user_id: String,
+    local_user_id: String,
+    /// Stable per-install stand-in for the Windows `X-Mme-Legacy-Device-Id` hardware anchor,
+    /// derived from our own seed (collision-safe; never a real serial). See `state.rs`.
+    legacy_device_id: String,
     /// Headers beyond these that the server gave (see remote_v3's `extra`).
     pub extra: HashMap<String, String>,
     generated_at: SystemTime,
@@ -60,6 +63,17 @@ impl AnisetteData {
             //     self.device_description.clone(),
             // ),
         ]);
+        // Identity fields Apple's own Windows client (AuthKitWin) always sends but Apparition
+        // historically omitted: the local-user hash and the local-derived hardware anchor. Apple
+        // appears to have begun requiring a hardware identity (Oct 2026). Fill only if the provider
+        // didn't already supply them (a native/macOS provider might), so a real value isn't
+        // clobbered by our derived one.
+        headers
+            .entry("X-Apple-I-MD-LU".to_string())
+            .or_insert_with(|| self.local_user_id.clone());
+        headers
+            .entry("X-Mme-Legacy-Device-Id".to_string())
+            .or_insert_with(|| self.legacy_device_id.clone());
         headers
     }
 
@@ -205,5 +219,53 @@ impl AnisetteDataGenerator {
         let arc_data = Arc::new(data);
         self.data = Some(arc_data.clone());
         Ok(arc_data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(extra: &[(&str, &str)]) -> AnisetteData {
+        AnisetteData {
+            machine_id: "MID".into(),
+            one_time_password: "OTP".into(),
+            routing_info: "17106176".into(),
+            _device_description: "desc".into(),
+            device_unique_identifier: "DEVICE-UUID".into(),
+            local_user_id: "MDLU-HEX".into(),
+            legacy_device_id: "LEGACY-HEX".into(),
+            extra: extra.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            generated_at: SystemTime::now(),
+        }
+    }
+
+    fn get<'a>(cpd: &'a Dictionary, key: &str) -> Option<&'a str> {
+        cpd.get(key).and_then(|v| v.as_string())
+    }
+
+    #[test]
+    fn cpd_carries_the_identity_fields_apple_wants() {
+        let cpd = sample(&[]).get_client_provided_data();
+        // The anchor Apple's Windows client sends and we used to omit entirely.
+        assert_eq!(get(&cpd, "X-Mme-Legacy-Device-Id"), Some("LEGACY-HEX"));
+        assert_eq!(get(&cpd, "X-Apple-I-MD-LU"), Some("MDLU-HEX"));
+        // And the fields we already sent are still there.
+        assert_eq!(get(&cpd, "X-Mme-Device-Id"), Some("DEVICE-UUID"));
+        assert_eq!(get(&cpd, "X-Apple-I-MD"), Some("OTP"));
+        assert_eq!(get(&cpd, "X-Apple-I-MD-M"), Some("MID"));
+        // We deliberately never fabricate a Mac serial.
+        assert!(cpd.get("X-Apple-I-SRL-NO").is_none());
+        assert!(cpd.get("X-Apple-I-MLB").is_none());
+        assert!(cpd.get("X-Apple-I-ROM").is_none());
+    }
+
+    #[test]
+    fn a_providers_own_identity_values_are_not_clobbered() {
+        // A native/macOS provider that already supplies these keeps its real values.
+        let cpd = sample(&[("X-Apple-I-MD-LU", "REAL-LU"), ("X-Mme-Legacy-Device-Id", "REAL-LEGACY")])
+            .get_client_provided_data();
+        assert_eq!(get(&cpd, "X-Apple-I-MD-LU"), Some("REAL-LU"));
+        assert_eq!(get(&cpd, "X-Mme-Legacy-Device-Id"), Some("REAL-LEGACY"));
     }
 }
