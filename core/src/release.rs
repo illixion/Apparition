@@ -131,6 +131,32 @@ pub async fn latest_signed_by(site: &str, signers: &str) -> Result<Verified, Rep
     verify_remote(&site, &client, release, signers).await
 }
 
+/// Newer releases may contain only installers or only some device platforms.
+pub async fn latest_app(site: &str, platform: &str) -> Result<Verified, Report> {
+    latest_app_signed_by(site, platform, SIGNERS).await
+}
+
+pub async fn latest_app_signed_by(site: &str, platform: &str, signers: &str) -> Result<Verified, Report> {
+    let (site, client, index) = index(site).await?;
+    let release = app_release(&index, platform)
+        .ok_or_else(|| report!("No Apparition release has a {platform} app"))?;
+    verify_remote(&site, &client, release.clone(), signers).await
+}
+
+fn app_release<'a>(index: &'a Index, platform: &str) -> Option<&'a Release> {
+    index.releases.iter()
+        .filter(|release| release.assets.iter().any(|asset| asset.kind == "app" && asset.platform == platform))
+        .max_by(|a, b| {
+            if is_newer(&a.version, &b.version) {
+                std::cmp::Ordering::Greater
+            } else if is_newer(&b.version, &a.version) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+}
+
 async fn index(site: &str) -> Result<(reqwest::Url, reqwest::Client, Index), Report> {
     let site = reqwest::Url::parse(site).context("bad release site URL")?;
     let client = http()?;
@@ -433,7 +459,7 @@ unsafe fn site_arg(site: *const c_char) -> Result<String, Report> {
     Ok(unsafe { optional(site) }?.unwrap_or_else(|| SITE.to_string()))
 }
 
-/// The latest verified release at `site` (NULL: [`SITE`]), checked against `signers` (NULL:
+/// The latest verified app for `platform` at `site` (NULL: [`SITE`]), checked against `signers` (NULL:
 /// the compiled-in keys; only a development build of the app passes others). Returns `{ok, version,
 /// build, date, notes, signer, asset: {name, size} | null}`, the asset being `platform`'s app.
 #[unsafe(no_mangle)]
@@ -445,7 +471,7 @@ pub unsafe extern "C" fn apparition_release_latest(
     reply((|| {
         let (site, signers) = (unsafe { site_arg(site) }?, unsafe { signers_arg(signers) }?);
         let platform = unsafe { text(platform) }?;
-        let verified = runtime().block_on(latest_signed_by(&site, &signers))?;
+        let verified = runtime().block_on(latest_app_signed_by(&site, &platform, &signers))?;
         let asset = verified.asset("app", &platform).map(|a| json!({"name": a.name, "size": a.size}));
         let release = &verified.release;
         Ok(json!({
@@ -455,7 +481,7 @@ pub unsafe extern "C" fn apparition_release_latest(
     })())
 }
 
-/// Fetches and verifies the latest release again, downloads `platform`'s app into `dir`
+/// Fetches and verifies the latest release containing `platform`'s app, downloads it into `dir`
 /// (emptied first) and unpacks it there. Returns `{ok, version, build, ipaPath, appPath}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_release_download_app(
@@ -470,7 +496,7 @@ pub unsafe extern "C" fn apparition_release_download_app(
         let dir = PathBuf::from(unsafe { text(dir) }?);
         let _ = std::fs::remove_dir_all(&dir);
         let (verified, ipa) = runtime().block_on(crate::stop::stoppable(async {
-            let verified = latest_signed_by(&site, &signers).await?;
+            let verified = latest_app_signed_by(&site, &platform, &signers).await?;
             let asset = verified
                 .asset("app", &platform)
                 .ok_or_else(|| report!("Apparition {} has no {platform} app", verified.release.version))?
@@ -515,6 +541,25 @@ mod local {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn app_selection_survives_installer_only_and_platform_partial_releases() {
+        let mut old = release(&[("Apparition-1.2.0-visionOS.ipa", "aa")]);
+        old.assets[0].platform = "visionos".into();
+        let mut ios = old.clone();
+        ios.version = "1.3.0".into();
+        ios.assets[0].platform = "ios".into();
+        let mut installer = old.clone();
+        installer.version = "1.4.0".into();
+        installer.assets[0].kind = "installer".into();
+        let index = Index {
+            format: "apparition-releases".into(), version: 1, latest: "1.4.0".into(),
+            releases: vec![installer, old, ios],
+        };
+        assert_eq!(app_release(&index, "visionos").unwrap().version, "1.2.0");
+        assert_eq!(app_release(&index, "ios").unwrap().version, "1.3.0");
+        assert!(app_release(&index, "tvos").is_none());
+    }
 
     /// A throwaway ed25519 key and ssh-keygen's signature over `data`, or None without
     /// ssh-keygen.

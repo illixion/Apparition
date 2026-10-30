@@ -21,7 +21,7 @@ Show the user the commits since the last tag (`git log v<current>..HEAD --onelin
 
 ## 2. Bump the version
 
-Decide first whether this is a **full** release (every part: a tag push, or `parts` all/empty) or a **partial** one (`parts` lists some parts, e.g. `app`, `macos`, `windows`, `linux`).
+Decide first whether this is a **full** release (every part) or a **partial** one (some of `app`, `macos`, `windows`, `linux`).
 
 - **Full:** set the same version in all four places (match the 0.3.2 release commit, `5f8b2b8`):
   - `project.yml`: `MARKETING_VERSION: "x.y.z"`
@@ -29,7 +29,7 @@ Decide first whether this is a **full** release (every part: a tag push, or `par
   - Refresh the lock files so their own entries match: `(cd desktop && cargo metadata --format-version 1 >/dev/null)` and the same in `installer/`. Only the `apparition-desktop` and `apparition-installer` entries should change in the lock diff.
 
   Check with `git diff`: exactly five lines change.
-- **Partial:** `project.yml` is the only version that must match. `scripts/package-release.sh` checks the Cargo files only when it builds installers, so a `parts=app` release needs just the `MARKETING_VERSION` bump. A partial release that includes any installer part (`macos`, `windows`, `linux`) needs all four places, same as a full one.
+- **Partial:** an app-only release needs just the `MARKETING_VERSION` bump. Installer parts (`macos`, `windows`, `linux`) require both Cargo versions and their lock entries to match; `project.yml` must match only when building `app`.
 
 Also grep for the old version to catch any other mention, and update docs that say "from <version>" only if they refer to the new release.
 
@@ -44,17 +44,17 @@ Also grep for the old version to catch any other mention, and update docs that s
 ## 4. Tag and start the build
 
 - **Full release:** `git tag -s vx.y.z -m "Apparition x.y.z"` then `git push origin vx.y.z`. The tag starts the full build (`.github/workflows/release.yml`). Do not also dispatch it.
-- **Partial release:** do **not** push a tag. A tag push always builds every part, so the tag would start a full build. Dispatch by hand instead: `gh workflow run release.yml -R illixion/Apparition -f version=x.y.z -f parts=<list>`, where `<list>` is a comma-separated subset of `app,macos,windows,linux`. The version must already be committed (see step 2 for which files). Step 5 creates the release with `--target` and makes the tag then.
-- If a tag was pushed by mistake, cancel the duplicate full run by its exact id (`gh run list --workflow release.yml`, then `gh run cancel <id>`).
+- **Partial release:** dispatch by hand: `gh workflow run release.yml -R illixion/Apparition -f version=x.y.z -f parts=<list>`, where `<list>` is a comma-separated subset of `app,macos,windows,linux`. The version must already be committed. Step 5 creates the release with `--target` and makes the tag then. A tag build now selects only components whose committed versions match the tag, so an app-only tag no longer tries to build old installers. An explicit dispatch still validates every requested part and fails early on mismatched versions.
+- Creating the tag during publication can still start a duplicate build. Cancel that run by its exact id (`gh run list --workflow release.yml`, then `gh run cancel <id>`); do not change a published release to repair a redundant run.
 - Get the run id with `gh run list --workflow release.yml -R illixion/Apparition --limit 3`.
 
-Wait for it in the background (`gh run watch <id> -R illixion/Apparition --exit-status --interval 60`, run_in_background). It takes about 45 minutes. Do not poll. If it fails, read the failing job's log (`gh run view <id> --log-failed`), report it, and stop. Do not publish a partial release.
+Wait for it in the background (`gh run watch <id> -R illixion/Apparition --exit-status --interval 60`, run_in_background). It takes about 45 minutes. Do not poll. If it fails, read the failing job's log (`gh run view <id> --log-failed`), report it, and stop. Never publish an incomplete set of the requested parts.
 
 ## 5. Check the build and create the draft release
 
 The release stays a **draft** until it is blessed: a draft is private, and (with immutable releases on) a published release's files and tag can never change, so nothing may go public before every file, including the signature, is on it.
 
-- The artifact name depends on how the run started: `release-vx.y.z` for a tag push (the version carries its `v`), but `release-x.y.z` for a hand-dispatched run (the workflow's `VERSION` is the `version` input as typed, no `v`). Check with `gh run view <id> -R illixion/Apparition --json artifacts` or the run page, then `gh run download <id> -R illixion/Apparition -n <name> -D build/release/x.y.z`.
+- The artifact name depends on how the run started: `release-vx.y.z` for a tag push (the version carries its `v`), but `release-x.y.z` for a hand-dispatched run (the workflow's `VERSION` is the `version` input as typed, no `v`). Check with `gh api repos/illixion/Apparition/actions/runs/<id>/artifacts` or the run page, then `gh run download <id> -R illixion/Apparition -n <name> -D build/release/x.y.z`.
 - A partial run uploads only the files of the parts it built. That is expected; check the set against the parts you asked for.
 - `for f in build/release/x.y.z/Apparition-*; do gh attestation verify "$f" -R illixion/Apparition; done`. Every file must verify.
 - Draft the release notes from the commit summary and show them to the user for approval.

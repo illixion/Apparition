@@ -80,7 +80,7 @@ cd "$ROOT"
 app_version="$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' project.yml | head -1)"
 installer_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' installer/Cargo.toml | head -1)"
 desktop_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop/Cargo.toml | head -1)"
-[[ "$app_version" == "$VERSION" ]] \
+{ ! has app || [[ "$app_version" == "$VERSION" ]]; } \
   || { echo "error: project.yml's MARKETING_VERSION is $app_version, not $VERSION; commit the bump first" >&2; exit 1; }
 { ! installers || [[ "$installer_version" == "$VERSION" ]]; } \
   || { echo "error: installer/Cargo.toml's version is $installer_version, not $VERSION; commit the bump first" >&2; exit 1; }

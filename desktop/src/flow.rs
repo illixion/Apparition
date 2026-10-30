@@ -189,15 +189,16 @@ pub(crate) fn installer_platform() -> &'static str {
 /// The official site, checked against the compiled-in release keys. A debug build may point
 /// at a scratch site and its own keys (APPARITION_RELEASE_SITE, APPARITION_RELEASE_SIGNERS);
 /// a release build can't.
-async fn latest_release() -> Result<release::Verified, Report> {
+async fn latest_release(platform: api::Platform) -> Result<release::Verified, Report> {
+    let platform = api::release_platform(platform);
     #[cfg(debug_assertions)]
     if let Ok(site) = std::env::var("APPARITION_RELEASE_SITE") {
         return match std::env::var("APPARITION_RELEASE_SIGNERS").ok().and_then(|path| std::fs::read_to_string(path).ok()) {
-            Some(signers) => release::latest_signed_by(&site, &signers).await,
-            None => release::latest(&site).await,
+            Some(signers) => release::latest_app_signed_by(&site, platform, &signers).await,
+            None => release::latest_app(&site, platform).await,
         };
     }
-    release::latest(release::SITE).await
+    release::latest_app(release::SITE, platform).await
 }
 
 #[tauri::command]
@@ -649,7 +650,7 @@ pub async fn prepare_latest(app: AppHandle, state: Shared<'_>, udid: String) -> 
         let platform = state.store.device(&udid).map(|d| d.platform()).unwrap_or(api::Platform::VisionOS);
         block_on(async {
             *state.app.lock().unwrap() = None;
-            let verified = latest_release().await?;
+            let verified = latest_release(platform).await?;
             let release = &verified.release;
             let size = verified.asset("app", api::release_platform(platform)).map(|a| a.size);
             let summary = json!({

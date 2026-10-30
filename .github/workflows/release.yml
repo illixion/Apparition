@@ -13,7 +13,7 @@
 # A fix that only touches the Apple apps needs only the IPAs: run it by hand with `parts` set to
 # "app" (the others are skipped, and project.yml is then the only version that must be bumped).
 # The release site lists such a release as the latest, and keeps offering the installers of the
-# last release that has them. A tag push always builds every part.
+# last release that has them. Tags build only parts whose committed versions match the tag.
 
 name: Release build
 
@@ -37,7 +37,7 @@ env:
   RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
-  # Which parts to build: every one for a tag push or `all`, else the ones `parts` lists. Each
+  # Tags select matching committed versions; dispatches build the requested parts. Each
   # job below takes its matrix from here and is skipped when its matrix is empty.
   plan:
     name: Plan
@@ -46,24 +46,14 @@ jobs:
       apple: ${{ steps.plan.outputs.apple }}
       linux: ${{ steps.plan.outputs.linux }}
     steps:
+      - uses: actions/checkout@v7
       - id: plan
         env:
           PARTS: ${{ inputs.parts }}
         run: |
-          [[ -z "$PARTS" || "$PARTS" == all ]] && PARTS=app,macos,windows,linux
-          wanted() { [[ ",${PARTS// /}," == *",$1,"* ]]; }
-          for part in ${PARTS//,/ }; do
-            case "$part" in app|macos|windows|linux) ;; *) echo "::error::no part called $part (app, macos, windows, linux)"; exit 1 ;; esac
-          done
-          apple='[]'
-          wanted app && apple=$(jq -c '. + [{part: "app", title: "Apps (visionOS, iOS, tvOS)", targets: "aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos", brew: "xcodegen"}]' <<< "$apple")
-          wanted macos && apple=$(jq -c '. + [{part: "macos", title: "macOS installer", targets: "aarch64-apple-darwin,x86_64-apple-darwin", brew: ""}]' <<< "$apple")
-          wanted windows && apple=$(jq -c '. + [{part: "windows", title: "Windows installer", targets: "x86_64-pc-windows-gnu", brew: "mingw-w64"}]' <<< "$apple")
-          linux='[]'
-          wanted linux && linux='[{"arch":"x86_64","runner":"ubuntu-24.04"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]'
-          echo "apple=$apple" >> "$GITHUB_OUTPUT"
-          echo "linux=$linux" >> "$GITHUB_OUTPUT"
-          echo "Building: $PARTS" | tee -a "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          python3 scripts/test-release-plan.py
+          python3 scripts/release-plan.py "$VERSION" "$PARTS" | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
 
   apple:
     name: ${{ matrix.title }}

@@ -874,7 +874,7 @@ async fn install(args: &[String]) -> Result<(), Error> {
 /// signature and hash check out.
 async fn latest_apparition(site: &str, dir: &Path, platform: api::Platform) -> Result<PathBuf, Error> {
     println!("Checking {site} for the latest Apparition…");
-    let verified = release::latest(site).await?;
+    let verified = release::latest_app(site, api::release_platform(platform)).await?;
     println!("Downloading Apparition {} (signed by {})…", verified.release.version, verified.signer);
     let shown = std::sync::atomic::AtomicU64::new(0);
     let path = api::download_apparition_for(&verified, platform, dir, |received, total| {
