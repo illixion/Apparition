@@ -130,10 +130,9 @@ struct RootView: View {
             } message: { failure in
                 Text(failure.message)
             }
-            // visionOS asks in JITRequestWindow: a dialog there can land out of reach.
-            .confirmationDialog("Enable JIT for \(library.pendingJITRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
-                                isPresented: Binding(get: { library.pendingJITRequest != nil }, set: { if !$0 { library.pendingJITRequest = nil } }),
-                                titleVisibility: .visible, presenting: library.pendingJITRequest) { request in
+            .alert("Enable JIT for \(library.pendingJITRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
+                   isPresented: Binding(get: { library.pendingJITRequest != nil }, set: { if !$0 { library.pendingJITRequest = nil } }),
+                   presenting: library.pendingJITRequest) { request in
                 Button("Enable JIT") { attach(request) }
                 Button("Cancel", role: .cancel) {}
             } message: { request in

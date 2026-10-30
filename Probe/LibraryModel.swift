@@ -206,11 +206,15 @@ final class LibraryModel {
         if dropped { save() }
     }
 
-    private func save() {
+    private func writeState(installed: [InstalledApp]) throws {
         let stored = Stored(sources: sources, installed: installed, refreshRuns: Array(refreshRuns.prefix(20)),
                             selfRecord: selfRecord, assignments: assignments)
+        try JSONEncoder().encode(stored).write(to: Self.stateURL, options: .atomic)
+    }
+
+    private func save() {
         do {
-            try JSONEncoder().encode(stored).write(to: Self.stateURL, options: .atomic)
+            try writeState(installed: installed)
             StateVault.sync()
         } catch {
             log.error("could not save library: \(String(describing: error), privacy: .private)")
@@ -657,13 +661,24 @@ final class LibraryModel {
     /// app itself stays on the device until its profile expires (or the user deletes it).
     /// Works while a refresh runs (a stuck one would otherwise keep a deleted app in the library);
     /// that run then leaves the record out.
-    func removeInstalled(_ id: String) {
-        guard let record = installed.first(where: { $0.id == id }) else { return }
+    func removeInstalled(_ id: String) throws {
+        let removed = installed.filter { $0.id == id }
+        let remaining = installed.filter { $0.id != id }
+        // Persist first, so a failed write cannot make the app appear removed until relaunch.
+        try writeState(installed: remaining)
         if busy { removedWhileBusy.insert(id) }
-        installed.removeAll { $0.id == id }
-        try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(record.ipaFile))
+        installed = remaining
+        StateVault.sync()
+        for file in Set(removed.map(\.ipaFile)) where !remaining.contains(where: { $0.ipaFile == file }) {
+            do {
+                try FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(file))
+            } catch let error as CocoaError where error.code == .fileNoSuchFile {
+                continue
+            } catch {
+                log.error("could not delete a removed app's kept copy: \(String(describing: error), privacy: .private)")
+            }
+        }
         account.refreshDownloads()
-        save()
         log.info("removed an app from the library")
     }
 
@@ -694,7 +709,13 @@ final class LibraryModel {
         save()
         log.info("removed \(bundleId, privacy: .private(mask: .hash)) for the app limit")
         if let managed = installed.first(where: { $0.installedBundleId == bundleId }) {
-            removeInstalled(managed.id)
+            do {
+                try removeInstalled(managed.id)
+            } catch {
+                appLimit?.removalError = "The app was removed from the device, but not from the library: \(error.localizedDescription)"
+                log.error("could not remove an app from the library: \(String(describing: error), privacy: .private)")
+                return
+            }
         }
         appLimit = nil
         await retry(limit.retry)
@@ -1384,6 +1405,7 @@ extension LibraryModel {
     /// Every foreground install reviews the downloaded archive, including updates and file imports.
     /// Refreshes use the persisted plan without presenting UI or enabling newly added extensions.
     private func reviewInstall(_ record: inout InstalledApp) async throws -> Bool {
+        guard !removedWhileBusy.contains(record.id) else { return false }
         let signer = signing.signer(for: record)
         let appleID = signer == SigningStore.appleID
         if appleID, let failure = await signInFailure() { throw IDevice.ProbeError(failure) }
@@ -1450,11 +1472,12 @@ extension LibraryModel {
             selected: record.selectedExtensions ?? (record.installedBundleId == nil ? [] : inventory.extensions.filter { !record.stripExtensions || !$0.extensionKit }.map(\.id)), unsupported: unsupported, candidates: ids?.appIds ?? [], available: ids?.availableQuantity, signingTeam: signingTeam,
             installed: probe.deviceApps, owners: owners, reserved: reserved, extensionOwners: extensionOwners,
             dataSource: record.takeOver ?? record.installedBundleId ?? previousAssignment.flatMap { installedOnDevice($0.target)?.bundleId } ?? installedOnDevice("\(inventory.id).\(team)")?.bundleId)
+        guard !removedWhileBusy.contains(record.id) else { return false }
         let decision = await withCheckedContinuation { continuation in
             reviewContinuation = continuation
             installReview = review
         }
-        guard let decision else { return false }
+        guard let decision, !removedWhileBusy.contains(record.id) else { return false }
         guard !reserved.contains(decision.target),
               (decision.target == target || (appleID && ids?.appIds.contains(where: { $0.identifier == decision.target }) == true)),
               decision.extensions.allSatisfy({ id in inventory.extensions.contains { $0.id == id && !unsupported.contains(id) } }) else {

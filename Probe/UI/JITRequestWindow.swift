@@ -39,7 +39,7 @@ extension LibraryModel.JITRequest {
 
 /// The "Enable JIT?" prompt for an app Apparition didn't install, or a JIT script, in a utility window. A
 /// confirmation dialog on visionOS is a popover anchored to the main window, which could land far
-/// to its right and out of reach, leaving the request to time out. iOS and tvOS keep the dialog.
+/// to its right and out of reach, leaving the request to time out. iOS and tvOS use an alert.
 /// It also says why a request couldn't be served (no pairing, a pairing the headset turned down,
 /// no companion), which iOS and tvOS show in an alert.
 struct JITRequestWindow: Scene {

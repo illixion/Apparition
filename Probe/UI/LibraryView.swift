@@ -18,15 +18,20 @@ struct LibraryView: View {
     /// The app whose JIT launch this screen started, to show its progress on the right card.
     @State private var jitAppId: String?
     @State private var downloadingArtifactID: String?
-    @State private var pendingRemoval: LibraryModel.InstalledApp?
-    /// The same removal, asked from the card's own button for an app that is gone from the device.
-    @State private var pendingMissingRemoval: LibraryModel.InstalledApp?
+    @State private var pendingRemoval: RemovalConfirmation?
+    @State private var removalError: String?
     @State private var confirmingSelfRefresh = false
     @State private var confirmingUpdate = false
     @State private var pickingFile = false
     @MainActor private static var listedThisLaunch = false
 
     private static let columns = [GridItem(.adaptive(minimum: 420, maximum: 640), spacing: 20)]
+
+    private struct RemovalConfirmation {
+        let appID: String
+        let token = UUID()
+        let deadline = Date().addingTimeInterval(10)
+    }
 
     /// Apps owned by a configured appstore project, identified by its registered bundle IDs.
     private var appstoreApps: [(app: ProbeModel.DeviceApp, project: BuildService.Project, target: BuildService.Target)] {
@@ -73,6 +78,13 @@ struct LibraryView: View {
                 .padding(32)
             }
             .task { await library.checkForUpdate() }
+            .task(id: pendingRemoval?.token) {
+                guard let confirmation = pendingRemoval else { return }
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled, pendingRemoval?.token == confirmation.token else { return }
+                pendingRemoval = nil
+            }
+            .onDisappear { pendingRemoval = nil }
             .task {
                 await service.restoreConnection()
                 if service.connected { await service.refresh() }
@@ -102,6 +114,11 @@ struct LibraryView: View {
                 Button("Refresh and Reinstall") { Task { await library.refreshSelf() } }
             } message: {
                 Text("Apparition signs itself again with \(library.signing.signerName(library.selfSigner)) and hands the update to \(ThisDevice.os), keeping its data. The update applies when you close Apparition, like an App Store update.")
+            }
+            .alert("Couldn't Remove from Library", isPresented: Binding(get: { removalError != nil }, set: { if !$0 { removalError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(removalError ?? "")
             }
         }
     }
@@ -641,6 +658,7 @@ struct LibraryView: View {
                 .focusRow()
                 result(app)
                 if library.isMissingFromDevice(app) { missingFromDevice(app) }
+                else if pendingRemoval?.appID == app.id { removalButton(app) }
                 if let jit = jitStatus(app) { jit }
                 actions(app, listing: listing)
             }
@@ -680,14 +698,39 @@ struct LibraryView: View {
     private func missingFromDevice(_ app: LibraryModel.InstalledApp) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Note(text: "\(app.name) isn't on this \(ThisDevice.noun) any more. Refresh installs it again; remove it to stop keeping it.", kind: .warning)
-            Button("Remove from Library", systemImage: "trash", role: .destructive) { pendingMissingRemoval = app }
-                .buttonStyle(.bordered)
-                .focusRow()
-                .confirmation("Remove \(app.name) from the library?", item: $pendingMissingRemoval, for: app.id) { app in
-                    Button("Remove", role: .destructive) { library.removeInstalled(app.id) }
-                } message: { _ in
-                    Text("Apparition stops refreshing it and deletes its kept copy.")
+            removalButton(app)
+        }
+    }
+
+    private func removalButton(_ app: LibraryModel.InstalledApp) -> some View {
+        let confirming = pendingRemoval?.appID == app.id
+        return VStack(alignment: .leading, spacing: 8) {
+            Button(role: .destructive) {
+                if let confirmation = pendingRemoval, confirmation.appID == app.id,
+                   Date() < confirmation.deadline {
+                    pendingRemoval = nil
+                    do {
+                        try library.removeInstalled(app.id)
+                    } catch {
+                        removalError = "The library couldn't be saved. \(error.localizedDescription)"
+                        log.error("could not remove an app from the library: \(String(describing: error), privacy: .private)")
+                    }
+                } else {
+                    pendingRemoval = RemovalConfirmation(appID: app.id)
                 }
+            } label: {
+                Label(confirming ? "Are you sure? Remove" : "Remove from Library", systemImage: "trash")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .focusRow()
+            if confirming {
+                Text(library.isMissingFromDevice(app)
+                     ? "Apparition stops refreshing it and deletes its kept copy."
+                     : "Apparition stops refreshing it and deletes its kept copy. The app stays on this \(ThisDevice.noun); delete it from the \(ThisDevice.home) to remove it now.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -769,18 +812,14 @@ struct LibraryView: View {
             }
             .pickerStyle(.menu)
             Divider()
-            Button("Remove from Library", systemImage: "trash", role: .destructive) { pendingRemoval = app }
+            Button("Remove from Library", systemImage: "trash", role: .destructive) {
+                pendingRemoval = RemovalConfirmation(appID: app.id)
+            }
         } label: {
             Image(systemName: "ellipsis")
                 .frame(width: 32, height: 32)
         }
         .menuStyle(.button)
-        // On the menu, so iOS's popover points at the row's button rather than the list.
-        .confirmation("Remove \(app.name) from the library?", item: $pendingRemoval, for: app.id) { app in
-            Button("Remove", role: .destructive) { library.removeInstalled(app.id) }
-        } message: { _ in
-            Text("Apparition stops refreshing it and deletes its kept copy. The app stays on this \(ThisDevice.noun) until its profile expires; delete it from the \(ThisDevice.home) to remove it now.")
-        }
         .buttonBorderShape(.circle)
         .help("More")
     }
