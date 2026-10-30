@@ -737,6 +737,19 @@ The header corner of the desktop app always says where this computer's sign-in g
 (built-in, Docker or another server) and what the companion offers, so a screenshot shows the
 setup.
 
+### Why sign-in stopped in October 2026
+
+From about 29 October Apple refused the anisette the built-in provider makes: provisioning
+(`gsd.apple.com`) and sign-in (`gsa.apple.com`) answered an HTML `403 Forbidden` with no Apple
+error code. It looked like Apple had stopped accepting the Android libraries' anisette, and for
+a day it was worked around by choosing a different Apple server, since the first servers to
+refuse were only some of them. On 30 October it was traced to the request's `Content-Type`:
+Apple's servers reject the legacy `text/x-xml-plist` at provisioning, and (the opposite way)
+`application/x-xml-plist` at sign-in. `text/xml` passes both, Apple parses the body the same and
+answers as usual. With that one header the same anisette is accepted, so it never was the
+anisette, the serial or the network. Apple may change the rule again; the same symptom would be
+a 403 before any Apple error code.
+
 ### When Apparition can't fetch Apple's libraries
 
 The built-in anisette needs two libraries, `libstoreservicescore.so` and `libCoreADI.so`, from
@@ -754,19 +767,6 @@ Apple's CDN". Work through this in order:
 
        apparition anisette import ~/Downloads/applemusic.apk
        apparition anisette import libstoreservicescore.so libCoreADI.so
-### Why sign-in stopped in October 2026
-
-From about 29 October Apple refused the anisette the built-in provider makes: provisioning
-(`gsd.apple.com`) and sign-in (`gsa.apple.com`) answered an HTML `403 Forbidden` with no Apple
-error code. It looked like Apple had stopped accepting the Android libraries' anisette, and for
-a day it was worked around by choosing a different Apple server, since the first servers to
-refuse were only some of them. On 30 October it was traced to the request's `Content-Type`:
-Apple's servers reject the legacy `text/x-xml-plist` at provisioning, and (the opposite way)
-`application/x-xml-plist` at sign-in. `text/xml` passes both, Apple parses the body the same and
-answers as usual. With that one header the same anisette is accepted, so it never was the
-anisette, the serial or the network. Apple may change the rule again; the same symptom would be
-a 403 before any Apple error code.
-
 
    Either the Apple Music APK for Android, or both libraries from its `lib/arm64-v8a` or
    `lib/x86_64` folder (the one for this computer's processor). What you give replaces what
