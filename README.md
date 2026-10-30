@@ -14,16 +14,6 @@ computer at all.
   <img src="docs/images/desktop.png" height="420" alt="The desktop app's welcome screen">
 </p>
 
-> [!IMPORTANT]
-> **Signing in with a free Apple ID needs a Mac's anisette since October 2026.** Apple now refuses
-> the anisette Apparition's built-in provider makes on iPhone, iPad, Apple TV, Vision Pro and
-> Linux. Two ways to fix it, in [Anisette](#anisette):
-> - **Quick:** enter the URL of a third-party anisette server. Works today, but could stop.
-> - **Reliable:** serve anisette from a macOS VM you host
->   ([guide, about 20 minutes](docs/ANISETTE_VM.md)), or from a Mac on macOS 26 or earlier.
->
-> A paid developer certificate doesn't sign in at all, so it isn't affected.
-
 ## What it does
 
 - **Install apps** from AltStore and SideStore sources, from a GitHub project's releases
@@ -674,29 +664,14 @@ for bundle creation, NixOS/Fusion USB setup, permissions and current integration
 
 ## Anisette
 
-> [!IMPORTANT]
-> **A free Apple ID's sign-in now needs anisette that Apple accepts, and Apparition's built-in
-> provider no longer makes it.** By 29 October 2026 Apple refuses the anisette made
-> from the Apple Music for Android libraries (the built-in provider on iPhone, iPad, Apple TV,
-> Vision Pro and Linux; it is still in the app, and still used where Apple accepts it). Pick one
-> of two paths:
->
-> **1. A third-party anisette server: quick, but it may stop working.** Enter the URL of an
-> anisette-v3 server under Anisette (Setup on a device, or the desktop app). Servers built on
-> Apple's own Mac library work today and take a minute to set up. Apple has tightened
-> what it accepts several times this month, so one could stop signing in with no warning, and
-> you rely on someone else's server (it sees this device's anisette identity and IP address,
-> never your Apple ID or password). Apparition ships and endorses none and gives out no
-> addresses; the sideloading community keeps lists.
->
-> **2. Your own macOS VM: the most reliable, but it takes about 20 minutes to set up.**
-> **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)** walks through it. It's a
-> real Mac's anisette on your own machine, so nothing leaves your network and no one else's
-> server has to keep working. A **Mac on macOS 26 or earlier** can skip the VM and serve its
-> own anisette: the companion does it with no setup.
->
-> A **paid** developer certificate avoids sign-in, and anisette, entirely (see
-> [Your own developer certificate](#your-own-developer-certificate)).
+> [!NOTE]
+> **Sign-in works with the built-in anisette again (from 0.4.3).** From 29 October 2026 Apple
+> refused it, and for a day or so nothing but a Mac's anisette signed in. The anisette was never
+> the problem: Apple had put a firewall rule in front of its sign-in servers that rejected the
+> `Content-Type` sideloaders have always sent, so the request was turned away before Apple looked
+> at it. Apparition sends `text/xml` now and Apple accepts the Android libraries' anisette as
+> before. A Mac's anisette, a macOS VM or a third-party server still work, if you prefer one.
+> Details [below](#why-sign-in-stopped-in-october-2026).
 
 Signing in to Apple needs "anisette" data that identifies the computer. On macOS and Linux
 (arm64 and x86_64) the installer makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
@@ -706,16 +681,15 @@ wherever you prefer it, use a server: Apparition ships none, so enter the URL of
 any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
 up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
 digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
-and IP address, never the Apple ID or password, which go straight to Apple.
+and IP address, never the Apple ID or password, which go straight to Apple. A third-party
+server is optional now; use one only if you'd rather not have the built-in one.
 
 **Since 12 October 2026 Apple checks that the anisette matches the device the sign-in claims
 to be**, and refuses the sign-in (`-80045`, "This action cannot be completed at this time")
 when it doesn't. isideload, like most sideloaders, claimed a Mac while sending the Android
 libraries' anisette. Apparition claims Android for that anisette (`core/src/claimed_platform.rs`),
-which Apple accepted, with the fixes below, until late October 2026; **by 29 October it refuses
-that anisette outright** (an HTML 403, or a 503 to any request that declares Android), so the
-Android-library provider no longer signs in, and a Mac's anisette (above) is needed. Where the libraries are still
-used — a server that makes its anisette with them, say — the claim still follows the server
+which Apple accepts. Where the libraries are used — a server that makes its anisette with them,
+say — the claim still follows the server
 (`Claim::after_sign_in`; Dadoum's anisette-v3-server reports a Mac but runs those libraries, so it
 gets the Android claim, while jkcoxson's native-c server reports a Mac and is claimed a Mac). A
 sign-in Apple asks a 2FA code for goes through the usual prompt; one it doesn't is asked for the
@@ -729,7 +703,7 @@ claims a Mac and goes through the usual 2FA (`core/src/anisette/native.rs`):
 - **macOS 27:** only programs with AuthKit's private entitlements get it. The release ships
   `apparition-anisette-helper` signed with them, next to `apparition` and inside the app, and
   macOS runs it only with SIP off and `sudo nvram boot-args="amfi_get_out_of_my_way=1"`.
-  Otherwise the Android libraries are used, which no longer sign in (above).
+  Otherwise the Android libraries are used, which sign in as before.
 
 In a **macOS virtual machine**, Apple also needs the host's attestation, which the helper forwards
 along with the rest of AuthKit's headers; it's only valid inside a desktop session, so the server
@@ -752,12 +726,12 @@ Desktop, OrbStack or Colima), from the desktop app's Companion tab or `apparitio
 --anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
 anisette server" next to the companion; nothing switches on its own.
 
-Some of Apple's servers turn some networks away: sign-in then fails "403 Forbidden", and which
-server you reach depends on your DNS (from one network, Cloudflare's 1.1.1.1 led to one that
-refused, the router's DNS didn't). Apparition notices, avoids that server for an hour and
-tries another, looked up over DNS-over-HTTPS (Google's and Cloudflare's) if your own DNS knows no
-other. Only that lookup goes elsewhere, never the Apple ID. If every server it finds refuses, the
-error says so; try another network, or set the computer's DNS to the router's.
+Apple's servers sometimes refuse a request that another one would take: sign-in then fails "403
+Forbidden". Apparition retries on another server (`core/vendor/isideload/src/auth/edge.rs`): it
+avoids the server that refused for an hour and asks another, looked up over DNS-over-HTTPS (Google's
+and Cloudflare's) if your own DNS knows no other, and does the same once when a server can't be
+connected to. Only that lookup goes elsewhere, never the Apple ID. If every server it finds
+refuses, the error says so; try again later or on another network.
 
 The header corner of the desktop app always says where this computer's sign-in gets its anisette
 (built-in, Docker or another server) and what the companion offers, so a screenshot shows the
@@ -780,6 +754,19 @@ Apple's CDN". Work through this in order:
 
        apparition anisette import ~/Downloads/applemusic.apk
        apparition anisette import libstoreservicescore.so libCoreADI.so
+### Why sign-in stopped in October 2026
+
+From about 29 October Apple refused the anisette the built-in provider makes: provisioning
+(`gsd.apple.com`) and sign-in (`gsa.apple.com`) answered an HTML `403 Forbidden` with no Apple
+error code. It looked like Apple had stopped accepting the Android libraries' anisette, and for
+a day it was worked around by choosing a different Apple server, since the first servers to
+refuse were only some of them. On 30 October it was traced to the request's `Content-Type`:
+Apple's servers reject the legacy `text/x-xml-plist` at provisioning, and (the opposite way)
+`application/x-xml-plist` at sign-in. `text/xml` passes both, Apple parses the body the same and
+answers as usual. With that one header the same anisette is accepted, so it never was the
+anisette, the serial or the network. Apple may change the rule again; the same symptom would be
+a 403 before any Apple error code.
+
 
    Either the Apple Music APK for Android, or both libraries from its `lib/arm64-v8a` or
    `lib/x86_64` folder (the one for this computer's processor). What you give replaces what

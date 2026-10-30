@@ -361,7 +361,7 @@ pub fn reset_anisette_libraries(data_dir: &std::path::Path) -> Result<(), Report
 ///   ([`import_anisette_libraries`] is the other way);
 /// - `"checksum"`: a library file given to [`import_anisette_libraries`] isn't the version this
 ///   build was tested with; the person may go on anyway;
-/// - `"network"`: Apple's servers couldn't be reached, or turned this network away (a retry may
+/// - `"network"`: Apple's servers couldn't be reached, or refused a request (a retry may
 ///   work, on this network or another).
 pub fn failure_kind(error: &Report) -> Option<&'static str> {
     error.iter_reports().find_map(|cause| {
@@ -1444,7 +1444,7 @@ mod refusal_text_tests {
         }
         // The first request found the refusal itself; the second never reached the server.
         println!("--- first attempt:\n{}\n--- second attempt (the server is avoided now):\n{}", seen[0], seen[1]);
-        assert!(seen[0].contains("turned this network away") || seen[0].contains("Every Apple server found"), "{}", seen[0]);
+        assert!(seen[0].contains("refused the request") || seen[0].contains("Every Apple server found"), "{}", seen[0]);
         assert!(seen[1].contains("Every Apple server found"), "{}", seen[1]);
         assert!(!seen[1].contains("error sending request for url"), "raw reqwest wording leaked: {}", seen[1]);
     }

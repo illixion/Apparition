@@ -1,13 +1,13 @@
 # Self-hosting anisette in a macOS virtual machine
 
-Signing in to Apple needs **anisette** data that identifies the computer. Since October 2026
-Apple only accepts anisette that comes from a real Mac (or a macOS virtual machine); the data
-third-party sideloaders used to generate is now refused for sign-in. The most reliable, fully
-self-hosted way to get Mac anisette, without a spare physical Mac, is a small macOS virtual
-machine that you run yourself: nothing leaves your network, and there is no third party involved.
+Signing in to Apple needs **anisette** data that identifies the computer. Apparition makes its
+own, which Apple accepts (a short-lived refusal in late October 2026 was a request header, fixed
+in 0.4.3; see [Anisette](../README.md#anisette)). If you'd still rather have a real Mac's
+anisette, the most reliable, fully self-hosted way, without a spare physical Mac, is a small macOS
+virtual machine that you run yourself: nothing leaves your network, and there is no third party
+involved.
 
-> You only need this if you sign in with an Apple ID and don't already have a Mac on macOS 26 or
-> earlier to serve anisette. With a **paid** developer certificate and profile you don't sign in
+> You don't need this to sign in with an Apple ID. With a **paid** developer certificate and profile you don't sign in
 > at all, and third-party anisette servers remain supported if you'd rather use one — see
 > [Anisette](../README.md#anisette).
 
