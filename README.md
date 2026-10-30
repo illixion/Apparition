@@ -605,8 +605,12 @@ it lists them and frees one only after you type `revoke` or `delete`. It drives 
 headset paired with one is paired with both. Passwords go from the app's own fields to the
 core and nowhere else.
 
-The desktop app checks for updates on launch and every six hours, including while running
-from the tray. A badge on its tray/menu-bar icon, an entry in that menu, and a persistent
+Desktop update checks are **off by default**, including for existing installations.
+Choose automatic checks on step 6, **Done**, or with the **Companion > Updates** toggle.
+When enabled, the app contacts apparition.illixion.com on launch and every six hours,
+including while running from the tray, for releases hosted on GitHub. When off, **Get started**
+offers a one-time check without enabling future checks; declining makes no update request.
+A badge on its tray/menu-bar icon, an entry in that menu, and a persistent
 banner in every app view announce an update. **Update & restart** downloads and installs
 it only when clicked; the companion briefly stops while restarting. **Check for Updates**
 in the tray menu retries a check manually. Development builds are never replaced.

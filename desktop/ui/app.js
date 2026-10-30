@@ -1,6 +1,6 @@
 // @ts-check
 import { DeveloperView } from './developer.js';
-import { UpdateBanner } from './updater.js';
+import { UpdateBanner, UpdatePreferences } from './updater.js';
 // Apparition's page: the install wizard and the Companion view. Every action is a Rust command
 // (see src/flow.rs and src/companion.rs); this page only shows steps and collects answers. Passwords are read from their field, sent with the
 // command and cleared from the field at once; nothing here stores them.
@@ -38,6 +38,8 @@ const state = {
 };
 
 const panel = /** @type {HTMLElement} */ (document.getElementById("panel"));
+const updateDialog = /** @type {HTMLDialogElement} */ (document.getElementById("update-consent"));
+const updatePreferences = new UpdatePreferences(document, updateDialog, invoke);
 
 // ------------------------------------------------------------ helpers
 
@@ -198,7 +200,10 @@ function render() {
 function welcome() {
   const view = template("t-welcome");
   panel.append(view);
-  panel.querySelector('[data-go="headset"]')?.addEventListener("click", () => go("headset"));
+  panel.querySelector('[data-go="headset"]')?.addEventListener("click", async () => {
+    await updatePreferences.beforeStart();
+    go("headset");
+  });
 }
 
 // ------------------------------------------------------------ 2. find the headset
@@ -1180,6 +1185,7 @@ async function showSlots(box, slot, retry, sample, manager = false) {
 
 function done() {
   panel.append(template("t-done"));
+  updatePreferences.draw();
   const result = state.result ?? {};
   const isApparition = result.isApparition ?? (result.bundleId ?? "").startsWith("com.illixion.apparition");
   const name = isApparition ? "Apparition" : result.label ?? result.bundleId;
@@ -1429,6 +1435,7 @@ tabDeveloper.addEventListener("click", () => showView("developer"));
 
 function buildCompanion() {
   companionPanel.append(template("t-companion"));
+  updatePreferences.draw();
   const where = state.info.platform === "macos-universal" ? "menu bar" : "tray";
   companionPanel.querySelectorAll('[data-role="where"]').forEach((el) => (el.textContent = where));
   $(companionPanel, "windows-firewall").hidden = !state.info.platform.startsWith("windows");
@@ -1560,8 +1567,10 @@ async function start() {
   setInterval(refreshCompanion, 5000);
 
   const updates = new UpdateBanner(
-    /** @type {HTMLElement} */ (document.getElementById("update")), invoke, () => state.busy || dialog.open,
+    /** @type {HTMLElement} */ (document.getElementById("update")), invoke, () => state.busy || dialog.open || updateDialog.open,
   );
+  await updatePreferences.ready;
+  await listen("auto-updates-changed", (/** @type {any} */ e) => updatePreferences.draw(e.payload));
   await listen("desktop-update", (/** @type {any} */ e) => updates.draw(e.payload));
   updates.draw(await invoke("update_status"));
 

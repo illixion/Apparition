@@ -133,6 +133,9 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), Report> {
     let Ok(_guard) = state.operation.try_lock() else {
         return Ok(());
     };
+    if !manual && !app.state::<std::sync::Arc<companion::CompanionState>>().auto_updates() {
+        return Ok(());
+    }
     let installation = installation(app)?;
     // Keep an already announced update (and its badge) on transient network failures.
     let candidate = release::latest_installer(
@@ -221,14 +224,28 @@ pub fn request_check(app: &AppHandle) {
     });
 }
 
+pub fn request_automatic_check(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = check(&app, false).await;
+    });
+}
+
 #[tauri::command]
 pub fn update_status(state: tauri::State<'_, Updates>) -> Status {
     state.status.lock().unwrap().clone()
 }
 
 #[tauri::command]
-pub fn check_update(app: AppHandle) {
-    request_check(&app);
+pub async fn check_update(app: AppHandle) -> Result<Status, Failure> {
+    if let Err(error) = check(&app, true).await {
+        let mut status = app.state::<Updates>().status.lock().unwrap().clone();
+        status.phase = "error";
+        status.message = format!("Couldn't check for updates: {}", api::describe(&error));
+        publish(&app, status);
+        return Err(error.into());
+    }
+    Ok(app.state::<Updates>().status.lock().unwrap().clone())
 }
 
 #[tauri::command]

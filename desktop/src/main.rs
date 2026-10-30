@@ -79,6 +79,8 @@ fn main() {
             flow::list_app_ids,
             flow::delete_app_id,
             companion::companion_status,
+            companion::auto_updates,
+            companion::set_auto_updates,
             companion::companion_set_relay,
             companion::companion_set_anisette,
             companion::companion_docker,

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::flow::Failure;
@@ -52,13 +52,14 @@ pub enum AnisetteMode {
 struct Settings {
     relay: bool,
     anisette: AnisetteMode,
+    auto_updates: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         // The relay is what Apparition on a device needs to do anything, so it's on unless
         // turned off; serving anisette to the network is a choice the user makes.
-        Self { relay: true, anisette: AnisetteMode::Off }
+        Self { relay: true, anisette: AnisetteMode::Off, auto_updates: false }
     }
 }
 
@@ -82,6 +83,25 @@ struct TrayItems {
 type Shared<'a> = tauri::State<'a, Arc<CompanionState>>;
 
 impl CompanionState {
+    pub fn auto_updates(&self) -> bool {
+        self.settings.lock().unwrap().auto_updates
+    }
+
+    fn set_auto_updates(&self, on: bool) -> Result<(), Failure> {
+        let mut settings = self.settings.lock().unwrap();
+        let mut next = settings.clone();
+        next.auto_updates = on;
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).map_err(|error| Failure::new(error.to_string()))?;
+        }
+        let mut file = tempfile::NamedTempFile::new_in(self.path.parent().unwrap())
+            .map_err(|error| Failure::new(error.to_string()))?;
+        serde_json::to_writer_pretty(&mut file, &next).map_err(|error| Failure::new(error.to_string()))?;
+        file.persist(&self.path).map_err(|error| Failure::new(error.to_string()))?;
+        *settings = next;
+        Ok(())
+    }
+
     pub fn new(store: &api::DeviceStore) -> Self {
         let path = store.dir.join("companion.json");
         let settings = std::fs::read(&path).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
@@ -97,11 +117,11 @@ impl CompanionState {
     }
 
     fn save(&self) {
-        let settings = self.settings.lock().unwrap().clone();
+        let settings = self.settings.lock().unwrap();
         if let Some(dir) = self.path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(&self.path, serde_json::to_vec_pretty(&settings).unwrap_or_default());
+        let _ = std::fs::write(&self.path, serde_json::to_vec_pretty(&*settings).unwrap_or_default());
     }
 
     /// Brings what runs in line with the settings: starts or stops the relay, and the
@@ -317,6 +337,21 @@ pub fn hide_window(app: &AppHandle) {
 // MARK: Commands
 
 #[tauri::command]
+pub fn auto_updates(state: Shared<'_>) -> bool {
+    state.auto_updates()
+}
+
+#[tauri::command]
+pub fn set_auto_updates(app: AppHandle, state: Shared<'_>, on: bool) -> Result<bool, Failure> {
+    state.set_auto_updates(on)?;
+    let _ = app.emit("auto-updates-changed", on);
+    if on {
+        crate::updater::request_automatic_check(&app);
+    }
+    Ok(on)
+}
+
+#[tauri::command]
 pub async fn companion_status(state: Shared<'_>) -> Result<Value, Failure> {
     Ok(state.status().await)
 }
@@ -368,4 +403,35 @@ pub fn set_launch_at_login(app: AppHandle, on: bool) -> Result<bool, Failure> {
     let result = if on { manager.enable() } else { manager.disable() };
     result.map_err(|error| Failure::new(format!("Couldn't change the login item: {error}")))?;
     Ok(manager.is_enabled().unwrap_or(on))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_consent_is_opt_in_for_new_and_existing_settings() {
+        assert!(!Settings::default().auto_updates);
+        let old: Settings = serde_json::from_str(r#"{"relay":false,"anisette":"local"}"#).unwrap();
+        assert!(!old.auto_updates);
+        assert!(!old.relay);
+        assert_eq!(old.anisette, AnisetteMode::Local);
+    }
+
+    #[test]
+    fn update_consent_persists_without_changing_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = api::DeviceStore { dir: dir.path().to_path_buf() };
+        let state = CompanionState::new(&store);
+        for on in [true, false] {
+            state.set_auto_updates(on).unwrap();
+            let reloaded = CompanionState::new(&store);
+            assert_eq!(reloaded.auto_updates(), on);
+            assert!(reloaded.settings.lock().unwrap().relay);
+        }
+        std::fs::remove_file(&state.path).unwrap();
+        std::fs::create_dir(&state.path).unwrap();
+        assert!(state.set_auto_updates(true).is_err());
+        assert!(!state.auto_updates());
+    }
 }

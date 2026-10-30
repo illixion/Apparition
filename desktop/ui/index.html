@@ -96,6 +96,13 @@
     </div>
 
     <div class="group">
+      <h2 class="small">Updates</h2>
+      <label class="check"><input type="checkbox" role="switch" data-role="auto-updates"><span>Automatically check for desktop updates</span></label>
+      <p class="hint">Off unless you choose it. When enabled, Apparition contacts apparition.illixion.com on launch and every six hours for releases hosted on GitHub. Installing a verified update always needs your click.</p>
+      <p class="status error" data-role="update-preferences-status" hidden></p>
+    </div>
+
+    <div class="group">
       <h2 class="small">Quitting</h2>
       <p class="hint">Closing this window keeps the companion running; open Apparition again to get back here. Quitting stops the relay and the anisette server.</p>
       <div class="row"><button type="button" class="button quiet small" data-role="quit">Quit Apparition</button></div>
@@ -416,6 +423,12 @@
       <h2 class="small">Next, on the device</h2>
       <ol class="howto" data-role="next"></ol>
       <p class="hint" data-role="extra" hidden></p>
+      <div class="group">
+        <h2 class="small">Keep this computer's Apparition up to date</h2>
+        <label class="check"><input type="checkbox" role="switch" data-role="auto-updates"><span>Automatically check for desktop updates</span></label>
+        <p class="hint">Updates help Apparition keep working when Apple changes its services. Choose to check apparition.illixion.com on launch and every six hours for releases hosted on GitHub. Off by default; updates are only downloaded and installed when you click Update &amp; restart. You can change this in Companion.</p>
+        <p class="status error" data-role="update-preferences-status" hidden></p>
+      </div>
     </div>
     <figure class="apparition" aria-hidden="true">
       <div class="aura"></div>
@@ -433,6 +446,18 @@
 </template>
 
 <!-- ============================================================ prompts -->
+
+<dialog id="update-consent" class="prompt" aria-labelledby="update-consent-title" aria-describedby="update-consent-text">
+  <form method="dialog">
+    <h2 id="update-consent-title">Check for an update before starting?</h2>
+    <p class="hint" id="update-consent-text">Automatic update checks are off. Timely updates help Apparition keep working when Apple changes its services. Check apparition.illixion.com once for a signed desktop release hosted on GitHub? This does not enable automatic checks or download an update.</p>
+    <p class="status" data-role="check-status" aria-live="polite" hidden></p>
+    <div class="row end">
+      <button type="button" class="button quiet" data-role="skip-check" autofocus>Continue without checking</button>
+      <button type="button" class="button primary" data-role="check-once">Check once</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="prompt" class="prompt" aria-labelledby="prompt-title">
   <form method="dialog" id="prompt-form" autocomplete="off">
