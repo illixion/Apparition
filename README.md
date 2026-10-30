@@ -676,7 +676,7 @@ for bundle creation, NixOS/Fusion USB setup, permissions and current integration
 
 > [!IMPORTANT]
 > **A free Apple ID's sign-in now needs anisette that Apple accepts, and Apparition's built-in
-> provider no longer makes it.** Since about 14 October 2026 Apple refuses the anisette made
+> provider no longer makes it.** By 29 October 2026 Apple refuses the anisette made
 > from the Apple Music for Android libraries (the built-in provider on iPhone, iPad, Apple TV,
 > Vision Pro and Linux; it is still in the app, and still used where Apple accepts it). Pick one
 > of two paths:
@@ -712,9 +712,9 @@ and IP address, never the Apple ID or password, which go straight to Apple.
 to be**, and refuses the sign-in (`-80045`, "This action cannot be completed at this time")
 when it doesn't. isideload, like most sideloaders, claimed a Mac while sending the Android
 libraries' anisette. Apparition claims Android for that anisette (`core/src/claimed_platform.rs`),
-which Apple accepted until mid-October 2026; **since about 14 October it refuses that anisette
-outright** (an HTML 403, or a 503 to any request that declares Android), so the Android-library
-provider no longer signs in, and a Mac's anisette (above) is needed. Where the libraries are still
+which Apple accepted, with the fixes below, until late October 2026; **by 29 October it refuses
+that anisette outright** (an HTML 403, or a 503 to any request that declares Android), so the
+Android-library provider no longer signs in, and a Mac's anisette (above) is needed. Where the libraries are still
 used — a server that makes its anisette with them, say — the claim still follows the server
 (`Claim::after_sign_in`; Dadoum's anisette-v3-server reports a Mac but runs those libraries, so it
 gets the Android claim, while jkcoxson's native-c server reports a Mac and is claimed a Mac). A
