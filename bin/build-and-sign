@@ -795,7 +795,7 @@ if [[ "$SIGN_ONLY" == false ]]; then
         # patched; debugtrace-inject says so and asks for INJECT_SCOPE=all.
         if [[ "${INJECT_BACKEND:-dynamic}" == apparition ]]; then
             XCB_ARGS+=(ENABLE_TESTABILITY=YES DEAD_CODE_STRIPPING=NO
-                       'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-private-imports')
+                       'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-private-imports -save-optimization-record')
         elif [[ "${INJECT_SCOPE:-all}" == app ]]; then
             XCB_ARGS+=(DEAD_CODE_STRIPPING=NO
                        'DTINJECT_TESTABILITY_app=YES' 'ENABLE_TESTABILITY=$(DTINJECT_TESTABILITY_$(WRAPPER_EXTENSION))'
@@ -825,7 +825,6 @@ if [[ "$SIGN_ONLY" == false ]]; then
         xcodebuild -quiet "${XCB_ARGS[@]}" build >>"$LOG_FILE" 2>&1
     fi
     echo "  Build succeeded."
-    node "$MANIFEST_TOOL" snapshot "$PROJECT_ROOT" "$SOURCE_AFTER" "$WORK_DIR/build-arguments"
 
     # --- Locate the product ------------------------------------------------
     # Globbing DerivedData for the .app has now failed three separate ways,
@@ -901,10 +900,13 @@ print(bs.get("PROJECT_DIR", ""))
             exit 1
         fi
         "$INJECT_TOOL" capture --log "$LOG_FILE" --out "$BUILD_DIR/inject" --root "$PROJECT_ROOT" \
-            --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" --scope "${INJECT_SCOPE:-all}" --backend "${INJECT_BACKEND:-dynamic}" >>"$LOG_FILE" 2>&1 \
+            --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" --scope "${INJECT_SCOPE:-all}" --backend "${INJECT_BACKEND:-dynamic}" --optimization-records "$DERIVED_DATA_PATH/Build/Intermediates.noindex" >>"$LOG_FILE" 2>&1 \
             || { echo "ERROR: could not record the build for live patching (see $LOG_FILE)" >&2; exit 1; }
         INJECT_DIR="$BUILD_DIR/inject"
     fi
+    # Capture first collects compiler-generated optimizer records out of source
+    # directories, so they cannot look like source edits in the provenance check.
+    node "$MANIFEST_TOOL" snapshot "$PROJECT_ROOT" "$SOURCE_AFTER" "$WORK_DIR/build-arguments"
     # An earlier bas embedded the runtime into DerivedData's product itself,
     # where an incremental build without --inject kept it.
     rm -f "$APP_PATH/Frameworks/DebugTraceInject.dylib"

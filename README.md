@@ -354,3 +354,11 @@ Apparition CLI with `inject` support. The CLI verifies the live session, attache
 for the native entry backend, signs patches, requests device approval and detaches.
 No build or installation occurs. Native and desktop Apparition expose this as
 **Patch running app**, with the usual device code-change approval.
+
+Apparition backend builds now save optimizer remarks and collect them into
+`build/inject/optimization-records/` before the final provenance snapshot. Query
+observed inline/specialization dependencies with DebugTrace's `debugtrace-inject
+callers --dir build/inject --file Sources/Model.swift --line 42 --transitive`.
+These are incomplete observations, including retained incremental records; they
+do not authorize patching arbitrary optimized functions. Existing boundaries and
+ABI restrictions remain in force.
