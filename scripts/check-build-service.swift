@@ -50,12 +50,25 @@ enum ThisDevice { static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [
         precondition(service.devices(for: kept) == ["AVP"])
         let profiles = await service.resignProfiles()
         precondition(profiles.map(\.id) == ["fixture-dev"], "expired profiles are not offered")
-        let queued = await service.resign(kept, device: "AVP", profile: profiles[0], keepData: false, dryRun: true)
+        let queued = await service.resign(.kept(kept), device: "AVP", profile: profiles[0], keepData: false, dryRun: true)
         precondition(queued?.id == 2 && service.state?.builds.count == 2, service.message)
+        precondition(service.state?.builds.first { $0.id == 2 }?.kind == "Re-sign check")
         // The service's own sentence reaches the person, not a bare status code.
         let refused = BuildService.ResignProfile(id: "refused", name: "x", appId: "x", expired: false, debuggable: true)
-        let none = await service.resign(kept, device: "AVP", profile: refused, keepData: true, dryRun: false)
+        let none = await service.resign(.kept(kept), device: "AVP", profile: refused, keepData: true, dryRun: false)
         precondition(none == nil && service.message == "No configured project installs com.example.fixture on AVP.", service.message)
+        // The installed build is re-signed when the Mac kept it; a target with no kept build is built first.
+        precondition(service.canResignByBuilding && service.device(named: "AVP")?.reachable == true)
+        precondition(service.install(for: project.platforms[0])?.buildId == "fixture-build" && service.install(for: project.platforms[1]) == nil)
+        guard case .kept(let installed)? = service.resignSource(for: project, target: project.platforms[0]), installed.buildId == "fixture-build" else {
+            preconditionFailure("the kept installed build is not the re-sign source")
+        }
+        guard case .build(_, let phone)? = service.resignSource(for: project, target: project.platforms[1]), phone.device == "Phone" else {
+            preconditionFailure("a target without a kept build is not built first")
+        }
+        let chained = await service.resign(.build(project, phone), device: "Phone", profile: profiles[0], keepData: true, dryRun: false)
+        precondition(chained?.id == 4 && service.message == "Queued build #3, then re-sign #4.", service.message)
+        precondition(project.git?.commit == "abc1234" && service.artifacts(for: project).count == 1)
         await service.disconnect()
         precondition(!service.canResign && !service.connected && service.state == nil && service.detail.isEmpty)
         precondition(stored[origin] == nil)
@@ -90,6 +103,6 @@ enum ThisDevice { static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [
         await pending.value
         precondition(stored[otherOrigin] == "other-fixture")
         precondition(service.message == "Disconnected.") // A stale reply cannot change the new connection state.
-        print("PASS: password restoration, expiry recovery, origin scoping, forgetting, rejected credentials, transport boundaries and re-sign requests")
+        print("PASS: password restoration, expiry recovery, origin scoping, forgetting, rejected credentials, transport boundaries, install state and re-sign requests (kept and built first)")
     }
 }

@@ -1,16 +1,52 @@
 import SwiftUI
 
-/// A kept build to re-sign, and the devices a project installs it on.
+/// What to re-sign (a kept build, or a project target the Mac builds first), and the devices a
+/// project installs that app on.
 struct ResignTarget: Identifiable {
-    let artifact: BuildService.Artifact
+    let source: BuildService.ResignSource
     let devices: [String]
-    var id: String { artifact.buildId }
+
+    init(artifact: BuildService.Artifact, devices: [String]) { source = .kept(artifact); self.devices = devices }
+    init(source: BuildService.ResignSource, devices: [String]) { self.source = source; self.devices = devices }
+
+    var id: String {
+        switch source {
+        case .kept(let artifact): artifact.buildId
+        case .build(let project, let target): "\(project.name)|\(target.platform)|\(target.device)"
+        }
+    }
+    var name: String {
+        switch source {
+        case .kept(let artifact): artifact.app.name ?? artifact.app.bundleId
+        case .build(let project, _): project.name
+        }
+    }
+    var platform: String {
+        switch source {
+        case .kept(let artifact): artifact.platform
+        case .build(_, let target): target.platform
+        }
+    }
+    var bundleId: String? {
+        switch source {
+        case .kept(let artifact): artifact.app.bundleId
+        case .build(_, let target): target.bundleId
+        }
+    }
+    /// Where the IPA comes from, in a sentence.
+    var sourceText: String {
+        switch source {
+        case .kept(let artifact): "The build the Mac kept: \(artifact.app.build ?? artifact.buildId)."
+        case .build(let project, _): "The Mac kept no build of this app, so it builds \(project.name) from its current checkout first, without installing it, and re-signs that build."
+        }
+    }
 }
 
-/// Signs a build the Mac kept with another of the Mac's profiles and installs it over the app on
-/// a device. A device can't give an installed app back, so the kept IPA is the source; the Mac
-/// (appstore, `lib/resign.js`) does the signing, and for a different App ID the backup,
-/// reinstall and restore of the app's data, which installd needs because it refuses that update.
+/// Signs an app with another of the Mac's profiles and installs it over the copy on a device. A
+/// device can't give an installed app back, so the IPA is the one the Mac kept, or one it builds
+/// for the purpose; the Mac (appstore, `lib/resign.js`) does the signing, and for a different App
+/// ID the backup, reinstall and restore of the app's data, which installd needs because it
+/// refuses that update.
 struct ResignSheet: View {
     let service: BuildService
     let target: ResignTarget
@@ -23,7 +59,6 @@ struct ResignSheet: View {
     @State private var confirming = false
     @State private var queued: BuildService.Job?
 
-    private var artifact: BuildService.Artifact { target.artifact }
     private var profile: BuildService.ResignProfile? { profiles.first { $0.id == profileID } }
     private var queuedStatus: String? { queued.flatMap { job in service.state?.builds.first { $0.id == job.id }?.status } }
     private var running: Bool { queuedStatus == "queued" || queuedStatus == "running" }
@@ -32,14 +67,15 @@ struct ResignSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Build") {
-                    Text(artifact.app.name ?? artifact.app.bundleId)
-                    Text("\(artifact.platform) · \(artifact.app.build ?? artifact.buildId)").foregroundStyle(.secondary)
-                    Text(artifact.app.bundleId).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Section("App") {
+                    Text(target.name)
+                    Text(target.platform).foregroundStyle(.secondary)
+                    if let bundleId = target.bundleId { Text(bundleId).font(.caption.monospaced()).foregroundStyle(.secondary) }
+                    Text(target.sourceText).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Sign and install") {
                     if target.devices.isEmpty {
-                        Text("No configured project installs this app on a \(artifact.platform) device, so there is nothing to sign it for.")
+                        Text("No configured project installs this app on a \(target.platform) device, so there is nothing to sign it for.")
                     } else {
                         Picker("Device", selection: $device) { ForEach(target.devices, id: \.self) { Text($0).tag($0) } }
                     }
@@ -51,7 +87,7 @@ struct ResignSheet: View {
                 }
                 Section("Data") {
                     Toggle("Keep the app's data", isOn: $keepData)
-                    Text("A profile for the same App ID updates the app in place and keeps its data. A different App ID can't be installed over the old copy: the Mac then copies Documents and Library off the device, reinstalls, and puts them back (the backup stays on the Mac). Keychain items and app-group data do not move.")
+                    Text("A profile for the same App ID updates the app in place and keeps its data. A different App ID can't be installed over the old copy: the Mac then copies Documents and Library off the device, reinstalls, and puts them back (the backup stays on the Mac). Keychain items and app-group data do not move. The device must be reachable from the Mac.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
@@ -73,7 +109,7 @@ struct ResignSheet: View {
             }
             .navigationTitle("Re-sign")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
-            .confirmationDialog("Re-sign \(artifact.app.name ?? artifact.app.bundleId) on \(device)?", isPresented: $confirming, titleVisibility: .visible) {
+            .confirmationDialog("Re-sign \(target.name) on \(device)?", isPresented: $confirming, titleVisibility: .visible) {
                 Button(keepData ? "Re-sign and keep data" : "Re-sign and discard data", role: .destructive) { submit(dryRun: false) }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -98,7 +134,7 @@ struct ResignSheet: View {
     private func submit(dryRun: Bool) {
         guard let profile else { return }
         Task {
-            queued = await service.resign(artifact, device: device, profile: profile, keepData: keepData, dryRun: dryRun)
+            queued = await service.resign(target.source, device: device, profile: profile, keepData: keepData, dryRun: dryRun)
         }
     }
 }

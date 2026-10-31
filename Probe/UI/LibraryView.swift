@@ -12,13 +12,14 @@ struct LibraryView: View {
     let library: LibraryModel
     let service: BuildService
     let onDeveloper: () -> Void
+    /// Opens a project's page on the Developer tab.
+    let onOpenProject: (String) -> Void
     let onBrowse: () -> Void
     let onSetup: () -> Void
 
     /// The app whose JIT launch this screen started, to show its progress on the right card.
     @State private var jitAppId: String?
     @State private var downloadingArtifactID: String?
-    @State private var resigning: ResignTarget?
     @State private var pendingRemoval: RemovalConfirmation?
     @State private var removalError: String?
     @State private var confirmingSelfRefresh = false
@@ -106,7 +107,6 @@ struct LibraryView: View {
                 Task { await library.receiveAppFile(url) }
             }
             #endif
-            .sheet(item: $resigning) { ResignSheet(service: service, target: $0) }
             .confirmationDialog("Update Apparition to \(library.availableUpdate?.version ?? "")?", isPresented: $confirmingUpdate, titleVisibility: .visible) {
                 Button("Download and Install") { Task { await library.updateSelf() } }
             } message: {
@@ -208,7 +208,7 @@ struct LibraryView: View {
     @ViewBuilder
     private var appstoreGroup: some View {
         VStack(alignment: .leading, spacing: 16) {
-            groupHeader("Appstore Projects", subtitle: "Installed apps matched to configured Mac projects. Builds, reports and JIT controls stay with each app.")
+            groupHeader("Your Projects", subtitle: "Apps on this \(ThisDevice.noun) that a project on your Mac's appstore builds. Install updates here; builds, re-signing and reports are on each project's page.")
             if service.connected {
                 LazyVGrid(columns: Self.columns, spacing: 20) {
                     ForEach(appstoreApps, id: \.app.bundleId) { match in
@@ -220,9 +220,9 @@ struct LibraryView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Text("Connect the Mac build service to match installed apps with their projects, builds and reports.")
+                Text("Building your own apps on a Mac? Connect to its appstore to see them here with their updates and reports.")
                     .foregroundStyle(.secondary)
-                Button("Connect build service", action: onDeveloper)
+                Button("Set Up in Developer", action: onDeveloper)
                     .buttonStyle(.bordered)
             }
         }
@@ -333,9 +333,9 @@ struct LibraryView: View {
                                     .fixedSize()
                             }
                         }
-                        Text("Appstore · \(project.name) · \(ThisDevice.appCompatibilityLabel(deviceFamily: app.deviceFamily))")
+                        Text("\(project.name) · \(ThisDevice.appCompatibilityLabel(deviceFamily: app.deviceFamily))")
                             .font(.callout).foregroundStyle(.secondary)
-                        Text("Build target \(target.platform) · \(target.device)")
+                        Text("Built on the Mac for \(target.device) · \(target.platform)")
                             .font(.caption).foregroundStyle(.secondary)
                         if let version = app.version, !version.isEmpty {
                             Text("Version \(version)").font(.callout).foregroundStyle(.secondary)
@@ -344,66 +344,28 @@ struct LibraryView: View {
                             Text("Installed build \(build)").font(.caption).foregroundStyle(.secondary)
                         }
                         if let artifact {
-                            Text("\(artifact.app.build == app.build ? "Registered build" : "Latest registered build") \(artifact.app.build ?? artifact.buildId)")
+                            Text("\(artifact.app.build == app.build ? "Kept build" : "Latest kept build") \(artifact.app.build ?? artifact.buildId)")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Text(app.bundleId).font(.caption.monospaced()).foregroundStyle(.tertiary).lineLimit(1).selectableText()
                     }
                     Spacer(minLength: 0)
                 }
-                appstoreBuildControls(app: app, project: project, target: target, bundleId: projectBundleId)
+                appstoreUpdateControls(app: app, project: project, target: target, bundleId: projectBundleId)
                 HStack(spacing: 12) {
                     Button {
                         jitAppId = jitId
                         Task { await model.launchJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort, bundleId: app.bundleId, waitSeconds: 600) }
                     } label: { Label("Launch with JIT", systemImage: "bolt.fill") }
                         .disabled(model.busy || library.busy)
-                    if !traces.isEmpty || !crashes.isEmpty {
-                        Text("\(traces.count) trace\(traces.count == 1 ? "" : "s") · \(crashes.count) crash\(crashes.count == 1 ? "" : "es")")
-                            .font(.caption).foregroundStyle(.secondary)
+                    Button { onOpenProject(project.name) } label: {
+                        Label(traces.isEmpty && crashes.isEmpty ? "Open Project"
+                              : "Open Project · \(crashes.count) crash\(crashes.count == 1 ? "" : "es"), \(traces.count) trace\(traces.count == 1 ? "" : "s")",
+                              systemImage: "hammer")
                     }
                 }
+                .buttonStyle(.bordered)
                 if jitAppId == jitId, let jit = jitNote() { jit }
-                if !traces.isEmpty || !crashes.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Reports").font(.headline)
-                        ForEach(crashes) { crash in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(crash.exception ?? "Crash report")
-                                Text("\(crash.device ?? "Device") · \(crash.build ?? "unknown build")")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                if crash.symbolicated != nil {
-                                    Button(service.reportDetailID == "crash:\(crash.id)" ? "Hide report" : "Read symbolicated report") {
-                                        Task { await service.readCrash(crash) }
-                                    }
-                                }
-                            }
-                        }
-                        ForEach(traces) { trace in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Trace · \(trace.build?.buildId ?? trace.app.build ?? "unknown build")")
-                                ForEach(trace.files.filter { [".txt", ".log", ".json", ".md"].contains(URL(fileURLWithPath: $0.path).pathExtension.lowercased()) }) { file in
-                                    let reportID = "trace:\(trace.id):\(file.path)"
-                                    Button(service.reportDetailID == reportID ? "Hide \(file.path)" : "Read \(file.path)") {
-                                        Task { await service.readTraceFile(trace, file: file) }
-                                    }
-                                }
-                            }
-                        }
-                        if service.reportDetailOwnerBundleId == app.bundleId, !service.reportDetail.isEmpty {
-                            if service.reportDetail.contains("? +0x") {
-                                Note(text: "Some frames are address-only because this report doesn't identify them as symbols from the app binary. The appstore has symbols for retained builds, but they can't resolve frames the crash log attributes to other binaries.", kind: .info)
-                            }
-                            Text(service.reportDetail)
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(30)
-                                #if !os(tvOS)
-                                .textSelection(.enabled)
-                                #endif
-                        }
-                    }
-                    .padding(.vertical, 8)
-                }
             }
         }
         .onChange(of: service.artifacts.map(\.id)) { _, _ in
@@ -414,9 +376,11 @@ struct LibraryView: View {
         }
     }
 
+    /// Updating this device's copy from a build the Mac kept: Apparition downloads it and signs it
+    /// like any other install. Building and re-signing are on the project's page.
     @ViewBuilder
-    private func appstoreBuildControls(app: ProbeModel.DeviceApp, project: BuildService.Project,
-                                       target: BuildService.Target, bundleId: String) -> some View {
+    private func appstoreUpdateControls(app: ProbeModel.DeviceApp, project: BuildService.Project,
+                                        target: BuildService.Target, bundleId: String) -> some View {
         let latest = service.latestArtifact(project: project, target: target, bundleId: bundleId)
         let hasUpdate = latest.map { app.build == nil || ($0.app.build ?? $0.buildId) != app.build } ?? false
         let preparesUpdates = Binding(get: {
@@ -426,48 +390,22 @@ struct LibraryView: View {
             if enabled, let latest, hasUpdate { prepareUpdate(latest) }
         })
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Build only · \(target.platform)").font(.headline)
-                Button("Build update") {
-                    Task { await service.build(project: project, target: target, branch: "current", deploy: false, launch: false, debug: true, patch: false) }
-                }
-                .buttonStyle(.bordered)
-                .disabled(service.busy)
-            }
             if let latest, hasUpdate {
                 Button {
                     prepareUpdate(latest)
                 } label: {
-                    if downloadingArtifactID == latest.id { ProgressView("Downloading retained build…") }
-                    else { Label("Install retained build · \(latest.app.build ?? latest.buildId)", systemImage: "arrow.down.app") }
+                    if downloadingArtifactID == latest.id { ProgressView("Downloading kept build…") }
+                    else { Label("Install update · \(latest.app.build ?? latest.buildId)", systemImage: "arrow.down.app") }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(service.busy || library.busy || downloadingArtifactID != nil || library.incoming != nil)
             }
             Toggle("Automatically prepare updates", isOn: preparesUpdates)
             if preparesUpdates.wrappedValue {
-                Text("When a newer build is retained, Apparition downloads it and opens the usual install review. You still approve signing and installation.")
+                Text("When the Mac keeps a newer build, Apparition downloads it and opens the usual install review. You still approve signing and installation.")
                     .font(.caption).foregroundStyle(.secondary)
-            }
-            if service.canResign, let kept = service.artifact(for: bundleId, installedBuild: app.build) {
-                Button { resigning = ResignTarget(artifact: kept, devices: [target.device]) } label: {
-                    Label("Re-sign with another profile…", systemImage: "signature")
-                }
-                .disabled(service.busy || library.busy)
-                Text("Signs the kept build \(kept.app.build ?? kept.buildId) with another of the Mac's profiles and installs it over this app.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Divider()
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Install on \(target.device) · \(ThisDevice.appCompatibilityLabel(deviceFamily: app.deviceFamily))").font(.headline)
-                Button("Build & install") {
-                    Task { await service.build(project: project, target: target, branch: "current", deploy: true, launch: false, debug: true, patch: false) }
-                }
-                .buttonStyle(.bordered)
-                .disabled(service.busy)
             }
         }
-        .buttonStyle(.bordered)
     }
 
     private func prepareUpdate(_ artifact: BuildService.Artifact) {

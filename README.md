@@ -109,28 +109,33 @@ certificate you already have from another device.
 
 ## Developer builds and reports
 
-The desktop app's **Developer** view connects to an [appstore](https://github.com/illixion/appstore)
-Mac build service. Set a password on that service with `node server.js set-password`, then
-enter its address and password in Apparition. Use `http://localhost:8484` on the Mac that
+The **Developer** tab, on the Mac and on devices, builds your own Xcode projects through
+[appstore](https://github.com/illixion/appstore), an open-source build service you run on your
+Mac. **[docs/DEVELOPER.md](docs/DEVELOPER.md)** explains how the pieces fit, how to set them up
+and what each part of the screen does; this section is the reference. Set a password on the
+service with `node server.js set-password`, then enter its address and password in Apparition. Use `http://localhost:8484` on the Mac that
 runs it, or its HTTPS address from another computer. The service needs the new
 `apparition-service` version 1 API; older servers need updating first.
 
-Projects and device targets currently come from the service's `config.json`. Choose a
-project's branch and exact platform/device target, then **Build & Install**. Launch, debug
-access, live patching and Debug configuration are separate options. The view shows queued
-and running jobs, cancellation, build logs, uploaded DebugTrace files, crash reports and
-basic inspection of discovered apps. New builds offer **Build details** and **Download**:
+The tab has four sections: **Projects**, **Activity** (the build queue and logs), **Reports**
+(crash logs, traces and, on the Mac, running debug apps, grouped by app) and **Devices &
+signing** (**Service** on a device). Each project lists its targets, one per device it installs
+on, with what the Mac installed there and whether the device is reachable; each target has
+**Install on _device_**, **Build only** and **Re-sign…**. Launch, debug access, live patching
+and Debug configuration are the project's **Build options**. The device list leaves out
+simulators. New builds offer **Build details** and **Download**:
 the saved artifact is checked against its manifest's SHA-256 and size before replacing
-your chosen destination file. **Registered builds** also shows artifacts created outside
-the service queue, such as terminal builds. Manifests record bundle identities, binary UUIDs, symbols,
+your chosen destination file. Each project lists its **kept builds**; **Other kept builds**
+shows artifacts no project claims, such as Xcode products registered by hand. Manifests record bundle identities, binary UUIDs, symbols,
 toolchain and before/after source/dependency fingerprints. Device debug access still asks
 for approval on the device; connecting to the service does not grant it.
 
-**Re-sign** (on any kept build, in Builds or Registered builds) signs the exact IPA the Mac
-kept with another of the Mac's provisioning profiles and installs it over the copy on a device.
-The device can't give an installed app back, so only a kept build can be re-signed. The Mac
-(`appstore`, `build-and-sign --ipa --profile`) does the work; the view sends a build ID, a device
-name, a profile ID, keep or discard data, and an optional dry run. A profile for the same App ID
+**Re-sign…** (on a target or a kept build) signs an app with another of the Mac's provisioning
+profiles and installs it over the copy on a device. The device can't give an installed app back,
+so the Mac signs the build it kept for that install, or, when it kept none, first builds the
+target without installing it (the same build **Build only** makes) and signs that. The Mac
+(`appstore`, `build-and-sign --ipa --profile`) does the work; the view sends a build ID or a
+project and platform, a device name, a profile ID, keep or discard data, and an optional dry run. A profile for the same App ID
 updates in place and keeps the app's data. The device refuses an update to a different App ID, so
 then the Mac copies Documents and Library to `~/.local/state/apparition/resign-backups`, removes the
 app, installs the new signature and copies them back, checking the file count. If the new signature
@@ -246,9 +251,9 @@ Implementation order:
    The Library matches installed debuggable apps against configured project bundle IDs.
    Matching cards prefer the service target configured for the paired device, and use
    `UIDeviceFamily` to identify iPhone/iPad apps running in compatibility mode. They show
-   project/platform, installed and retained build identity, build-only and separately
-   labelled device-install actions, JIT launch, and reports filtered to the installed
-   `CFBundleVersion`. A retained build can be downloaded into Apparition's normal
+   project/platform, installed and retained build identity, JIT launch and report counts
+   for the installed `CFBundleVersion`, and open the project's Developer page, where
+   build-only, separately labelled device-install actions, re-signing and reports live. A retained build can be downloaded into Apparition's normal
    install review and signing flow without rebuilding it. Per-app automatic update
    preparation watches retained artifacts while the service refreshes, downloads a newer
    build and opens that same review; installation still requires confirmation. Crash text
@@ -295,11 +300,12 @@ the project without building it or changing signing material. Local branch names
 optional; the current checkout remains available. The Mac service validates the checkout
 and updates its configuration atomically, preserving existing settings.
 
-When the device build service is connected, the Library matches installed debuggable apps
-against configured project target bundle IDs. Matching cards keep build-only separate from
-installing to the project's configured device, and show retained artifacts and reports for
-the installed build number when available. Apps with no configured project match remain in
-Other Apps. The service connection is shared with Developer.
+When the device build service is connected, the Library's **Your Projects** group shows the
+installed debuggable apps a configured project builds, matched by bundle ID. A card offers the
+newest kept build as an update (installed through Apparition's own signing and review), JIT
+launch, and **Open Project**, which opens the project's page on the Developer tab with its
+builds, re-signing and reports. Apps with no configured project match remain in Other Apps. The
+service connection is shared with Developer.
 
 On the Mac with the complete build-tools checkout and Node 18+:
 

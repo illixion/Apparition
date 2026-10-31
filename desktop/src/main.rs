@@ -46,6 +46,7 @@ fn main() {
             updater::update_status,
             updater::install_update,
             flow::open_downloads,
+            flow::open_developer_link,
             flow::open_help,
             flow::paired_devices,
             flow::discover,

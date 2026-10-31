@@ -49,25 +49,76 @@ final class BuildService {
         let device: String
         let bundleId: String?
     }
-    struct Project: Decodable, Identifiable {
+    struct Project: Decodable, Identifiable, Hashable {
+        /// The checkout's branch and commit; `nil` fields when git couldn't be read.
+        struct Git: Decodable, Hashable { let branch: String?; let commit: String?; let dirty: Bool? }
         var id: String { name }
         let name: String
         let branches: [String]?
         let platforms: [Target]
+        let git: Git?
     }
     struct Job: Decodable, Identifiable {
+        struct Resign: Decodable { let dryRun: Bool?; let result: String?; let after: Int? }
         let id: Int
         let repo: String
         let platform: String
         let device: String?
         let status: String
         let buildId: String?
+        let noDeploy: Bool?
+        let forResign: Bool?
+        let resign: Resign?
+        let commit: String?
+        let builtBranch: String?
+        let error: String?
         var cancellable: Bool { status == "queued" || status == "running" }
+        var active: Bool { cancellable }
+        /// What the job is, in words, from the flags the service sets.
+        var kind: String {
+            if let resign { return resign.dryRun == true ? "Re-sign check" : "Re-sign" }
+            if forResign == true { return "Build for re-sign" }
+            return noDeploy == true ? "Build only" : "Build & install"
+        }
+    }
+    /// A device the Mac can install to (the service leaves simulators out).
+    struct Device: Decodable, Identifiable {
+        var id: String { name }
+        let name: String
+        let model: String?
+        let state: String?
+        let platform: String?
+        var reachable: Bool { state == "connected" }
+    }
+    struct Devices: Decodable { let list: [Device] }
+    /// The service's ledger of what it installed where.
+    struct Install: Decodable {
+        let repo: String?
+        let branch: String?
+        let commit: String?
+        let buildId: String?
+        let buildNo: String?
+        let confirmed: Bool?
+        let resigned: String?
+        let at: Double?
     }
     struct State: Decodable {
         let host: String?
         let repos: [Project]
         let builds: [Job]
+        let devices: Devices?
+        let installs: [String: [String: Install]]?
+
+        private enum CodingKeys: String, CodingKey { case host, repos, builds, devices, installs }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            host = try c.decodeIfPresent(String.self, forKey: .host)
+            repos = try c.decode([Project].self, forKey: .repos)
+            builds = try c.decode([Job].self, forKey: .builds)
+            // Extras for display: an entry the client doesn't understand must not cost the projects.
+            devices = try? c.decodeIfPresent(Devices.self, forKey: .devices)
+            installs = try? c.decodeIfPresent([String: [String: Install]].self, forKey: .installs)
+        }
     }
     struct Artifact: Decodable, Identifiable {
         struct App: Decodable { let name: String?; let bundleId: String; let originalBundleId: String?; let build: String?; let version: String? }
@@ -449,6 +500,31 @@ final class BuildService {
         return text
     }
 
+    /// What the service installed for this target, if anything.
+    func install(for target: Target) -> Install? {
+        guard let bundleId = target.bundleId else { return nil }
+        return state?.installs?[target.device]?[bundleId]
+    }
+
+    func device(named name: String) -> Device? { state?.devices?.list.first { $0.name == name } }
+
+    /// Kept builds of a project's apps, newest first.
+    func artifacts(for project: Project) -> [Artifact] {
+        let ids = Set(project.platforms.compactMap(\.bundleId))
+        return artifacts.filter { ids.contains($0.app.bundleId) || $0.app.originalBundleId.map(ids.contains) == true }
+            .sorted { ($0.createdAt ?? "") > ($1.createdAt ?? "") }
+    }
+
+    func jobs(for project: Project) -> [Job] { (state?.builds ?? []).filter { $0.repo == project.name } }
+
+    func reportCount(for project: Project) -> (crashes: Int, traces: Int) {
+        let ids = Set(project.platforms.compactMap(\.bundleId))
+        return (crashLogs.filter { ids.contains($0.bundleId) }.count, traces.filter { ids.contains($0.app.bundleId) }.count)
+    }
+
+    /// The project a configured bundle ID belongs to.
+    func project(named name: String) -> Project? { state?.repos.first { $0.name == name } }
+
     func build(project: Project, target: Target, branch: String, deploy: Bool, launch: Bool, debug: Bool, patch: Bool) async {
         guard !busy else { return }
         busy = true
@@ -465,6 +541,22 @@ final class BuildService {
     // MARK: Re-sign
 
     var canResign: Bool { connected && capabilities.contains("resign") }
+    /// The service can build a target first when it kept no build to re-sign.
+    var canResignByBuilding: Bool { canResign && capabilities.contains("resign-build") }
+
+    /// What a re-sign signs: a kept IPA, or a fresh build of a project target.
+    enum ResignSource {
+        case kept(Artifact)
+        case build(Project, Target)
+    }
+
+    /// How to re-sign the app this target installs, if the service can: the exact build on the
+    /// device when the Mac kept it, otherwise a fresh build of the target.
+    func resignSource(for project: Project, target: Target) -> ResignSource? {
+        guard canResign, target.platform.caseInsensitiveCompare("macOS") != .orderedSame else { return nil }
+        if let id = install(for: target)?.buildId, let kept = artifacts.first(where: { $0.buildId == id }) { return .kept(kept) }
+        return canResignByBuilding ? .build(project, target) : nil
+    }
 
     /// The devices a project installs this build's app on, so only those are offered.
     func devices(for artifact: Artifact) -> [String] {
@@ -481,19 +573,28 @@ final class BuildService {
         catch { message = error.localizedDescription; return [] }
     }
 
-    /// Asks the Mac to re-sign a kept build for a device. The Mac signs the IPA it kept with the
-    /// chosen profile and installs it over the app; if the device refuses an update to another
-    /// App ID it backs the data up, reinstalls and restores it (lib/resign.js in appstore).
-    /// `dryRun` only checks the data can be reached. Returns the queued job.
-    func resign(_ artifact: Artifact, device: String, profile: ResignProfile, keepData: Bool, dryRun: Bool) async -> Job? {
+    /// Asks the Mac to re-sign an app on a device. The Mac signs the IPA (the one it kept, or one
+    /// it builds first) with the chosen profile and installs it over the app; if the device refuses
+    /// an update to another App ID it backs the data up, reinstalls and restores it (lib/resign.js
+    /// in appstore). `dryRun` only checks the data can be reached. Returns the re-sign job, which
+    /// is the last one when a build is queued before it.
+    func resign(_ source: ResignSource, device: String, profile: ResignProfile, keepData: Bool, dryRun: Bool) async -> Job? {
         guard !busy else { return nil }
         busy = true
         defer { busy = false }
+        var body: [String: Any] = ["device": device, "profile": profile.id, "dataMode": keepData ? "keep" : "discard", "dryRun": dryRun]
+        switch source {
+        case .kept(let artifact): body["buildId"] = artifact.buildId
+        case .build(let project, let target): body["repo"] = project.name; body["platform"] = target.platform
+        }
         do {
-            let reply: BuildReply = try await authenticated("resign", body: ["buildId": artifact.buildId, "device": device,
-                "profile": profile.id, "dataMode": keepData ? "keep" : "discard", "dryRun": dryRun])
-            let job = reply.jobs.first
-            message = job.map { "Queued \(dryRun ? "check" : "re-sign") #\($0.id)." } ?? "Queued."
+            let reply: BuildReply = try await authenticated("resign", body: body)
+            let job = reply.jobs.last
+            if reply.jobs.count > 1, let first = reply.jobs.first, let job {
+                message = "Queued build #\(first.id), then re-sign #\(job.id)."
+            } else {
+                message = job.map { "Queued \(dryRun ? "check" : "re-sign") #\($0.id)." } ?? "Queued."
+            }
             await refresh()
             return job
         } catch { message = error.localizedDescription; return nil }

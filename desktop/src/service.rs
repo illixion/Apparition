@@ -189,31 +189,46 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
     match name {
         "state" | "traces" | "crashlogs" | "artifacts" => get(name.into()),
         "resignOptions" => get("resign/options".into()),
-        // Only these five fields leave the webview; the Mac validates each against its own
-        // kept builds, configured targets and profile folder (no path ever crosses).
+        // Only these fields leave the webview; the Mac validates each against its own kept
+        // builds, configured targets and profile folder (no path ever crosses). The source is
+        // either a kept build (`id`) or a project target (`repo`, optional `platform` and
+        // `branch`), which the Mac builds first.
         "resign" => {
             let text = |key: &str| {
                 args[key]
                     .as_str()
                     .filter(|s| !s.is_empty() && s.len() <= 128)
-                    .ok_or("Choose a kept build, a device and a profile first.")
+                    .ok_or("Choose a kept build or a project, a device and a profile first.")
+            };
+            let optional = |key: &str| -> Result<Option<&str>, String> {
+                match &args[key] {
+                    Value::Null => Ok(None),
+                    _ => text(key).map(Some).map_err(String::from),
+                }
             };
             let mode = match args["dataMode"].as_str() {
                 Some(m @ ("keep" | "discard")) => m,
                 None => "keep",
                 _ => return Err("Choose whether to keep or discard the app's data.".into()),
             };
-            Ok((
-                Method::POST,
-                "resign".into(),
-                Some(json!({
-                    "buildId": key()?,
-                    "device": text("device")?,
-                    "profile": text("profile")?,
-                    "dataMode": mode,
-                    "dryRun": args["dryRun"] == true
-                })),
-            ))
+            let mut body = json!({
+                "device": text("device")?,
+                "profile": text("profile")?,
+                "dataMode": mode,
+                "dryRun": args["dryRun"] == true
+            });
+            if args["id"].is_null() {
+                body["repo"] = json!(text("repo")?);
+                if let Some(platform) = optional("platform")? {
+                    body["platform"] = json!(platform);
+                }
+                if let Some(branch) = optional("branch")? {
+                    body["branch"] = json!(branch);
+                }
+            } else {
+                body["buildId"] = json!(key()?);
+            }
+            Ok((Method::POST, "resign".into(), Some(body)))
         }
         "registerProject" => Ok((Method::POST, "projects".into(), Some(args.clone()))),
         "build" => {
@@ -581,5 +596,23 @@ mod tests {
         assert!(operation("resign", &json!({"id":"b","device":"","profile":"p"})).is_err());
         assert!(operation("resign", &json!({"id":"../b","device":"d","profile":"p"})).is_err());
         assert_eq!(operation("resignOptions", &json!({})).unwrap().1, "resign/options");
+    }
+    #[test]
+    fn resign_without_a_kept_build_names_a_project_target_only() {
+        let (_, _, body) = operation(
+            "resign",
+            &json!({"repo":"App","platform":"visionOS","branch":"main","device":"Headset","profile":"p","buildId":"smuggled","path":"/x"}),
+        )
+        .unwrap();
+        assert_eq!(
+            body.unwrap(),
+            json!({"repo":"App","platform":"visionOS","branch":"main","device":"Headset","profile":"p","dataMode":"keep","dryRun":false})
+        );
+        let (_, _, body) =
+            operation("resign", &json!({"repo":"App","device":"d","profile":"p"})).unwrap();
+        assert!(body.as_ref().unwrap().get("platform").is_none());
+        assert!(operation("resign", &json!({"device":"d","profile":"p"})).is_err());
+        assert!(operation("resign", &json!({"repo":"App","device":"d","profile":"p","branch":7})).is_err());
+        assert!(operation("resign", &json!({"repo":"","device":"d","profile":"p"})).is_err());
     }
 }

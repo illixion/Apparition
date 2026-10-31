@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DeveloperView } from '../ui/developer.js';
+import { DeveloperView, jobKind, targetState } from '../ui/developer.js';
 
 // A DOM event fixture for the controller's credential and deployment boundaries.
 // Rendering and platform appearance are deliberately outside these unit tests.
@@ -58,8 +58,11 @@ test('deployment preserves device and platform when one device has multiple targ
   ] }]);
   const controls = view.projects.all();
   const selects = controls.filter(n => n.tagName === 'select');
-  selects[0].value = 'main'; selects[1].value = '1';
-  await controls.find(n => n.tagName === 'button' && n.textContent === 'Build & Install').listeners.click();
+  assert.equal(selects.length, 1, 'one branch choice per project; each target has its own buttons');
+  selects[0].value = 'main';
+  const installs = controls.filter(n => n.tagName === 'button' && n.textContent === 'Install on AVP');
+  assert.equal(installs.length, 2);
+  await installs[1].listeners.click();
   assert.equal(calls.length, 1);
   assert.equal(calls[0].operation, 'build');
   assert.deepEqual(calls[0].arguments, { repo: 'Sample', device: 'AVP', targetPlatform: 'visionOS', branch: 'main',
@@ -184,4 +187,81 @@ test('re-signing offers only the devices a project installs this app on and send
   assert.equal(view.selectedLog, 11);
   await view.openResign({ buildId: 'b2', bundleId: 'com.example.unknown', platform: 'visionOS' });
   assert.equal(view.resignGo.disabled, true, 'an app no project installs has nothing to sign for');
+});
+
+test('Build only keeps the IPA without installing or launching', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command === 'service_request') { calls.push(args); return { jobs: [{ id: 3 }] }; }
+    return {};
+  });
+  view.renderProjects([{ name: 'Sample', deployDefaults: { launch: true, mcp: true }, platforms: [{ platform: 'iOS', device: 'Phone' }] }]);
+  await view.projects.all().find(n => n.tagName === 'button' && n.textContent === 'Build only').listeners.click();
+  assert.deepEqual(calls[0].arguments, { repo: 'Sample', device: 'Phone', targetPlatform: 'iOS', branch: 'current',
+    run: false, mcp: true, inject: false, buildDebug: false, deploy: false });
+});
+
+const targetButtons = (view, text) => view.projects.all().filter(n => n.className === 'dev-target')
+  .flatMap(row => row.all()).filter(n => n.tagName === 'button' && n.textContent === text);
+test('a target re-signs its installed kept build, or builds first when the Mac kept none', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command !== 'service_request') return {};
+    calls.push(args);
+    if (args.operation === 'resignOptions') return { profiles: [{ id: 'other-dev', name: 'Other', appId: 'com.example.Other', expired: false, debuggable: true }] };
+    if (args.operation === 'resign') return { jobs: [{ id: 20 }, { id: 21 }] };
+    return {};
+  });
+  const repo = { name: 'Sample', git: { branch: 'main', commit: 'abc1234' }, platforms: [
+    { platform: 'visionOS', device: 'AVP', bundleId: 'com.example.app' }, { platform: 'iOS', device: 'Phone', bundleId: 'com.example.app' } ] };
+  view.capabilities = new Set(['resign']);
+  view.installs = { AVP: { 'com.example.app': { commit: 'abc1234', branch: 'main', buildId: 'kept-1' } } };
+  view.artifactList = [{ buildId: 'kept-1', platform: 'visionOS', app: { bundleId: 'com.example.app', build: 'abc1234' } }];
+  view.renderProjects([repo]);
+  let resigns = targetButtons(view, 'Re-sign…');
+  assert.equal(resigns.length, 1, 'without resign-build only the target with a kept build offers it');
+  view.capabilities = new Set(['resign', 'resign-build']);
+  view.renderProjects([repo]);
+  resigns = targetButtons(view, 'Re-sign…');
+  assert.equal(resigns.length, 2);
+  await resigns[0].listeners.click();
+  assert.match(view.resignSource.textContent, /kept-1/);
+  view.resignDevice.value = 'AVP'; view.resignProfile.value = 'other-dev'; view.resignData.value = 'keep';
+  await view.submitResign(false);
+  assert.deepEqual(calls.filter(c => c.operation === 'resign').at(-1).arguments, { id: 'kept-1', device: 'AVP', profile: 'other-dev', dataMode: 'keep', dryRun: false });
+  await resigns[1].listeners.click();
+  assert.deepEqual(view.resignDevice.children.map(o => o.value), ['Phone']);
+  assert.match(view.resignSource.textContent, /builds Sample from its current checkout first/);
+  view.resignDevice.value = 'Phone';
+  await view.submitResign(false);
+  assert.deepEqual(calls.filter(c => c.operation === 'resign').at(-1).arguments, { repo: 'Sample', platform: 'iOS', device: 'Phone', profile: 'other-dev', dataMode: 'keep', dryRun: false });
+  assert.equal(view.selectedLog, 21, 'the re-sign, not the build before it, is followed');
+  assert.match(view.note.textContent, /Queued build #20, then re-sign #21/);
+});
+
+test('targets say what is installed, and jobs say what they are', () => {
+  const repo = { git: { branch: 'main', commit: 'def5678' } };
+  const target = { device: 'AVP', bundleId: 'com.example.app' };
+  assert.match(targetState(repo, target, {}).text, /Not installed from this Mac/);
+  assert.match(targetState(repo, target, { AVP: { 'com.example.app': { commit: 'def5678', branch: 'main' } } }).text, /Installed def5678 · up to date/);
+  assert.match(targetState(repo, target, { AVP: { 'com.example.app': { commit: 'abc1234', branch: 'main' } } }).text, /checkout is at def5678/);
+  assert.match(targetState(repo, target, { AVP: { 'com.example.app': { commit: 'abc1234', confirmed: false } } }).text, /not confirmed/);
+  assert.equal(jobKind({ noDeploy: false }), 'Build & install');
+  assert.equal(jobKind({ noDeploy: true }), 'Build only');
+  assert.equal(jobKind({ noDeploy: true, forResign: true }), 'Build for re-sign');
+  assert.equal(jobKind({ resign: { dryRun: true } }), 'Re-sign check');
+});
+
+test('sections switch one pane at a time, and activity lists running builds first', () => {
+  const view = new DeveloperView(new Node('main'), async () => ({}));
+  assert.equal(view.panes.projects.hidden, false); assert.equal(view.panes.activity.hidden, true);
+  view.select('activity');
+  assert.equal(view.panes.projects.hidden, true); assert.equal(view.panes.activity.hidden, false);
+  assert.equal(view.navButtons.activity['aria-selected'], 'true');
+  const old = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, repo: 'R', platform: 'iOS', status: 'success' }));
+  view.renderJobs([...old.reverse(), { id: 30, repo: 'R', platform: 'iOS', status: 'running' }]);
+  const rows = view.items(view.jobs).children;
+  assert.match(rows[0].textContent, /running.*#30/);
+  assert.equal(rows.length, 10, 'one running, eight finished, and a button for the rest');
+  assert.equal(rows.at(-1).textContent, 'Show 2 older');
 });

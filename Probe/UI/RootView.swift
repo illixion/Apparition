@@ -40,6 +40,8 @@ struct RootView: View {
     let library: LibraryModel
     let companions: CompanionFinder
     @State private var buildService = BuildService()
+    /// The Developer tab's navigation: a project name opens that project's page.
+    @State private var developerPath: [String] = []
 
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @AppStorage(RootView.setupFinishedKey) private var setupFinished = false
@@ -233,12 +235,13 @@ struct RootView: View {
             case .library:
                 LibraryView(model: model, account: account, library: library,
                             service: buildService,
-                            onDeveloper: { tab = .developer },
+                            onDeveloper: { developerPath = []; tab = .developer },
+                            onOpenProject: { name in developerPath = [name]; tab = .developer },
                             onBrowse: { tab = .browse }, onSetup: openSetup)
             case .browse:
                 BrowseView(model: model, account: account, library: library, onSetup: openSetup)
             case .developer:
-                BuildServiceView(service: buildService)
+                DeveloperView(service: buildService, library: library, path: $developerPath)
             case .setup:
                 SetupView(model: model, account: account, companions: companions) {
                     setupFinished = true
