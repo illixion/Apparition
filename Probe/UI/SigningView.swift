@@ -2,13 +2,13 @@ import RAVEUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// What signs the library's apps: the Apple ID (free, 7 days, slots), or the user's own
-/// certificate and provisioning profiles from a paid developer account (a year, no sign-in).
-/// Importing, checking what fits this headset, and removing them.
+/// The user's own certificates (.p12) and provisioning profiles, and which signs by default:
+/// importing, checking what fits this device, and removing them. Entirely offline: nothing on
+/// this screen signs in or contacts Apple, so a certificate here signs with no network. The
+/// Apple ID's own side (its certificates and App IDs on Apple's servers) is a separate screen,
+/// DeveloperSlotsView, reached from Settings > Apple ID.
 struct SigningView: View {
-    let account: AccountModel
     let library: LibraryModel
-    let onSignIn: () -> Void
 
     @AppStorage("pairedUDID") private var pairedUDID: String?
     @State private var importing: ImportKind?
@@ -40,7 +40,6 @@ struct SigningView: View {
             signerSection
             certificatesSection
             profilesSection
-            appleIDSection
             howToSection
         }
         .raveScreenTitle("Signing")
@@ -63,7 +62,7 @@ struct SigningView: View {
     private var signerSection: some View {
         Section {
             Picker("Sign apps with", selection: Binding(get: { signing.defaultSigner }, set: { signing.defaultSigner = $0 })) {
-                Text("Apple ID").tag(SigningStore.appleID)
+                Text("Apple ID (signs in, needs the network)").tag(SigningStore.appleID)
                 ForEach(signing.identities) { identity in
                     Text(identity.name).tag(identity.id)
                 }
@@ -76,7 +75,7 @@ struct SigningView: View {
         } footer: {
             Text((signing.defaultSigner == SigningStore.appleID
                  ? "Your Apple ID signs for 7 days at a time and needs the anisette server. A free account has two certificates and ten App IDs a week. Each app can choose otherwise in its menu in the Library."
-                 : "Your own certificate signs without signing in, for as long as its profile lasts (usually a year). Each app can choose otherwise in its menu in the Library; the change applies at its next refresh.")
+                 : "Your own certificate signs offline, without signing in or contacting Apple, for as long as its profile lasts (usually a year). Each app can choose otherwise in its menu in the Library; the change applies at its next refresh.")
                  + " Apparition asks what signs an app when you install it, if there is more than one way. Switching an installed app changes its bundle ID (the Apple ID adds your team ID to it), so it comes back as a new copy; with the switch on, Apparition copies the old copy's data to it and removes the old copy once everything arrived. Keychain items and app group data can't move, and neither can the data of an app that isn't development-signed.")
         }
     }
@@ -100,7 +99,7 @@ struct SigningView: View {
         } header: {
             Text("Your Certificates")
         } footer: {
-            Text("An Apple Development or Distribution certificate exported with its private key. Its password opens the file once and isn't kept. The key stays in Apparition's storage on this \(ThisDevice.noun).")
+            Text("An Apple Development or Distribution certificate exported with its private key. Its password opens the file once and isn't kept. The key stays in Apparition's storage on this \(ThisDevice.noun), and importing or signing with it never contacts Apple.")
         }
     }
 
@@ -236,19 +235,7 @@ struct SigningView: View {
         return nil
     }
 
-    // MARK: Apple ID and how-to
-
-    private var appleIDSection: some View {
-        Section {
-            NavigationLink {
-                DeveloperSlotsView(account: account, library: library, onSignIn: onSignIn)
-            } label: {
-                Label("Apple ID Certificates & App IDs", systemImage: "person.badge.key")
-            }
-        } footer: {
-            Text("What the Apple ID's signing uses up: its certificate slots and App IDs, and freeing them.")
-        }
-    }
+    // MARK: How-to
 
     private var howToSection: some View {
         Section {
@@ -312,7 +299,7 @@ struct SigningView: View {
 
     @ViewBuilder
     private func expiryText(_ text: String?) -> some View {
-        if let expires = DeveloperSlotsView.date(text) {
+        if let expires = SigningStore.date(text) {
             Text(expires < Date() ? "Expired \(expires.relativeToNow)" : "Expires \(expires.relativeToNow)")
                 .font(.callout)
                 .foregroundStyle(expires < Date() ? .red : .secondary)

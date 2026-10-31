@@ -6,6 +6,10 @@ import SwiftUI
 /// fails (error 7460 for certificates) until the user revokes or deletes one here. For
 /// certificates the better way comes first: Apparition installs share one (Share Signing, Get
 /// Signing), so revoking is for what other tools made or what nobody uses.
+///
+/// This is the Apple ID's side only, apart from signing with your own certificate
+/// (SigningView), and it talks to Apple only when the person asks: opening it makes no request
+/// and signs nothing in. "Load from Apple" (or Refresh, or a revoke or delete) is what does.
 struct DeveloperSlotsView: View {
     let account: AccountModel
     let library: LibraryModel
@@ -16,6 +20,8 @@ struct DeveloperSlotsView: View {
     @State private var certificateError: String?
     @State private var appIDError: String?
     @State private var loading = false
+    /// The person has asked Apple for the lists, here, since this screen opened.
+    @State private var requested = false
     @State private var working: String?
     @State private var actionError: String?
     @State private var pendingRevoke: DeveloperSlots.Certificate?
@@ -37,6 +43,8 @@ struct DeveloperSlotsView: View {
                     .frame(maxWidth: 720, alignment: .leading)
                     .frame(maxWidth: .infinity)
                 }
+            } else if !requested {
+                notLoaded
             } else if account.team == nil && !loading {
                 notSignedIn
             } else {
@@ -49,7 +57,7 @@ struct DeveloperSlotsView: View {
             ToolbarItem(placement: .primaryAction) {
                 if loading {
                     ProgressView()
-                } else {
+                } else if requested {
                     Button {
                         Task { await load() }
                     } label: {
@@ -59,7 +67,28 @@ struct DeveloperSlotsView: View {
                 }
             }
         }
-        .task { await load() }
+    }
+
+    /// Where the screen starts: nothing asked of Apple yet, and no sign-in. A certificate of
+    /// your own (SigningView) never needs this screen.
+    private var notLoaded: some View {
+        let remembered = account.rememberPassword && Keychain.hasPassword
+        return ContentUnavailableView {
+            Label("Not Loaded", systemImage: "icloud.slash")
+        } description: {
+            Text("This lists what your Apple ID has registered with Apple, so Apparition asks Apple only when you press the button\(account.team == nil && remembered ? ", and signs in with the remembered password to do it" : ""). Signing with your own certificate never needs this screen.")
+        } actions: {
+            if account.team == nil && !remembered {
+                Button("Sign In…", action: onSignIn)
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button(account.team == nil ? "Sign In and Load from Apple" : "Load from Apple") {
+                    Task { await load() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(account.busy)
+            }
+        }
     }
 
     /// No session: sign in here with the remembered password, which asks for a 2FA code on this
@@ -192,7 +221,7 @@ struct DeveloperSlotsView: View {
                 Text(certificateDetails(certificate))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if let expires = Self.date(certificate.expires) {
+                if let expires = SigningStore.date(certificate.expires) {
                     Text(expires < Date() ? "Expired \(expires.relativeToNow)" : "Expires \(expires.relativeToNow)")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -284,7 +313,7 @@ struct DeveloperSlotsView: View {
                     if let app {
                         StatusPill(text: "Used by \(app.name)", systemImage: "square.stack.3d.up", tint: .blue)
                     }
-                    if let expires = Self.date(appID.expires) {
+                    if let expires = SigningStore.date(appID.expires) {
                         Text(expires < Date() ? "Expired \(expires.relativeToNow)" : "Expires \(expires.relativeToNow)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -336,14 +365,15 @@ struct DeveloperSlotsView: View {
         }
     }
 
+    /// Only ever started by the person (a button here, or a revoke or delete they confirmed).
     private func load() async {
         guard !loading else { return }
+        requested = true
         loading = true
         defer { loading = false }
-        // A remembered password signs in as a refresh would; Apple's 2FA step, if it asks for
-        // one, shows on this screen (or the sign-in waits for the person, if they already
-        // left a code unentered).
-        if account.team == nil, !(await account.signInWithRememberedPassword()) { return }
+        // A remembered password signs in for them; Apple's 2FA step, if it asks for one,
+        // shows on this screen. `byPerson`: they asked just now, so a paused sign-in resumes.
+        if account.team == nil, !(await account.signInWithRememberedPassword(byPerson: true)) { return }
         do {
             certificates = try await DeveloperSlots.certificates()
             certificateError = nil
@@ -392,12 +422,6 @@ struct DeveloperSlotsView: View {
         case "watchos": "watchOS"
         default: platform
         }
-    }
-
-    /// Apple's dates arrive as plist XML dates ("2026-10-18T12:00:00Z").
-    static func date(_ text: String?) -> Date? {
-        guard let text else { return nil }
-        return (try? Date(text, strategy: .iso8601)) ?? Date.iso(text)
     }
 }
 

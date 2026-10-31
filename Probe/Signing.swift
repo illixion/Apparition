@@ -484,6 +484,13 @@ final class SigningStore {
 
     // MARK: Helpers
 
+    /// Certificate and profile dates arrive as ISO 8601 text ("2026-10-18T12:00:00Z"); also what
+    /// Apple's own screens show, so the Apple ID's screen uses this too.
+    nonisolated static func date(_ text: String?) -> Date? {
+        guard let text else { return nil }
+        return (try? Date(text, strategy: .iso8601)) ?? Date.iso(text)
+    }
+
     private struct Empty: Decodable {}
 
     private static func decode<T: Decodable>(_ type: T.Type, _ reply: [String: Any]) throws -> T {

@@ -22,6 +22,7 @@ struct SettingsView: View {
             Form {
                 RAVEScreenHeading("Settings")
                 companionSection
+                certificatesSection
                 accountSection
                 pairingSection
                 shortcutsSection
@@ -66,6 +67,26 @@ struct SettingsView: View {
         }
     }
 
+    /// Signing with your own certificate (.p12) and profiles: its own screen and section, apart
+    /// from the Apple ID's. Nothing in it signs in or asks Apple for anything.
+    private var certificatesSection: some View {
+        Section {
+            NavigationLink {
+                SigningView(library: library)
+            } label: {
+                LabeledContent {
+                    Text(library.signing.signerName(library.signing.defaultSigner))
+                } label: {
+                    Label("Certificates & Profiles", systemImage: "signature")
+                }
+            }
+        } header: {
+            Text("Your Certificates")
+        } footer: {
+            Text("Import a certificate (.p12) and provisioning profiles to sign offline, with no Apple ID and no requests to Apple. This also sets what signs apps by default.")
+        }
+    }
+
     private var accountSection: some View {
         Section {
             if let team = account.team {
@@ -83,15 +104,6 @@ struct SettingsView: View {
                 Button("Sign In…", action: onSetup)
                 if account.lastAppleID != nil && Keychain.hasPassword {
                     Button("Forget Apple ID", role: .destructive) { account.signOut() }
-                }
-            }
-            NavigationLink {
-                SigningView(account: account, library: library, onSignIn: onSetup)
-            } label: {
-                LabeledContent {
-                    Text(library.signing.signerName(library.signing.defaultSigner))
-                } label: {
-                    Label("Signing", systemImage: "signature")
                 }
             }
             NavigationLink {
@@ -124,7 +136,7 @@ struct SettingsView: View {
         } header: {
             Text("Apple ID")
         } footer: {
-            Text("Your devices and computers share one certificate: Share Signing hands this \(ThisDevice.noun)'s to another, and Get Signing takes another's, so a free Apple ID's two are never used up one per device. A remembered password stays in this \(ThisDevice.noun)'s Keychain, never synced or sent anywhere but Apple, so refreshes can sign in on their own. Turning it off deletes it.")
+            Text("Apparition asks Apple only when you sign in, install or refresh with the Apple ID, or open Certificates & App IDs and press Load. Your devices and computers share one certificate: Share Signing hands this \(ThisDevice.noun)'s to another, and Get Signing takes another's, so a free Apple ID's two are never used up one per device. A remembered password stays in this \(ThisDevice.noun)'s Keychain, never synced or sent anywhere but Apple, so refreshes can sign in on their own. Turning it off deletes it.")
         }
     }
 

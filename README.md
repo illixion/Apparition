@@ -405,8 +405,10 @@ fails with the reason (not signed in, companion unreachable), so the automation 
 
 ## Your own developer certificate
 
-With a paid developer account, Apparition can sign without an Apple ID (Settings > Signing):
-import an Apple Development or Distribution certificate as a .p12, plus development, ad hoc or
+With a paid developer account, Apparition can sign without an Apple ID (Settings > Your
+Certificates > Certificates & Profiles). That screen is separate from the Apple ID's and works
+offline: it never signs in or contacts Apple, and the Apple ID's own Certificates & App IDs
+screen (Settings > Apple ID) asks Apple only when you press Load from Apple. Import an Apple Development or Distribution certificate as a .p12, plus development, ad hoc or
 enterprise profiles that list the headset. Apps then sign on the headset for as long as their
 profile lasts, usually a year, with no sign-in, anisette server or free-account slots. A wildcard
 profile keeps each app's own bundle ID, and development profiles keep Launch with JIT working.
@@ -426,7 +428,7 @@ same bundle ID, Apparition says so before installing, rather than passing on ins
 Changing an app's signer later (its menu in the Library) changes its bundle ID too, as does an
 Apple ID that signs for another team. The app comes back as a new copy; Apparition then copies
 the old copy's files to it through the same tunnel (house_arrest), and removes the old copy only
-once every file arrived. Turn it off in Settings > Signing. Caches are left behind, and so are
+once every file arrived. Turn it off in Settings > Certificates & Profiles. Caches are left behind, and so are
 Keychain items and app group data, which belong to the signing team. Only a development-signed
 app can have its data read, so a distribution-signed one keeps its data in the old copy.
 
