@@ -3,6 +3,7 @@ import SwiftUI
 struct BuildServiceView: View {
     @Bindable var service: BuildService
     @State private var password = ""
+    @State private var resigning: ResignTarget?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -63,6 +64,9 @@ struct BuildServiceView: View {
                                 Text(artifact.app.name ?? artifact.app.bundleId).font(.headline)
                                 Text("\(artifact.platform) · \(artifact.app.build ?? artifact.buildId)")
                                 Text(artifact.buildId).font(.caption).foregroundStyle(.secondary)
+                                if service.canResign {
+                                    Button("Re-sign…") { resigning = ResignTarget(artifact: artifact, devices: service.devices(for: artifact)) }
+                                }
                             }
                         }
                     }
@@ -77,6 +81,7 @@ struct BuildServiceView: View {
                 }
             }
             .navigationTitle("Developer")
+            .sheet(item: $resigning) { ResignSheet(service: service, target: $0) }
             .task { await service.restoreConnection() }
             .toolbar {
                 if service.connected { Button("Refresh", systemImage: "arrow.clockwise") { Task { await service.refresh() } } }

@@ -13,7 +13,8 @@ const compiled = spawnSync('xcrun', ['swiftc', path.join(root, 'Probe/BuildServi
   path.join(root, 'scripts/check-build-service.swift'), '-o', binary], { stdio: 'inherit' });
 if (compiled.status !== 0) process.exit(1);
 const token = 'A'.repeat(43); // Synthetic fixture value, never a real credential.
-let job = null, revoked = false, redirected = false;
+let job = null, resignJob = null, revoked = false, redirected = false;
+const resigns = [];
 let successfulConnections = 0, expiredOnce = false;
 const requests = [];
 const server = http.createServer(async (req, res) => {
@@ -37,7 +38,7 @@ const server = http.createServer(async (req, res) => {
       }
       assert.equal(body.password, 'fixture-password');
       successfulConnections++;
-      return json({ protocol: 'apparition-service', version: 1, token });
+      return json({ protocol: 'apparition-service', version: 1, token, capabilities: ['builds', 'resign'] });
     }
     if (req.url === '/stolen') { redirected = true; return json({}); }
     assert.equal(req.headers.authorization, 'Bearer ' + token);
@@ -47,9 +48,20 @@ const server = http.createServer(async (req, res) => {
         expiredOnce = true; res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{}');
       }
       return json({ host: 'fixture', repos: [{ name: 'Fixture', branches: [],
-        platforms: [{ platform: 'visionOS', device: 'AVP' }] }], builds: job ? [job] : [] });
+        platforms: [{ platform: 'visionOS', device: 'AVP', bundleId: 'com.example.fixture' }] }],
+        builds: [job, resignJob].filter(Boolean) });
     }
-    if (req.url === '/api/service/v1/artifacts') return json({ builds: [] });
+    if (req.url === '/api/service/v1/artifacts') return json({ builds: [{ buildId: 'fixture-build', platform: 'visionOS', project: 'Fixture',
+      createdAt: '2026-10-31T00:00:00Z', app: { name: 'Fixture', bundleId: 'com.example.fixture', build: 'abc1234' } }] });
+    if (req.url === '/api/service/v1/resign/options') return json({ profiles: [
+      { id: 'fixture-old', name: 'Old', appId: 'com.example.*', expired: true, debuggable: true },
+      { id: 'fixture-dev', name: 'Fixture', appId: 'com.example.Other', expired: false, debuggable: true } ] });
+    if (req.url === '/api/service/v1/resign') {
+      resigns.push(body);
+      if (body.profile === 'refused') { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'No configured project installs com.example.fixture on AVP.' })); }
+      resignJob = { id: 2, repo: 'Fixture', platform: 'visionOS', device: 'AVP', status: 'queued' };
+      return json({ jobs: [resignJob] });
+    }
     if (req.url === '/api/service/v1/build') {
       assert.deepEqual(body, { repo: 'Fixture', device: 'AVP', targetPlatform: 'visionOS', branch: 'current',
         deploy: false, run: false, mcp: true, inject: false, buildDebug: false });
@@ -67,7 +79,9 @@ server.listen(0, '127.0.0.1', async () => {
   const timer = setTimeout(() => { child.kill('SIGTERM'); process.exitCode = 1; }, 30000);
   child.on('exit', code => {
     clearTimeout(timer);
-    try { assert.equal(code, 0); assert.equal(revoked, true); assert.equal(redirected, false); assert.equal(expiredOnce, true); assert.equal(successfulConnections, 3); assert.ok(requests.length > 8); }
+    try { assert.equal(code, 0); assert.equal(revoked, true); assert.equal(redirected, false); assert.equal(expiredOnce, true); assert.equal(successfulConnections, 3); assert.ok(requests.length > 8);
+      assert.deepEqual(resigns, [{ buildId: 'fixture-build', device: 'AVP', profile: 'fixture-dev', dataMode: 'discard', dryRun: true },
+        { buildId: 'fixture-build', device: 'AVP', profile: 'refused', dataMode: 'keep', dryRun: false }]); }
     catch (error) { console.error(error); process.exitCode = 1; }
     server.close(); server.closeAllConnections();
   });

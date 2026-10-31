@@ -18,6 +18,7 @@ struct LibraryView: View {
     /// The app whose JIT launch this screen started, to show its progress on the right card.
     @State private var jitAppId: String?
     @State private var downloadingArtifactID: String?
+    @State private var resigning: ResignTarget?
     @State private var pendingRemoval: RemovalConfirmation?
     @State private var removalError: String?
     @State private var confirmingSelfRefresh = false
@@ -105,6 +106,7 @@ struct LibraryView: View {
                 Task { await library.receiveAppFile(url) }
             }
             #endif
+            .sheet(item: $resigning) { ResignSheet(service: service, target: $0) }
             .confirmationDialog("Update Apparition to \(library.availableUpdate?.version ?? "")?", isPresented: $confirmingUpdate, titleVisibility: .visible) {
                 Button("Download and Install") { Task { await library.updateSelf() } }
             } message: {
@@ -445,6 +447,14 @@ struct LibraryView: View {
             Toggle("Automatically prepare updates", isOn: preparesUpdates)
             if preparesUpdates.wrappedValue {
                 Text("When a newer build is retained, Apparition downloads it and opens the usual install review. You still approve signing and installation.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if service.canResign, let kept = service.artifact(for: bundleId, installedBuild: app.build) {
+                Button { resigning = ResignTarget(artifact: kept, devices: [target.device]) } label: {
+                    Label("Re-sign with another profile…", systemImage: "signature")
+                }
+                .disabled(service.busy || library.busy)
+                Text("Signs the kept build \(kept.app.build ?? kept.buildId) with another of the Mac's profiles and installs it over this app.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Divider()

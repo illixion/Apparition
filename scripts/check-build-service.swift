@@ -1,6 +1,10 @@
 // Compiled and driven by verify-device-build-service.cjs; no device or signing needed.
 import Foundation
 
+/// BuildService asks the real `ThisDevice` (UIKit) which platforms suit this device's apps; this
+/// macOS check has no UIKit, so a stand-in answers with the headset's.
+enum ThisDevice { static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [String] { ["visionos"] } }
+
 @main struct CheckBuildService {
     @MainActor static func main() async throws {
         for address in ["http://192.168.1.2", "https://user:password@example.com", "https://example.com/path", "https://example.com?q=1", "file:///tmp/a"] {
@@ -39,8 +43,21 @@ import Foundation
         precondition(service.detail == "fixture build log")
         await service.cancel(job)
         precondition(service.state?.builds[0].status == "cancelled")
+        // Re-signing: offered only when the service says so, for the devices a project installs the app on,
+        // with only unexpired profiles, and the body is exactly the five plain fields.
+        precondition(service.canResign)
+        let kept = service.artifacts[0]
+        precondition(service.devices(for: kept) == ["AVP"])
+        let profiles = await service.resignProfiles()
+        precondition(profiles.map(\.id) == ["fixture-dev"], "expired profiles are not offered")
+        let queued = await service.resign(kept, device: "AVP", profile: profiles[0], keepData: false, dryRun: true)
+        precondition(queued?.id == 2 && service.state?.builds.count == 2, service.message)
+        // The service's own sentence reaches the person, not a bare status code.
+        let refused = BuildService.ResignProfile(id: "refused", name: "x", appId: "x", expired: false, debuggable: true)
+        let none = await service.resign(kept, device: "AVP", profile: refused, keepData: true, dryRun: false)
+        precondition(none == nil && service.message == "No configured project installs com.example.fixture on AVP.", service.message)
         await service.disconnect()
-        precondition(!service.connected && service.state == nil && service.detail.isEmpty)
+        precondition(!service.canResign && !service.connected && service.state == nil && service.detail.isEmpty)
         precondition(stored[origin] == nil)
         let disconnected = BuildService(defaults: defaults, passwords: passwords)
         await disconnected.restoreConnection()
@@ -73,6 +90,6 @@ import Foundation
         await pending.value
         precondition(stored[otherOrigin] == "other-fixture")
         precondition(service.message == "Disconnected.") // A stale reply cannot change the new connection state.
-        print("PASS: password restoration, expiry recovery, origin scoping, forgetting, rejected credentials and transport boundaries")
+        print("PASS: password restoration, expiry recovery, origin scoping, forgetting, rejected credentials, transport boundaries and re-sign requests")
     }
 }

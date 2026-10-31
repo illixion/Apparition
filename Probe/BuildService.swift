@@ -79,6 +79,17 @@ final class BuildService {
         let app: App
     }
     private struct Artifacts: Decodable { let builds: [Artifact] }
+    /// A provisioning profile in the Mac's build-signing folder, as the service describes it:
+    /// no path and no device list, only what choosing one needs.
+    struct ResignProfile: Decodable, Identifiable, Hashable {
+        let id: String
+        let name: String
+        let appId: String
+        let expired: Bool
+        let debuggable: Bool
+        var label: String { "\(name) · \(appId)" + (debuggable ? "" : " · not debuggable") }
+    }
+    private struct ResignOptions: Decodable { let profiles: [ResignProfile] }
     struct Trace: Decodable, Identifiable {
         struct App: Decodable { let name: String?; let bundleId: String; let version: String?; let build: String? }
         struct Build: Decodable { let buildId: String?; let repo: String?; let platform: String? }
@@ -108,17 +119,20 @@ final class BuildService {
         let `protocol`: String
         let version: Int
         let token: String
+        let capabilities: [String]?
     }
     private struct BuildReply: Decodable { let jobs: [Job] }
     private struct Log: Decodable { let chunk: String }
     private struct OK: Decodable { let ok: Bool }
+    private struct Reason: Decodable { let error: String }
     enum Failure: LocalizedError {
-        case address, response, rejected(Int), expired
+        case address, response, rejected(Int), refused(String), expired
         var errorDescription: String? {
             switch self {
             case .address: "Use an HTTPS service address, or HTTP on localhost. Do not include credentials, a path or query."
             case .response: "The service returned an unsupported or oversized response."
             case .rejected(let status): status == 401 ? "Connect to the build service again." : "The service refused the request (HTTP \(status))."
+            case .refused(let reason): reason
             case .expired: "The connection changed; try again."
             }
         }
@@ -127,6 +141,8 @@ final class BuildService {
     var address: String
     private(set) var connected = false
     private(set) var busy = false
+    /// What the connected service says it can do (`resign` among them); empty when disconnected.
+    private(set) var capabilities: Set<String> = []
     private(set) var state: State?
     private(set) var artifacts: [Artifact] = []
     private(set) var traces: [Trace] = []
@@ -191,7 +207,17 @@ final class BuildService {
         }
         let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse else { throw Failure.response }
-        guard response.statusCode == 200 else { throw Failure.rejected(response.statusCode) }
+        guard response.statusCode == 200 else {
+            // The service explains a refused request in `{error}`; keep that sentence, bounded.
+            if (400..<500).contains(response.statusCode), response.statusCode != 401, response.expectedContentLength <= 4096 {
+                var data = Data()
+                for try await byte in bytes { guard data.count < 4096 else { break }; data.append(byte) }
+                if let reason = try? JSONDecoder().decode(Reason.self, from: data), !reason.error.isEmpty, reason.error.count <= 500 {
+                    throw Failure.refused(reason.error)
+                }
+            }
+            throw Failure.rejected(response.statusCode)
+        }
         let limit = 8 * 1024 * 1024
         guard response.expectedContentLength <= limit else { throw Failure.response }
         var data = Data()
@@ -215,7 +241,7 @@ final class BuildService {
                 throw Failure.rejected(401)
             }
             let refreshed: String
-            do { refreshed = try await openSession(at: base, password: password) }
+            do { refreshed = try await openSession(at: base, password: password).token }
             catch Failure.rejected(401) {
                 guard expected == generation else { throw Failure.expired }
                 passwords.delete(base.absoluteString); connected = false; self.token = nil
@@ -229,11 +255,11 @@ final class BuildService {
         return reply
     }
 
-    private func openSession(at url: URL, password: String) async throws -> String {
+    private func openSession(at url: URL, password: String) async throws -> (token: String, capabilities: Set<String>) {
         let reply: Connection = try await request("api/service/connect", at: url, body: ["password": password])
         guard reply.protocol == "apparition-service", reply.version == 1,
               reply.token.count == 43, reply.token.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }) else { throw Failure.response }
-        return reply.token
+        return (reply.token, Set(reply.capabilities ?? []))
     }
 
     func restoreConnection() async {
@@ -261,9 +287,9 @@ final class BuildService {
         let destination = try? Self.serviceURL(address)
         do {
             guard let url = destination else { throw Failure.address }
-            let credential = try await openSession(at: url, password: password)
+            let opened = try await openSession(at: url, password: password)
             guard expected == generation else { throw Failure.expired }
-            base = url; token = credential; connected = true; restoreAttempted = true
+            base = url; token = opened.token; capabilities = opened.capabilities; connected = true; restoreAttempted = true
             defaults.set(url.absoluteString, forKey: "buildServiceURL")
             let saved = !rememberPassword || passwords.save(url.absoluteString, password)
             message = saved ? "Connected." : "Connected, but the password could not be saved in this device's Keychain."
@@ -279,7 +305,7 @@ final class BuildService {
         let previous = base, credential = token
         if let origin = previous ?? (try? Self.serviceURL(address)) { passwords.delete(origin.absoluteString) }
         restoreAttempted = true
-        generation = UUID(); connected = false; token = nil; base = nil
+        generation = UUID(); connected = false; token = nil; base = nil; capabilities = []
         state = nil; artifacts = []; traces = []; crashLogs = []; detail = ""; reportDetail = ""; reportDetailOwnerBundleId = nil; reportDetailID = nil; message = "Disconnected."
         if let previous, let credential {
             let _: OK? = try? await request("api/service/v1/disconnect", at: previous, token: credential, body: [:])
@@ -434,6 +460,43 @@ final class BuildService {
             message = reply.jobs.first.map { "Queued build #\($0.id)." } ?? "Build queued."
             await refresh()
         } catch { message = error.localizedDescription }
+    }
+
+    // MARK: Re-sign
+
+    var canResign: Bool { connected && capabilities.contains("resign") }
+
+    /// The devices a project installs this build's app on, so only those are offered.
+    func devices(for artifact: Artifact) -> [String] {
+        var names: [String] = []
+        for target in (state?.repos ?? []).flatMap(\.platforms)
+        where target.bundleId == artifact.app.bundleId && target.platform.caseInsensitiveCompare(artifact.platform) == .orderedSame
+            && !names.contains(target.device) { names.append(target.device) }
+        return names
+    }
+
+    /// The Mac's unexpired profiles. Empty on failure, with `message` saying why.
+    func resignProfiles() async -> [ResignProfile] {
+        do { let reply: ResignOptions = try await authenticated("resign/options"); return reply.profiles.filter { !$0.expired } }
+        catch { message = error.localizedDescription; return [] }
+    }
+
+    /// Asks the Mac to re-sign a kept build for a device. The Mac signs the IPA it kept with the
+    /// chosen profile and installs it over the app; if the device refuses an update to another
+    /// App ID it backs the data up, reinstalls and restores it (lib/resign.js in appstore).
+    /// `dryRun` only checks the data can be reached. Returns the queued job.
+    func resign(_ artifact: Artifact, device: String, profile: ResignProfile, keepData: Bool, dryRun: Bool) async -> Job? {
+        guard !busy else { return nil }
+        busy = true
+        defer { busy = false }
+        do {
+            let reply: BuildReply = try await authenticated("resign", body: ["buildId": artifact.buildId, "device": device,
+                "profile": profile.id, "dataMode": keepData ? "keep" : "discard", "dryRun": dryRun])
+            let job = reply.jobs.first
+            message = job.map { "Queued \(dryRun ? "check" : "re-sign") #\($0.id)." } ?? "Queued."
+            await refresh()
+            return job
+        } catch { message = error.localizedDescription; return nil }
     }
 
     func log(_ job: Job) async {
