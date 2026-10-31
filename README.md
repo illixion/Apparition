@@ -167,6 +167,9 @@ the previous one back with its data. `dataMode: "discard"` skips the backup. Key
 and app-group containers do not move. This needs the device reachable by `devicectl`; an OTA
 install can't change an installed app's App ID.
 
+The device list leaves out simulators: Xcode 27's `devicectl list devices` reports every
+simulator too, and nothing here installs to one.
+
 `test/service.test.js` exercises the real HTTP authentication/route boundary and target
 validation. The frontend/controller and Rust transport tests live in Apparition.
 

@@ -277,7 +277,10 @@ async function refreshDeviceList() {
     model: d.hardwareProperties?.marketingName || '',
     state: d.connectionProperties?.tunnelState || '',
     udid: d.hardwareProperties?.udid || d.identifier,
-  })).filter(d => d.name);
+    platform: d.hardwareProperties?.platform || '',
+    // devicectl (Xcode 27) lists every simulator too; nothing here installs to one.
+    simulated: d.hardwareProperties?.reality === 'simulated',
+  })).filter(d => d.name && !d.simulated).map(({ simulated, ...d }) => d);
   state.devices = { fetchedAt: Date.now(), list: devices };
   saveState();
   return devices;
