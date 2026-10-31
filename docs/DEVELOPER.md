@@ -209,3 +209,26 @@ without editing either entry body or rebuilding the app.
 A subsequent private helper signature change produced `73/173` on the same live
 Vision Pro process. Restoring the original group returned `31/131`; the lab's
 receiver and read counters survived all three two-entry transactions.
+
+The lab also includes an explicit state-generation experiment. Its original
+`EntryWorkflowState.swift` provides a main-actor `Any` slot, a V1 value snapshot and
+a synchronous scalar entry. The excluded `Lab/Patches/StateV2.swift` and
+`StateV3.swift` add separately named types and migrate value data through that slot;
+they never change a loaded type's layout. To reproduce on a fresh lab launch:
+
+```sh
+SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab \
+  BUILD_BUNDLE_ID=com.illixion.apparition.lab \
+  build-and-sign --platform visionOS --device AVP --inject \
+  --inject-backend apparition --run --mcp
+python3 scripts/test-entry-state.py --device AVP
+```
+
+The script checks two successive migrations, retained added state, rejection
+before publishing a candidate and old-code refusal after migration. It restores
+the edited source even on failure. The running app finishes with V3 data and its
+original boundary returning `-1` without changing that data; relaunch before
+repeating. Migration is an application operation on first use after code has
+loaded, separate from the native entry transaction. Read DebugTrace's
+`Docs/live-patching.md`, “Explicit state generations,” for ownership, concurrency
+and rollback limits before applying the pattern to app state.
