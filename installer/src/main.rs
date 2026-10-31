@@ -93,8 +93,14 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Another Device there) or computer (`signing receive`), found over mDNS or at the
       address it shows.
   apparition signing hand-off --apple-id <email> [--device <name>] [--bundle-id <id>]
-      Put this computer's key in Apparition's Files inbox on a paired device, as installing
-      Apparition does, for an Apparition installed another way.
+  apparition signing hand-off --build-signing [<dir>] [--device <name>] [--bundle-id <id>]
+  apparition signing hand-off --p12 <file>... --profile <file>... [--device <name>] [--bundle-id <id>]
+      Put signing in Apparition's Files inbox (Documents/Signing) on a paired device, as
+      installing Apparition does, for an Apparition installed another way. --apple-id gives this
+      computer's key; --build-signing gives every .p12 and .mobileprovision of build-and-sign
+      (~/.config/build-signing, or <dir>), so the headset signs what the appstore builds;
+      --p12 and --profile give the files you name. Apparition there asks for each .p12's
+      password once. Nothing is reinstalled.
   apparition signing share --apple-id <email>
       For devices that aren't on this network: seal the key into a .apparitionkey file here
       and print the five words that open it. Send the file any way you like and open it in
@@ -341,19 +347,40 @@ async fn signing(args: &[String]) -> Result<(), Error> {
             send_signing(&data_dir, email.ok_or_else(usage)?, to).await
         }
         Some("hand-off") => {
-            let usage = || fail("usage: apparition signing hand-off --apple-id <email> [--device <name>] [--bundle-id <id>]");
+            let usage = || fail("usage: apparition signing hand-off (--apple-id <email> | --build-signing [<dir>] | --p12 <file>... --profile <file>...) [--device <name>] [--bundle-id <id>]");
             let (mut email, mut wanted, mut bundle_id) = (None, None, None);
-            let mut rest = args[1..].iter();
+            let (mut build_signing, mut p12s, mut profiles) = (None::<Option<PathBuf>>, Vec::new(), Vec::new());
+            let mut rest = args[1..].iter().peekable();
             while let Some(arg) = rest.next() {
+                if arg == "--build-signing" {
+                    // An optional directory: the next word, unless it's another option.
+                    build_signing = Some(rest.next_if(|next| !next.starts_with("--")).map(PathBuf::from));
+                    continue;
+                }
                 let value = rest.next().ok_or_else(usage)?;
                 match arg.as_str() {
                     "--apple-id" => email = Some(value),
+                    "--p12" => p12s.push(PathBuf::from(value)),
+                    "--profile" => profiles.push(PathBuf::from(value)),
                     "--device" => wanted = Some(value),
                     "--bundle-id" => bundle_id = Some(value.clone()),
                     _ => return Err(usage()),
                 }
             }
-            let email = email.ok_or_else(usage)?;
+            let custom = !p12s.is_empty() || !profiles.is_empty();
+            if [email.is_some(), build_signing.is_some(), custom].iter().filter(|chosen| **chosen).count() != 1 {
+                return Err(usage());
+            }
+            if custom && p12s.is_empty() {
+                return Err(fail("--profile needs at least one --p12"));
+            }
+            let found = match &build_signing {
+                Some(dir) => Some(api::BuildSigning::discover(dir.as_deref())?),
+                None => None,
+            };
+            if let Some(found) = &found {
+                println!("From {}: {} certificate(s), {} profile(s).", found.dir.display(), found.p12s.len(), found.profiles.len());
+            }
             let device = find_device(wanted.map(String::as_str))?;
             println!("Connecting to {}…", device.name);
             let pin = || ask("The device wants to pair again. PIN: ");
@@ -366,11 +393,20 @@ async fn signing(args: &[String]) -> Result<(), Error> {
                     several => return Err(fail(format!("several Apparitions on {}: choose one with --bundle-id ({})", device.name, several.join(", ")))),
                 },
             };
-            tunnel.hand_off_signing(&bundle_id, Handoff::AppleId { data_dir: &data_dir, email, team_id: None }).await?;
-            println!("Put {email}'s certificate key in {bundle_id}'s inbox on {}: Apparition there now signs with this computer's certificate.", device.name);
+            if let Some(email) = email {
+                tunnel.hand_off_signing(&bundle_id, Handoff::AppleId { data_dir: &data_dir, email, team_id: None }).await?;
+                println!("Put {email}'s certificate key in {bundle_id}'s inbox on {}: Apparition there now signs with this computer's certificate.", device.name);
+            } else {
+                let what = match &found {
+                    Some(found) => found.handoff(),
+                    None => Handoff::Certificate { p12s: &p12s, profiles: &profiles },
+                };
+                tunnel.hand_off_signing(&bundle_id, what).await?;
+                println!("Put the certificates and profiles in {bundle_id}'s inbox on {}: open Apparition there and enter each .p12's password once.", device.name);
+            }
             Ok(())
         }
-        _ => Err(fail("usage: apparition signing receive | send --apple-id <email> | hand-off --apple-id <email> | share --apple-id <email> | import <file>")),
+        _ => Err(fail("usage: apparition signing receive | send --apple-id <email> | hand-off --apple-id <email> | --build-signing | --p12 … | share --apple-id <email> | import <file>")),
     }
 }
 
@@ -974,7 +1010,7 @@ async fn handoff(
         println!("Shared this computer's certificate with Apparition: sign in there with {email} and it signs with the same one.");
         return Ok(());
     };
-    tunnel.hand_off_signing(installed_id, Handoff::Certificate { p12, profiles: &options.profiles }).await?;
+    tunnel.hand_off_signing(installed_id, Handoff::Certificate { p12s: std::slice::from_ref(p12), profiles: &options.profiles }).await?;
     println!("Put your certificate and profiles in Apparition's inbox: open Apparition and enter the .p12's password once.");
     Ok(())
 }

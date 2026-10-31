@@ -516,7 +516,12 @@ certificate key as a `.apparitionsigning` file. With the key, Apparition signs w
 certificate as the computer once signed in to the same Apple ID, so the two use one of a free
 account's two certificates instead of one each. For an Apparition installed some other way,
 `apparition signing hand-off --apple-id <email> [--device <name>]` puts the key in its inbox on
-its own.
+its own. `apparition signing hand-off --build-signing [<dir>]` does the same for `build-and-sign`'s
+signing: every `.p12` under `~/.config/build-signing/certs` and `.mobileprovision` under `profiles`,
+sent into Documents/Signing over the device's pairing, so the headset can sign what the appstore
+builds without a reinstall (`--p12 <file>... --profile <file>...` sends files you name). The
+Developer view's **Signing on devices** does it with a button. Apparition on the device asks for
+each .p12's password once; the passwords are never sent.
 
 #### When Apparition says it isn't paired
 

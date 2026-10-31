@@ -68,6 +68,7 @@ required-features = ["desktop", "anisette"]
 
 [dev-dependencies]
 rand = "0.8"
+tempfile = "3"
 rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
 tokio = { version = "1.49", features = ["macros"] }
 

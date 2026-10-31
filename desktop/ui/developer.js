@@ -26,7 +26,8 @@ export class DeveloperView {
     this.capabilities = new Set();
     root.append(element('h1', '', 'Developer'));
     root.append(element('p', 'lede', 'Build on your Mac, install on your devices, and bring diagnostics back to the same project.'));
-    const form = element('form', 'group service-connect');
+    const form = element('form', 'dev-card dev-connect');
+    const fields = element('div', 'dev-connect-fields');
     const addressLabel = element('label', '', 'Build service');
     this.address = element('input');
     this.address.type = 'url'; this.address.required = true;
@@ -40,11 +41,17 @@ export class DeveloperView {
     passwordLabel.append(this.password);
     this.connect = element('button', 'button primary', 'Connect');
     this.connect.type = 'submit';
+    fields.append(addressLabel, passwordLabel, this.connect);
+    this.hint = element('p', 'hint', 'Use your appstore service password. This connection is separate from the companion relay. Sign in again after quitting Apparition.');
+    this.fields = fields;
+    // Once connected the form folds into one line: where, and a way out.
+    this.connected_bar = element('div', 'dev-connected'); this.connected_bar.hidden = true;
+    this.connected_label = element('span', 'dev-connected-label selectable');
     this.disconnect = button('Disconnect', () => this.signOut());
-    this.disconnect.hidden = true;
-    form.append(addressLabel, passwordLabel, this.connect, this.disconnect);
-    form.append(element('p', 'hint', 'Use your appstore service password. This connection is separate from the companion relay. Sign in again after quitting Apparition.'));
+    this.connected_bar.append(element('span', 'dot'), this.connected_label, this.disconnect);
+    form.append(fields, this.hint, this.connected_bar);
     form.addEventListener('submit', event => { event.preventDefault(); this.signIn(); });
+    this.signing = this.signingSection();
     this.note = element('p', 'status'); this.note.setAttribute('role', 'status');
     this.content = element('div', 'service-content'); this.content.hidden = true;
     this.projects = this.section('Projects');
@@ -54,15 +61,62 @@ export class DeveloperView {
     this.artifacts = this.section('Registered builds'); this.artifacts.hidden = true;
     this.reports = this.section('Reports');
     this.debug = this.section('Running apps');
-    this.detail = element('pre', 'service-detail selectable');
+    this.detail = element('pre', 'service-detail dev-wide selectable');
     this.detail.tabIndex = 0; this.detail.hidden = true;
     this.content.append(this.registration, this.projects, this.devices, this.jobs, this.artifacts, this.reports, this.debug, this.detail);
-    root.append(form, this.note, this.content);
+    root.append(this.signing, form, this.note, this.content);
     invoke('service_settings').then(settings => { if (settings.url) this.address.value = settings.url; }).catch(() => {});
   }
 
+  // Send build-and-sign's certificates and profiles to Apparition on a paired device, through
+  // its Documents/Signing inbox. Needs no build service: it's this Mac's files and the device's
+  // existing pairing.
+  signingSection() {
+    const card = element('section', 'dev-card dev-signing');
+    card.hidden = true;
+    card.append(element('h2', 'small', 'Signing on devices'));
+    this.signingSummary = element('p', 'hint');
+    const row = element('div', 'dev-signing-row');
+    const label = element('label', '', 'Send to');
+    this.signingDevice = element('select');
+    this.signingDevice.setAttribute('aria-label', 'Device to send signing to');
+    label.append(this.signingDevice);
+    this.signingSend = element('button', 'button primary', 'Send certificates and profiles');
+    this.signingSend.type = 'button';
+    this.signingSend.addEventListener('click', () => this.sendSigning());
+    row.append(label, this.signingSend);
+    this.signingNote = element('p', 'status'); this.signingNote.hidden = true;
+    card.append(this.signingSummary, row, this.signingNote);
+    return card;
+  }
+  async loadSigning() {
+    try {
+      const [summary, devices] = await Promise.all([this.invoke('build_signing_summary'), this.invoke('paired_devices')]);
+      this.signing.hidden = !summary;
+      if (!summary) return;
+      const count = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+      this.signingSummary.textContent = `build-and-sign on this Mac has ${count(summary.certificates.length, 'certificate')} and ${count(summary.profiles.length, 'profile')} (${summary.dir}). They go into Apparition's Signing folder on the device; open Apparition there and enter each certificate's password once. Nothing is reinstalled.`;
+      const previous = this.signingDevice.value;
+      this.signingDevice.replaceChildren(...devices.map(device => {
+        const option = element('option', '', `${device.name} · ${device.platform}`); option.value = device.udid; return option;
+      }));
+      if (devices.some(device => device.udid === previous)) this.signingDevice.value = previous;
+      this.signingSend.disabled = !devices.length;
+      if (!devices.length) this.signingSummary.textContent += ' Pair a device on the Install tab first.';
+    } catch { this.signing.hidden = true; }
+  }
+  async sendSigning() {
+    const note = (text, error = false) => { this.signingNote.hidden = !text; this.signingNote.textContent = text; this.signingNote.className = `status ${error ? 'error' : 'good'}`; };
+    this.signingSend.disabled = true; note('Connecting to the device…');
+    try {
+      const sent = await this.invoke('hand_off_build_signing', { udid: this.signingDevice.value });
+      note(`Sent ${sent.certificates} certificate(s) and ${sent.profiles} profile(s) to ${sent.device}. Open Apparition there and enter each .p12's password.`);
+    } catch (error) { note(String(error?.message || error), true); }
+    finally { this.signingSend.disabled = false; }
+  }
+
   registrationForm() {
-    const container = element('details', 'group');
+    const container = element('details', 'dev-card dev-wide');
     container.append(element('summary', '', 'Register a project'));
     const form = element('form', 'service-project');
     const input = (title, placeholder = '') => {
@@ -110,7 +164,7 @@ export class DeveloperView {
   }
 
   section(title) {
-    const node = element('section', 'group');
+    const node = element('section', 'dev-card');
     node.append(element('h2', 'small', title), element('div', 'service-items'));
     return node;
   }
@@ -119,6 +173,7 @@ export class DeveloperView {
   request(operation, args = {}) { return this.invoke('service_request', { operation, arguments: args }); }
   show(visible) {
     this.visible = visible;
+    if (visible) this.loadSigning();
     clearInterval(this.timer);
     if (visible && this.connected) { this.refresh(); this.timer = setInterval(() => this.refresh(), 4000); }
   }
@@ -133,10 +188,11 @@ export class DeveloperView {
       this.artifacts.hidden = !this.capabilities.has('artifact-manifests');
       this.registration.hidden = !this.capabilities.has('project-registration');
       this.epoch += 1;
-      this.address.disabled = this.password.disabled = true;
-      this.connect.hidden = true; this.disconnect.hidden = false; this.content.hidden = false;
+      this.fields.hidden = this.hint.hidden = true;
+      this.connected_bar.hidden = false; this.connected_label.textContent = `Connected to ${service.url}`;
+      this.content.hidden = false;
       this.projectSignature = '';
-      this.status(`Connected to ${service.url}`);
+      this.status('');
       this.show(true);
     } catch (error) { this.status(String(error?.message || error), true); }
     finally { this.connect.disabled = false; }
@@ -146,8 +202,8 @@ export class DeveloperView {
     this.connected = false;
     this.epoch += 1;
     this.content.hidden = true;
-    this.address.disabled = this.password.disabled = false;
-    this.connect.hidden = false; this.disconnect.hidden = true;
+    this.fields.hidden = this.hint.hidden = false;
+    this.connected_bar.hidden = true;
     this.detail.replaceChildren(); this.detail.hidden = true;
     try { await this.invoke('service_disconnect'); this.status('Disconnected.'); }
     catch (error) { this.status(`Disconnected locally. ${error?.message || error}`, true); }

@@ -130,3 +130,27 @@ test('project registration sends the Mac checkout and explicit targets without b
   assert.match(view.note.textContent, /Registered Example/);
   assert.equal(view.registration.open, false);
 });
+
+test('signing is offered only with build-and-sign material, and sends just the chosen device', async () => {
+  const calls = [];
+  let summary = null;
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'build_signing_summary') return summary;
+    if (command === 'paired_devices') return [{ udid: 'U1', name: 'AVP', platform: 'visionOS' }, { udid: 'U2', name: 'ATV', platform: 'tvOS' }];
+    if (command === 'hand_off_build_signing') return { device: 'ATV', certificates: 1, profiles: 3 };
+    return {};
+  });
+  await view.loadSigning();
+  assert.equal(view.signing.hidden, true);
+  summary = { dir: '/Users/me/.config/build-signing', certificates: ['development.p12'], profiles: ['a.mobileprovision', 'b.mobileprovision', 'c.mobileprovision'] };
+  await view.loadSigning();
+  assert.equal(view.signing.hidden, false);
+  assert.match(view.signingSummary.textContent, /1 certificate and 3 profiles/);
+  assert.equal(view.signingDevice.children.length, 2);
+  view.signingDevice.value = 'U2';
+  await view.sendSigning();
+  assert.deepEqual(calls.at(-1), ['hand_off_build_signing', { udid: 'U2' }]);
+  assert.match(view.signingNote.textContent, /Sent 1 certificate\(s\) and 3 profile\(s\) to ATV/);
+  assert.equal(view.signingSend.disabled, false);
+});

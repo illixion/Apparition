@@ -74,6 +74,8 @@ fn main() {
             flow::prepare_latest,
             flow::prepare_local,
             flow::install,
+            flow::build_signing_summary,
+            flow::hand_off_build_signing,
             flow::list_certificates,
             flow::revoke_certificate,
             flow::list_app_ids,

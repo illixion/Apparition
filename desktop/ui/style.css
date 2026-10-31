@@ -81,20 +81,32 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 .defs { position: absolute; }
 
 .developer-panel { max-width: 76rem; width: 100%; margin-inline: auto; }
-.service-connect { display: flex; flex-wrap: wrap; align-items: end; gap: 1rem; }
-.service-connect label { display: grid; gap: .4rem; flex: 1 1 15rem; }
-.service-connect .hint { flex-basis: 100%; margin: 0; }
-.service-connect input, .service-project select {
-  color: var(--ink); background: var(--surface); border: 1px solid var(--line);
-  padding: .65rem .8rem; border-radius: var(--radius-s); font: inherit; min-width: 0;
+/* Cards: the Developer view's one container. Not `.group`, whose column layout once
+   overrode the connection form's row and turned its 15rem flex-basis into a height. */
+.dev-card { display: flex; flex-direction: column; gap: .75rem; padding: 1.1rem 1.25rem;
+  border: 1px solid var(--line); border-radius: var(--radius-l); background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.dev-card > h2 { margin: 0; }
+.dev-card + .dev-card, .developer-panel > .dev-card, .developer-panel > .status { margin-top: 1rem; }
+.dev-wide { grid-column: 1 / -1; }
+.dev-connect-fields, .dev-signing-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: .75rem 1rem; align-items: end; }
+.dev-signing-row { grid-template-columns: minmax(0, 24rem) auto; justify-content: start; }
+.developer-panel > .status:empty { display: none; }
+.dev-connect label, .dev-signing label, .service-project label { display: grid; gap: .35rem; font-size: .9rem; color: var(--muted); }
+.dev-connect .hint { margin: 0; }
+.dev-connected { display: flex; align-items: center; gap: .7rem; }
+.dev-connected-label { flex: 1; overflow-wrap: anywhere; }
+.dev-connected .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--glow-soft); flex: none; }
+@media (max-width: 40rem) {
+  .dev-connect-fields, .dev-signing-row { grid-template-columns: 1fr; }
 }
-.service-content { display: grid; gap: 1.25rem; padding-bottom: 1.5rem; }
-.service-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-block: .5rem; }
-.service-row > span { flex: 1 1 18rem; overflow-wrap: anywhere; }
+.service-content { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(26rem, 100%), 1fr)); gap: 1rem; padding-block: 1rem 1.5rem; align-items: start; }
+.service-items { display: flex; flex-direction: column; }
+.service-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-block: .4rem; }
+.service-row > span { flex: 1 1 14rem; overflow-wrap: anywhere; }
 .service-row .button { padding: .35rem .7rem; }
-.service-project { border-top: 1px solid var(--line); padding-block: .8rem; }
-.service-project h3 { margin: 0 0 .5rem; }
-.service-project .check { font-size: .875rem; }
+.service-project { border-top: 1px solid var(--line); padding-block: .8rem; display: flex; flex-direction: column; gap: .6rem; }
+.service-project h3 { margin: 0; }
+.service-project .check { font-size: .875rem; display: inline-flex; margin-top: 0; }
 .service-project summary { cursor: pointer; overflow-wrap: anywhere; }
 .service-detail { max-height: 28rem; overflow: auto; user-select: text; white-space: pre-wrap;
   overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: var(--radius-s);

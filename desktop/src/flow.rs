@@ -769,6 +769,49 @@ fn stage(app: &AppHandle, name: &str, detail: Value) {
     let _ = app.emit("stage", json!({ "stage": name, "detail": detail }));
 }
 
+/// What `build-and-sign` keeps on this Mac, for the Developer view: counts and file names, so
+/// the person sees what would be sent. `null` when there's none (another computer, or not set up).
+#[tauri::command]
+pub fn build_signing_summary() -> Value {
+    let Ok(found) = api::BuildSigning::discover(None) else { return Value::Null };
+    let names = |files: &[std::path::PathBuf]| -> Vec<String> {
+        files.iter().filter_map(|f| f.file_name()).map(|n| n.to_string_lossy().to_string()).collect()
+    };
+    json!({ "dir": found.dir.to_string_lossy(), "certificates": names(&found.p12s), "profiles": names(&found.profiles) })
+}
+
+/// Puts build-and-sign's certificates and profiles in Apparition's Files inbox
+/// (Documents/Signing) on a paired device, over the same RemotePairing tunnel an install uses,
+/// without reinstalling anything. Apparition there asks for each .p12's password once.
+#[tauri::command]
+pub async fn hand_off_build_signing(app: AppHandle, state: Shared<'_>, udid: String) -> Result<Value, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let device = state.store.device(&udid).ok_or("That device isn't paired any more. Pair it again.")?;
+        let found = api::BuildSigning::discover(None)?;
+        let cancelled = AtomicBool::new(false);
+        let pin = || match state.ask(&app, json!({ "kind": "pin", "again": true })) {
+            Answer::Pin { pin } => digits(&pin),
+            _ => {
+                cancelled.store(true, Ordering::Relaxed);
+                String::new()
+            }
+        };
+        let bundle_id = block_on(async {
+            let mut tunnel = state.store.connect(&device, pin).await?;
+            let bundle_id = match tunnel.installed_like(APPARITION_ID).await?.as_slice() {
+                [one] => one.clone(),
+                [] => return Err(rootcause::report!("Apparition isn't installed on {}", device.name)),
+                several => return Err(rootcause::report!("Several Apparitions are installed on {}: {}", device.name, several.join(", "))),
+            };
+            tunnel.hand_off_signing(&bundle_id, found.handoff()).await?;
+            Ok::<_, Report>(bundle_id)
+        })?;
+        Ok(json!({ "device": device.name, "bundleId": bundle_id, "certificates": found.p12s.len(), "profiles": found.profiles.len() }))
+    })
+    .await
+}
+
 /// Connects, signs the prepared app for the device and installs it, then (for Apparition)
 /// hands it what signed it. Stages arrive as `stage` events. A full certificate or App ID
 /// slot fails with `slot` set. Data removal follows the explicit install-review choice.
@@ -944,7 +987,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 }
                 let apple_id_dir = state.store.apple_id_dir();
                 let (kind, what) = match (&certificate, &apple_id) {
-                    (Some(cert), _) => ("certificate", Handoff::Certificate { p12: &cert.p12, profiles: &cert.profiles }),
+                    (Some(cert), _) => ("certificate", Handoff::Certificate { p12s: std::slice::from_ref(&cert.p12), profiles: &cert.profiles }),
                     (None, Some((email, team_id))) => ("appleId", Handoff::AppleId { data_dir: &apple_id_dir, email, team_id: Some(team_id) }),
                     (None, None) => unreachable!("signed with neither"),
                 };

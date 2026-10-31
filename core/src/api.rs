@@ -5,7 +5,10 @@
 //! A desktop isn't the device it installs to, so it reaches the device's RemotePairing
 //! service directly: no relay, no LocalDevVPN.
 
-use std::{net::SocketAddr, path::Path};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 pub use idevice::remote_pairing::RpPairingFile;
 pub use isideload::auth::apple_account::{TwoFactorCallbackParams, TwoFactorCallbackResponse};
@@ -477,8 +480,58 @@ pub enum Handoff<'a> {
     /// The Apple ID's certificate key, from `<data_dir>/storage.json`: Apparition then signs
     /// with the same certificate, so the two use one of a free account's two.
     AppleId { data_dir: &'a Path, email: &'a str, team_id: Option<&'a str> },
-    /// The .p12 and profiles, as files; Apparition asks for the .p12's password once.
-    Certificate { p12: &'a Path, profiles: &'a [std::path::PathBuf] },
+    /// The .p12 files and profiles, as files; Apparition asks for each .p12's password once.
+    Certificate { p12s: &'a [PathBuf], profiles: &'a [PathBuf] },
+}
+
+/// The signing material `build-and-sign` keeps on a Mac: `certs/*.p12` and
+/// `profiles/*.mobileprovision` under `~/.config/build-signing` (`BUILD_SIGNING_DIR` overrides
+/// it). It's what the appstore build service signs with, so handing it to Apparition lets the
+/// device refresh those apps on its own. Only the files are collected; the .p12 passwords stay
+/// in `global.conf`, and the device asks for each one itself.
+#[derive(Debug, Clone, Default)]
+pub struct BuildSigning {
+    pub dir: PathBuf,
+    pub p12s: Vec<PathBuf>,
+    pub profiles: Vec<PathBuf>,
+}
+
+impl BuildSigning {
+    pub fn default_dir() -> PathBuf {
+        match std::env::var_os("BUILD_SIGNING_DIR").filter(|d| !d.is_empty()) {
+            Some(dir) => PathBuf::from(dir),
+            None => dirs::home_dir().unwrap_or_default().join(".config").join("build-signing"),
+        }
+    }
+
+    /// Lists what's in `dir` (the default when `None`); errors when there's no certificate.
+    pub fn discover(dir: Option<&Path>) -> Result<Self, Report> {
+        let dir = dir.map(Path::to_path_buf).unwrap_or_else(Self::default_dir);
+        let collect = |sub: &str, extension: &str| -> Vec<PathBuf> {
+            let mut found: Vec<PathBuf> = std::fs::read_dir(dir.join(sub))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_file()
+                        && !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))
+                        && path.extension().is_some_and(|e| e.eq_ignore_ascii_case(extension))
+                })
+                .collect();
+            found.sort();
+            found
+        };
+        let signing = Self { p12s: collect("certs", "p12"), profiles: collect("profiles", "mobileprovision"), dir };
+        if signing.p12s.is_empty() {
+            bail!("no certificate (.p12) in {}/certs: is build-and-sign set up on this computer?", signing.dir.display());
+        }
+        Ok(signing)
+    }
+
+    pub fn handoff(&self) -> Handoff<'_> {
+        Handoff::Certificate { p12s: &self.p12s, profiles: &self.profiles }
+    }
 }
 
 impl Tunnel {
@@ -492,8 +545,11 @@ impl Tunnel {
                 let file = export_apple_id_key(data_dir, email, team_id, &hostname())?;
                 vec![("apple-id.apparitionsigning".to_string(), file)]
             }
-            Handoff::Certificate { p12, profiles } => {
-                let mut files = vec![(file_name(p12)?, std::fs::read(p12)?)];
+            Handoff::Certificate { p12s, profiles } => {
+                let mut files = Vec::new();
+                for p12 in p12s {
+                    files.push((file_name(p12)?, std::fs::read(p12)?));
+                }
                 for profile in profiles {
                     files.push((file_name(profile)?, std::fs::read(profile)?));
                 }
@@ -815,7 +871,29 @@ mod desktop {
 
 #[cfg(test)]
 mod tests {
-    use super::Slot;
+    use super::{BuildSigning, Slot};
+
+    #[test]
+    fn build_signing_collects_p12s_and_profiles_only() {
+        let dir = tempfile::tempdir().unwrap();
+        for (sub, name) in [
+            ("certs", "development.p12"),
+            ("certs", "notes.txt"),
+            ("certs", ".hidden.p12"),
+            ("profiles", "b.mobileprovision"),
+            ("profiles", "a.mobileprovision"),
+            ("profiles", "Mac.provisionprofile"),
+        ] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+            std::fs::write(dir.path().join(sub).join(name), b"x").unwrap();
+        }
+        let found = BuildSigning::discover(Some(dir.path())).unwrap();
+        let names = |files: &[std::path::PathBuf]| files.iter().map(|f| f.file_name().unwrap().to_string_lossy().to_string()).collect::<Vec<_>>();
+        assert_eq!(names(&found.p12s), ["development.p12"]);
+        assert_eq!(names(&found.profiles), ["a.mobileprovision", "b.mobileprovision"]);
+        let empty = tempfile::tempdir().unwrap();
+        assert!(BuildSigning::discover(Some(empty.path())).is_err());
+    }
 
     #[test]
     fn slot_errors() {
