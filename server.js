@@ -1676,6 +1676,14 @@ const server = http.createServer(async (req, res) => {
       return res.end(fs.readFileSync(fp));
     }
     if (req.method === 'GET' && (url.pathname === '/login' || PUBLIC_FILES.has(url.pathname))) {
+      if (url.pathname === '/login' && signedIn(req)) {
+        // A same-site path only. Browsers read "/\host" like "//host", and a control
+        // character would break the header, so neither is allowed through.
+        const next = url.searchParams.get('next') || '/';
+        const target = /^\/(?![\/\\])[^\x00-\x1f\x7f]*$/.test(next) ? next : '/';
+        res.writeHead(302, { Location: target, 'Cache-Control': 'no-store' });
+        return res.end();
+      }
       if (sendStatic(res, url.pathname === '/login' ? 'login.html' : url.pathname.slice(1))) return;
     }
     // Apps upload traces with no session; the signature check is the gate.

@@ -9,7 +9,7 @@ const net = require('node:net');
 const http = require('node:http');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { hashPassword } = require('../lib/auth');
+const { hashPassword, COOKIE } = require('../lib/auth');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-http-'));
 const KEYS = path.join(TMP, 'keys');
@@ -131,6 +131,32 @@ describe('with a session', () => {
     assert.equal(state.status, 200);
     assert.equal(state.json.authRequired, true);
     assert.equal((await req('GET', '/', { cookie })).status, 200);
+  });
+  test('the login page sends a signed-in visitor on instead of asking again', async () => {
+    const cookie = await login();
+    const r = await req('GET', '/login', { cookie });
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.location, '/');
+    assert.equal(r.headers['cache-control'], 'no-store'); // a cached redirect would hide the form after the session ends
+    // the page a visitor was sent from stays where they land
+    assert.equal((await req('GET', '/login?next=%2Fota', { cookie })).headers.location, '/ota');
+    assert.equal((await req('GET', '/login?next=%2F%23debug%2Fk1', { cookie })).headers.location, '/#debug/k1');
+  });
+  test('the login page never redirects a signed-in visitor off this site', async () => {
+    const cookie = await login();
+    for (const next of ['//evil.example', 'https://evil.example', '/\\evil.example', '\\\\evil.example', 'evil.example',
+      '/ok\r\nSet-Cookie: x=1', '/ok\nX: y', '/ok\u0000', 'javascript:alert(1)', '']) {
+      const r = await req('GET', `/login?next=${encodeURIComponent(next)}`, { cookie });
+      assert.equal(r.status, 302, JSON.stringify(next));
+      assert.equal(r.headers.location, '/', JSON.stringify(next));
+      assert.equal(r.headers['set-cookie'], undefined, JSON.stringify(next));
+    }
+  });
+  test('an expired or forged session still gets the login page', async () => {
+    const forged = `${COOKIE}=${'0'.repeat(64)}`;
+    assert.equal((await req('GET', '/login', { cookie: forged })).status, 200);
+    assert.equal((await req('GET', '/login?next=%2Fota', { cookie: forged })).status, 200);
+    assert.equal((await req('GET', '/api/state', { cookie: forged })).status, 401); // and it really is not a session
   });
   test('cross-site requests are refused even with the cookie', async () => {
     const cookie = await login();

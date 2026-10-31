@@ -6,15 +6,22 @@ const os = require('node:os');
 const net = require('node:net');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { hashPassword } = require('../lib/auth');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-brand-'));
-let server, base;
+const PASSWORD = 'correct horse';
+let server, base, cookie;
 
 const freePort = () => new Promise(r => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 
-async function start(branding) {
+// The server runs with a password by default, as it does in real use: with none
+// set every visitor counts as signed in and /login redirects away, so the login
+// page could not be checked at all. Pass `locked: false` for that open case.
+async function start(branding, { locked = true } = {}) {
   const port = await freePort();
-  fs.writeFileSync(path.join(TMP, 'config.json'), JSON.stringify({ port, bundlePrefix: 'x', repos: [], branding }));
+  fs.writeFileSync(path.join(TMP, 'config.json'), JSON.stringify({
+    port, bundlePrefix: 'x', repos: [], branding, ...(locked ? { passwordHash: hashPassword(PASSWORD) } : {}),
+  }));
   server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'config.json'), APPSTORE_DATA: path.join(TMP, 'data'),
       DEBUGTRACE_KEY_DIR: path.join(TMP, 'keys'), PATH: '/usr/bin:/bin' },
@@ -26,9 +33,17 @@ async function start(branding) {
     server.on('exit', c => reject(new Error(`server exited ${c}`)));
   });
   base = `http://127.0.0.1:${port}`;
+  cookie = null;
+  if (locked) {
+    const r = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }) });
+    assert.equal(r.status, 200);
+    cookie = r.headers.get('set-cookie').split(';')[0];
+  }
 }
 const stop = () => { server?.kill(); server = null; };
-const page = async p => (await fetch(base + p)).text();
+// The app pages need the session; the login page is fetched without one, as a
+// visitor who is signed out would.
+const page = async p => (await fetch(base + p, { headers: p === '/login' || !cookie ? {} : { Cookie: cookie } })).text();
 
 describe('branding', () => {
   after(stop);
@@ -59,6 +74,14 @@ describe('branding', () => {
     const r = await fetch(base + '/branding/icon');
     assert.equal(r.status, 200);
     assert.equal(r.headers.get('content-type'), 'image/svg+xml');
+    stop();
+  });
+  test('with no password set there is nothing to sign in to, so /login leads to the app', async () => {
+    await start({ org: 'Acme' }, { locked: false });
+    const r = await fetch(base + '/login', { redirect: 'manual' });
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.get('location'), '/');
+    assert.match(await page('/'), /class="tri"|class="brandicon"/);
     stop();
   });
 });
