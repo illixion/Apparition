@@ -142,3 +142,11 @@ test('a dry run only checks the data can be reached', async () => {
   assert.equal(result.dataReadable, true);
   assert.deepEqual(verbs(calls), ['info files']);
 });
+
+test('the short form build-and-sign prints still counts as the App ID refusal', () => {
+  const printed = 'ERROR: Failed to install the app on the device. (com.apple.dt.CoreDeviceError error 3002 (0xBBA))\n' +
+    '   FunctionName = -[MIInstallableBundle _validateApplicationIdentifierForNewBundleSigningInfo:error:]';
+  assert.match(printed, resign.MISMATCH);
+  assert.doesNotMatch('error: No signing certificate matching', resign.MISMATCH);
+  assert.doesNotMatch('0xe8008012 could not install: profile does not include device', resign.MISMATCH);
+});
