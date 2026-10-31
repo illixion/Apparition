@@ -500,7 +500,7 @@ impl BuildSigning {
     pub fn default_dir() -> PathBuf {
         match std::env::var_os("BUILD_SIGNING_DIR").filter(|d| !d.is_empty()) {
             Some(dir) => PathBuf::from(dir),
-            None => dirs::home_dir().unwrap_or_default().join(".config").join("build-signing"),
+            None => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config").join("build-signing"),
         }
     }
 
