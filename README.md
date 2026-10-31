@@ -337,7 +337,6 @@ and five timings per phase in nanoseconds per call. Breadcrumbs are synced befor
 steps to `Documents/optimized-patch-steps.txt`. A normal launch reports `not-traced` and
 does not issue debugger requests. Use a fresh launch for each experiment.
 
-Verified on a physical Vision Pro on 2026-10-29: writes succeeded, ordinary calls returned
 `[11,17,11]`, and the inlined caller returned `[11,11,11]`; loop checksums matched all three
 phases. Tiny-function timings varied substantially, including after restoration, so they
 establish no application-level performance improvement. This proves optimized entry
@@ -367,7 +366,6 @@ each launch, so a crash cannot reuse an old success. Reports stay under ignored
 `build/swift-entry-lab/<platform>/`. Runtime checkpoints are in
 `Documents/swift-entry-steps.txt`.
 
-Verified on physical Vision Pro, 2026-10-29, both native visionOS and iOS compatibility builds:
 
 - A native Swift integer entry returned `[11,17,11]` before patching, after patching and
   after restoration. Both a Swift function reference and a normal compiled Swift call
@@ -694,6 +692,7 @@ restore a free account's weekly allowance before it expires.
 
     scripts/install-tauri-cli.sh      # once (or cargo install tauri-cli --version '^2' --locked)
     cd desktop && cargo tauri build --bundles app                           # this Mac
+    scripts/install-desktop.sh        # build, sign, install to /Applications and relaunch (this Mac)
     cargo tauri build --target universal-apple-darwin --bundles app         # arm64 + x86_64
     cargo build --release --features custom-protocol --target x86_64-pc-windows-gnu   # Windows exe
     docker build -t apparition-desktop-linux -f ../scripts/desktop-linux.Dockerfile ../scripts
@@ -755,16 +754,12 @@ code Apple pushes to your trusted devices if the Xcode token is refused (`core/v
 On a Mac the built-in provider asks macOS for the Mac's own anisette instead, and the sign-in
 claims a Mac and goes through the usual 2FA (`core/src/anisette/native.rs`):
 
-- **macOS 26 and earlier:** AOSKit gives it to any program.
-- **macOS 27:** only programs with AuthKit's private entitlements get it. The release ships
-  `apparition-anisette-helper` signed with them, next to `apparition` and inside the app, and
-  macOS runs it only with SIP off and `sudo nvram boot-args="amfi_get_out_of_my_way=1"`.
-  Otherwise the Android libraries are used, which sign in as before.
+
 
 In a **macOS virtual machine**, Apple also needs the host's attestation, which the helper forwards
 along with the rest of AuthKit's headers; it's only valid inside a desktop session, so the server
 runs as a login item. [`selfhost/macos-vm/setup.sh`](selfhost/macos-vm/setup.sh) arranges all of
-this — see **[Self-hosting anisette in a macOS VM](docs/ANISETTE_VM.md)**.
+this — see **[Self-hosting anisette in a macOS VM](selfhost/macos-vm/README.md)**.
 
 Provisioning goes through the Android libraries either way, so a device's stored identity works
 with any server. With a paid developer account there is also a route with no sign-in at all:

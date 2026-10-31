@@ -261,7 +261,6 @@ impl AppleAccount {
                                 .verify_trusted_device_2fa(code)
                                 .await
                                 .context("Failed to verify trusted device 2FA")?;
-                            // Taken (hsc 409 asks for it too): code_after_login mustn't ask again.
                             if matches!(self.login_state, LoginState::NeedsLogin) {
                                 self.code_checked = true;
                                 code_taken = true;
