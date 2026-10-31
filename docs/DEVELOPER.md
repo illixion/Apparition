@@ -189,3 +189,6 @@ or an error with a hint. App approval and signed-code checks apply to both backe
 The isolated `ApparitionLab` target exposes `entryProbe`, whose value starts at 11 and
 whose counter survives live patches. Its `EntryWorkflowLab.swift` boundary can be
 patched through this complete workflow without deploying the main Apparition app.
+
+For the reproducible host performance comparison and tested struct receiver
+conventions, see [native entry performance and validation](ENTRY_PERFORMANCE.md).
