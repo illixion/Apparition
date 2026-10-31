@@ -52,20 +52,21 @@ def main():
         total = start + 5
         inject('entryWorkflowState(5)', str(total))
         # Reject after constructing a candidate, before storing it: V1 survives.
-        inject(r'let result = entryWorkflowState(-999); return "\(result):\((EntryWorkflowStateSlot.value as? EntryWorkflowStateV1)?.total ?? -1)"',
-               f'-2:{total}', 'StateV2.swift')
+        inject(r'let result = entryWorkflowState(-999); return "\(result):\((try? EntryWorkflowStateSlot.slot.read(generation: "v1", as: EntryWorkflowStateV1.self))?.total ?? -1):\(EntryWorkflowStateSlot.slot.revision)"',
+               f'-2:{total}:2', 'StateV2.swift')
         total += 2
-        inject(r'let result = entryWorkflowState(2); let state = EntryWorkflowStateSlot.value as! EntryWorkflowStateV2; return "\(result):\(state.steps):\(state.label)"',
-               f'{total}:1:migrated')
+        inject(r'let result = entryWorkflowState(2); let state = try! EntryWorkflowStateSlot.slot.read(generation: "v2", as: EntryWorkflowStateV2.self); return "\(result):\(state.steps):\(state.label):\(EntryWorkflowStateSlot.slot.revision)"',
+               f'{total}:1:migrated:3')
         total += 3
-        inject(r'let result = entryWorkflowState(3); return "\(result):\((EntryWorkflowStateSlot.value as! EntryWorkflowStateV2).steps)"', f'{total}:2')
+        inject(r'let result = entryWorkflowState(3); return "\(result):\((try! EntryWorkflowStateSlot.slot.read(generation: "v2", as: EntryWorkflowStateV2.self)).steps)"', f'{total}:2')
         total += 4
-        inject(r'let result = entryWorkflowState(4); return "\(result):\((EntryWorkflowStateSlot.value as! EntryWorkflowStateV3).history)"',
+        inject(r'let result = entryWorkflowState(4); return "\(result):\((try! EntryWorkflowStateSlot.slot.read(generation: "v3", as: EntryWorkflowStateV3.self)).history)"',
                f'{total}:[2, 4]', 'StateV3.swift')
+        inject(r'let result = entryWorkflowState(-999); let state = try! EntryWorkflowStateSlot.slot.read(generation: "v3", as: EntryWorkflowStateV3.self); return "\(result):\(state.total):\(state.history):\(EntryWorkflowStateSlot.slot.revision)"', f'-2:{total}:[2, 4]:5')
         total += 1
-        inject(r'let result = entryWorkflowState(1); return "\(result):\((EntryWorkflowStateSlot.value as! EntryWorkflowStateV3).history)"', f'{total}:[2, 4, 1]')
-        inject(r'let result = entryWorkflowState(10); return "\(result):\((EntryWorkflowStateSlot.value as! EntryWorkflowStateV3).total)"',
-               f'-1:{total}', 'StateRollback.swift')
+        inject(r'let result = entryWorkflowState(1); return "\(result):\((try! EntryWorkflowStateSlot.slot.read(generation: "v3", as: EntryWorkflowStateV3.self)).history)"', f'{total}:[2, 4, 1]')
+        inject(r'let result = entryWorkflowState(10); return "\(result):\((try! EntryWorkflowStateSlot.slot.read(generation: "v3", as: EntryWorkflowStateV3.self)).total):\(EntryWorkflowStateSlot.slot.revision)"',
+               f'-1:{total}:6', 'StateRollback.swift')
         print('PASS: two migrations, retained added state, rejected candidate, safe old-code refusal.', flush=True)
     finally:
         source.write_text(original)

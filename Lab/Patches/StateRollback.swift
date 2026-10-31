@@ -1,3 +1,5 @@
+import DebugTrace
+
 // Stable storage and a scalar boundary for explicit state-generation experiments.
 // Every access is synchronous on the main actor; payloads are value snapshots.
 public struct EntryWorkflowStateV1 {
@@ -6,7 +8,7 @@ public struct EntryWorkflowStateV1 {
 
 @MainActor
 public enum EntryWorkflowStateSlot {
-    public static var value: Any = EntryWorkflowStateV1(total: 10)
+    public static let slot = try! DebugPatchStateSlot(generation: "v1", value: EntryWorkflowStateV1(total: 10))
 }
 
 @MainActor
@@ -14,11 +16,14 @@ public enum EntryWorkflowStateSlot {
 @inline(never)
 @_optimize(none)
 public func entryWorkflowState(_ delta: Int) -> Int {
-    // Older code must refuse an unknown generation without destroying its state.
-    guard var candidate = EntryWorkflowStateSlot.value as? EntryWorkflowStateV1 else { return -1 }
-    candidate.total += delta
-    EntryWorkflowStateSlot.value = candidate
-    return candidate.total
+    do {
+        let value = try EntryWorkflowStateSlot.slot.update(generation: "v1", as: EntryWorkflowStateV1.self) {
+            var candidate = $0
+            candidate.total += delta
+            return candidate
+        }
+        return value.total
+    } catch { return -1 }
 }
 
 public struct EntryWorkflowStateV2 {

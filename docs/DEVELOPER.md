@@ -211,7 +211,7 @@ Vision Pro process. Restoring the original group returned `31/131`; the lab's
 receiver and read counters survived all three two-entry transactions.
 
 The lab also includes an explicit state-generation experiment. Its original
-`EntryWorkflowState.swift` provides a main-actor `Any` slot, a V1 value snapshot and
+`EntryWorkflowState.swift` provides a main-actor `DebugPatchStateSlot`, a V1 value snapshot and
 a synchronous scalar entry. The excluded `Lab/Patches/StateV2.swift` and
 `StateV3.swift` add separately named types and migrate value data through that slot;
 they never change a loaded type's layout. To reproduce on a fresh lab launch:
@@ -224,8 +224,10 @@ SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab \
 python3 scripts/test-entry-state.py --device AVP
 ```
 
-The script checks two successive migrations, retained added state, rejection
-before publishing a candidate and old-code refusal after migration. It restores
+The script checks two successive migrations, retained added state, validation
+failure after mutating an array candidate, unchanged revisions on failure and
+old-code refusal after migration. The slot owns publication and checks generation
+names and exact payload types. It restores
 the edited source even on failure. The running app finishes with V3 data and its
 original boundary returning `-1` without changing that data; relaunch before
 repeating. Migration is an application operation on first use after code has
