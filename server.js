@@ -1520,7 +1520,14 @@ const crashLogs = createCrashLogs({
 function linkCrashLogs() {
   try { crashLogs.link(crashRefs(TRACE_DIR, listTraces().slice(0, 100))); } catch (e) { console.error('crash log link failed:', e.message); }
 }
+// Pulling `systemCrashLogs` off the devices is OFF for every device, whatever config.json says.
+// Each pull runs `devicectl` against every device, and doing that to a sleeping Apple TV wakes it
+// (measured 2026-10-31: a devicectl at :x1:38/:x6:38 every 5 min re-woke the ATV ~15 s after
+// power-off). The apps push their traces to this server themselves, so nothing needs the pull.
+// Crash logs already stored stay readable; lib/crashlogs.js is untouched. Flip this to bring it back.
+const CRASH_LOG_PULL = false;
 async function pullCrashLogs(force = false) {
+  if (!CRASH_LOG_PULL) return;
   if (CONFIG.crashLogs?.enabled === false) return;
   const names = new Set();
   for (const r of CONFIG.repos) for (const p of r.platforms) names.add(p.device);
@@ -1897,6 +1904,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { crashLogs: crashLogs.list(), pull: crashLogs.status() });
     }
     if (url.pathname === '/api/crashlogs/refresh' && req.method === 'POST') {
+      if (!CRASH_LOG_PULL) return json(res, 200, { ok: false, disabled: true });
       pullCrashLogs(true); // async
       return json(res, 200, { ok: true });
     }
@@ -1995,9 +2003,11 @@ if (require.main === module) {
   server.listen(CONFIG.port, '127.0.0.1', () => {
     console.log(`appstore listening on http://127.0.0.1:${CONFIG.port}`);
     refreshAllDevices(); // warm the inventory on startup
-    // Crash logs: first look shortly after start, then on a timer.
-    setTimeout(() => pullCrashLogs(), 15000);
-    setInterval(() => pullCrashLogs(), (CONFIG.crashLogs?.intervalSeconds || 300) * 1000).unref();
+    // Crash logs: first look shortly after start, then on a timer (only while CRASH_LOG_PULL is on).
+    if (CRASH_LOG_PULL) {
+      setTimeout(() => pullCrashLogs(), 15000);
+      setInterval(() => pullCrashLogs(), (CONFIG.crashLogs?.intervalSeconds || 300) * 1000).unref();
+    }
     reapBuildClones();
     backfillOta().catch(e => console.error('OTA backfill failed:', e)); // adopt pre-ledger IPAs
   });

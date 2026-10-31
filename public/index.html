@@ -925,7 +925,8 @@ async function pollCrashLogs(){
 document.addEventListener('click', async e => {
   const t = e.target;
   if (t.id === 'crashRefreshBtn') {
-    await api('/api/crashlogs/refresh', { method: 'POST' });
+    const r = await api('/api/crashlogs/refresh', { method: 'POST' });
+    if (r && r.disabled) { toast('Pulling crash logs from devices is disabled'); return; }
     toast('Pulling crash logs…'); setTimeout(pollCrashLogs, 4000); return;
   }
   if (t.dataset?.opentrace) { openTraces.add(t.dataset.opentrace); renderTraces(); }
