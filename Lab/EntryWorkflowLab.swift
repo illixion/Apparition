@@ -37,8 +37,8 @@ enum EntryWorkflowLab {
         DebugSurface.shared.register(.query("entryProbe", "Verify native entry patching and state retention", trace: .never) { _ in
             reads += 1
             return Probe(value: entryWorkflowScalar(10), reads: reads, method: receiver.apply(10),
-                         accumulated: receiver.accumulate(1), scaled: EntryWorkflowValue.scale(10))
+                         accumulated: receiver.accumulate(1), scaled: EntryWorkflowValue.scale(10), groupFirst: entryWorkflowGroupFirst(10, 0), groupSecond: entryWorkflowGroupSecond(10, 0))
         })
     }
-    struct Probe: Encodable { let value: Int; let reads: Int; let method: Int; let accumulated: Int; let scaled: Int }
+    struct Probe: Encodable { let value: Int; let reads: Int; let method: Int; let accumulated: Int; let scaled: Int; let groupFirst: Int; let groupSecond: Int }
 }

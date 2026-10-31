@@ -192,3 +192,20 @@ patched through this complete workflow without deploying the main Apparition app
 
 For the reproducible host performance comparison and tested struct receiver
 conventions, see [native entry performance and validation](ENTRY_PERFORMANCE.md).
+
+A private optimized implementation can now be reloaded as one source unit: a
+`private enum DebugTraceImplementation…` plus explicit native entry functions in a
+dedicated file. A helper edit regenerates every entry in the file, even if its body
+is unchanged. Helpers can inline into each other and change private signatures;
+entry signatures stay fixed. Both old and new code must pass syntax and raw-SIL
+ownership checks. The group is restricted to state-free scalar/String functions;
+it cannot access models or retain callbacks. See DebugTrace's live-patching guide,
+“Recompiling a private optimized implementation group,” for the full contract.
+
+The lab's `EntryWorkflowImplementation.swift` exercises this path. A leaf-only edit
+changed both `entryProbe` group results from `31/131` to `71/171` on Vision Pro,
+without editing either entry body or rebuilding the app.
+
+A subsequent private helper signature change produced `73/173` on the same live
+Vision Pro process. Restoring the original group returned `31/131`; the lab's
+receiver and read counters survived all three two-entry transactions.
