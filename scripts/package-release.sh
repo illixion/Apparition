@@ -34,8 +34,8 @@
 # Needs: Xcode with the visionOS, iOS and tvOS SDKs, xcodegen, rustup targets
 # aarch64-apple-visionos, aarch64-apple-ios, aarch64-apple-tvos,
 # aarch64-apple-darwin, x86_64-apple-darwin and x86_64-pc-windows-gnu (with mingw-w64 from
-# Homebrew), the Tauri CLI for the desktop app (cargo install tauri-cli --version '^2'
-# --locked), and Docker for --linux.
+# Homebrew), the Tauri CLI for the desktop app (scripts/install-tauri-cli.sh), and Docker for
+# --linux.
 #
 # The Linux desktop app is built in an image made from scripts/desktop-linux.Dockerfile
 # (Ubuntu 22.04 with WebKitGTK and the Tauri CLI), tagged per architecture and reused.
@@ -150,9 +150,9 @@ linux_build() {
   [[ "$arch" == arm64 ]] && platform=linux/arm64
   [[ "$arch" == x86_64 ]] && host="${LINUX_X86_64_HOST:-}"
   mkdir -p "$src/selfhost" "$src/scripts" "$out"
-  rsync -a --exclude target "$ROOT/core" "$ROOT/installer" "$ROOT/desktop" "$ROOT/release-signers" "$src/"
+  rsync -a --exclude target "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" "$ROOT/core" "$ROOT/installer" "$ROOT/desktop" "$ROOT/release-signers" "$src/"
   rsync -a "$ROOT/selfhost/anisette" "$src/selfhost/"
-  cp "$ROOT/scripts/desktop-linux.Dockerfile" "$src/scripts/"
+  cp "$ROOT/scripts/desktop-linux.Dockerfile" "$ROOT/scripts/install-tauri-cli.sh" "$src/scripts/"
   # Where the source is on the machine that builds, and how to run a command there.
   local dir="$src"
   on() { "$@"; }
@@ -258,12 +258,16 @@ if has app; then
 fi
 
 # ------------------------------------------------------------------ the installers
-cd "$ROOT/installer"
+# The command line and the desktop app share one workspace (Cargo.toml). Each target builds both
+# in one cargo invocation: cargo unifies features only across what one invocation builds, so this
+# is what lets them share one build of the core and its dependencies.
+cd "$ROOT"
+both=(-p apparition-installer -p apparition-desktop --features apparition-desktop/custom-protocol)
 if has macos; then
 
-  echo "==> installer for macOS (arm64 + x86_64)"
+  echo "==> installer and desktop app for macOS (arm64 + x86_64)"
   for target in aarch64-apple-darwin x86_64-apple-darwin; do
-    MACOSX_DEPLOYMENT_TARGET=11.0 cargo build -q --release --target "$target"
+    MACOSX_DEPLOYMENT_TARGET=11.0 cargo build -q --release --target "$target" "${both[@]}"
   done
   mkdir -p "$WORK/macos"
   xcrun lipo -create -output "$WORK/macos/$bin" \
@@ -276,8 +280,15 @@ if has macos; then
   codesign -f -s - --entitlements "$ROOT/installer/anisette-helper.entitlements" "$WORK/macos/$helper"
   echo "==> desktop app for macOS (universal)"
   app_name="Apparition"
-  (cd "$ROOT/desktop" && MACOSX_DEPLOYMENT_TARGET=11.0 cargo tauri build --target universal-apple-darwin --bundles app)
-  ditto "$ROOT/desktop/target/universal-apple-darwin/release/bundle/macos/$app_name.app" "$WORK/macos/$app_name.app"
+  # Bundled from the binaries above, the universal one put where `tauri build` would put it:
+  # `tauri build` would compile the desktop app again on its own, with other features.
+  mkdir -p target/universal-apple-darwin/release
+  # tauri bundle looks for the binary under tauri.conf's mainBinaryName, not the cargo name
+  xcrun lipo -create -output "target/universal-apple-darwin/release/$app_name" \
+    target/aarch64-apple-darwin/release/apparition-app target/x86_64-apple-darwin/release/apparition-app
+  rm -rf target/universal-apple-darwin/release/bundle
+  (cd desktop && MACOSX_DEPLOYMENT_TARGET=11.0 cargo tauri bundle --target universal-apple-darwin --bundles app)
+  ditto "target/universal-apple-darwin/release/bundle/macos/$app_name.app" "$WORK/macos/$app_name.app"
   # The helper keeps its own signature; the app is sealed again around it (not --deep, which
   # would sign the helper over without its entitlements).
   cp "$WORK/macos/$helper" "$WORK/macos/$app_name.app/Contents/MacOS/$helper"
@@ -292,15 +303,13 @@ if has macos; then
 fi
 
 if has windows; then
-  echo "==> installer for Windows (x86_64)"
-  cargo build -q --release --target x86_64-pc-windows-gnu
+  echo "==> installer and desktop app for Windows (x86_64)"
+  cargo build -q --release --target x86_64-pc-windows-gnu "${both[@]}"
   mkdir -p "$WORK/windows"
   # Windows is case-insensitive: apparition.exe collides with the desktop's Apparition.exe.
   cp "target/x86_64-pc-windows-gnu/release/$bin.exe" "$WORK/windows/$bin-cli.exe"
-  echo "==> desktop app for Windows (x86_64)"
-  (cd "$ROOT/desktop" && cargo build -q --release --features custom-protocol --target x86_64-pc-windows-gnu)
-  cp "$ROOT/desktop/target/x86_64-pc-windows-gnu/release/apparition-app.exe" "$WORK/windows/$app_name.exe"
-  cp "$ROOT/desktop/target/x86_64-pc-windows-gnu/release/WebView2Loader.dll" "$WORK/windows/"
+  cp "target/x86_64-pc-windows-gnu/release/apparition-app.exe" "$WORK/windows/$app_name.exe"
+  cp "target/x86_64-pc-windows-gnu/release/WebView2Loader.dll" "$WORK/windows/"
   readme "$WORK/windows" "$bin-cli.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have). Keep WebView2Loader.dll beside it. The command line is $bin-cli.exe; its name must differ from the desktop app on Windows."
   (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin-cli.exe" "$app_name.exe" WebView2Loader.dll README.txt)
 

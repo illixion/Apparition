@@ -45,20 +45,23 @@ fi
 git -C "$src" fetch --quiet origin
 git -C "$src" checkout --quiet "$commit"
 
-header_built=0
+# idevice.h is written by the FFI crate's build script (cbindgen), which reads the source and
+# nothing else: the header is the same for every target and feature set. So a host `cargo check`
+# with the light TLS backend makes it, rather than a release build of all of idevice per platform,
+# and a stamp skips even that while the checkout stays at this commit.
+stamp="$src/ffi/.apparition-header-commit"
+if [[ ! -f "$src/ffi/idevice.h" || "$(cat "$stamp" 2>/dev/null)" != "$commit" ]]; then
+  rm -f "$stamp"
+  (cd "$src/ffi" && cargo check --quiet --no-default-features --features full,ring)
+  echo "$commit" > "$stamp"
+fi
+
 for platform in "${platforms[@]}"; do
   read -r target sdk_name deploy_var deploy_version <<< "$(spec "$platform")"
   sdk="$(xcrun --sdk "$sdk_name" --show-sdk-path)"
   if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
     echo "Rust target $target is not installed: rustup target add $target" >&2
     exit 1
-  fi
-  # The header is the same for every platform, so the FFI crate (whose build script runs
-  # cbindgen to write idevice.h) only needs building once.
-  if [[ $header_built == 0 ]]; then
-    (cd "$src/ffi" && env BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$sdk" "$deploy_var=$deploy_version" \
-      cargo build --release --target "$target")
-    header_built=1
   fi
   (cd "$root/core" && env BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$sdk" "$deploy_var=$deploy_version" \
     cargo build --release --target "$target")

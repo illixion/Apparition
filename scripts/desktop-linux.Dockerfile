@@ -9,8 +9,8 @@ RUN apt-get update -q && apt-get install -qy --no-install-recommends \
       libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+COPY install-tauri-cli.sh /tmp/
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.97.0 \
-    && cargo install -q tauri-cli --version '^2' --locked \
-    && rm -rf /usr/local/cargo/registry
+    && bash /tmp/install-tauri-cli.sh && rm /tmp/install-tauri-cli.sh
 # linuxdeploy, which bundles the AppImage, is itself an AppImage; there's no FUSE in a container.
 ENV APPIMAGE_EXTRACT_AND_RUN=1

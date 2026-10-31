@@ -14,6 +14,12 @@
 # "app" (the others are skipped, and project.yml is then the only version that must be bumped).
 # The release site lists such a release as the latest, and keeps offering the installers of the
 # last release that has them. Tags build only parts whose committed versions match the tag.
+#
+# Caches: a run restores only caches saved on its own ref or on main, so ones a tag saved were
+# never used again (every release built cold, 40 to 70 minutes). So only runs on main save them:
+# a weekly run with no version builds every part at its committed version to warm them, publishing
+# nothing, and a release tag starts from there. Run it by hand (no version) after changing
+# dependencies or the toolchain, so the next release starts warm.
 
 name: Release build
 
@@ -21,19 +27,23 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version (major.minor.patch), as committed"
-        required: true
+        description: "Version (major.minor.patch), as committed; empty only warms the caches"
+        required: false
       parts:
         description: "What to build: all, or a comma-separated list of app, macos, windows, linux"
         default: all
   push:
     tags: ["v*.*.*"]
+  schedule:
+    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
 
 env:
-  VERSION: ${{ inputs.version || github.ref_name }}
+  VERSION: ${{ inputs.version || (github.ref_type == 'tag' && github.ref_name) || '' }}
+  # Caches are saved only here, where every release can restore them (see the top).
+  SAVE_CACHE: ${{ github.ref == 'refs/heads/main' }}
   RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
@@ -43,6 +53,7 @@ jobs:
     name: Plan
     runs-on: ubuntu-24.04
     outputs:
+      warm: ${{ steps.plan.outputs.warm }}
       apple: ${{ steps.plan.outputs.apple }}
       linux: ${{ steps.plan.outputs.linux }}
     steps:
@@ -98,37 +109,28 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.targets }}"
           rustup default "$RUST_TOOLCHAIN"
           if [[ -n "${{ matrix.brew }}" ]]; then brew install ${{ matrix.brew }}; fi
-      # Compiling the Tauri CLI takes about 9 minutes, so it's cached on its own and saved as
-      # soon as it's built: a cache saved at the end of the job is lost whenever the build fails.
-      - uses: actions/cache/restore@v6
-        if: matrix.part == 'macos'
-        id: tauri-cli
-        with:
-          path: ~/.cargo/bin/cargo-tauri
-          key: tauri-cli-2-${{ runner.os }}-${{ runner.arch }}-rust-${{ env.RUST_TOOLCHAIN }}
+      # Tauri's prebuilt CLI, checked against pinned hashes; compiling it took about 9 minutes.
       - name: Tauri CLI
-        if: matrix.part == 'macos' && steps.tauri-cli.outputs.cache-hit != 'true'
-        run: cargo install tauri-cli --version '^2' --locked
-      - uses: actions/cache/save@v6
-        if: matrix.part == 'macos' && steps.tauri-cli.outputs.cache-hit != 'true'
-        with:
-          path: ~/.cargo/bin/cargo-tauri
-          key: ${{ steps.tauri-cli.outputs.cache-primary-key }}
-      # The three workspaces' dependencies, compiled for every target; Apparition's own crates
-      # always build afresh. Kept even when the build fails, so a rerun starts warm.
+        if: matrix.part == 'macos'
+        working-directory: Apparition
+        run: scripts/install-tauri-cli.sh
+      # The two workspaces' dependencies (core, and the installer with the desktop app), compiled
+      # for every target; Apparition's own crates always build afresh. Kept even when the build
+      # fails, so a rerun starts warm.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
+            Apparition
             Apparition/core
-            Apparition/installer
-            Apparition/desktop
           key: ${{ matrix.part }}
           cache-on-failure: true
           cache-bin: false
+          save-if: ${{ env.SAVE_CACHE == 'true' }}
       - name: Build
         working-directory: Apparition
-        run: scripts/package-release.sh "${VERSION#v}" --parts ${{ matrix.part }}
+        run: scripts/package-release.sh "${{ matrix.version }}" --parts ${{ matrix.part }}
       - uses: actions/upload-artifact@v7
+        if: needs.plan.outputs.warm != 'true'
         with:
           name: apple-${{ matrix.part }}
           path: Apparition/build/release/*/*
@@ -151,7 +153,7 @@ jobs:
           path: Apparition
           fetch-depth: 0
       # The desktop image (WebKitGTK, Rust and the Tauri CLI) from the layer cache, rather than
-      # built afresh, which compiles the Tauri CLI each time.
+      # built afresh.
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         env:
@@ -163,13 +165,13 @@ jobs:
           tags: apparition-desktop-linux:${{ matrix.arch }}
           load: true
           cache-from: type=gha,scope=desktop-linux-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=desktop-linux-${{ matrix.arch }}
+          cache-to: ${{ env.SAVE_CACHE == 'true' && format('type=gha,mode=max,scope=desktop-linux-{0}', matrix.arch) || '' }}
       # The registries and build output the containers keep (LINUX_CACHE in the script).
       - uses: actions/cache/restore@v6
         id: linux-cache
         with:
           path: ~/linux-cache
-          key: linux-${{ matrix.arch }}-${{ hashFiles('Apparition/installer/Cargo.lock', 'Apparition/desktop/Cargo.lock') }}-${{ github.sha }}
+          key: linux-${{ matrix.arch }}-${{ hashFiles('Apparition/Cargo.lock') }}
           restore-keys: linux-${{ matrix.arch }}-
       - name: Build, in the same Docker images as a local build
         working-directory: Apparition
@@ -178,14 +180,16 @@ jobs:
           LINUX_DESKTOP_IMAGE_BUILT: "1"
         run: |
           mkdir -p ~/linux-cache && export LINUX_CACHE=~/linux-cache
-          scripts/package-release.sh "${VERSION#v}" --parts linux
-      # Saved even when the build fails, so a rerun starts warm.
+          scripts/package-release.sh "${{ matrix.version }}" --parts linux
+      # Saved even when the build fails, so a rerun starts warm; once per lock file, as each
+      # takes a couple of gigabytes of the repository's 10.
       - uses: actions/cache/save@v6
-        if: always() && steps.linux-cache.outputs.cache-hit != 'true'
+        if: always() && env.SAVE_CACHE == 'true' && steps.linux-cache.outputs.cache-hit != 'true'
         with:
           path: ~/linux-cache
           key: ${{ steps.linux-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v7
+        if: needs.plan.outputs.warm != 'true'
         with:
           name: linux-${{ matrix.arch }}
           path: Apparition/build/release/*/*
@@ -195,7 +199,7 @@ jobs:
     name: Attest
     # Parts that weren't asked for are skipped, which would skip this too without the condition.
     needs: [plan, apple, linux]
-    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') }}
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.plan.outputs.warm != 'true' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

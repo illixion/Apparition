@@ -51,6 +51,15 @@ class ReleasePlanTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 module.plan(self.root, version, "")
 
+    def test_no_version_warms_every_part_at_its_committed_version(self):
+        result = module.plan(self.root, "", "")
+        self.assertEqual(result["warm"], "true")
+        self.assertEqual(result["parts"], "app,macos,windows,linux")
+        versions = {part["part"]: part["version"] for part in result["apple"]}
+        self.assertEqual(versions, {"app": "0.4.4", "macos": "0.4.3", "windows": "0.4.3"})
+        self.assertEqual({arch["version"] for arch in result["linux"]}, {"0.4.3"})
+        self.assertEqual(module.plan(self.root, "v0.4.4", "")["warm"], "false")
+
 
 if __name__ == "__main__":
     unittest.main()

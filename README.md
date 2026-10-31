@@ -588,7 +588,7 @@ An update of an app that is open on the headset finishes when it's closed. It ne
 certificate on its own: with no free slot it offers to receive another Apparition's key, then to
 revoke one you choose.
 
-    cd installer && cargo build --release                                   # this machine
+    cd installer && cargo build --release          # this machine, into target/ at the root (one workspace with desktop/)
     cargo build --release --target x86_64-pc-windows-gnu                    # Windows, from macOS with mingw-w64
 
 ### The desktop app
@@ -692,7 +692,7 @@ screens. It shows Apple's remaining allowance, registered bundle identifiers and
 dates, with search, refresh and deletion after confirmation. Deleting an ID may not
 restore a free account's weekly allowance before it expires.
 
-    cargo install tauri-cli --version '^2' --locked                         # once
+    scripts/install-tauri-cli.sh      # once (or cargo install tauri-cli --version '^2' --locked)
     cd desktop && cargo tauri build --bundles app                           # this Mac
     cargo tauri build --target universal-apple-darwin --bundles app         # arm64 + x86_64
     cargo build --release --features custom-protocol --target x86_64-pc-windows-gnu   # Windows exe

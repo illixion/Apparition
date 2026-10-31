@@ -26,7 +26,7 @@ Decide first whether this is a **full** release (every part) or a **partial** on
 - **Full:** set the same version in all four places (match the 0.3.2 release commit, `5f8b2b8`):
   - `project.yml`: `MARKETING_VERSION: "x.y.z"`
   - `desktop/Cargo.toml` and `installer/Cargo.toml`: line 3, `version = "x.y.z"`
-  - Refresh the lock files so their own entries match: `(cd desktop && cargo metadata --format-version 1 >/dev/null)` and the same in `installer/`. Only the `apparition-desktop` and `apparition-installer` entries should change in the lock diff.
+  - Refresh the workspace lock file (the root `Cargo.lock`, shared by both) so their entries match: `cargo metadata --format-version 1 >/dev/null` in the repository root. Only the `apparition-desktop` and `apparition-installer` entries should change in the lock diff.
 
   Check with `git diff`: exactly five lines change.
 - **Partial:** an app-only release needs just the `MARKETING_VERSION` bump. Installer parts (`macos`, `windows`, `linux`) require both Cargo versions and their lock entries to match; `project.yml` must match only when building `app`.
@@ -35,7 +35,7 @@ Also grep for the old version to catch any other mention, and update docs that s
 
 ## 3. Commit and push the release
 
-- `git add project.yml desktop/Cargo.toml desktop/Cargo.lock installer/Cargo.toml installer/Cargo.lock`
+- `git add project.yml desktop/Cargo.toml installer/Cargo.toml Cargo.lock`
 - Before committing, check the Rust crates build: `(cd installer && cargo check)` and `(cd desktop && cargo check)`. Both must finish with no errors. A broken build here would otherwise only show up after the tag has started the full release, which is how 0.3.3 failed on its first run.
 - Commit **signed** in the foreground: `git commit -S`. Subject `Release x.y.z`. The body summarises everything since the last release in plain prose (not a raw list of commit subjects), followed by the `Co-Authored-By` trailer for the model doing the release, as the session's attribution instructions give it (it names the model actually running; never copy a model name from an earlier commit or from this file).
 - If signing fails with "agent refused operation", stop. **USER:** run `git commit -S` themselves with the `!` prefix (touch the YubiKey), then continue.
