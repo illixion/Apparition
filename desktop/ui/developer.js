@@ -59,11 +59,12 @@ export class DeveloperView {
     this.devices = this.section('Devices');
     this.jobs = this.section('Builds');
     this.artifacts = this.section('Registered builds'); this.artifacts.hidden = true;
+    this.resign = this.resignSection();
     this.reports = this.section('Reports');
     this.debug = this.section('Running apps');
     this.detail = element('pre', 'service-detail dev-wide selectable');
     this.detail.tabIndex = 0; this.detail.hidden = true;
-    this.content.append(this.registration, this.projects, this.devices, this.jobs, this.artifacts, this.reports, this.debug, this.detail);
+    this.content.append(this.registration, this.resign, this.projects, this.devices, this.jobs, this.artifacts, this.reports, this.debug, this.detail);
     root.append(this.signing, form, this.note, this.content);
     invoke('service_settings').then(settings => { if (settings.url) this.address.value = settings.url; }).catch(() => {});
   }
@@ -113,6 +114,82 @@ export class DeveloperView {
       note(`Sent ${sent.certificates} certificate(s) and ${sent.profiles} profile(s) to ${sent.device}. Open Apparition there and enter each .p12's password.`);
     } catch (error) { note(String(error?.message || error), true); }
     finally { this.signingSend.disabled = false; }
+  }
+
+  // Re-sign an app that is already on a device from the exact IPA the Mac kept for it, with
+  // another profile. The Mac does the work (build-and-sign --ipa); nothing but a build id, a
+  // device name, a profile id and two choices leaves this view.
+  resignSection() {
+    const card = element('section', 'dev-card dev-wide dev-resign');
+    card.hidden = true;
+    card.append(element('h2', 'small', 'Re-sign'));
+    this.resignWhat = element('p', 'hint');
+    const grid = element('div', 'dev-resign-grid');
+    const pick = (title, label) => {
+      const wrap = element('label', '', title), select = element('select');
+      select.setAttribute('aria-label', label); wrap.append(select); grid.append(wrap); return select;
+    };
+    this.resignDevice = pick('Device', 'Device to re-sign on');
+    this.resignProfile = pick('Profile', 'Provisioning profile to sign with');
+    this.resignData = pick('Data', 'What to do with the app\'s data');
+    for (const [value, text] of [['keep', 'Keep its data'], ['discard', 'Discard its data']]) {
+      const option = element('option', '', text); option.value = value; this.resignData.append(option);
+    }
+    this.resignData.value = 'keep';
+    this.resignNote = element('p', 'hint',
+      'A profile for the same App ID updates the app in place and keeps its data. A different App ID can\'t be installed over the old copy: the Mac then copies Documents and Library off the device, reinstalls, and puts them back (the backup stays on the Mac). Keychain items and app-group data do not move.');
+    const actions = element('div', 'service-row');
+    this.resignCheck = button('Check first', () => this.submitResign(true));
+    this.resignGo = element('button', 'button primary', 'Re-sign'); this.resignGo.type = 'button';
+    this.resignGo.addEventListener('click', () => this.submitResign(false));
+    actions.append(this.resignGo, this.resignCheck, button('Close', () => { card.hidden = true; this.resignTarget = null; }));
+    card.append(this.resignWhat, grid, this.resignNote, actions);
+    return card;
+  }
+  resignDevices(build) {
+    const wanted = String(build.platform || '').toLowerCase();
+    const names = new Set();
+    for (const repo of this.repos || []) for (const target of repo.platforms || []) {
+      if (target.bundleId === build.bundleId && String(target.platform).toLowerCase() === wanted) names.add(target.device);
+    }
+    return [...names];
+  }
+  async openResign(build) {
+    if (!this.capabilities.has('resign')) return;
+    const devices = this.resignDevices(build);
+    this.resignTarget = build;
+    this.resign.hidden = false;
+    this.resignWhat.textContent = `${build.name || build.bundleId} · ${build.platform || ''} · ${build.label || build.buildId}`;
+    this.resignDevice.replaceChildren(...devices.map(name => { const option = element('option', '', name); option.value = name; return option; }));
+    this.resignGo.disabled = this.resignCheck.disabled = true;
+    try {
+      const { profiles = [] } = await this.request('resignOptions');
+      const usable = profiles.filter(profile => !profile.expired);
+      this.resignProfile.replaceChildren(...usable.map(profile => {
+        const option = element('option', '', `${profile.name} · ${profile.appId}${profile.debuggable ? '' : ' · not debuggable'}`);
+        option.value = profile.id; return option;
+      }));
+      if (!devices.length) this.status(`No configured project installs ${build.bundleId} on a ${build.platform} device, so there's nothing to sign it for.`, true);
+      else if (!usable.length) this.status('No usable provisioning profiles in the Mac\'s build-signing folder.', true);
+      else this.status('');
+      this.resignGo.disabled = this.resignCheck.disabled = !devices.length || !usable.length;
+    } catch (error) { this.status(String(error?.message || error), true); }
+    this.resign.scrollIntoView?.({ block: 'nearest' });
+  }
+  async submitResign(dryRun) {
+    const target = this.resignTarget;
+    if (!target) return;
+    this.resignGo.disabled = this.resignCheck.disabled = true;
+    try {
+      const reply = await this.request('resign', { id: target.buildId, device: this.resignDevice.value, profile: this.resignProfile.value,
+        dataMode: this.resignData.value, dryRun });
+      if (reply?.jobs?.[0]) { this.selectedLog = reply.jobs[0].id; this.status(`Queued ${dryRun ? 'check' : 're-sign'} #${this.selectedLog}.`); }
+      await this.refresh();
+    } catch (error) { this.status(String(error?.message || error), true); }
+    finally { this.resignGo.disabled = this.resignCheck.disabled = false; }
+  }
+  resignButton(build) {
+    return this.capabilities.has('resign') ? button('Re-sign…', () => this.openResign(build)) : null;
   }
 
   registrationForm() {
@@ -204,7 +281,7 @@ export class DeveloperView {
     this.content.hidden = true;
     this.fields.hidden = this.hint.hidden = false;
     this.connected_bar.hidden = true;
-    this.detail.replaceChildren(); this.detail.hidden = true;
+    this.detail.replaceChildren(); this.detail.hidden = true; this.resign.hidden = true; this.resignTarget = null;
     try { await this.invoke('service_disconnect'); this.status('Disconnected.'); }
     catch (error) { this.status(`Disconnected locally. ${error?.message || error}`, true); }
   }
@@ -241,6 +318,8 @@ export class DeveloperView {
         if (job.buildId && job.artifact) {
           row.append(button('Build details', () => { this.selectedLog = null; this.read('artifactManifest', { id: job.buildId }, `Build ${job.buildId}`); }));
           row.append(this.downloadButton(job.buildId));
+          const resign = job.resign ? null : this.resignButton({ buildId: job.buildId, bundleId: job.bundleId, platform: job.platform, name: job.repo, label: `#${job.id}` });
+          if (resign) row.append(resign);
         }
         if (['queued', 'running'].includes(job.status)) row.append(button('Cancel', () => this.action('cancel', { id: job.id })));
         return row;
@@ -261,6 +340,7 @@ export class DeveloperView {
     finally { this.polling = false; }
   }
   renderProjects(repos) {
+    this.repos = repos;
     const signature = JSON.stringify(repos.map(r => [r.name, r.branches, r.platforms, r.deployDefaults]));
     if (signature === this.projectSignature) return;
     this.projectSignature = signature;
@@ -318,6 +398,8 @@ export class DeveloperView {
         row.append(element('span', '', `${build.app?.name || build.app?.bundleId || 'App'} · ${build.platform || ''} · ${build.app?.build || build.buildId}`));
         row.append(button('Build details', () => { this.selectedLog = null; this.read('artifactManifest', { id: build.buildId }, `Build ${build.buildId}`); }));
         row.append(this.downloadButton(build.buildId));
+        const resign = this.resignButton({ buildId: build.buildId, bundleId: build.app?.bundleId, platform: build.platform, name: build.app?.name, label: build.app?.build });
+        if (resign) row.append(resign);
         rows.push(row);
       }
     } else rows.push(element('p', 'error', 'Registered builds could not be loaded.'));

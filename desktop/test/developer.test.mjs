@@ -154,3 +154,34 @@ test('signing is offered only with build-and-sign material, and sends just the c
   assert.match(view.signingNote.textContent, /Sent 1 certificate\(s\) and 3 profile\(s\) to ATV/);
   assert.equal(view.signingSend.disabled, false);
 });
+
+test('re-signing offers only the devices a project installs this app on and sends five plain fields', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command !== 'service_request') return {};
+    calls.push(args);
+    if (args.operation === 'resignOptions') return { profiles: [
+      { id: 'old', name: 'Old', appId: 'com.example.*', expired: true, debuggable: true },
+      { id: 'other-dev', name: 'Other', appId: 'com.example.Other', expired: false, debuggable: true } ] };
+    if (args.operation === 'resign') return { jobs: [{ id: 11 }] };
+    return {};
+  });
+  view.capabilities = new Set(['resign']);
+  view.renderProjects([{ name: 'Sample', branches: [], platforms: [
+    { platform: 'visionOS', device: 'AVP', bundleId: 'com.example.app' },
+    { platform: 'iOS', device: 'Phone', bundleId: 'com.example.app' } ] }]);
+  assert.equal(view.resignButton({ buildId: 'b1' }).textContent, 'Re-sign…');
+  view.capabilities = new Set();
+  assert.equal(view.resignButton({ buildId: 'b1' }), null, 'no button without the capability');
+  view.capabilities = new Set(['resign']);
+  await view.openResign({ buildId: 'b1', bundleId: 'com.example.app', platform: 'visionOS', name: 'Sample', label: '#4' });
+  assert.deepEqual(view.resignDevice.children.map(o => o.value), ['AVP']);
+  assert.deepEqual(view.resignProfile.children.map(o => o.value), ['other-dev'], 'expired profiles are not offered');
+  view.resignDevice.value = 'AVP'; view.resignProfile.value = 'other-dev'; view.resignData.value = 'keep';
+  await view.submitResign(true);
+  const sent = calls.find(c => c.operation === 'resign');
+  assert.deepEqual(sent.arguments, { id: 'b1', device: 'AVP', profile: 'other-dev', dataMode: 'keep', dryRun: true });
+  assert.equal(view.selectedLog, 11);
+  await view.openResign({ buildId: 'b2', bundleId: 'com.example.unknown', platform: 'visionOS' });
+  assert.equal(view.resignGo.disabled, true, 'an app no project installs has nothing to sign for');
+});

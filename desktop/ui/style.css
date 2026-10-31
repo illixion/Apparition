@@ -99,6 +99,8 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 @media (max-width: 40rem) {
   .dev-connect-fields, .dev-signing-row { grid-template-columns: 1fr; }
 }
+.dev-resign-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: .75rem 1rem; align-items: end; }
+.dev-resign label { display: grid; gap: .35rem; font-size: .9rem; color: var(--muted); }
 .service-content { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(26rem, 100%), 1fr)); gap: 1rem; padding-block: 1rem 1.5rem; align-items: start; }
 .service-items { display: flex; flex-direction: column; }
 .service-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-block: .4rem; }

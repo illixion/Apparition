@@ -188,6 +188,33 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
     let get = |p: String| Ok((Method::GET, p, None));
     match name {
         "state" | "traces" | "crashlogs" | "artifacts" => get(name.into()),
+        "resignOptions" => get("resign/options".into()),
+        // Only these five fields leave the webview; the Mac validates each against its own
+        // kept builds, configured targets and profile folder (no path ever crosses).
+        "resign" => {
+            let text = |key: &str| {
+                args[key]
+                    .as_str()
+                    .filter(|s| !s.is_empty() && s.len() <= 128)
+                    .ok_or("Choose a kept build, a device and a profile first.")
+            };
+            let mode = match args["dataMode"].as_str() {
+                Some(m @ ("keep" | "discard")) => m,
+                None => "keep",
+                _ => return Err("Choose whether to keep or discard the app's data.".into()),
+            };
+            Ok((
+                Method::POST,
+                "resign".into(),
+                Some(json!({
+                    "buildId": key()?,
+                    "device": text("device")?,
+                    "profile": text("profile")?,
+                    "dataMode": mode,
+                    "dryRun": args["dryRun"] == true
+                })),
+            ))
+        }
         "registerProject" => Ok((Method::POST, "projects".into(), Some(args.clone()))),
         "build" => {
             if !args["repo"].is_string() || !args["device"].is_string() {
@@ -535,5 +562,24 @@ mod tests {
         let (_, path, _) =
             operation("traceFile", &json!({"id":"id", "path":"logs/a?#.txt"})).unwrap();
         assert_eq!(path, "traces/id/files/logs/a%3F%23.txt");
+    }
+    #[test]
+    fn resign_sends_only_its_five_fields_and_refuses_odd_ones() {
+        let (method, path, body) = operation(
+            "resign",
+            &json!({"id":"build-1","device":"Headset","profile":"p","dataMode":"discard","dryRun":true,"path":"/etc/passwd","extra":1}),
+        )
+        .unwrap();
+        assert_eq!((method, path.as_str()), (Method::POST, "resign"));
+        assert_eq!(
+            body.unwrap(),
+            json!({"buildId":"build-1","device":"Headset","profile":"p","dataMode":"discard","dryRun":true})
+        );
+        let (_, _, body) = operation("resign", &json!({"id":"b","device":"d","profile":"p"})).unwrap();
+        assert_eq!(body.unwrap()["dataMode"], "keep");
+        assert!(operation("resign", &json!({"id":"b","device":"d","profile":"p","dataMode":"wipe"})).is_err());
+        assert!(operation("resign", &json!({"id":"b","device":"","profile":"p"})).is_err());
+        assert!(operation("resign", &json!({"id":"../b","device":"d","profile":"p"})).is_err());
+        assert_eq!(operation("resignOptions", &json!({})).unwrap().1, "resign/options");
     }
 }

@@ -126,6 +126,18 @@ the service queue, such as terminal builds. Manifests record bundle identities, 
 toolchain and before/after source/dependency fingerprints. Device debug access still asks
 for approval on the device; connecting to the service does not grant it.
 
+**Re-sign** (on any kept build, in Builds or Registered builds) signs the exact IPA the Mac
+kept with another of the Mac's provisioning profiles and installs it over the copy on a device.
+The device can't give an installed app back, so only a kept build can be re-signed. The Mac
+(`appstore`, `build-and-sign --ipa --profile`) does the work; the view sends a build ID, a device
+name, a profile ID, keep or discard data, and an optional dry run. A profile for the same App ID
+updates in place and keeps the app's data. The device refuses an update to a different App ID, so
+then the Mac copies Documents and Library to `~/.local/state/apparition/resign-backups`, removes the
+app, installs the new signature and copies them back, checking the file count. If the new signature
+won't install, it puts the previous one back with its data. Keychain items and app-group data
+don't move. The backup is never deleted for you. **Check first** only tests that the data can be
+reached.
+
 Only the service address is remembered on disk. The service password field clears when
 connecting; its session credential stays in Rust memory, outside the page. Disconnect
 revokes that session. After quitting Apparition, connect again. This connection is separate
