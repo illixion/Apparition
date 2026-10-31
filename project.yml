@@ -155,6 +155,11 @@ targets:
         excludes:
           - Info.plist
           - Patches
+    dependencies:
+      - package: DebugTrace
+        product: DebugTrace
+      - package: DebugTrace
+        product: DebugTraceServer
     info:
       path: Lab/Info.plist
       properties:
@@ -163,6 +168,9 @@ targets:
         CFBundleVersion: "1"
         UILaunchScreen: {}
         UIFileSharingEnabled: true
+        NSLocalNetworkUsageDescription: The entry-patching lab accepts approved development patches.
+        NSBonjourServices:
+          - _debugtrace._tcp
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.lab

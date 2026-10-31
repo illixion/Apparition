@@ -400,10 +400,11 @@ This is a single-threaded, ARM64 lab proof using signed dylib loading. It has no
 function discovery or dependency tracking, does not allocate anonymous JIT code, and does
 not test custom app types, generics, async/throwing methods, pointer authentication, active
 stack frames or concurrent patch publication. Existing inlined or constant-folded results
-can still retain old behavior. Keep the dylib loaded for the process lifetime. Production
-adoption needs thread coordination, ABI validation, compiler dependency handling and the
-same per-patch device approval as DebugTrace injection. No application performance claim
-follows from these correctness tests.
+can still retain old behavior. Keep the dylib loaded for the process lifetime. The experimental Developer/CLI backend now uses explicit non-optimized boundaries,
+all-stop publication, image/instruction validation, and the same device approval as
+DebugTrace injection; see [the developer workflow](docs/DEVELOPER.md#live-patches-from-developer-or-the-cli).
+General optimized functions, caller dependency tracking and automatic type migration remain
+unsupported. No application performance claim follows from these correctness tests.
 
 ## Shortcuts automation
 

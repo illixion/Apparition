@@ -151,3 +151,41 @@ your tailnet. Apparition keeps the service session in memory (and, on a device, 
 Keychain if you allow it), sends only identifiers to the service and never file paths, and refuses
 redirects. The service decides what is allowed: configured projects, targets, branches and
 profiles only.
+
+### Live patches from Developer or the CLI
+
+Build options in the native and desktop Developer views offer **Patch backend** when
+live patching is enabled. Swift dynamic replacement is the default. The experimental
+**Apparition entry boundaries** backend leaves the rest of the app optimized and uses
+explicit synchronous Swift boundaries; it does not support arbitrary optimized
+functions or mutation of existing type layouts. Setup and restrictions are in
+[DebugTrace's live-patching guide](../../DebugTrace/Docs/live-patching.md#apparition-native-entry-backend-experimental).
+
+After launching the patchable build, edit its sources on the build Mac and choose
+**Patch running app** for that project/device. The authenticated service asks its local
+Apparition CLI to attach, compile and sign, request device approval, apply and detach.
+The button applies changed files from the captured build, including shared packages;
+use the CLI's `--file` option to select files when other edits are present. Patching
+never builds, installs or relaunches an app. Build-only also never attaches a debugger.
+The service advertises `entry-patching` only in versions with this route; older clients
+and services retain the existing build controls.
+
+On the Mac with Xcode, the captured build products and current DebugTrace tools:
+
+```sh
+build-and-sign --run --mcp --inject-backend apparition
+apparition inject com.example.app --device AVP --file Sources/Update.swift
+apparition inject com.example.app --device AVP --run 'return model.count'
+```
+
+`DEBUGTRACE_MCP` overrides the CLI's DebugTrace tool path. The Mac service uses its
+`debugtraceTool` setting and `apparitionCli` (default `apparition` on PATH). Install a
+CLI built from this version before using the button. Service API:
+`POST /api/service/v1/inject` with `{repo, device, targetPlatform, files?: string[]}`.
+It accepts only configured targets, requires a native service session and permits
+one operation per app/device at a time. It returns the ordinary MCP injection result
+or an error with a hint. App approval and signed-code checks apply to both backends.
+
+The isolated `ApparitionLab` target exposes `entryProbe`, whose value starts at 11 and
+whose counter survives live patches. Its `EntryWorkflowLab.swift` boundary can be
+patched through this complete workflow without deploying the main Apparition app.

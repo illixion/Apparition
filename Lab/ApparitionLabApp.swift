@@ -1,4 +1,6 @@
 import SwiftUI
+import DebugTrace
+import DebugTraceServer
 
 /// Runs the __TEXT patch experiment (Lab/TextPatch.c) once at launch. Launch it through
 /// Apparition's launchJIT so a debugger serves the requests; launched normally it only runs the
@@ -7,6 +9,12 @@ import SwiftUI
 struct ApparitionLabApp: App {
     @State private var lines: [String] = []
     @State private var started = false
+
+    init() {
+        DebugTrace.configure(.init(subsystems: ["com.illixion.apparition.lab"]))
+        EntryWorkflowLab.register()
+        DebugTraceServer.startIfRequested()
+    }
 
     var body: some Scene {
         WindowGroup {

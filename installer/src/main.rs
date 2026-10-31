@@ -27,6 +27,7 @@ use apparition_core::{
 };
 use rootcause::prelude::*;
 mod xcode;
+mod inject;
 
 const USAGE: &str = "\
 Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
@@ -70,6 +71,9 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       its running process) and serve its JIT requests until it closes or says it's done. The
       app has to be development-signed (installed by Apparition is). --wait is how long to
       wait for its first request before leaving it (default: no limit).
+  apparition inject <bundle ID> --device <name or UDID> [--file PATH]... [--run SWIFT]
+      Attach, compile and sign patches on this Mac, request device approval, apply, then detach.
+      Requires a live build-and-sign --inject-backend apparition session.
   apparition certificates --apple-id <email> [--anisette <url>]
   apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
@@ -173,6 +177,7 @@ async fn main() -> ExitCode {
         Some("install") => install(&args[1..]).await,
         Some("sign") => sign(&args[1..]).await,
         Some("jit") => jit(&args[1..]).await,
+        Some("inject") => inject::run(&args[1..]).await,
         Some("xcode") => xcode::run(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("signing") => signing(&args[1..]).await,

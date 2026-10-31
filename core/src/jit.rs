@@ -348,6 +348,16 @@ pub async fn serve(
                         gdb.set_register(PC, thread, pc + 4).await?;
                         events.log(format!("brk #0xf00d write: {length} bytes to {destination:#x}: {result}"));
                     }
+                    // Signed DebugTrace entry manifest, already approved on the device.
+                    // All-stop debugserver keeps other threads parked for the entire transaction.
+                    0x4151 => {
+                        let address = gdb.register(0, thread).await?;
+                        let count = gdb.register(1, thread).await?;
+                        let status = gdb.entry_transaction(address, count).await?;
+                        gdb.set_register(0, thread, status).await?;
+                        gdb.set_register(PC, thread, pc + 4).await?;
+                        events.log(format!("entry transaction: {count} entries, status {status}"));
+                    }
                     0 => {
                         gdb.set_register(PC, thread, pc + 4).await?;
                         let reply = gdb.request("D").await?;
@@ -470,6 +480,75 @@ fn fields(reply: &str, key: &str) -> Vec<u64> {
         .collect()
 }
 
+trait EntryRemote {
+    async fn command(&mut self, command: &str) -> Result<String, Report>;
+    async fn pc(&mut self, thread: u64) -> Result<u64, Report>;
+}
+impl EntryRemote for Gdb {
+    async fn command(&mut self, command: &str) -> Result<String, Report> { self.request(command).await }
+    async fn pc(&mut self, thread: u64) -> Result<u64, Report> { self.register(PC, thread).await }
+}
+
+/// All reads and writes occur during one all-stop breakpoint. A failed write is
+/// included in rollback, since a remote write can fail after changing a prefix.
+async fn entry_transaction(remote: &mut impl EntryRemote, address: u64, count: u64) -> Result<u64, Report> {
+        if address == 0 || address % 8 != 0 || count == 0 || count > 64 { return Ok(1); }
+        let raw = remote.command(&format!("m{address:x},{:x}", count * 40)).await?;
+        let Some(entries) = decode_entries(&raw, count as usize) else { return Ok(1); };
+        let mut ranges: Vec<_> = entries.iter().map(|e| e.0).collect();
+        ranges.sort_unstable();
+        if ranges.windows(2).any(|w| w[0].checked_add(16).is_none_or(|end| end > w[1])) { return Ok(1); }
+        let mut query = "qfThreadInfo";
+        loop {
+            let reply = remote.command(query).await?;
+            if reply == "l" { break; }
+            let Some(ids) = reply.strip_prefix('m') else { return Ok(1); };
+            for id in ids.split(',') {
+                let Ok(thread) = u64::from_str_radix(id, 16) else { return Ok(1); };
+                let pc = remote.pc(thread).await?;
+                if ranges.iter().any(|start| pc >= *start && pc < start + 16) { return Ok(2); }
+            }
+            query = "qsThreadInfo";
+        }
+        for (target, expected, _) in &entries {
+            if remote.command(&format!("m{target:x},10")).await? != *expected { return Ok(3); }
+        }
+        for (index, (target, _, replacement)) in entries.iter().enumerate() {
+            // Even a refused write might have changed a prefix: include it in rollback.
+            let write = remote.command(&format!("M{target:x},10:{replacement}")).await;
+            let verified = if matches!(&write, Ok(reply) if reply == "OK") {
+                remote.command(&format!("m{target:x},10")).await.is_ok_and(|r| r == *replacement)
+            } else { false };
+            if !verified {
+                for (restore, expected, _) in entries[..=index].iter().rev() {
+                    let reply = remote.command(&format!("M{restore:x},10:{expected}")).await?;
+                    if reply != "OK" || remote.command(&format!("m{restore:x},10")).await? != *expected {
+                        bail!("entry rollback failed; debugger cannot safely resume the app; relaunch it");
+                    }
+                }
+                return Ok(4);
+            }
+        }
+        Ok(0)
+}
+
+/// Fixed little-endian records: target u64, expected 16 bytes, replacement 16 bytes.
+fn decode_entries(hex: &str, count: usize) -> Option<Vec<(u64, String, String)>> {
+    if count == 0 || count > 64 || hex.len() != count * 80 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+    let mut entries = Vec::new();
+    for record in hex.as_bytes().chunks_exact(80) {
+        let record = std::str::from_utf8(record).ok()?;
+        let mut address = [0u8; 8];
+        for (i, byte) in address.iter_mut().enumerate() { *byte = u8::from_str_radix(&record[i*2..i*2+2], 16).ok()?; }
+        let target = u64::from_le_bytes(address);
+        if target == 0 || target % 4 != 0 || target.checked_add(16).is_none() { return None; }
+        // This protocol only redirects entries: never accept arbitrary replacement instructions.
+        if &record[48..64] != "5000005800021fd6" { return None; }
+        entries.push((target, record[16..48].to_ascii_lowercase(), record[48..80].to_ascii_lowercase()));
+    }
+    Some(entries)
+}
+
 /// Minimal gdb-remote client over the tunnel's debugproxy (no-ack mode, pipelined writes).
 struct Gdb {
     proxy: DebugProxyClient<Box<dyn idevice::ReadWrite>>,
@@ -529,6 +608,10 @@ impl Gdb {
             bail!("cannot write register {number}: {reply}");
         }
         Ok(())
+    }
+
+    async fn entry_transaction(&mut self, address: u64, count: u64) -> Result<u64, Report> {
+        entry_transaction(self, address, count).await
     }
 
     /// Writes one zero word into every 16 KiB page of [address, address + length): TXM only
@@ -782,5 +865,73 @@ mod tests {
         let soft = "T11thread:7;metype:5;mecount:2;medata:10003;medata:1e;";
         assert_eq!(fields(soft, "medata"), vec![0x10003, 0x1e]);
         assert_eq!(field("S05", "thread"), None);
+    }
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    const OLD: &str = "00000000000000000000000000000000";
+    const NEW: &str = "5000005800021fd60030000000000000";
+    struct Remote { memory: BTreeMap<u64, String>, pc: u64, fail: Option<u64>, writes: Vec<u64> }
+    impl Remote {
+        fn new() -> Self {
+            let mut memory = BTreeMap::new();
+            let mut table = String::new();
+            for address in [0x1000u64, 0x2000] {
+                table += &address.to_le_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>();
+                table += OLD;
+                table += NEW;
+                memory.insert(address, OLD.into());
+            }
+            memory.insert(0x8000, table);
+            Self { memory, pc: 0x9000, fail: None, writes: vec![] }
+        }
+    }
+    impl EntryRemote for Remote {
+        async fn pc(&mut self, _: u64) -> Result<u64, Report> { Ok(self.pc) }
+        async fn command(&mut self, command: &str) -> Result<String, Report> {
+            if command == "qfThreadInfo" { return Ok("m1".into()); }
+            if command == "qsThreadInfo" { return Ok("l".into()); }
+            if let Some(read) = command.strip_prefix('m') {
+                let address = u64::from_str_radix(read.split(',').next().unwrap(), 16).unwrap();
+                return Ok(self.memory.get(&address).unwrap().clone());
+            }
+            let (head, bytes) = command.strip_prefix('M').unwrap().split_once(':').unwrap();
+            let address = u64::from_str_radix(head.split(',').next().unwrap(), 16).unwrap();
+            self.writes.push(address);
+            self.memory.insert(address, bytes.into());
+            if self.fail == Some(address) && bytes == NEW { self.fail = None; return Ok("E01".into()); }
+            Ok("OK".into())
+        }
+    }
+    #[tokio::test]
+    async fn publishes_all_entries_and_rolls_back_even_a_partially_failed_write() {
+        let mut remote = Remote::new();
+        assert_eq!(entry_transaction(&mut remote, 0x8000, 2).await.unwrap(), 0);
+        assert_eq!(remote.memory[&0x1000], NEW);
+        assert_eq!(remote.memory[&0x2000], NEW);
+        let mut remote = Remote::new(); remote.fail = Some(0x2000);
+        assert_eq!(entry_transaction(&mut remote, 0x8000, 2).await.unwrap(), 4);
+        assert_eq!(remote.writes, [0x1000, 0x2000, 0x2000, 0x1000]);
+        assert_eq!(remote.memory[&0x1000], OLD);
+        assert_eq!(remote.memory[&0x2000], OLD);
+    }
+    #[tokio::test]
+    async fn refuses_busy_entries_and_stale_generations_without_writing() {
+        let mut remote = Remote::new(); remote.pc = 0x1004;
+        assert_eq!(entry_transaction(&mut remote, 0x8000, 2).await.unwrap(), 2);
+        assert!(remote.writes.is_empty());
+        remote.pc = 0x9000; remote.memory.insert(0x2000, NEW.into());
+        assert_eq!(entry_transaction(&mut remote, 0x8000, 2).await.unwrap(), 3);
+        assert!(remote.writes.is_empty());
+    }
+    #[test]
+    fn refuses_invalid_records_and_arbitrary_instructions() {
+        assert!(decode_entries("", 0).is_none());
+        assert!(decode_entries(&"0".repeat(80), 1).is_none());
+        assert!(decode_entries(&format!("0010000000000000{OLD}{NEW}"), 1).is_some());
+        assert!(decode_entries(&format!("0010000000000000{OLD}{OLD}"), 1).is_none());
     }
 }

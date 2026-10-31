@@ -20,6 +20,12 @@
 	<string>0.1</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_debugtrace._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>The entry-patching lab accepts approved development patches.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>UILaunchScreen</key>

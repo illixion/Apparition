@@ -53,12 +53,14 @@ test('deployment preserves device and platform when one device has multiple targ
     if (command === 'service_request') { calls.push(args); return { jobs: [{ id: 7 }] }; }
     return {};
   });
+  view.capabilities.add('entry-patching');
   view.renderProjects([{ name: 'Sample', branches: ['main'], deployDefaults: { mcp: true }, platforms: [
     { platform: 'iPad', device: 'AVP' }, { platform: 'visionOS', device: 'AVP' },
   ] }]);
   const controls = view.projects.all();
   const selects = controls.filter(n => n.tagName === 'select');
-  assert.equal(selects.length, 1, 'one branch choice per project; each target has its own buttons');
+  assert.equal(selects.length, 2, 'one branch and one backend choice per project');
+  selects[1].value = 'apparition';
   selects[0].value = 'main';
   const installs = controls.filter(n => n.tagName === 'button' && n.textContent === 'Install on AVP');
   assert.equal(installs.length, 2);
@@ -66,7 +68,7 @@ test('deployment preserves device and platform when one device has multiple targ
   assert.equal(calls.length, 1);
   assert.equal(calls[0].operation, 'build');
   assert.deepEqual(calls[0].arguments, { repo: 'Sample', device: 'AVP', targetPlatform: 'visionOS', branch: 'main',
-    run: false, mcp: true, inject: false, buildDebug: false });
+    run: false, mcp: true, inject: false, injectBackend: 'apparition', buildDebug: false });
   assert.equal(view.selectedLog, 7);
 });
 
@@ -335,4 +337,17 @@ test('a target badge says at a glance whether the device is current', () => {
   assert.equal(targetBadge(repo, target, { AVP: { x: { commit: 'def5678', branch: 'main' } } }).text, 'Up to date');
   assert.equal(targetBadge(repo, target, { AVP: { x: { commit: 'old', branch: 'main' } } }).text, 'Behind checkout');
   assert.equal(targetBadge(repo, target, { AVP: { x: { buildId: 'b' } } }).text, 'Installed');
+});
+
+test('patching uses only the configured target and does not enqueue a build', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command === 'service_request') calls.push(args);
+    return { content: [{ type: 'text', text: '{"ok":true,"applied":["Sample"]}' }] };
+  });
+  view.capabilities.add('entry-patching');
+  view.renderProjects([{ name: 'Sample', platforms: [{ platform: 'visionOS', device: 'AVP' }] }]);
+  await view.projects.all().find(n => n.tagName === 'button' && n.textContent === 'Patch running app').listeners.click();
+  assert.deepEqual(calls.map(c => c.operation), ['inject']);
+  assert.deepEqual(calls[0].arguments, { repo: 'Sample', device: 'AVP', targetPlatform: 'visionOS' });
 });

@@ -633,6 +633,17 @@ export class DeveloperView {
       input.addEventListener('change', () => { remembered[key] = input.checked; });
       label.append(input, document.createTextNode(title)); optionRow.append(label);
     }
+    if (this.capabilities.has('entry-patching')) {
+    const backendLabel = element('label', 'dev-inline', 'Patch backend');
+    const backend = element('select'); backend.setAttribute('aria-label', `${repo.name} patch backend`);
+    for (const [value, title] of [['dynamic', 'Swift dynamic replacement'], ['apparition', 'Apparition entry boundaries (experimental)']]) {
+      const option = element('option', '', title); option.value = value; backend.append(option);
+    }
+    backend.value = remembered.injectBackend || 'dynamic';
+    backend.addEventListener('change', () => { remembered.injectBackend = backend.value; });
+    flags.injectBackend = backend;
+    backendLabel.append(backend); optionRow.append(backendLabel);
+    }
     options.append(optionRow);
     this.projectControls = this.projectControls || {};
     this.projectControls[repo.name] = { branch, flags };
@@ -688,11 +699,21 @@ export class DeveloperView {
       control.disabled = true;
       try {
         const reply = await this.action('build', { repo: repo.name, device: target.device, targetPlatform: target.platform, branch: branch.value,
-          ...Object.fromEntries(Object.entries(flags).map(([key, input]) => [key, deploy ? input.checked : (key === 'run' ? false : input.checked)])),
+          ...Object.fromEntries(Object.entries(flags).map(([key, input]) => [key, key === 'injectBackend' ? input.value : (deploy ? input.checked : (key === 'run' ? false : input.checked))])),
           ...(deploy ? {} : { deploy: false }) });
         if (reply?.jobs?.[0]) { this.followJob(reply.jobs[0].id); this.status(`Queued ${deploy ? 'build' : 'build-only'} #${this.selectedLog}. Follow it in Activity.`); }
       } finally { control.disabled = false; }
     };
+    if (this.capabilities.has('entry-patching')) {
+      const patchButton = button('Patch running app', async () => {
+        patchButton.disabled = true;
+        try {
+          const reply = await this.action('inject', { repo: repo.name, device: target.device, targetPlatform: target.platform });
+          this.status(JSON.stringify(reply));
+        } finally { patchButton.disabled = false; }
+      }, 'button quiet small');
+      actions.append(patchButton);
+    }
     const installButton = button(`Install on ${target.device}`, () => submit(true, installButton), 'button primary small');
     const buildOnly = button('Build only', () => submit(false, buildOnly), 'button quiet small');
     buildOnly.title = 'Builds and signs without installing; the kept IPA can be downloaded, installed over the air or re-signed.';

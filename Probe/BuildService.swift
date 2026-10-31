@@ -525,17 +525,35 @@ final class BuildService {
     /// The project a configured bundle ID belongs to.
     func project(named name: String) -> Project? { state?.repos.first { $0.name == name } }
 
-    func build(project: Project, target: Target, branch: String, deploy: Bool, launch: Bool, debug: Bool, patch: Bool) async {
+    func build(project: Project, target: Target, branch: String, deploy: Bool, launch: Bool, debug: Bool, patch: Bool, injectBackend: String = "dynamic") async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
         do {
             let reply: BuildReply = try await authenticated("build", body: ["repo": project.name, "device": target.device,
                 "targetPlatform": target.platform, "branch": branch, "deploy": deploy, "run": deploy && launch,
-                "mcp": debug, "inject": patch, "buildDebug": false])
+                "mcp": debug, "inject": patch, "injectBackend": injectBackend, "buildDebug": false])
             message = reply.jobs.first.map { "Queued build #\($0.id)." } ?? "Build queued."
             await refresh()
         } catch { message = error.localizedDescription }
+    }
+
+    func inject(project: Project, target: Target) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            // The Mac compiles the edited sources; the target still asks to allow code changes.
+            let reply: PatchReply = try await authenticated("inject", body: ["repo": project.name,
+                "device": target.device, "targetPlatform": target.platform])
+            message = reply.isError == true ? "Patch refused. Check the reported hint." : "Patch completed."
+            detail = reply.content.map(\.text).joined(separator: "\n")
+        } catch { message = error.localizedDescription }
+    }
+    private struct PatchReply: Decodable {
+        struct Content: Decodable { let text: String }
+        let content: [Content]
+        let isError: Bool?
     }
 
     // MARK: Re-sign

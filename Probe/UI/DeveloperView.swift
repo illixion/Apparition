@@ -137,6 +137,7 @@ struct ProjectDetailView: View {
     @State private var launch = false
     @State private var debug = true
     @State private var patch = false
+    @State private var injectBackend = "dynamic"
     @State private var downloadingID: String?
 
     var body: some View {
@@ -167,10 +168,16 @@ struct ProjectDetailView: View {
             Toggle("Launch after installing", isOn: $launch)
             Toggle("Debug access", isOn: $debug)
             Toggle("Live patching", isOn: $patch)
+            if patch && service.capabilities.contains("entry-patching") {
+                Picker("Patch backend", selection: $injectBackend) {
+                    Text("Swift dynamic replacement").tag("dynamic")
+                    Text("Apparition entry boundaries (experimental)").tag("apparition")
+                }
+            }
         } header: {
             Text("Build options")
         } footer: {
-            Text("These apply to Install and Build only above. Live patching adds instrumentation and can reduce performance. Debug access still asks for approval on the device. None of these enable JIT.")
+            Text("These apply to Install and Build only above. Live patching adds instrumentation and can reduce performance. Debug access still asks for approval on the device. The Apparition backend needs explicitly declared entry boundaries; use apparition inject on the build Mac to attach, patch and detach.")
         }
         let jobs = service.jobs(for: project)
         if !jobs.isEmpty {
@@ -217,6 +224,11 @@ struct ProjectDetailView: View {
                 Text("Keeps a signed IPA on the Mac to install here, over the air, or re-sign.").font(.footnote).foregroundStyle(.secondary)
             }
             .padding(.vertical, 6)
+            if service.capabilities.contains("entry-patching") {
+                Button("Patch running app") { Task { await service.inject(project: project, target: target) } }
+                Text("Applies edited sources from the Mac checkout. The app must already be running with live patching enabled; code changes still ask for approval.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
             if let latest, fitsHere(target) {
                 installHereButton(latest)
             }
@@ -278,7 +290,7 @@ struct ProjectDetailView: View {
 
     private func submit(_ project: BuildService.Project, _ target: BuildService.Target, deploy: Bool) {
         Task { await service.build(project: project, target: target, branch: branch,
-                                   deploy: deploy, launch: launch, debug: debug, patch: patch) }
+                                   deploy: deploy, launch: launch, debug: debug, patch: patch, injectBackend: injectBackend) }
     }
 }
 

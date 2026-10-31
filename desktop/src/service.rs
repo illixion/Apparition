@@ -231,6 +231,7 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
             Ok((Method::POST, "resign".into(), Some(body)))
         }
         "registerProject" => Ok((Method::POST, "projects".into(), Some(args.clone()))),
+        "inject" => Ok((Method::POST, "inject".into(), Some(args.clone()))),
         "build" => {
             if !args["repo"].is_string() || !args["device"].is_string() {
                 return Err("Select a project and target first.".into());
