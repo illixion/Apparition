@@ -336,3 +336,21 @@ over a private tailnet. Don't expose it to the internet, password or not.
 ## License
 
 MIT, see `LICENSE`.
+
+### Apparition entry patching
+
+Build requests accept `injectBackend: "dynamic" | "apparition"` alongside `inject`.
+The default remains dynamic replacement. `build-and-sign --inject-backend apparition`
+uses separate `DerivedData-inject-apparition` products and DebugTrace's explicit native
+entry-boundary backend. See `DebugTrace/Docs/live-patching.md` for required declarations
+and unsupported edits; this does not make existing Swift object layouts mutable.
+
+The authenticated native service advertises `entry-patching` and accepts
+`POST /api/service/v1/inject` with `{repo, device, targetPlatform, files?: string[]}`.
+Only configured targets can be patched, with one request per app/device in progress.
+It invokes the current Apparition CLI on this Mac, using `apparitionCli` from config
+(or `apparition` on PATH) and `debugtraceTool` for compilation/discovery. Install an
+Apparition CLI with `inject` support. The CLI verifies the live session, attaches only
+for the native entry backend, signs patches, requests device approval and detaches.
+No build or installation occurs. Native and desktop Apparition expose this as
+**Patch running app**, with the usual device code-change approval.

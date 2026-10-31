@@ -37,6 +37,7 @@ set -euo pipefail
 #                                   # development build a debug session
 #   build-and-sign --run --no-mcp   # A bare launch, even when MCP_DEFAULT=on
 #   build-and-sign --inject         # Build so running code can be patched live
+#   build-and-sign --inject-backend apparition  # Explicit native boundaries via Apparition
 #                                   # (testability + dynamic replacement) and keep
 #                                   # what the `inject` tool needs in build/inject/, and
 #                                   # embed the patch runtime (Frameworks/DebugTraceInject.dylib)
@@ -199,6 +200,7 @@ while [[ $# -gt 0 ]]; do
         --mcp)           MCP_REQUEST=on; shift ;;
         --no-mcp)        MCP_REQUEST=off; shift ;;
         --inject)        INJECT=true; shift ;;
+        --inject-backend) INJECT_BACKEND="${2:?--inject-backend requires dynamic or apparition}"; INJECT=true; shift 2 ;;
         --sign-dylib)    shift; SIGN_DYLIBS=("$@"); SIGN_ONLY=true; NO_DEPLOY=true; TARGET_NAME="${TARGET_NAME:-dylib}"; shift $# ;;
         --platform)      PLATFORM="$2"; shift 2 ;;
         --device)        DEVICE_NAME="$2"; shift 2 ;;
@@ -250,7 +252,11 @@ fi
 # --inject) into the same directory silently replaced them, and the next
 # `inject` failed with "module was not compiled for private import".
 if [[ "$INJECT" == true ]]; then
-    DERIVED_DATA_PATH="$BUILD_DIR/DerivedData-inject"
+    case "${INJECT_BACKEND:-dynamic}" in
+        dynamic) DERIVED_DATA_PATH="$BUILD_DIR/DerivedData-inject" ;;
+        apparition) DERIVED_DATA_PATH="$BUILD_DIR/DerivedData-inject-apparition" ;;
+        *) echo "ERROR: INJECT_BACKEND must be dynamic or apparition" >&2; exit 1 ;;
+    esac
 else
     DERIVED_DATA_PATH="$BUILD_DIR/DerivedData"
 fi
@@ -498,7 +504,8 @@ prune_legacy_derived_data() {
     for candidate in "$BUILD_DIR"/*; do
         [[ -d "$candidate" && ! -L "$candidate" ]] || continue
         [[ "$candidate" == "$BUILD_DIR/DerivedData" || \
-           "$candidate" == "$BUILD_DIR/DerivedData-inject" ]] && continue
+           "$candidate" == "$BUILD_DIR/DerivedData-inject" || \
+           "$candidate" == "$BUILD_DIR/DerivedData-inject-apparition" ]] && continue
         if [[ -f "$candidate/Info.plist" && \
               -d "$candidate/Build/Products" && \
               -d "$candidate/Build/Intermediates.noindex" ]]; then
@@ -786,7 +793,10 @@ if [[ "$SIGN_ONLY" == false ]]; then
         # "app" only for the app (packages leave it empty). Package code then
         # keeps full optimization (games' hot loops live there) but cannot be
         # patched; debugtrace-inject says so and asks for INJECT_SCOPE=all.
-        if [[ "${INJECT_SCOPE:-all}" == app ]]; then
+        if [[ "${INJECT_BACKEND:-dynamic}" == apparition ]]; then
+            XCB_ARGS+=(ENABLE_TESTABILITY=YES DEAD_CODE_STRIPPING=NO
+                       'OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-private-imports')
+        elif [[ "${INJECT_SCOPE:-all}" == app ]]; then
             XCB_ARGS+=(DEAD_CODE_STRIPPING=NO
                        'DTINJECT_TESTABILITY_app=YES' 'ENABLE_TESTABILITY=$(DTINJECT_TESTABILITY_$(WRAPPER_EXTENSION))'
                        'DTINJECT_FLAGS_app=-Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports'
@@ -891,7 +901,7 @@ print(bs.get("PROJECT_DIR", ""))
             exit 1
         fi
         "$INJECT_TOOL" capture --log "$LOG_FILE" --out "$BUILD_DIR/inject" --root "$PROJECT_ROOT" \
-            --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" --scope "${INJECT_SCOPE:-all}" >>"$LOG_FILE" 2>&1 \
+            --app-module "$TARGET_NAME" --products "$(dirname "$APP_PATH")" --scope "${INJECT_SCOPE:-all}" --backend "${INJECT_BACKEND:-dynamic}" >>"$LOG_FILE" 2>&1 \
             || { echo "ERROR: could not record the build for live patching (see $LOG_FILE)" >&2; exit 1; }
         INJECT_DIR="$BUILD_DIR/inject"
     fi

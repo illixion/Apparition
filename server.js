@@ -212,7 +212,7 @@ async function ensureBuildClone(repoPath, branch, excludes = [], rev = null) {
 //    is deleted, never one a build is using right now.
 const activeClones = new Set();
 function dropCloneDerivedData(dir, keepInject) {
-  for (const name of keepInject ? ['DerivedData'] : ['DerivedData', 'DerivedData-inject']) {
+  for (const name of keepInject ? ['DerivedData'] : ['DerivedData', 'DerivedData-inject', 'DerivedData-inject-apparition']) {
     fs.rmSync(path.join(dir, 'build', name), { recursive: true, force: true });
   }
 }
@@ -410,7 +410,8 @@ function resolveBuildSettings(rc, branch, platform) {
 // store's own devicectl launch). mcp without launch installs only, like
 // build-and-sign --mcp without --run; buildDebug = --debug
 // (Debug configuration); inject = --inject (patchable build)
-function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, deploy }) {
+function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, injectBackend = 'dynamic', deploy }) {
+  if (!['dynamic', 'apparition'].includes(injectBackend)) throw new Error('injectBackend must be dynamic or apparition');
   const rc = CONFIG.repos.find(r => r.name === repo);
   if (!rc) throw new Error(`unknown repo: ${repo}`);
   if (!rc.platforms?.length) throw new Error(`${repo} has no device platforms to deploy to`);
@@ -429,7 +430,7 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDe
       mcp: !!launch && !!mcp && deploy !== false,
       run: !!launch && !mcp && deploy !== false,
       buildDebug: !!buildDebug,
-      inject: !!inject,
+      inject: !!inject, injectBackend,
       status: 'queued', queuedAt: Date.now(),
     };
   });
@@ -543,7 +544,7 @@ async function executeBuild(job) {
     if (job.mcp) buildArgs.push('--run', '--mcp');
     else if (!job.noDeploy) buildArgs.push('--no-mcp');
     if (job.buildDebug) buildArgs.push('--debug');
-    if (job.inject) buildArgs.push('--inject');
+    if (job.inject) buildArgs.push('--inject-backend', job.injectBackend || 'dynamic');
     for (const s of job.buildSettings) buildArgs.push('--set', s);
 
     await new Promise((resolve, reject) => {
@@ -1255,7 +1256,21 @@ fs.mkdirSync(TRACE_DIR, { recursive: true });
 const { createAuth, parseCookies } = require('./lib/auth');
 const { createDebug } = require('./lib/debug');
 const auth = createAuth(DATA_DIR);
+const patchingTargets = new Set();
 const service = require('./lib/service').createService({ auth, config: () => CONFIG, json, readBody,
+  inject: async ({ repo, target, files }) => {
+    const key = `${target.bundleId}@${target.device}`;
+    if (patchingTargets.has(key)) throw new Error('A patch is already in progress for this app and device.');
+    patchingTargets.add(key);
+    try {
+      const args = ['inject', target.bundleId, '--device', target.device, ...files.flatMap(f => ['--file', f])];
+      const localCli = path.join(os.homedir(), '.local/bin/apparition');
+      const result = await run(CONFIG.apparitionCli || (fs.existsSync(localCli) ? localCli : 'apparition'), args, { cwd: repo.path, timeout: 90000,
+        env: { ...process.env, ...(CONFIG.debugtraceTool ? { DEBUGTRACE_MCP: CONFIG.debugtraceTool } : {}) } });
+      if (result.code !== 0) throw new Error('Patch failed: ' + (result.stdout || result.stderr).slice(-12000));
+      return JSON.parse(result.stdout.trim());
+    } finally { patchingTargets.delete(key); }
+  },
   registerProject: input => {
     const result = require('./lib/project-registration').registerProject(CONFIG_PATH, input);
     CONFIG = result.config;

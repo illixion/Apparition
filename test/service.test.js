@@ -256,3 +256,38 @@ exit 0
   const state = (await request('/api/service/v1/state', { token })).body;
   assert.equal(state.installs['fixture-device']['com.example.chain'].resigned, 'other-dev', 'only the re-sign, not the build, is recorded as installed');
 });
+
+test('native entry patching accepts only a configured target and valid file list', async () => {
+  const config = { passwordHash: 'hash', repos: [{ name: 'Example', platforms: [
+    { device: 'AVP', platform: 'visionOS', bundleId: 'com.example.lab' },
+  ] }] };
+  const calls = [];
+  const service = createService({ auth: { check: () => true }, config: () => config,
+    readBody: async req => req.body, json: (res, status, body) => Object.assign(res, { status, body }),
+    inject: async options => { calls.push(options); return { content: [], isError: false }; } });
+  const valid = { repo: 'Example', device: 'AVP', targetPlatform: 'visionOS', files: ['Entry.swift'] };
+  const req = body => ({ method: 'POST', headers: { authorization: 'Bearer ' + 'a'.repeat(43) }, body });
+  let res = {};
+  await service(req(valid), res, new URL('http://test/api/service/v1/inject'));
+  assert.equal(res.status, 200); assert.equal(calls[0].target.bundleId, 'com.example.lab');
+  assert.deepEqual(calls[0].files, ['Entry.swift']);
+  for (const bad of [{ device: 'other' }, { targetPlatform: 'iOS' }, { repo: 'other' }, { files: 'Entry.swift' }, { files: [null] }]) {
+    res = {};
+    await service(req({ ...valid, ...bad }), res, new URL('http://test/api/service/v1/inject'));
+    assert.equal(res.status, 400); assert.ok(res.body.hint);
+  }
+  assert.equal(calls.length, 1);
+});
+
+test('native build options preserve a known backend and reject guesses', async () => {
+  const config = { passwordHash: 'hash', repos: [{ name: 'Example', platforms: [{ device: 'AVP', platform: 'visionOS' }] }] };
+  const service = createService({ auth: { check: () => true }, config: () => config,
+    readBody: async req => req.body, json: (res, status, body) => Object.assign(res, { status, body }) });
+  const valid = { repo: 'Example', device: 'AVP', targetPlatform: 'visionOS', inject: true, injectBackend: 'apparition' };
+  const req = body => ({ method: 'POST', headers: { authorization: 'Bearer ' + 'a'.repeat(43) }, body });
+  const routed = await service(req(valid), {}, new URL('http://test/api/service/v1/build'));
+  assert.equal(routed.body.injectBackend, 'apparition');
+  const res = {};
+  await service(req({ ...valid, injectBackend: 'jit' }), res, new URL('http://test/api/service/v1/build'));
+  assert.equal(res.status, 400);
+});
