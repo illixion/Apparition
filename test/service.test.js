@@ -24,7 +24,7 @@ before(async () => {
     passwordHash: hashPassword(password), crashLogs: { enabled: false }, buildManifestDir: 'artifacts' }));
   child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
     env: { ...process.env, APPSTORE_CONFIG: config, APPSTORE_DATA: path.join(dir, 'data'),
-      DEBUGTRACE_KEY_DIR: path.join(dir, 'keys') }, stdio: ['ignore', 'pipe', 'pipe'],
+      DEBUGTRACE_KEY_DIR: path.join(dir, 'keys'), BUILD_SIGNING_DIR: path.join(dir, 'signing') }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('service did not start')), 10000);
@@ -148,4 +148,29 @@ test('target validation preserves platform identity and refuses arbitrary branch
     await service(req({ ...valid, ...bad }), res, new URL('http://test/api/service/v1/build'));
     assert.equal(res.status, 400);
   }
+});
+
+test('re-signing is bounded: it needs a session, a kept build, a configured target and a known profile', async () => {
+  assert.equal((await request('/api/service/v1/resign/options')).status, 401);
+  assert.equal((await request('/api/service/v1/resign', { method: 'POST', body: {} })).status, 401);
+  const token = await connect();
+  assert.ok((await request('/api/service', {})).body.capabilities.includes('resign'));
+  const options = await request('/api/service/v1/resign/options', { token });
+  assert.equal(options.status, 200); assert.deepEqual(options.body.profiles, []);
+  const post = body => request('/api/service/v1/resign', { method: 'POST', token, body });
+  for (const bad of [{}, { buildId: 'x', device: 'AVP' }, { buildId: 'x', device: 'AVP', profile: 'p', dataMode: 'wipe' },
+    { buildId: 'x', device: 'AVP', profile: 'p', dryRun: 'yes' }, { buildId: 'x', device: 7, profile: 'p' }]) {
+    assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await post({ buildId: 'no-such-build', device: 'AVP', profile: 'p' })).status, 404);
+  // A kept build whose app no configured project installs on that device has no signing setup.
+  const buildId = 'resign-fixture', content = Buffer.from('ipa bytes');
+  const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+  const artifact = { sha256, bytes: content.length, kind: 'ipa', file: `${sha256}.ipa` };
+  const directory = path.join(dir, 'artifacts', buildId); fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, artifact.file), content);
+  fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ format: 'apparition-build/1', buildId, platform: 'visionOS',
+    app: { bundleId: 'com.example.app', name: 'Example' }, artifact }));
+  const refused = await post({ buildId, device: 'AVP', profile: 'p' });
+  assert.equal(refused.status, 400); assert.match(refused.body.error, /No configured project installs com\.example\.app on AVP/);
 });

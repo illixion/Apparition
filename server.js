@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { readBuild, listBuilds, defaultStore: defaultBuildStore } = require('./lib/artifacts');
+const resignTool = require('./lib/resign');
 
 const ROOT = __dirname;
 // APPSTORE_CONFIG and APPSTORE_DATA relocate the config and the runtime data
@@ -366,7 +367,7 @@ function pump(repo) {
   job.status = 'running';
   job.startedAt = Date.now();
   saveState();
-  executeBuild(job).finally(() => { q.activeId = null; settleWaiters(id); pump(repo); });
+  (job.resign ? executeResign(job) : executeBuild(job)).finally(() => { q.activeId = null; settleWaiters(id); pump(repo); });
 }
 
 function logPath(id) { return path.join(LOG_DIR, `build-${id}.log`); }
@@ -696,6 +697,106 @@ async function executeBuild(job) {
     if (liveLogs.size > 5) liveLogs.delete(liveLogs.keys().next().value);
   }
   if (job.status === 'success' && !job.noDeploy) refreshDeviceApps(job.device); // async, best-effort
+}
+
+// Re-signs an app already on a device from the exact IPA the store kept for it (lib/resign.js),
+// as a job on that repo's queue: build-and-sign --ipa writes into the repo's build/ like any
+// build, so it must not run alongside one. `body` was validated by resignRequest.
+function enqueueResign({ rc, target, kept, profile, dataMode, dryRun }) {
+  const job = {
+    id: state.nextBuildId++, batchId: null,
+    repo: rc.name, branch: 'current',
+    platform: target.platform, device: target.device, bundleId: kept.manifest.app.bundleId,
+    noDeploy: false, mcp: false, run: false, buildDebug: false, inject: false,
+    resign: { from: kept.manifest.buildId, profile: profile.id, dataMode, dryRun },
+    status: 'queued', queuedAt: Date.now(),
+  };
+  state.builds.push(job);
+  if (state.builds.length > 200) state.builds = state.builds.slice(-200);
+  getRepoQueue(rc.name).queue.push(job.id);
+  saveState();
+  pump(rc.name);
+  return job;
+}
+
+// Turns a client's {buildId, device, profile, dataMode, dryRun} into a queued job, or throws
+// an Error with a `status` the route reports. Nothing here takes a path from the client.
+function resignRequest(body) {
+  const fail = (status, message) => Object.assign(new Error(message), { status });
+  body = body || {};
+  if (typeof body.buildId !== 'string' || typeof body.device !== 'string' || typeof body.profile !== 'string' ||
+      (body.dataMode !== undefined && !['keep', 'discard'].includes(body.dataMode)) ||
+      (body.dryRun !== undefined && typeof body.dryRun !== 'boolean')) {
+    throw fail(400, 'Choose a kept build, a device and a profile.');
+  }
+  let kept;
+  try { kept = readBuild(body.buildId, { store: buildStore(), verify: true }); }
+  catch { throw fail(404, 'That build is not kept, or its files no longer match its manifest.'); }
+  if (kept.manifest.artifact.kind !== 'ipa') throw fail(400, 'Only an IPA can be re-signed.');
+  const found = CONFIG.repos.flatMap(rc => (rc.platforms || []).map(target => ({ rc, target })))
+    .find(({ target }) => target.device === body.device && target.bundleId === kept.manifest.app.bundleId &&
+      String(target.platform).toLowerCase() === String(kept.manifest.platform).toLowerCase());
+  if (!found) throw fail(400, `No configured project installs ${kept.manifest.app.bundleId} on ${body.device}, so there is no signing setup for it.`);
+  const profile = resignTool.findProfile(body.profile);
+  if (!profile) throw fail(400, 'That profile is not in the build-signing folder.');
+  const udid = (state.devices?.list || []).find(d => d.name === body.device)?.udid;
+  const problem = resignTool.profileProblem(profile, udid, found.target.platform);
+  if (problem) throw fail(400, problem);
+  return { ...found, kept, profile, dataMode: body.dataMode || 'keep', dryRun: body.dryRun === true };
+}
+
+async function executeResign(job) {
+  if (job.status === 'cancelled') return;
+  const rc = CONFIG.repos.find(r => r.name === job.repo);
+  const stream = fs.createWriteStream(logPath(job.id));
+  liveLogs.set(job.id, '');
+  const log = s => { liveLogs.set(job.id, liveLogs.get(job.id) + s); stream.write(s); };
+  // Every command streams to the log; the running child is what Cancel stops.
+  const exec = (cmd, args, opts = {}) => new Promise(resolve => {
+    let output = '';
+    const child = spawn(cmd, args, { cwd: opts.cwd, env: opts.env || process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    procs.set(job.id, child);
+    const timer = opts.timeout ? setTimeout(() => child.kill('SIGTERM'), opts.timeout) : null;
+    const take = d => { const text = d.toString(); output += text; log(text); };
+    child.stdout.on('data', take); child.stderr.on('data', take);
+    child.on('error', e => { clearTimeout(timer); resolve({ code: 127, output: output + String(e.message) }); });
+    // 'exit', not 'close': devicectl's XPC helpers keep inherited pipes open (see executeBuild).
+    child.on('exit', code => { clearTimeout(timer); setImmediate(() => resolve({ code: code ?? 1, output })); });
+  });
+  saveState();
+  try {
+    const kept = readBuild(job.resign.from, { store: buildStore(), verify: true });
+    const profile = resignTool.findProfile(job.resign.profile);
+    if (!profile) throw new Error('the profile is no longer in the build-signing folder');
+    log(`==> Re-signing ${job.bundleId} (kept build ${job.resign.from}) for ${job.device} with ${profile.name} [${profile.appId}]\n`);
+    const result = await resignTool.performResign({
+      ipa: kept.file, bundleId: job.bundleId, device: job.device, profileFile: profile.file,
+      buildAndSign: CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN, cwd: rc.path,
+      env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore() },
+      dataMode: job.resign.dataMode, dryRun: job.resign.dryRun, exec, log,
+    });
+    job.resign.result = result.mode;
+    if (result.backup) job.resign.backup = result.backup;
+    job.buildId = [...String(liveLogs.get(job.id) || '').matchAll(/^\s*Build ID:\s+([A-Za-z0-9-]+)\s*$/gm)].pop()?.[1] || null;
+    if (job.status !== 'cancelled') job.status = 'success';
+    if (result.mode !== 'dry-run' && job.buildId) {
+      const before = state.installs?.[job.device]?.[job.bundleId];
+      state.installs[job.device] = state.installs[job.device] || {};
+      state.installs[job.device][job.bundleId] = { ...(before || { repo: job.repo, platform: job.platform }),
+        buildId: job.buildId, at: Date.now(), confirmed: true, resigned: profile.id };
+    }
+    log(`\n==> Store: ${result.mode === 'dry-run' ? 'dry run finished' : `re-signed ${job.bundleId} on ${job.device} (${result.mode})`}\n`);
+  } catch (e) {
+    if (job.status !== 'cancelled') job.status = 'failed';
+    job.error = String(e.message || e);
+    log(`\n==> Store: re-sign ${job.status}: ${job.error}\n`);
+  } finally {
+    job.finishedAt = Date.now();
+    saveState();
+    stream.end();
+    if (liveLogs.size > 5) liveLogs.delete(liveLogs.keys().next().value);
+  }
+  if (job.status === 'success' && !job.resign.dryRun) refreshDeviceApps(job.device);
 }
 
 function cancelBuild(id) {
@@ -1668,6 +1769,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/api/state' && req.method === 'GET') {
       return json(res, 200, await stateBundle());
+    }
+    if (url.pathname === '/api/resign/options' && req.method === 'GET') {
+      return json(res, 200, { profiles: resignTool.listProfiles().map(resignTool.publicProfile) });
+    }
+    if (url.pathname === '/api/resign' && req.method === 'POST') {
+      let request;
+      try { request = resignRequest(native.body || await readBody(req)); }
+      catch (error) { return json(res, error.status || 400, { error: error.message }); }
+      return json(res, 200, { jobs: [publicBuild(enqueueResign(request))] });
     }
     const artifactRoute = url.pathname.match(/^\/api\/artifacts\/([A-Za-z0-9-]{1,64})\/(manifest|download)$/);
     if (url.pathname === '/api/artifacts' && req.method === 'GET') {
