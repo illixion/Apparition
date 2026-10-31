@@ -146,6 +146,27 @@ device and branch (`current` or a configured branch) must match the configuratio
 platform is retained even when a single device has several platform aliases. All builds,
 logs, cancellation, DebugTrace approvals and report verification use the existing backend.
 
+### Re-signing an installed app with another profile
+
+`GET /api/service/v1/resign/options` lists the `.mobileprovision` files in
+`~/.config/build-signing/profiles` (`BUILD_SIGNING_DIR` overrides the root), without paths or
+device lists. `POST /api/service/v1/resign` re-signs an app that is already on a device and
+installs it over the old copy (capabilities `resign` and `resign-build`). It takes either of:
+
+- `{buildId, device, profile, dataMode?, dryRun?}`: re-sign that kept IPA.
+- `{repo, device, platform?, branch?, profile, dataMode?, dryRun?}`: no kept build is needed.
+  The service queues a signed `--no-deploy` build of that project target first (the same build
+  an OTA link or an Apparition download asks for), then a re-sign of the IPA it kept. The
+  reply lists both jobs, the build first. A dry run builds nothing.
+
+Either way, a profile for the same App ID updates the app in place. A different App ID is
+refused by installd as an update, so the service backs up the app's Documents and Library
+with `devicectl` (kept under `~/.local/state/apparition/resign-backups/`), removes the app,
+installs the new signature and restores the data. If the new signature won't install, it puts
+the previous one back with its data. `dataMode: "discard"` skips the backup. Keychain items
+and app-group containers do not move. This needs the device reachable by `devicectl`; an OTA
+install can't change an installed app's App ID.
+
 `test/service.test.js` exercises the real HTTP authentication/route boundary and target
 validation. The frontend/controller and Rust transport tests live in Apparition.
 

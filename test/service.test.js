@@ -174,3 +174,85 @@ test('re-signing is bounded: it needs a session, a kept build, a configured targ
   const refused = await post({ buildId, device: 'AVP', profile: 'p' });
   assert.equal(refused.status, 400); assert.match(refused.body.error, /No configured project installs com\.example\.app on AVP/);
 });
+
+test('re-signing without a kept build names a configured project target, and a branch it has', async () => {
+  const token = await connect();
+  assert.ok((await request('/api/service', {})).body.capabilities.includes('resign-build'));
+  const post = body => request('/api/service/v1/resign', { method: 'POST', token, body });
+  // 'Registered' (from the registration test) installs on AVP for visionOS and has no branches.
+  const cases = [
+    [{ repo: 'Nope', device: 'AVP', profile: 'p' }, /Nope has no target on AVP/],
+    [{ repo: 'Registered', device: 'ATV', profile: 'p' }, /no target on ATV/],
+    [{ repo: 'Registered', device: 'AVP', platform: 'tvOS', profile: 'p' }, /no target on AVP for tvOS/],
+    [{ repo: 'Registered', device: 'AVP', branch: '../etc', profile: 'p' }, /not one of Registered's branches/],
+    [{ repo: 'Registered', device: 'AVP', profile: 'p' }, /profile is not in the build-signing folder/],
+    [{ repo: 7, device: 'AVP', profile: 'p' }, /Choose a kept build or a project/],
+  ];
+  for (const [body, error] of cases) {
+    const reply = await post(body);
+    assert.equal(reply.status, 400, JSON.stringify(body)); assert.match(reply.body.error, error);
+  }
+  const state = await request('/api/service/v1/state', { token });
+  assert.ok(!state.body.builds.some(job => job.resign || job.forResign), 'a refused request queues nothing');
+});
+
+test('with no kept build, a re-sign builds the project first and signs the IPA that build kept', async () => {
+  const { execFileSync } = require('node:child_process');
+  // A real CMS-wrapped profile (self-signed), so the service's own decoding reads it.
+  const signing = path.join(dir, 'signing', 'profiles'); fs.mkdirSync(signing, { recursive: true });
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'resign-chain-'));
+  fs.writeFileSync(path.join(work, 'p.plist'), `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+<key>Name</key><string>Other</string><key>ExpirationDate</key><date>2099-01-01T00:00:00Z</date>
+<key>Platform</key><array><string>xrOS</string></array><key>TeamIdentifier</key><array><string>T1</string></array>
+<key>Entitlements</key><dict><key>application-identifier</key><string>T1.com.example.Other</string><key>get-task-allow</key><true/></dict>
+</dict></plist>`);
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', path.join(work, 'k.pem'), '-out', path.join(work, 'c.pem'), '-subj', '/CN=fixture', '-days', '2'], { stdio: 'ignore' });
+  execFileSync('openssl', ['smime', '-sign', '-in', path.join(work, 'p.plist'), '-signer', path.join(work, 'c.pem'), '-inkey', path.join(work, 'k.pem'),
+    '-outform', 'DER', '-nodetach', '-binary', '-out', path.join(signing, 'other-dev.mobileprovision')]);
+  // A stand-in build-and-sign: a --no-deploy build keeps an IPA in the store; --ipa "installs" it.
+  const calls = path.join(work, 'calls.log'), fake = path.join(work, 'build-and-sign');
+  fs.writeFileSync(fake, `#!/bin/bash
+echo "$*" >> ${JSON.stringify(calls)}
+if [[ " $* " == *" --no-deploy "* ]]; then
+  id=fixture-chain; d="$APPARITION_BUILD_DIR/$id"; mkdir -p "$d"; printf 'ipa' > "$d/app.ipa"
+  sha=$(shasum -a 256 "$d/app.ipa" | cut -d' ' -f1); mv "$d/app.ipa" "$d/$sha.ipa"
+  printf '{"format":"apparition-build/1","buildId":"%s","platform":"visionOS","app":{"bundleId":"com.example.chain"},"artifact":{"kind":"ipa","sha256":"%s","bytes":3,"file":"%s.ipa"}}' "$id" "$sha" "$sha" > "$d/manifest.json"
+  echo "Build ID: $id"
+else
+  echo "Build ID: fixture-resigned"   # build-and-sign --ipa keeps the re-signed IPA as a build of its own
+fi
+exit 0
+`, { mode: 0o755 });
+  const project = path.join(dir, 'Chain'); fs.mkdirSync(project);
+  execFileSync('git', ['init', '-b', 'main', project], { stdio: 'ignore' });
+  execFileSync('git', ['-C', project, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '--allow-empty', '-m', 'init'], { stdio: 'ignore' });
+  const configFile = path.join(dir, 'config.json');
+  const config = JSON.parse(fs.readFileSync(configFile));
+  config.buildAndSign = fake;
+  config.repos.push({ name: 'Chain', path: project, branches: [], platforms: [{ platform: 'visionOS', device: 'fixture-device', bundleId: 'com.example.chain' }] });
+  fs.writeFileSync(configFile + '.next', JSON.stringify(config)); fs.renameSync(configFile + '.next', configFile);
+  const token = await connect();
+  for (let attempt = 0; attempt < 30; ++attempt) {
+    if ((await request('/api/service/v1/state', { token })).body.repos.some(r => r.name === 'Chain')) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const reply = await request('/api/service/v1/resign', { method: 'POST', token,
+    body: { repo: 'Chain', device: 'fixture-device', profile: 'other-dev', dataMode: 'keep' } });
+  assert.equal(reply.status, 200, JSON.stringify(reply.body));
+  const [build, resign] = reply.body.jobs;
+  assert.equal(build.forResign, true); assert.equal(build.noDeploy, true);
+  assert.equal(resign.resign.after, build.id); assert.equal(resign.batchId, build.id);
+  let done;
+  for (let attempt = 0; attempt < 100 && !done; ++attempt) {
+    const jobs = (await request('/api/service/v1/state', { token })).body.builds;
+    done = jobs.find(job => job.id === resign.id && ['success', 'failed'].includes(job.status));
+    if (!done) await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.equal(done?.status, 'success', done?.error);
+  assert.equal(done.resign.from, 'fixture-chain');
+  const lines = fs.readFileSync(calls, 'utf8').trim().split('\n');
+  assert.match(lines[0], /--no-deploy/);
+  assert.match(lines[1], /--ipa .*fixture-chain\/[0-9a-f]{64}\.ipa --device fixture-device --no-mcp --profile .*other-dev\.mobileprovision/);
+  const state = (await request('/api/service/v1/state', { token })).body;
+  assert.equal(state.installs['fixture-device']['com.example.chain'].resigned, 'other-dev', 'only the re-sign, not the build, is recorded as installed');
+});

@@ -655,7 +655,7 @@ async function executeBuild(job) {
     // for the remote-dev case (branch/commit tracking while away from the
     // LAN beats nothing), so it's kept but flagged `confirmed: false` for
     // the UI to display distinctly rather than asserting it as installed.
-    if (!job.altSource) {
+    if (!job.altSource && !job.forResign) {
       state.installs[job.device] = state.installs[job.device] || {};
       state.installs[job.device][job.bundleId] = {
         repo: job.repo, branch: job.builtBranch, commit: job.commit, buildId: job.buildId,
@@ -665,6 +665,7 @@ async function executeBuild(job) {
     }
     job.status = 'success';
     if (job.altSource) log(`\n==> Store: AltSource build of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) ready for download\n`);
+    else if (job.forResign) log(`\n==> Store: built ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) for the re-sign queued after it\n`);
     else log(job.noDeploy
       ? `\n==> Store: OTA-only build of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) — recorded as an unconfirmed guess, not deployed to ${job.device}\n`
       : `\n==> Store: recorded install of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) on ${job.device}\n`);
@@ -702,47 +703,83 @@ async function executeBuild(job) {
 // Re-signs an app already on a device from the exact IPA the store kept for it (lib/resign.js),
 // as a job on that repo's queue: build-and-sign --ipa writes into the repo's build/ like any
 // build, so it must not run alongside one. `body` was validated by resignRequest.
-function enqueueResign({ rc, target, kept, profile, dataMode, dryRun }) {
+//
+// Without a kept build (one made before builds were kept, or one pruned since), the job is
+// preceded by an ordinary signed-but-not-deployed build of the project, the same build an OTA
+// or Apparition download asks for, and re-signs the IPA that build kept. Both jobs go on the
+// repo's queue in order, so the build has always finished when the re-sign starts. A dry run
+// only probes the device, so it needs no IPA and builds nothing.
+function enqueueResign({ rc, target, kept, branch, profile, dataMode, dryRun }) {
+  const queue = getRepoQueue(rc.name);
+  const jobs = [];
+  let after = null;
+  if (!kept && !dryRun) {
+    const build = {
+      id: state.nextBuildId++, batchId: null,
+      repo: rc.name, branch: branch || 'current',
+      platform: target.platform, device: target.device, bundleId: target.bundleId,
+      noDeploy: true, forResign: true, mcp: false, run: false, buildDebug: false, inject: false,
+      status: 'queued', queuedAt: Date.now(),
+    };
+    jobs.push(build);
+    after = build.id;
+  }
   const job = {
     id: state.nextBuildId++, batchId: null,
     repo: rc.name, branch: 'current',
-    platform: target.platform, device: target.device, bundleId: kept.manifest.app.bundleId,
+    platform: target.platform, device: target.device, bundleId: kept ? kept.manifest.app.bundleId : target.bundleId,
     noDeploy: false, mcp: false, run: false, buildDebug: false, inject: false,
-    resign: { from: kept.manifest.buildId, profile: profile.id, dataMode, dryRun },
+    resign: { from: kept ? kept.manifest.buildId : null, after, profile: profile.id, dataMode, dryRun },
     status: 'queued', queuedAt: Date.now(),
   };
-  state.builds.push(job);
+  jobs.push(job);
+  if (jobs.length > 1) for (const j of jobs) j.batchId = jobs[0].id;
+  for (const j of jobs) { state.builds.push(j); queue.queue.push(j.id); }
   if (state.builds.length > 200) state.builds = state.builds.slice(-200);
-  getRepoQueue(rc.name).queue.push(job.id);
   saveState();
   pump(rc.name);
-  return job;
+  return jobs;
 }
 
-// Turns a client's {buildId, device, profile, dataMode, dryRun} into a queued job, or throws
-// an Error with a `status` the route reports. Nothing here takes a path from the client.
+// Turns a client's request into a queued job, or throws an Error with a `status` the route
+// reports. Nothing here takes a path from the client. Either
+//   {buildId, device, profile, dataMode?, dryRun?}         re-sign that kept IPA, or
+//   {repo, device, platform?, branch?, profile, ...}      build that project target first.
 function resignRequest(body) {
   const fail = (status, message) => Object.assign(new Error(message), { status });
   body = body || {};
-  if (typeof body.buildId !== 'string' || typeof body.device !== 'string' || typeof body.profile !== 'string' ||
+  const fromBuild = typeof body.buildId === 'string';
+  if ((!fromBuild && typeof body.repo !== 'string') || typeof body.device !== 'string' || typeof body.profile !== 'string' ||
+      (body.platform !== undefined && typeof body.platform !== 'string') ||
+      (body.branch !== undefined && typeof body.branch !== 'string') ||
       (body.dataMode !== undefined && !['keep', 'discard'].includes(body.dataMode)) ||
       (body.dryRun !== undefined && typeof body.dryRun !== 'boolean')) {
-    throw fail(400, 'Choose a kept build, a device and a profile.');
+    throw fail(400, 'Choose a kept build or a project, a device and a profile.');
   }
-  let kept;
-  try { kept = readBuild(body.buildId, { store: buildStore(), verify: true }); }
-  catch { throw fail(404, 'That build is not kept, or its files no longer match its manifest.'); }
-  if (kept.manifest.artifact.kind !== 'ipa') throw fail(400, 'Only an IPA can be re-signed.');
-  const found = CONFIG.repos.flatMap(rc => (rc.platforms || []).map(target => ({ rc, target })))
-    .find(({ target }) => target.device === body.device && target.bundleId === kept.manifest.app.bundleId &&
-      String(target.platform).toLowerCase() === String(kept.manifest.platform).toLowerCase());
-  if (!found) throw fail(400, `No configured project installs ${kept.manifest.app.bundleId} on ${body.device}, so there is no signing setup for it.`);
+  let kept = null, found, branch;
+  if (fromBuild) {
+    try { kept = readBuild(body.buildId, { store: buildStore(), verify: true }); }
+    catch { throw fail(404, 'That build is not kept, or its files no longer match its manifest.'); }
+    if (kept.manifest.artifact.kind !== 'ipa') throw fail(400, 'Only an IPA can be re-signed.');
+    found = CONFIG.repos.flatMap(rc => (rc.platforms || []).map(target => ({ rc, target })))
+      .find(({ target }) => target.device === body.device && target.bundleId === kept.manifest.app.bundleId &&
+        String(target.platform).toLowerCase() === String(kept.manifest.platform).toLowerCase());
+    if (!found) throw fail(400, `No configured project installs ${kept.manifest.app.bundleId} on ${body.device}, so there is no signing setup for it.`);
+  } else {
+    const rc = CONFIG.repos.find(r => r.name === body.repo);
+    const target = rc?.platforms?.find(p => p.device === body.device && (!body.platform || p.platform === body.platform));
+    if (!target) throw fail(400, `${body.repo} has no target on ${body.device}${body.platform ? ` for ${body.platform}` : ''}.`);
+    if (/^macos$/i.test(target.platform)) throw fail(400, 'A Mac app has no device install to re-sign.');
+    branch = body.branch || 'current';
+    if (branch !== 'current' && !rc.branches?.includes(branch)) throw fail(400, `${branch} is not one of ${rc.name}'s branches.`);
+    found = { rc, target };
+  }
   const profile = resignTool.findProfile(body.profile);
   if (!profile) throw fail(400, 'That profile is not in the build-signing folder.');
   const udid = (state.devices?.list || []).find(d => d.name === body.device)?.udid;
   const problem = resignTool.profileProblem(profile, udid, found.target.platform);
   if (problem) throw fail(400, problem);
-  return { ...found, kept, profile, dataMode: body.dataMode || 'keep', dryRun: body.dryRun === true };
+  return { ...found, kept, branch, profile, dataMode: body.dataMode || 'keep', dryRun: body.dryRun === true };
 }
 
 async function executeResign(job) {
@@ -765,12 +802,21 @@ async function executeResign(job) {
   });
   saveState();
   try {
-    const kept = readBuild(job.resign.from, { store: buildStore(), verify: true });
+    if (job.resign.after != null) {
+      const build = state.builds.find(b => b.id === job.resign.after);
+      if (!build || build.status !== 'success' || !build.buildId) {
+        throw new Error(`build #${job.resign.after} ${build?.status === 'cancelled' ? 'was cancelled' : "didn't produce a kept IPA"}, so there is nothing to re-sign; the app was not changed`);
+      }
+      job.resign.from = build.buildId;
+      log(`==> Using build #${build.id} (${build.builtBranch}@${build.commit}), kept as ${build.buildId}\n`);
+    }
+    const kept = job.resign.from ? readBuild(job.resign.from, { store: buildStore(), verify: true }) : null;
+    if (!kept && !job.resign.dryRun) throw new Error('no kept build to re-sign');
     const profile = resignTool.findProfile(job.resign.profile);
     if (!profile) throw new Error('the profile is no longer in the build-signing folder');
-    log(`==> Re-signing ${job.bundleId} (kept build ${job.resign.from}) for ${job.device} with ${profile.name} [${profile.appId}]\n`);
+    log(`==> Re-signing ${job.bundleId}${kept ? ` (kept build ${job.resign.from})` : ''} for ${job.device} with ${profile.name} [${profile.appId}]\n`);
     const result = await resignTool.performResign({
-      ipa: kept.file, bundleId: job.bundleId, device: job.device, profileFile: profile.file,
+      ipa: kept?.file, bundleId: job.bundleId, device: job.device, profileFile: profile.file,
       buildAndSign: CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN, cwd: rc.path,
       env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore() },
       dataMode: job.resign.dataMode, dryRun: job.resign.dryRun, exec, log,
@@ -1777,7 +1823,7 @@ const server = http.createServer(async (req, res) => {
       let request;
       try { request = resignRequest(native.body || await readBody(req)); }
       catch (error) { return json(res, error.status || 400, { error: error.message }); }
-      return json(res, 200, { jobs: [publicBuild(enqueueResign(request))] });
+      return json(res, 200, { jobs: enqueueResign(request).map(publicBuild) });
     }
     const artifactRoute = url.pathname.match(/^\/api\/artifacts\/([A-Za-z0-9-]{1,64})\/(manifest|download)$/);
     if (url.pathname === '/api/artifacts' && req.method === 'GET') {
