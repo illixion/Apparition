@@ -668,6 +668,7 @@ struct LibraryView: View {
                 }
             } label: {
                 Label(confirming ? "Are you sure? Remove" : "Remove from Library", systemImage: "trash")
+                    .foregroundStyle(.white)
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
