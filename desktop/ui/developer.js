@@ -2,10 +2,14 @@
 // remote HTML enter this view; all service-provided strings become text nodes.
 //
 // Layout: before connecting, a getting-started page (what appstore is, where to get it, how
-// to connect). Once connected, four sections: Projects (one card per project, one row per
+// to connect). Once connected, four sections: Projects (a two-column grid of cards, one tile per
 // target with what is installed there and what can be done), Activity (the build queue and
 // logs), Reports (crashes, traces and running debug apps, grouped by app) and Devices &
-// signing.
+// signing (with a note on appstore itself).
+//
+// Rendering rule: the view polls, so a section repaints only when what it shows has changed, and
+// what the person has opened (a report group, a kept-builds list, a log) is remembered across
+// repaints. A log, report or build manifest opens inline, directly under the row that asked.
 const element = (tag, className = '', text = '') => {
   const node = document.createElement(tag);
   node.className = className;
@@ -18,6 +22,12 @@ const button = (text, action, className = 'button quiet') => {
   node.addEventListener('click', action);
   return node;
 };
+const pill = (text, tone = '', title = '') => {
+  const node = element('span', `pill ${tone}`.trim(), text);
+  if (title) node.title = title;
+  return node;
+};
+const statusTone = status => ({ running: 'info', queued: 'info', success: 'good', failed: 'bad' })[status] || '';
 const plural = (n, noun) => `${n} ${noun}${n === 1 ? '' : noun.endsWith('h') ? 'es' : 's'}`;
 const ago = ms => {
   if (!ms) return '';
@@ -52,6 +62,17 @@ export function targetState(repo, target, installs = {}) {
   return { install, text: parts.join(' · ') };
 }
 
+// The same, as a badge for the target's tile: scannable where the line above is detailed.
+export function targetBadge(repo, target, installs = {}) {
+  const install = installs?.[target.device]?.[target.bundleId];
+  if (!install) return { tone: '', text: 'Not installed' };
+  const head = repo.git?.commit;
+  if (head && install.commit && install.branch === repo.git?.branch) {
+    return install.commit === head ? { tone: 'good', text: 'Up to date' } : { tone: 'warn', text: 'Behind checkout' };
+  }
+  return { tone: 'info', text: 'Installed' };
+}
+
 export class DeveloperView {
   constructor(root, invoke) {
     this.root = root;
@@ -59,8 +80,17 @@ export class DeveloperView {
     this.connected = false;
     this.visible = false;
     this.polling = false;
+    // The job whose log is being followed (set when a build is queued from here).
     this.selectedLog = null;
     this.projectSignature = '';
+    // Per-section signatures of what was last painted, the rows that can host the inline viewer,
+    // and what stays open across repaints.
+    this.signatures = {};
+    this.hosts = new Map();
+    this.viewing = null;
+    this.last = null;
+    this.openGroups = new Set();
+    this.expandedGroups = new Set();
     this.epoch = 0;
     this.capabilities = new Set();
     this.repos = [];
@@ -94,7 +124,8 @@ export class DeveloperView {
     this.connected_bar = element('div', 'dev-connected'); this.connected_bar.hidden = true;
     this.connected_label = element('span', 'dev-connected-label selectable');
     this.disconnect = button('Disconnect', () => this.signOut());
-    this.connected_bar.append(element('span', 'dot'), this.connected_label, this.disconnect);
+    this.connected_bar.append(element('span', 'dot on'), this.connected_label,
+      button('appstore on GitHub', () => this.open('appstore'), 'button quiet small'), this.disconnect);
     form.append(fields, this.hint, this.connected_bar);
     form.addEventListener('submit', event => { event.preventDefault(); this.signIn(); });
     this.signing = this.signingSection();
@@ -113,7 +144,7 @@ export class DeveloperView {
     for (const [key] of SECTIONS) { this.panes[key] = element('div', 'dev-pane'); this.panes[key].setAttribute('role', 'tabpanel'); }
 
     this.resign = this.resignSection();
-    this.projects = this.block('Projects', 'Each target is a device the project installs on. Install builds and installs it there; Build only keeps a signed IPA to download, install over the air or re-sign.');
+    this.projects = this.block('Projects', 'Each tile is a device the project installs on. Install builds and installs it there; Build only keeps a signed IPA to download, install over the air or re-sign.', true);
     this.registration = this.registrationForm(); this.registration.hidden = true;
     this.artifacts = this.block('Other kept builds', 'Signed builds the Mac kept that no project here installs, such as Xcode products registered by hand.');
     this.artifacts.hidden = true;
@@ -126,12 +157,12 @@ export class DeveloperView {
     this.debug = this.block('Running apps', 'Dev builds with a debug server that are running now. Inspecting one asks for approval on the device.');
     this.panes.reports.append(this.reports, this.debug);
 
-    this.devices = this.block('Devices', 'Devices this Mac can install to. Simulators are not listed.');
-    this.panes.setup.append(this.devices);
+    this.devices = this.block('Devices', 'Devices this Mac can install to. Simulators are not listed.', true);
+    this.about = this.aboutSection();
+    this.panes.setup.append(this.devices, this.about);
 
-    this.detail = element('pre', 'service-detail selectable');
-    this.detail.tabIndex = 0; this.detail.hidden = true;
-    this.content.append(this.nav, ...SECTIONS.map(([key]) => this.panes[key]), this.detail);
+    this.buildViewer();
+    this.content.append(this.nav, ...SECTIONS.map(([key]) => this.panes[key]));
     root.append(this.intro, form, this.note, this.content, this.signing);
     this.select('projects');
     invoke('service_settings').then(settings => { if (settings.url) this.address.value = settings.url; }).catch(() => {});
@@ -153,6 +184,126 @@ export class DeveloperView {
     card.append(steps, links);
     return card;
   }
+  // appstore is a second backend, a separate project, so say so once connected as well as before.
+  aboutSection() {
+    const card = element('section', 'dev-card dev-about');
+    card.append(element('h2', 'small', 'About appstore'));
+    card.append(element('p', '', 'appstore is an open-source build service that runs on your Mac and gives Apparition a second backend for developer work. It builds your Xcode projects with your own certificate, installs them on devices paired with the Mac, keeps every signed build, re-signs apps with another profile, and collects crash logs and debug traces. It is a separate Node.js project (Node 18 and Xcode on the Mac), developed on GitHub.'));
+    const links = element('div', 'service-row');
+    links.append(button('appstore on GitHub', () => this.open('appstore'), 'button quiet small'), button('Developer guide', () => this.open('guide'), 'button quiet small'));
+    card.append(links);
+    return card;
+  }
+
+  // The inline viewer: one box that moves under whichever row asked for it, so a log, report or
+  // manifest appears where the button was instead of at the foot of the page.
+  buildViewer() {
+    this.viewer = element('div', 'dev-viewer'); this.viewer.hidden = true;
+    const head = element('div', 'dev-viewer-head');
+    this.viewerTitle = element('strong');
+    this.viewerCopy = button('Copy', () => this.copyViewer(), 'button quiet small');
+    head.append(this.viewerTitle, this.viewerCopy, button('Close', () => this.closeView(), 'button quiet small'));
+    this.detail = element('pre', 'service-detail selectable');
+    this.detail.tabIndex = 0;
+    this.detail.addEventListener('scroll', () => { this.viewerScroll = this.detail.scrollTop; });
+    this.viewer.append(head, this.detail);
+  }
+  host(rowId, node) { this.hosts.set(rowId, node); return node; }
+  viewKey() { return this.viewing ? `${this.viewing.rowId}|${this.viewing.id}` : ''; }
+  isViewing(rowId, id) { return this.viewing?.rowId === rowId && this.viewing.id === id; }
+  // Move the viewer under its row if the row exists; hide it if not. Re-attaching a node resets its
+  // scroll position, so only move it when its row is a different node.
+  placeViewer() {
+    const host = this.viewing && this.hosts.get(this.viewing.rowId);
+    if (!host) { this.viewer.remove?.(); this.viewer.hidden = true; return; }
+    this.viewer.hidden = false;
+    if (this.viewer.parentNode !== host) {
+      host.append(this.viewer);
+      if (this.viewerScroll) this.detail.scrollTop = this.viewerScroll;
+    }
+  }
+  setViewer(title, text) {
+    const pre = this.detail, view = this.viewing;
+    this.viewerTitle.textContent = title;
+    const atEnd = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 32;
+    const first = view && !view.filled;
+    if (pre.textContent !== text) pre.textContent = text;
+    if (view && text) view.filled = true;
+    if (first || atEnd) pre.scrollTop = view?.live ? pre.scrollHeight : first ? 0 : pre.scrollTop;
+    this.viewerScroll = pre.scrollTop;
+  }
+  copyViewer() {
+    navigator.clipboard?.writeText(this.detail.textContent).then(() => {
+      this.viewerCopy.textContent = 'Copied';
+      setTimeout(() => { this.viewerCopy.textContent = 'Copy'; }, 1500);
+    }).catch(() => {});
+  }
+  // A button that opens (and, pressed again, closes) something inline under its row.
+  viewButton(rowId, id, show, hide, spec) {
+    const control = button(this.isViewing(rowId, id) ? hide : show, () => this.toggleView(rowId, id, spec), 'button quiet small');
+    control.setAttribute('aria-expanded', String(this.isViewing(rowId, id)));
+    return control;
+  }
+  async toggleView(rowId, id, spec) {
+    if (this.isViewing(rowId, id)) { this.closeView(); return; }
+    this.viewing = { rowId, id, ...spec };
+    this.selectedLog = spec.operation === 'buildLog' ? spec.args.id : null;
+    this.viewerScroll = 0;
+    this.setViewer(spec.title, 'Loading…');
+    this.redraw();
+    this.viewer.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    await this.loadViewing();
+  }
+  // Follow a job that was just queued: its log is open in Activity as soon as the person looks.
+  followJob(id) {
+    this.selectedLog = id;
+    this.viewing = { rowId: `job:${id}`, id: 'log', title: `Build #${id}`, operation: 'buildLog', args: { id }, live: true };
+    this.viewerScroll = 0;
+    this.setViewer(this.viewing.title, '');
+    this.redraw();
+  }
+  closeView() {
+    this.viewing = null; this.selectedLog = null;
+    this.redraw();
+  }
+  async loadViewing() {
+    const view = this.viewing, epoch = this.epoch;
+    if (!view) return;
+    try {
+      const reply = await this.request(view.operation, view.args);
+      if (this.viewing !== view || epoch !== this.epoch || !this.connected) return;
+      const text = typeof reply === 'string' ? reply : reply?.chunk ?? reply?.text ?? JSON.stringify(reply, null, 2);
+      if (view.live) view.done = !ACTIVE.includes(reply?.status);
+      this.setViewer(reply?.status && view.live ? `${view.title} · ${reply.status}` : view.title, text);
+    } catch (error) {
+      if (this.viewing === view) this.setViewer(view.title, `Could not load this: ${error?.message || error}`);
+    }
+  }
+  // Repaint every section from the last data, e.g. after the inline viewer moved.
+  redraw() {
+    this.signatures = {}; this.projectSignature = '';
+    this.renderAll();
+    this.placeViewer();
+  }
+  // Skip the repaint when nothing a section shows has changed; open state survives either way.
+  paint(key, signature, build) {
+    if (this.signatures[key] === signature) return false;
+    this.signatures[key] = signature;
+    build();
+    this.placeViewer();
+    return true;
+  }
+  renderAll() {
+    const last = this.last;
+    if (!last) return;
+    this.renderProjects(last.repos);
+    this.renderDevices(this.deviceList || []);
+    this.renderJobs(this.jobsList);
+    this.renderReports(last.traces, last.crashes);
+    this.renderDebug(last.debug);
+    this.renderArtifacts(last.artifacts, this.jobsList);
+  }
+
   open(which) { this.invoke('open_developer_link', { which }).catch(error => this.status(String(error?.message || error), true)); }
 
   select(key) {
@@ -286,7 +437,7 @@ export class DeveloperView {
       // A re-sign without a kept build is two jobs, the build first; follow the re-sign.
       const job = reply?.jobs?.at(-1);
       if (job) {
-        this.selectedLog = job.id;
+        this.followJob(job.id);
         this.status(reply.jobs.length > 1 ? `Queued build #${reply.jobs[0].id}, then re-sign #${job.id}. Follow them in Activity.`
           : `Queued ${dryRun ? 'check' : 're-sign'} #${job.id}. Follow it in Activity.`);
       }
@@ -346,12 +497,12 @@ export class DeveloperView {
     container.append(form); return container;
   }
 
-  block(title, hint) {
+  block(title, hint, grid = false) {
     const node = element('section', 'dev-block');
     const head = element('div', 'dev-block-head');
     head.append(element('h2', 'small', title));
     if (hint) head.append(element('p', 'hint', hint));
-    node.append(head, element('div', 'service-items'));
+    node.append(head, element('div', grid ? 'service-items dev-grid' : 'service-items'));
     return node;
   }
   items(section) { return section.querySelector('.service-items'); }
@@ -374,11 +525,12 @@ export class DeveloperView {
       this.registration.hidden = !this.capabilities.has('project-registration');
       this.epoch += 1;
       this.fields.hidden = this.hint.hidden = this.intro.hidden = true;
-      this.connected_bar.hidden = false; this.connected_label.textContent = `Connected to ${service.url}`;
+      this.connected_bar.hidden = false; this.connected_label.textContent = `Connected to appstore at ${service.url}`;
       this.content.hidden = false;
       // Signing hand-off moves into its section once there is one to put it in.
-      this.panes.setup.append(this.signing);
+      this.panes.setup.append(this.signing, this.about);
       this.projectSignature = '';
+      this.signatures = {};
       this.status('');
       this.show(true);
     } catch (error) { this.status(String(error?.message || error), true); }
@@ -392,25 +544,15 @@ export class DeveloperView {
     this.fields.hidden = this.hint.hidden = this.intro.hidden = false;
     this.connected_bar.hidden = true;
     this.root.append(this.signing);
-    this.detail.replaceChildren(); this.detail.hidden = true; this.resign.hidden = true; this.resignTarget = null;
+    this.viewing = null; this.selectedLog = null; this.last = null; this.signatures = {}; this.hosts.clear();
+    this.viewer.remove?.(); this.viewer.hidden = true;
+    this.resign.hidden = true; this.resignTarget = null;
     try { await this.invoke('service_disconnect'); this.status('Disconnected.'); }
     catch (error) { this.status(`Disconnected locally. ${error?.message || error}`, true); }
   }
   async action(operation, args) {
     try { const result = await this.request(operation, args); await this.refresh(); return result; }
     catch (error) { this.status(String(error?.message || error), true); }
-  }
-  showDetail(title, value) {
-    this.detail.textContent = title + '\n\n' + (typeof value === 'string' ? value : JSON.stringify(value, null, 2));
-    this.detail.hidden = false;
-  }
-  async read(operation, args, title) {
-    const epoch = this.epoch;
-    try {
-      const reply = await this.request(operation, args);
-      if (epoch !== this.epoch || !this.connected) return;
-      this.showDetail(title, reply.text ?? reply);
-    } catch (error) { this.status(String(error?.message || error), true); }
   }
   async refresh() {
     if (!this.connected || !this.visible || this.polling) return;
@@ -427,20 +569,10 @@ export class DeveloperView {
       if (!this.connected || !this.visible || epoch !== this.epoch) return;
       this.artifactList = results[3].status === 'fulfilled' ? results[3].value.builds || [] : [];
       this.reportCounts = this.countReports(results[0], results[1]);
-      this.projectSignature = '';
-      this.renderProjects(state.repos || []);
-      this.renderDevices(this.deviceList);
-      this.renderJobs(this.jobsList);
-      this.renderReports(results[0], results[1]);
-      this.renderDebug(results[2]);
-      this.renderArtifacts(results[3], this.jobsList);
-      const running = this.jobsList.filter(job => ACTIVE.includes(job.status)).length;
-      this.navButtons.activity.textContent = running ? `Activity · ${running} running` : 'Activity';
-      if (this.selectedLog) {
-        const logId = this.selectedLog;
-        const log = await this.request('buildLog', { id: logId });
-        if (this.selectedLog === logId && this.connected && epoch === this.epoch) this.showDetail(`Build #${logId} · ${log.status}`, log.chunk);
-      }
+      this.last = { repos: state.repos || [], traces: results[0], crashes: results[1], debug: results[2], artifacts: results[3] };
+      this.renderAll();
+      // A log being followed keeps loading until its build is over; everything else opened stays as read.
+      if (this.viewing?.live && !this.viewing.done) await this.loadViewing();
     } catch (error) { this.status(String(error?.message || error), true); }
     finally { this.polling = false; }
   }
@@ -453,26 +585,32 @@ export class DeveloperView {
     return counts;
   }
 
-  // One card per project. The card's controls are rebuilt only when the project's shape changes,
-  // so a choice in progress survives the 4-second refresh; the target rows refresh every time.
+  // One tile-card per project, two to a row. A card's controls are rebuilt only when what it
+  // shows changes, and what the person set on it (branch, options, kept builds opened) is
+  // remembered, so a choice in progress survives the 4-second refresh.
   renderProjects(repos) {
     this.repos = repos;
     const signature = JSON.stringify([repos.map(r => [r.name, r.branches, r.platforms, r.deployDefaults, r.git]),
       this.installs, this.artifactList.map(a => a.buildId), this.jobsList.map(j => [j.id, j.status]), this.reportCounts,
-      this.deviceList?.map(d => [d.name, d.state]), [...this.capabilities]]);
+      this.deviceList?.map(d => [d.name, d.state]), [...this.capabilities], this.viewKey(),
+      repos.flatMap(r => (r.platforms || []).map(t => targetState(r, t, this.installs).text))]);
     if (signature === this.projectSignature) return;
     this.projectSignature = signature;
     this.cardState = this.cardState || {};
     const rows = repos.map(repo => this.projectCard(repo));
     this.items(this.projects).replaceChildren(...(rows.length ? rows : [element('p', 'hint',
       this.capabilities.has('project-registration') ? 'No projects yet. Register one below, or add it to appstore\'s config.json.' : 'Add a project to appstore\'s config.json to start building.')]));
+    this.placeViewer();
   }
   projectCard(repo) {
     const remembered = this.cardState[repo.name] = this.cardState[repo.name] || {};
     const card = element('article', 'dev-project');
     const head = element('div', 'dev-project-head');
-    head.append(element('h3', '', repo.name));
-    if (repo.git?.commit) head.append(element('span', 'badge', `${repo.git.branch}@${repo.git.commit}${repo.git.dirty ? ' · uncommitted changes' : ''}`));
+    const title = element('div', 'dev-project-title');
+    title.append(element('h3', '', repo.name));
+    if (repo.git?.commit) title.append(pill(`${repo.git.branch}@${repo.git.commit}`, 'mono', 'The branch and commit checked out on the Mac'));
+    if (repo.git?.dirty) title.append(pill('Uncommitted changes', 'warn', 'The checkout has changes that are not committed; a build includes them.'));
+    head.append(title);
     card.append(head);
 
     // Build options apply to every action on this card.
@@ -505,24 +643,29 @@ export class DeveloperView {
     card.append(targets, options);
 
     const footer = element('div', 'dev-project-foot');
+    const rowId = `project:${repo.name}`;
     const latest = this.jobsList.find(job => job.repo === repo.name);
     if (latest) {
-      footer.append(element('span', `dev-job-status ${latest.status}`, `${jobKind(latest)} #${latest.id} · ${latest.status}`));
-      footer.append(button('Log', () => { this.selectedLog = latest.id; this.read('buildLog', { id: latest.id }, `Build #${latest.id}`); }));
+      footer.append(pill(`${jobKind(latest)} #${latest.id} · ${latest.status}`, statusTone(latest.status)));
+      footer.append(this.viewButton(rowId, `log:${latest.id}`, 'Log', 'Hide log',
+        { title: `Build #${latest.id}`, operation: 'buildLog', args: { id: latest.id }, live: true }));
     }
     const bundleIds = new Set((repo.platforms || []).map(t => t.bundleId).filter(Boolean));
     const reports = [...bundleIds].reduce((sum, id) => {
       const c = this.reportCounts?.[id]; return c ? { crashes: sum.crashes + c.crashes, traces: sum.traces + c.traces } : sum;
     }, { crashes: 0, traces: 0 });
-    if (reports.crashes || reports.traces) footer.append(button(`${plural(reports.crashes, 'crash')} · ${plural(reports.traces, 'trace')}`, () => this.select('reports')));
+    if (reports.crashes || reports.traces) footer.append(button(`${plural(reports.crashes, 'crash')} · ${plural(reports.traces, 'trace')}`, () => this.select('reports'), 'button quiet small'));
     const kept = this.artifactList.filter(a => bundleIds.has(a.app?.bundleId) || bundleIds.has(a.app?.originalBundleId));
     if (kept.length) {
       const list = element('details', 'dev-kept');
+      list.open = !!remembered.keptOpen;
+      list.addEventListener('toggle', () => { remembered.keptOpen = list.open; });
       list.append(element('summary', '', `${plural(kept.length, 'kept build')}`));
-      for (const build of kept.slice(0, 12)) list.append(this.artifactRow(build));
+      for (const build of kept.slice(0, 12)) list.append(this.artifactRow(build, repo.name));
       footer.append(list);
     }
     if (footer.children.length) card.append(footer);
+    this.host(rowId, card);
     return card;
   }
   // A target: where it installs, what is there now, and the three things to do about it.
@@ -533,7 +676,11 @@ export class DeveloperView {
     const reachable = device?.state === 'connected';
     where.append(element('span', `dot ${reachable ? 'on' : ''}`));
     where.append(element('strong', '', `${target.device}`));
-    where.append(element('span', 'hint', ` · ${target.platform}${device ? (reachable ? '' : ' · not reachable now') : ' · not paired with this Mac'}`));
+    where.append(pill(target.platform || '', 'mono'));
+    where.append(device ? pill(reachable ? 'Reachable' : 'Not reachable now', reachable ? 'good' : '')
+      : pill('Not paired with this Mac', 'warn', 'Pair it in Xcode (Window > Devices and Simulators) to install from this Mac.'));
+    const badge = targetBadge(repo, target, this.installs);
+    where.append(pill(badge.text, badge.tone));
     const { install, text } = targetState(repo, target, this.installs);
     const state = element('p', 'hint dev-target-state', text);
     const actions = element('div', 'service-row');
@@ -543,11 +690,11 @@ export class DeveloperView {
         const reply = await this.action('build', { repo: repo.name, device: target.device, targetPlatform: target.platform, branch: branch.value,
           ...Object.fromEntries(Object.entries(flags).map(([key, input]) => [key, deploy ? input.checked : (key === 'run' ? false : input.checked)])),
           ...(deploy ? {} : { deploy: false }) });
-        if (reply?.jobs?.[0]) { this.selectedLog = reply.jobs[0].id; this.status(`Queued ${deploy ? 'build' : 'build-only'} #${this.selectedLog}. Follow it in Activity.`); }
+        if (reply?.jobs?.[0]) { this.followJob(reply.jobs[0].id); this.status(`Queued ${deploy ? 'build' : 'build-only'} #${this.selectedLog}. Follow it in Activity.`); }
       } finally { control.disabled = false; }
     };
-    const installButton = button(`Install on ${target.device}`, () => submit(true, installButton), 'button primary');
-    const buildOnly = button('Build only', () => submit(false, buildOnly));
+    const installButton = button(`Install on ${target.device}`, () => submit(true, installButton), 'button primary small');
+    const buildOnly = button('Build only', () => submit(false, buildOnly), 'button quiet small');
     buildOnly.title = 'Builds and signs without installing; the kept IPA can be downloaded, installed over the air or re-signed.';
     actions.append(installButton, buildOnly);
     if (this.capabilities.has('resign') && !/^macos$/i.test(target.platform)) {
@@ -557,40 +704,57 @@ export class DeveloperView {
         ? { buildId: keptInstalled.buildId, label: keptInstalled.app?.build || keptInstalled.buildId }
         : this.capabilities.has('resign-build') ? { repo: repo.name } : null;
       if (source) actions.append(button('Re-sign…', () => this.openResign({ ...source, repo: repo.name, device: target.device,
-        bundleId: target.bundleId, platform: target.platform, name: repo.name })));
+        bundleId: target.bundleId, platform: target.platform, name: repo.name }), 'button quiet small'));
     }
     row.append(where, state, actions);
     return row;
   }
 
   renderDevices(list) {
-    const rows = list.map(device => {
-      const row = element('div', 'service-row');
-      row.append(element('span', `dot ${device.state === 'connected' ? 'on' : ''}`));
-      row.append(element('span', '', `${device.name} · ${device.model || device.platform || ''} · ${device.state === 'connected' ? 'reachable' : device.state || 'unknown'}`));
-      return row;
+    this.paint('devices', JSON.stringify(list.map(d => [d.name, d.model, d.platform, d.state])), () => {
+      const cards = list.map(device => {
+        const on = device.state === 'connected';
+        const card = element('div', 'dev-device');
+        const head = element('div', 'dev-device-head');
+        const state = on ? 'Reachable' : String(device.state || 'unknown').replace(/^./, c => c.toUpperCase());
+        head.append(element('span', `dot ${on ? 'on' : ''}`), element('strong', '', device.name), pill(state, on ? 'good' : ''));
+        card.append(head, element('span', 'hint', [device.model, device.platform].filter(Boolean).join(' · ')));
+        return card;
+      });
+      this.items(this.devices).replaceChildren(...(cards.length ? cards : [element('p', 'hint', 'No devices yet. Pair one with this Mac in Xcode (Window > Devices and Simulators).')]));
     });
-    this.items(this.devices).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No devices yet. Pair one with this Mac in Xcode (Window > Devices and Simulators).')]));
   }
   renderJobs(jobs) {
     const active = jobs.filter(job => ACTIVE.includes(job.status));
     const finished = jobs.filter(job => !ACTIVE.includes(job.status));
     const shown = this.showAllJobs ? finished : finished.slice(0, 8);
-    const rows = [...active, ...shown].map(job => this.jobRow(job));
-    if (finished.length > shown.length) rows.push(button(`Show ${finished.length - shown.length} older`, () => { this.showAllJobs = true; this.renderJobs(this.jobsList); }));
-    this.items(this.jobs).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No builds yet. Start one from a project.')]));
+    if (this.navButtons) this.navButtons.activity.textContent = active.length ? `Activity · ${active.length} running` : 'Activity';
+    this.paint('jobs', JSON.stringify([jobs, this.showAllJobs, this.viewKey(), Math.floor(Date.now() / 60000)]), () => {
+      const rows = [...active, ...shown].map(job => this.jobRow(job));
+      if (finished.length > shown.length) rows.push(button(`Show ${finished.length - shown.length} older`, () => { this.showAllJobs = true; this.renderJobs(this.jobsList); }));
+      this.items(this.jobs).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No builds yet. Start one from a project.')]));
+    });
   }
+  // A job: its state, what it built, and its log, opening right under it.
   jobRow(job) {
-    const row = element('div', 'service-row dev-job');
-    row.append(element('span', `dev-job-status ${job.status}`, job.status));
-    const what = `${jobKind(job)} #${job.id} · ${job.repo} · ${job.platform}${job.device ? ` · ${job.device}` : ''}${job.commit ? ` · ${job.builtBranch || ''}@${job.commit}` : ''}`;
-    row.append(element('span', '', job.error ? `${what} — ${job.error}` : what));
-    row.append(button('Log', async () => { this.selectedLog = job.id; await this.read('buildLog', { id: job.id }, `Build #${job.id}`); }));
+    const rowId = `job:${job.id}`;
+    const row = element('div', 'dev-job');
+    const main = element('div', 'dev-job-main');
+    const body = element('div', 'dev-job-body');
+    body.append(element('strong', '', `${jobKind(job)} #${job.id}`));
+    body.append(element('span', 'hint', `${job.repo} · ${job.platform}${job.device ? ` · ${job.device}` : ''}${job.commit ? ` · ${job.builtBranch || ''}@${job.commit}` : ''}`));
+    if (job.error) body.append(element('span', 'dev-job-error', job.error));
+    const actions = element('div', 'dev-job-actions');
+    actions.append(this.viewButton(rowId, 'log', 'Log', 'Hide log', { title: `Build #${job.id}`, operation: 'buildLog', args: { id: job.id }, live: true }));
     if (job.buildId && job.artifact) {
-      row.append(button('Build details', () => { this.selectedLog = null; this.read('artifactManifest', { id: job.buildId }, `Build ${job.buildId}`); }));
-      row.append(this.downloadButton(job.buildId));
+      actions.append(this.viewButton(rowId, 'manifest', 'Build details', 'Hide details',
+        { title: `Build ${job.buildId}`, operation: 'artifactManifest', args: { id: job.buildId } }));
+      actions.append(this.downloadButton(job.buildId));
     }
-    if (ACTIVE.includes(job.status)) row.append(button('Cancel', () => this.action('cancel', { id: job.id })));
+    if (ACTIVE.includes(job.status)) actions.append(button('Cancel', () => this.action('cancel', { id: job.id }), 'button quiet small'));
+    main.append(pill(job.status, `jobstate ${statusTone(job.status)}`), body, actions);
+    row.append(main);
+    this.host(rowId, row);
     return row;
   }
   downloadButton(id) {
@@ -601,88 +765,138 @@ export class DeveloperView {
         if (!result.cancelled) this.status(`Saved verified artifact to ${result.path}`);
       } catch (error) { this.status(String(error?.message || error), true); }
       finally { download.disabled = false; download.textContent = 'Download'; }
-    });
+    }, 'button quiet small');
     return download;
   }
-  artifactRow(build) {
-    const row = element('div', 'service-row');
-    row.append(element('span', '', `${build.app?.name || build.app?.bundleId || 'App'} · ${build.platform || ''} · ${build.app?.build || build.buildId}${build.createdAt ? ` · ${ago(Date.parse(build.createdAt))}` : ''}`));
-    row.append(button('Build details', () => { this.selectedLog = null; this.read('artifactManifest', { id: build.buildId }, `Build ${build.buildId}`); }));
-    row.append(this.downloadButton(build.buildId));
+  // A kept build; `where` keeps its inline viewer apart when it is listed in two places.
+  artifactRow(build, where = 'kept') {
+    const rowId = `artifact:${where}:${build.buildId}`;
+    const row = element('div', 'dev-item');
+    const main = element('div', 'dev-item-main');
+    main.append(element('span', 'dev-item-text', `${build.app?.name || build.app?.bundleId || 'App'} · ${build.platform || ''} · ${build.app?.build || build.buildId}${build.createdAt ? ` · ${ago(Date.parse(build.createdAt))}` : ''}`));
+    const actions = element('div', 'dev-job-actions');
+    actions.append(this.viewButton(rowId, 'manifest', 'Build details', 'Hide details',
+      { title: `Build ${build.buildId}`, operation: 'artifactManifest', args: { id: build.buildId } }));
+    actions.append(this.downloadButton(build.buildId));
     const resign = this.resignButton({ buildId: build.buildId, bundleId: build.app?.bundleId, platform: build.platform, name: build.app?.name, label: build.app?.build });
-    if (resign) row.append(resign);
+    if (resign) { resign.className = 'button quiet small'; actions.append(resign); }
+    main.append(actions);
+    row.append(main);
+    this.host(rowId, row);
     return row;
   }
   // Kept builds no project claims; a project's own are listed on its card.
   renderArtifacts(result, jobs) {
-    const rows = [];
-    if (result.status === 'fulfilled') {
-      const claimed = new Set((this.repos || []).flatMap(repo => (repo.platforms || []).map(t => t.bundleId)).filter(Boolean));
-      const inJobs = new Set(jobs.map(job => job.buildId).filter(Boolean));
-      for (const build of result.value.builds || []) {
-        if (inJobs.has(build.buildId) || claimed.has(build.app?.bundleId) || claimed.has(build.app?.originalBundleId)) continue;
-        rows.push(this.artifactRow(build));
-      }
-    } else rows.push(element('p', 'error', 'Kept builds could not be loaded.'));
-    this.artifacts.hidden = !rows.length || !this.capabilities.has('artifact-manifests');
-    this.items(this.artifacts).replaceChildren(...rows);
+    const builds = result.status === 'fulfilled' ? result.value.builds || [] : [];
+    this.paint('artifacts', JSON.stringify([result.status, builds.map(b => b.buildId), jobs.map(j => j.buildId), this.repos?.map(r => r.platforms),
+      this.viewKey(), [...this.capabilities], Math.floor(Date.now() / 60000)]), () => {
+      const rows = [];
+      if (result.status === 'fulfilled') {
+        const claimed = new Set((this.repos || []).flatMap(repo => (repo.platforms || []).map(t => t.bundleId)).filter(Boolean));
+        const inJobs = new Set(jobs.map(job => job.buildId).filter(Boolean));
+        for (const build of builds) {
+          if (inJobs.has(build.buildId) || claimed.has(build.app?.bundleId) || claimed.has(build.app?.originalBundleId)) continue;
+          rows.push(this.artifactRow(build, 'other'));
+        }
+      } else rows.push(element('p', 'error', 'Kept builds could not be loaded.'));
+      this.artifacts.hidden = !rows.length || !this.capabilities.has('artifact-manifests');
+      this.items(this.artifacts).replaceChildren(...rows);
+    });
   }
   renderReports(traces, crashes) {
     const groups = new Map();
     const group = (bundleId, name) => {
       const key = bundleId || name || 'Unknown app';
-      if (!groups.has(key)) groups.set(key, { name: name || bundleId || 'Unknown app', bundleId, rows: [], crashes: 0, traces: 0 });
+      if (!groups.has(key)) groups.set(key, { key, name: name || bundleId || 'Unknown app', bundleId, rows: [], crashes: 0, traces: 0 });
       return groups.get(key);
     };
     const errors = [];
-    if (crashes.status === 'fulfilled') {
-      for (const crash of crashes.value.crashLogs || []) {
-        const g = group(crash.bundleId, crash.appName); g.crashes += 1;
-        const row = element('div', 'service-row');
-        row.append(element('span', '', `Crash · ${crash.exception || 'report'} · ${crash.device || ''}${crash.build ? ` · build ${crash.build}` : ''}${crash.capturedAt ? ` · ${ago(crash.capturedAt)}` : ''}`));
-        row.append(button(crash.symbolicated ? 'Read symbolicated' : 'Read crash', () => { this.selectedLog = null; this.read('crashFile', { id: crash.id, raw: !crash.symbolicated }, 'Crash report'); }));
-        g.rows.push(row);
-      }
-    } else errors.push(element('p', 'error', 'Crash reports could not be loaded.'));
-    if (traces.status === 'fulfilled') {
-      for (const trace of traces.value.traces || []) {
-        const g = group(trace.app?.bundleId, trace.app?.name); g.traces += 1;
-        const row = element('div', 'service-row');
-        row.append(element('span', '', `Trace · ${trace.note || 'debug trace'}${trace.app?.build ? ` · build ${trace.app.build}` : ''}`));
-        if (trace.build?.buildId) row.append(button('Build details', () => {
-          this.selectedLog = null; this.read('artifactManifest', { id: trace.build.buildId }, `Build ${trace.build.buildId}`);
-        }));
-        for (const file of trace.files || []) row.append(button(file.path, () => {
-          this.selectedLog = null; this.read('traceFile', { id: trace.id, path: file.path }, file.path);
-        }));
-        g.rows.push(row);
-      }
-    } else errors.push(element('p', 'error', 'Debug traces could not be loaded.'));
-    const rows = [...groups.values()].map(g => {
-      const details = element('details', 'service-project');
-      details.append(element('summary', '', `${g.name} · ${plural(g.crashes, 'crash')} · ${plural(g.traces, 'trace')}`), ...g.rows);
-      return details;
-    });
-    this.items(this.reports).replaceChildren(...errors, ...(rows.length ? rows : [element('p', 'hint', 'No reports yet.')]));
-    const total = [...groups.values()].reduce((sum, g) => sum + g.crashes + g.traces, 0);
+    const sources = [traces, crashes].map(r => r.status === 'fulfilled' ? r.value : null);
+    const signature = JSON.stringify([sources, traces.status, crashes.status, this.viewKey(), [...this.expandedGroups], Math.floor(Date.now() / 60000)]);
+    // The tab's count is part of the page chrome, so it follows the data even when the list is unchanged.
+    const total = (sources[0]?.traces?.length || 0) + (sources[1]?.crashLogs?.length || 0);
     if (this.navButtons) this.navButtons.reports.textContent = total ? `Reports · ${total}` : 'Reports';
+    this.paint('reports', signature, () => {
+      if (crashes.status === 'fulfilled') {
+        const sorted = [...(crashes.value.crashLogs || [])].sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0));
+        for (const crash of sorted) {
+          const g = group(crash.bundleId, crash.appName); g.crashes += 1;
+          const rowId = `crash:${crash.id}`;
+          const row = element('div', 'dev-report');
+          const main = element('div', 'dev-item-main');
+          const body = element('div', 'dev-job-body');
+          body.append(element('strong', '', crash.exception || 'Crash report'));
+          body.append(element('span', 'hint', [crash.device, crash.build ? `build ${crash.build}` : '', crash.capturedAt ? ago(crash.capturedAt) : ''].filter(Boolean).join(' · ')));
+          const actions = element('div', 'dev-job-actions');
+          actions.append(this.viewButton(rowId, 'crash', crash.symbolicated ? 'Read symbolicated' : 'Read crash', 'Hide report',
+            { title: `${crash.exception || 'Crash report'} · ${crash.device || ''}`.trim(), operation: 'crashFile', args: { id: crash.id, raw: !crash.symbolicated } }));
+          main.append(pill('Crash', 'bad'), body, actions);
+          row.append(main); this.host(rowId, row);
+          g.rows.push(row);
+        }
+      } else errors.push(element('p', 'error', 'Crash reports could not be loaded.'));
+      if (traces.status === 'fulfilled') {
+        for (const trace of traces.value.traces || []) {
+          const g = group(trace.app?.bundleId, trace.app?.name); g.traces += 1;
+          const rowId = `trace:${trace.id}`;
+          const row = element('div', 'dev-report');
+          const main = element('div', 'dev-item-main');
+          const body = element('div', 'dev-job-body');
+          body.append(element('strong', '', trace.note || 'Debug trace'));
+          if (trace.app?.build) body.append(element('span', 'hint', `build ${trace.app.build}`));
+          const actions = element('div', 'dev-job-actions');
+          if (trace.build?.buildId) actions.append(this.viewButton(rowId, 'manifest', 'Build details', 'Hide details',
+            { title: `Build ${trace.build.buildId}`, operation: 'artifactManifest', args: { id: trace.build.buildId } }));
+          for (const file of trace.files || []) actions.append(this.viewButton(rowId, `file:${file.path}`, file.path, `Hide ${file.path}`,
+            { title: file.path, operation: 'traceFile', args: { id: trace.id, path: file.path } }));
+          main.append(pill('Trace', 'info'), body, actions);
+          row.append(main); this.host(rowId, row);
+          g.rows.push(row);
+        }
+      } else errors.push(element('p', 'error', 'Debug traces could not be loaded.'));
+      const LIMIT = 8;
+      const rows = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name)).map(g => {
+        const details = element('details', 'dev-group');
+        details.open = this.openGroups.has(g.key);
+        details.addEventListener('toggle', () => { if (details.open) this.openGroups.add(g.key); else this.openGroups.delete(g.key); });
+        const summary = element('summary');
+        summary.append(element('span', 'dev-group-name', g.name));
+        if (g.crashes) summary.append(pill(plural(g.crashes, 'crash'), 'bad'));
+        if (g.traces) summary.append(pill(plural(g.traces, 'trace'), 'info'));
+        const body = element('div', 'dev-group-body');
+        const expanded = this.expandedGroups.has(g.key);
+        body.append(...(expanded ? g.rows : g.rows.slice(0, LIMIT)));
+        if (g.rows.length > LIMIT && !expanded) {
+          body.append(button(`Show ${g.rows.length - LIMIT} more`, () => { this.expandedGroups.add(g.key); this.openGroups.add(g.key); this.redraw(); }, 'button quiet small'));
+        }
+        details.append(summary, body);
+        return details;
+      });
+      this.items(this.reports).replaceChildren(...errors, ...(rows.length ? rows : [element('p', 'hint', 'No reports yet.')]));
+    });
   }
   renderDebug(result) {
-    const rows = [];
-    if (result.status === 'fulfilled') {
-      for (const app of result.value.apps || []) {
-        const row = element('div', 'service-row');
-        row.append(element('span', '', `${app.appName || app.bundleId} · ${app.device || ''}`));
-        const inspect = button('Inspect', async () => {
-          this.selectedLog = null;
-          await this.read('debugCall', { id: app.id, endpoint: '_info', arguments: {} }, app.appName || app.bundleId);
-        });
-        inspect.disabled = !app.attachable;
-        row.append(inspect);
-        rows.push(row);
-      }
-      if (result.value.error) rows.push(element('p', 'hint', String(result.value.error)));
-    } else rows.push(element('p', 'error', 'Running apps could not be loaded.'));
-    this.items(this.debug).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No debug apps running.')]));
+    const apps = result.status === 'fulfilled' ? result.value : null;
+    this.paint('debug', JSON.stringify([result.status, apps, this.viewKey()]), () => {
+      const rows = [];
+      if (result.status === 'fulfilled') {
+        for (const app of result.value.apps || []) {
+          const rowId = `debug:${app.id || app.bundleId || app.appName}`;
+          const row = element('div', 'dev-item');
+          const main = element('div', 'dev-item-main');
+          main.append(element('span', 'dot on'), element('span', 'dev-item-text', `${app.appName || app.bundleId} · ${app.device || ''}`));
+          const actions = element('div', 'dev-job-actions');
+          const inspect = this.viewButton(rowId, 'info', 'Inspect', 'Hide',
+            { title: app.appName || app.bundleId, operation: 'debugCall', args: { id: app.id, endpoint: '_info', arguments: {} } });
+          inspect.disabled = !app.attachable;
+          actions.append(inspect);
+          main.append(actions);
+          row.append(main); this.host(rowId, row);
+          rows.push(row);
+        }
+        if (result.value.error) rows.push(element('p', 'hint', String(result.value.error)));
+      } else rows.push(element('p', 'error', 'Running apps could not be loaded.'));
+      this.items(this.debug).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No debug apps running.')]));
+    });
   }
 }

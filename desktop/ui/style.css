@@ -19,6 +19,7 @@
   --lilac: #5B47C9;
   --button-ink: #FFFFFF;
   --danger: #B3263E;
+  --warn: #9A5B00;
   --aura-a: rgba(127, 233, 200, .45);
   --aura-b: rgba(138, 116, 242, .30);
   --floor: rgba(31, 26, 61, .14);
@@ -46,6 +47,7 @@
     --lilac: #B9A6FF;
     --button-ink: #13102A;
     --danger: #FF8A9B;
+    --warn: #FFC36B;
     --aura-a: rgba(127, 233, 200, .20);
     --aura-b: rgba(138, 116, 242, .30);
     --floor: rgba(0, 0, 0, .45);
@@ -95,7 +97,6 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 .dev-connect .hint { margin: 0; }
 .dev-connected { display: flex; align-items: center; gap: .7rem; }
 .dev-connected-label { flex: 1; overflow-wrap: anywhere; }
-.dev-connected .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--glow-soft); flex: none; }
 @media (max-width: 40rem) {
   .dev-connect-fields, .dev-signing-row { grid-template-columns: 1fr; }
 }
@@ -114,43 +115,78 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 .dev-block-head h2, .dev-block-head .hint { margin: 0; }
 .dev-intro p { margin: 0; max-width: 46rem; line-height: 1.5; }
 .dev-steps { margin: 0; padding-left: 1.3rem; display: flex; flex-direction: column; gap: .35rem; max-width: 46rem; }
-/* Projects: a grid of cards, each a list of targets. */
-.dev-block > .service-items:has(> .dev-project) { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(30rem, 100%), 1fr)); gap: 1rem; }
-.dev-project { display: flex; flex-direction: column; gap: .8rem; padding: 1rem 1.15rem; border: 1px solid var(--line);
-  border-radius: var(--radius-l); background: color-mix(in srgb, var(--surface) 55%, transparent); }
-.dev-project-head { display: flex; align-items: baseline; gap: .7rem; flex-wrap: wrap; }
-.dev-project-head h3 { margin: 0; font-size: 1.1rem; }
-.dev-targets { display: flex; flex-direction: column; }
-.dev-target { display: flex; flex-direction: column; gap: .15rem; padding-block: .65rem; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
-.dev-target:first-child { border-top: 0; padding-top: 0; }
-.dev-target-where { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
-.dev-target-where .hint, .dev-target-state { margin: 0; }
-.dev-target .service-row { margin-block: .35rem 0; }
+/* Pills: small capsules carrying one state, the desktop twin of the iOS StatusPill. */
+.pill { display: inline-flex; align-items: center; font: 600 .75rem/1 var(--text); padding: .3rem .65rem; border-radius: 999px;
+  color: var(--muted); background: color-mix(in srgb, var(--muted) 15%, transparent); white-space: nowrap; flex: none; }
+.pill.good { color: var(--glow); background: color-mix(in srgb, var(--glow) 16%, transparent); }
+.pill.info { color: var(--lilac); background: color-mix(in srgb, var(--lilac) 16%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 17%, transparent); }
+.pill.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 15%, transparent); }
+.pill.mono { font-family: var(--mono); font-weight: 500; }
+.pill.jobstate { text-transform: capitalize; }
+/* A grid of tiles: two to a row, one on a narrow window. */
+.dev-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
+.dev-grid > .hint { grid-column: 1 / -1; }
+@media (max-width: 54rem) { .dev-grid { grid-template-columns: minmax(0, 1fr); } }
+.dev-project { display: flex; flex-direction: column; gap: .9rem; padding: 1.15rem 1.2rem; border: 1px solid var(--line);
+  border-radius: var(--radius-l); background: color-mix(in srgb, var(--surface) 55%, transparent); min-width: 0; }
+.dev-project-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; }
+.dev-project-title { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; min-width: 0; }
+.dev-project-title h3 { margin: 0 .2rem 0 0; font: 600 1.35rem/1.2 var(--display); overflow-wrap: anywhere; }
+.dev-targets { display: flex; flex-direction: column; gap: .6rem; }
+.dev-target { display: flex; flex-direction: column; gap: .5rem; padding: .85rem .95rem; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
+  border-radius: var(--radius-s); background: color-mix(in srgb, var(--bg-deep) 38%, transparent); }
+.dev-target-where { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
+.dev-target-where strong { margin-right: .15rem; }
+.dev-target-state { margin: 0; line-height: 1.4; }
+.dev-target .service-row { margin: .1rem 0 0; gap: .5rem; }
 .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--line); flex: none; display: inline-block; }
 .dot.on { background: var(--glow-soft); box-shadow: 0 0 5px var(--glow-soft); }
-.dev-options summary, .dev-kept summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+.dev-options summary, .dev-kept summary { color: var(--muted); font-size: .9rem; font-weight: 500; }
 .dev-options .service-row { margin-top: .6rem; }
 .dev-inline { display: inline-flex !important; align-items: center; gap: .45rem; font-size: .875rem; color: var(--muted); }
-.dev-project-foot { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: .7rem; }
-.dev-project-foot .button { padding: .3rem .65rem; }
+.dev-project-foot { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: .8rem; }
 .dev-kept { flex-basis: 100%; }
-/* Job status as a word with a colour, the same on cards and in Activity. */
-.dev-job-status { font-size: .8rem; font-weight: 600; color: var(--muted); flex: none !important; }
-.dev-job-status.running, .dev-job-status.queued { color: var(--lilac); }
-.dev-job-status.success { color: var(--glow); }
-.dev-job-status.failed { color: var(--danger); }
-.dev-job > .dev-job-status { min-width: 5.5rem; text-transform: capitalize; }
+.dev-kept .dev-item { border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+/* Devices */
+.dev-device { display: flex; flex-direction: column; gap: .3rem; padding: .85rem 1.1rem; border: 1px solid var(--line);
+  border-radius: var(--radius-s); background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.dev-device-head { display: flex; align-items: center; gap: .55rem; }
+.dev-device-head strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dev-device .hint { margin: 0; }
+/* Activity, Reports and running apps: rows that can open a log or report right under themselves. */
+.dev-job, .dev-report, .dev-item { padding-block: .75rem; border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent); }
+#developer-panel .service-items > .dev-job, #developer-panel .service-items > .dev-item { padding-inline: 1.1rem; border: 1px solid var(--line);
+  border-radius: var(--radius-s); background: color-mix(in srgb, var(--surface) 55%, transparent); margin-bottom: .6rem; }
+.dev-job-main, .dev-item-main { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.dev-job-body { display: flex; flex-direction: column; gap: .15rem; flex: 1 1 14rem; min-width: 0; }
+.dev-job-body .hint, .dev-item-text { overflow-wrap: anywhere; max-width: none; }
+.dev-item-text { flex: 1 1 14rem; min-width: 0; }
+.dev-job-error { color: var(--danger); font-size: .875rem; overflow-wrap: anywhere; }
+.dev-job-actions { display: flex; gap: .45rem; flex-wrap: wrap; margin-left: auto; }
+.dev-group { border: 1px solid var(--line); border-radius: var(--radius-l); background: color-mix(in srgb, var(--surface) 55%, transparent); margin-bottom: .7rem; }
+.dev-group > summary { display: flex; width: 100%; gap: .6rem; padding: .95rem 1.2rem; flex-wrap: wrap; }
+.dev-group-name { margin-right: auto; font-size: 1.02rem; }
+.dev-group-body { padding: 0 1.2rem .9rem; display: flex; flex-direction: column; align-items: flex-start; }
+.dev-group-body > .dev-report { align-self: stretch; }
+.dev-group-body > .button { margin-top: .6rem; }
+/* The inline viewer. */
+.dev-viewer { flex-basis: 100%; margin-top: .75rem; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); overflow: hidden; }
+.dev-viewer-head { display: flex; align-items: center; gap: .45rem; padding: .45rem .55rem .45rem .95rem; border-bottom: 1px solid var(--line); }
+.dev-viewer-head strong { flex: 1; min-width: 0; font-size: .875rem; overflow-wrap: anywhere; }
+.dev-job > .dev-viewer, .dev-report > .dev-viewer, .dev-item > .dev-viewer, .dev-project > .dev-viewer { margin-top: .75rem; }
 .service-items { display: flex; flex-direction: column; }
+.service-items.dev-grid { display: grid; }
 .service-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-block: .4rem; }
-.service-row > span { flex: 1 1 14rem; overflow-wrap: anywhere; }
+.service-row > span:not(.dot):not(.pill) { flex: 1 1 14rem; overflow-wrap: anywhere; }
 .service-row .button { padding: .35rem .7rem; }
 .service-project { border-top: 1px solid var(--line); padding-block: .8rem; display: flex; flex-direction: column; gap: .6rem; }
 .service-project h3 { margin: 0; }
 .service-project .check { font-size: .875rem; display: inline-flex; margin-top: 0; }
 .service-project summary { cursor: pointer; overflow-wrap: anywhere; }
-.service-detail { max-height: 28rem; overflow: auto; user-select: text; white-space: pre-wrap;
-  overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: var(--radius-s);
-  padding: 1rem; background: var(--surface); font: .8rem/1.55 var(--mono); }
+.service-detail { max-height: 22rem; overflow: auto; user-select: text; white-space: pre-wrap; margin: 0;
+  overflow-wrap: anywhere; padding: .9rem 1rem; font: .8rem/1.55 var(--mono); }
+.dev-about p { margin: 0; max-width: 46rem; line-height: 1.5; }
 
 :focus-visible {
   outline: 3px solid var(--lilac);

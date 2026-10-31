@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DeveloperView, jobKind, targetState } from '../ui/developer.js';
+import { DeveloperView, jobKind, targetState, targetBadge } from '../ui/developer.js';
 
 // A DOM event fixture for the controller's credential and deployment boundaries.
 // Rendering and platform appearance are deliberately outside these unit tests.
@@ -264,4 +264,75 @@ test('sections switch one pane at a time, and activity lists running builds firs
   assert.match(rows[0].textContent, /running.*#30/);
   assert.equal(rows.length, 10, 'one running, eight finished, and a button for the rest');
   assert.equal(rows.at(-1).textContent, 'Show 2 older');
+});
+
+const jobsOf = view => view.items(view.jobs).children;
+test('an unchanged section is not repainted, so what the person opened stays open', () => {
+  const view = new DeveloperView(new Node('main'), async () => ({}));
+  const traces = { status: 'fulfilled', value: { traces: [{ id: 't1', app: { bundleId: 'a.b', name: 'App' }, files: [] }] } };
+  const crashes = { status: 'fulfilled', value: { crashLogs: [{ id: 'c1', bundleId: 'a.b', appName: 'App', exception: 'EXC_BAD_ACCESS' }] } };
+  view.renderReports(traces, crashes);
+  const group = view.items(view.reports).children[0];
+  group.open = true; group.listeners.toggle();
+  view.renderReports(traces, crashes);
+  assert.equal(view.items(view.reports).children[0], group, 'the same data leaves the DOM alone');
+  view.signatures = {};
+  view.renderReports(traces, crashes);
+  assert.equal(view.items(view.reports).children[0].open, true, 'even a forced repaint restores the open group');
+  assert.equal(view.navButtons.reports.textContent, 'Reports · 2');
+});
+
+test('a log opens inside the row that asked for it, and Hide closes it', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command === 'service_request') { calls.push(args.operation); return { status: 'running', chunk: 'line one' }; }
+    return {};
+  });
+  view.connected = true;
+  view.jobsList = [{ id: 5, repo: 'R', platform: 'iOS', status: 'running' }, { id: 4, repo: 'R', platform: 'iOS', status: 'success' }];
+  const failed = { status: 'rejected', reason: 'offline' };
+  view.last = { repos: [], traces: failed, crashes: failed, debug: failed, artifacts: failed };
+  view.renderJobs(view.jobsList);
+  const logButton = row => row.all().find(n => n.tagName === 'button' && /^(Log|Hide log)$/.test(n.textContent));
+  await logButton(jobsOf(view)[1]).listeners.click();
+  assert.deepEqual(calls, ['buildLog']);
+  assert.ok(jobsOf(view)[1].all().includes(view.viewer), 'the viewer sits under job #4, not at the foot of the page');
+  assert.ok(!jobsOf(view)[0].all().includes(view.viewer));
+  assert.equal(view.detail.textContent, 'line one');
+  assert.equal(view.viewerTitle.textContent, 'Build #4 · running');
+  assert.equal(logButton(jobsOf(view)[1]).textContent, 'Hide log');
+  view.closeView();
+  assert.equal(view.viewer.hidden, true);
+});
+
+test('queueing a build follows its log in Activity without asking the service twice', () => {
+  const view = new DeveloperView(new Node('main'), async () => ({}));
+  view.followJob(9);
+  assert.equal(view.selectedLog, 9);
+  assert.equal(view.viewKey(), 'job:9|log');
+});
+
+test('appstore is introduced once connected, with its GitHub link', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    calls.push([command, args]);
+    if (command === 'service_connect') return { url: 'http://localhost:8484/', capabilities: [] };
+    return command === 'service_request' ? { repos: [], builds: [] } : {};
+  });
+  view.password.value = 'pw';
+  await view.signIn(); view.show(false);
+  assert.match(view.about.textContent, /About appstore/);
+  assert.ok(view.panes.setup.children.includes(view.about));
+  await view.about.all().find(n => n.tagName === 'button' && n.textContent === 'appstore on GitHub').listeners.click();
+  assert.deepEqual(calls.at(-1), ['open_developer_link', { which: 'appstore' }]);
+  assert.match(view.connected_label.textContent, /appstore at http:\/\/localhost:8484\//);
+});
+
+test('a target badge says at a glance whether the device is current', () => {
+  const repo = { git: { branch: 'main', commit: 'def5678' } };
+  const target = { device: 'AVP', bundleId: 'x' };
+  assert.deepEqual(targetBadge(repo, target, {}), { tone: '', text: 'Not installed' });
+  assert.equal(targetBadge(repo, target, { AVP: { x: { commit: 'def5678', branch: 'main' } } }).text, 'Up to date');
+  assert.equal(targetBadge(repo, target, { AVP: { x: { commit: 'old', branch: 'main' } } }).text, 'Behind checkout');
+  assert.equal(targetBadge(repo, target, { AVP: { x: { buildId: 'b' } } }).text, 'Installed');
 });
