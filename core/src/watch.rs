@@ -115,6 +115,41 @@ pub unsafe extern "C" fn apparition_install_watch_app(
     })())
 }
 
+/// Removes `bundle_id` from the Watch `watch_udid` through the iPhone at the other end of the
+/// tunnel (see `apparition_install_watch_app` for the other arguments). Returns `{}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_uninstall_watch_app(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    watch_udid: *const std::ffi::c_char,
+    record_dir: *const std::ffi::c_char,
+    bundle_id: *const std::ffi::c_char,
+    waiting: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+    context: *mut std::ffi::c_void,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let udid = unsafe { crate::text(watch_udid) }?;
+        let dir = std::path::PathBuf::from(unsafe { crate::text(record_dir) }?);
+        let bundle_id = unsafe { crate::text(bundle_id) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let context = context as usize;
+        let on_waiting = move |_: &str| {
+            if let Some(waiting) = waiting {
+                unsafe { waiting(context as *mut std::ffi::c_void) }
+            }
+        };
+        crate::runtime().block_on(crate::stop::stoppable(async {
+            let mut companion = Companion::connect(adapter, handshake, &udid, &dir, &on_waiting).await?;
+            companion.uninstall(&bundle_id).await?;
+            Ok(serde_json::json!({}))
+        }))
+    })())
+}
+
 /// What each iPhone last said about its Watches, by the phone's UDID: kept in memory for this
 /// process, and in `paired-watches.json` beside the Apple ID's data once signing used it, so a
 /// refresh that signs without a tunnel open still registers the Watch.
@@ -255,6 +290,13 @@ impl<'a> Companion<'a> {
             let name = |key: &str| info.and_then(|i| i.get(key)).and_then(plist::Value::as_string);
             name("CFBundleDisplayName").or_else(|| name("CFBundleName")).unwrap_or(bundle_id).to_string()
         }))
+    }
+
+    /// Removes `bundle_id` and its data from the Watch through its installation_proxy.
+    pub async fn uninstall(&mut self, bundle_id: &str) -> Result<(), Report> {
+        let mut installer = idevice::installation_proxy::InstallationProxyClient::new(self.service("com.apple.mobile.installation_proxy").await?);
+        installer.uninstall(bundle_id.to_string(), None).await.context("The Watch refused to remove the app")?;
+        Ok(())
     }
 
     /// Installs the signed Watch app at `app_path` on the Watch, streamed over

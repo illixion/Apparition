@@ -116,6 +116,25 @@ pub fn inspect(path: &Path) -> Result<Inventory, Report> {
     Ok(Inventory { id: app.main_bundle_id()?, name: app.main_app_name()?, extensions })
 }
 
+/// Copies the IPA `src` to `dst` without its watch app (`Payload/X.app/Watch/`), for an install
+/// that keeps the Watch free of it. Returns false, writing nothing, when there is none.
+pub fn without_watch(src: &Path, dst: &Path) -> Result<bool, Report> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(src)?)?;
+    let is_watch = |name: &str| name.split('/').nth(2) == Some("Watch") && name.starts_with("Payload/");
+    if !archive.file_names().any(|name| name.is_ok_and(|n| is_watch(&n))) {
+        return Ok(false);
+    }
+    let mut out = zip::ZipWriter::new(std::fs::File::create(dst)?);
+    for index in 0..archive.len() {
+        let entry = archive.by_index_raw(index)?;
+        if !entry.name().is_ok_and(|n| is_watch(&n)) {
+            out.raw_copy_file(entry)?;
+        }
+    }
+    out.finish()?;
+    Ok(true)
+}
+
 /// Always starts from the original archive; selections are IDs, never filesystem paths from the UI.
 pub fn select(path: &Path, selected: &[String]) -> Result<PathBuf, Report> {
     let inventory = inspect(path)?;
@@ -154,6 +173,12 @@ mod tests {
             zip.write_all(format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{id}</string><key>CFBundleName</key><string>Test</string></dict></plist>").as_bytes()).unwrap();
         }
         zip.finish().unwrap();
+        let bare = dir.join("bare.ipa");
+        assert!(without_watch(&archive, &bare).unwrap());
+        let inventory = inspect(&bare).unwrap();
+        assert!(!inventory.has_watch_app());
+        assert_eq!(inventory.extensions.len(), 3);
+        assert!(!without_watch(&bare, &dir.join("again.ipa")).unwrap());
         let inventory = inspect(&archive).unwrap();
         assert_eq!(inventory.extensions.len(), 4);
         let watch = inventory.extensions.iter().find(|e| e.watch).unwrap();

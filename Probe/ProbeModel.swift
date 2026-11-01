@@ -465,6 +465,21 @@ final class ProbeModel {
         }
     }
 
+    /// Removes `bundleId` from the Watch `watchUDID` through the iPhone. "ok" or what failed.
+    func uninstallWatchApp(host: String, port: Int, watchUDID: String, bundleId: String,
+                           waiting: @escaping @Sendable () -> Void) async -> String {
+        let target = tunnelTarget(host: host, port: port)
+        let recordDir = AccountModel.dataDir.path
+        return await run(action: "remove watch app", host: host, port: port) { file, context in
+            let reply = try IDevice.uninstallWatchApp(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                      watchUDID: watchUDID, recordDir: recordDir, bundleId: bundleId, waiting: waiting)
+            guard reply["ok"] as? Bool == true else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "watch removal failed")
+            }
+            return { _ in }
+        }
+    }
+
     /// Lists the headset's user apps through the tunnel and keeps the list (device-apps.json),
     /// so the Library can show it before the next tunnel opens.
     @discardableResult

@@ -119,7 +119,7 @@ struct LibraryView: View {
             .sheet(item: $linking) { app in
                 LinkProjectSheet(developer: developer, app: app) { linking = nil }
             }
-            .alert("Couldn't Remove from Library", isPresented: Binding(get: { removalError != nil }, set: { if !$0 { removalError = nil } })) {
+            .alert("Removal Incomplete", isPresented: Binding(get: { removalError != nil }, set: { if !$0 { removalError = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(removalError ?? "")
@@ -713,17 +713,12 @@ struct LibraryView: View {
                 if let confirmation = pendingRemoval, confirmation.appID == app.id,
                    Date() < confirmation.deadline {
                     pendingRemoval = nil
-                    do {
-                        try library.removeInstalled(app.id)
-                    } catch {
-                        removalError = "The library couldn't be saved. \(error.localizedDescription)"
-                        log.error("could not remove an app from the library: \(String(describing: error), privacy: .private)")
-                    }
+                    Task { removalError = await library.removeFromDeviceAndLibrary(app.id) }
                 } else {
                     pendingRemoval = RemovalConfirmation(appID: app.id)
                 }
             } label: {
-                Label(confirming ? "Are you sure? Remove" : "Remove from Library", systemImage: "trash")
+                Label(confirming ? "Are you sure? Remove" : (library.isMissingFromDevice(app) ? "Remove from Library" : "Remove App"), systemImage: "trash")
                     .foregroundStyle(.white)
             }
             .buttonStyle(.borderedProminent)
@@ -732,7 +727,7 @@ struct LibraryView: View {
             if confirming {
                 Text(library.isMissingFromDevice(app)
                      ? "Apparition stops refreshing it and deletes its kept copy."
-                     : "Apparition stops refreshing it and deletes its kept copy. The app stays on this \(ThisDevice.noun); delete it from the \(ThisDevice.home) to remove it now.")
+                     : "Apparition deletes the app and its data from this \(ThisDevice.noun) (and its watch app from the Apple Watch), stops refreshing it and deletes its kept copy. If the device can't be reached, the app still leaves this list.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -817,7 +812,7 @@ struct LibraryView: View {
             }
             .pickerStyle(.menu)
             Divider()
-            Button("Remove from Library", systemImage: "trash", role: .destructive) {
+            Button("Remove App", systemImage: "trash", role: .destructive) {
                 pendingRemoval = RemovalConfirmation(appID: app.id)
             }
         } label: {

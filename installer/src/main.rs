@@ -51,17 +51,18 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       (run `pair --usb` first then, or `pair` for an Apple TV). Works over Wi-Fi.
   apparition install [<app.ipa or .deb>] [--device <name or UDID>]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
-          [--keep-extensions] [--no-handoff] [--release-site <url>]
+          [--keep-extensions] [--no-watch] [--no-handoff] [--release-site <url>]
       Sign and install. Without an IPA, installs the latest Apparition from
       apparition.illixion.com, checked against its release signature first. A .deb package
       (how Kodi is published) is unpacked first: the app inside is what gets installed. With an Apple
       ID, a free account's apps last 7 days; with your own certificate, as long as its
       profile. Installing Apparition also puts the certificate in its Files inbox
-      (--no-handoff skips that).
+      (--no-handoff skips that). --no-watch leaves the app's watch app out: nothing goes to the
+      Apple Watch and its App ID isn't spent.
       Signing in to Apple needs anisette data. Where this build has it (macOS, Linux), it makes
       its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
       and is required elsewhere.
-  apparition sign <app.ipa or .deb> [--device <name or UDID>] [--keep-extensions]
+  apparition sign <app.ipa or .deb> [--device <name or UDID>] [--keep-extensions] [--no-watch]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
       Sign for a paired device without reaching it and install nothing. With an Apple ID,
       says which capabilities (increased memory limit, extended virtual addressing) the app
@@ -660,6 +661,8 @@ struct Options {
     p12: Option<PathBuf>,
     profiles: Vec<PathBuf>,
     keep_extensions: bool,
+    /// Leave the app's watch app out, so the Watch (and its App ID) stays free of it.
+    no_watch: bool,
     handoff: bool,
 }
 
@@ -673,6 +676,7 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
         p12: None,
         profiles: Vec::new(),
         keep_extensions: false,
+        no_watch: false,
         handoff: true,
     };
     let mut args = args.iter();
@@ -685,6 +689,7 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
             "--p12" => options.p12 = Some(value()?.into()),
             "--profile" => options.profiles.push(value()?.into()),
             "--keep-extensions" => options.keep_extensions = true,
+            "--no-watch" => options.no_watch = true,
             "--no-handoff" => options.handoff = false,
             "--release-site" => options.release_site = value()?,
             other if other.starts_with("--") => return Err(fail(format!("unknown option {other}"))),
@@ -710,6 +715,14 @@ fn unpack_package(options: &mut Options, scratch: &Path) -> Result<(), Error> {
         return Ok(());
     }
     if apparition_core::package::format(&options.ipa).map_err(|e| fail(format!("{}: {e}", options.ipa.display())))? != apparition_core::package::Format::Deb {
+        if options.no_watch && options.ipa.is_file() {
+            let out = scratch.join("no-watch").join(options.ipa.file_name().unwrap_or_default());
+            std::fs::create_dir_all(out.parent().unwrap())?;
+            if apparition_core::install_plan::without_watch(&options.ipa, &out).map_err(|e| fail(e.to_string()))? {
+                println!("Leaving the watch app out.");
+                options.ipa = out;
+            }
+        }
         return Ok(());
     }
     println!("Unpacking the app from {}…", options.ipa.display());
@@ -721,7 +734,22 @@ fn unpack_package(options: &mut Options, scratch: &Path) -> Result<(), Error> {
         println!("  The package also holds {}, left out.", converted.others.join(", "));
     }
     options.ipa = out;
+    if options.no_watch {
+        let bare = out_without_watch(&options.ipa)?;
+        options.ipa = bare;
+    }
     Ok(())
+}
+
+/// A copy of the IPA beside it without its watch app, or the IPA itself when it has none.
+fn out_without_watch(ipa: &Path) -> Result<PathBuf, Error> {
+    let bare = ipa.with_extension("no-watch.ipa");
+    Ok(if apparition_core::install_plan::without_watch(ipa, &bare).map_err(|e| fail(e.to_string()))? {
+        println!("Leaving the watch app out.");
+        bare
+    } else {
+        ipa.to_path_buf()
+    })
 }
 
 /// Asked during Apple ID sign-in when 2FA is needed.

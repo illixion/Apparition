@@ -181,6 +181,12 @@ char *apparition_install_watch_app(struct AdapterHandle *adapter, struct RsdHand
                                    const char *watch_udid, const char *record_dir, const char *app_path,
                                    void (*waiting)(void *context), void *context);
 
+// Removes bundle_id and its data from the Watch watch_udid, through the iPhone, as above.
+// Replies {}.
+char *apparition_uninstall_watch_app(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                     const char *watch_udid, const char *record_dir, const char *bundle_id,
+                                     void (*waiting)(void *context), void *context);
+
 // The account's development certificates and App IDs (core/src/account.rs). Revoking a
 // certificate stops apps signed with it from launching; ask the user first.
 char *apparition_list_certificates(void);

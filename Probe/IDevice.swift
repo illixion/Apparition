@@ -223,6 +223,22 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and removes `bundleId` from the Watch `watchUDID` through the iPhone
+    /// (apparition_uninstall_watch_app).
+    static func uninstallWatchApp(target: Target, hostname: String, file: PairingFile,
+                                  pin: PinCallback?, context: UnsafeMutableRawPointer,
+                                  watchUDID: String, recordDir: String, bundleId: String,
+                                  waiting: @escaping @Sendable () -> Void) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let box = Unmanaged.passRetained(WaitingBox(waiting))
+            defer { box.release() }
+            return AccountModel.call(apparition_uninstall_watch_app(adapter, handshake, watchUDID, recordDir, bundleId, { raw in
+                guard let raw else { return }
+                Unmanaged<WaitingBox>.fromOpaque(raw).takeUnretainedValue().waiting()
+            }, box.toOpaque()))
+        }
+    }
+
     /// Opens a tunnel and lists every user app on the device (apparition_list_apps).
     static func listApps(target: Target, hostname: String, file: PairingFile,
                          pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> [String: Any] {

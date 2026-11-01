@@ -46,6 +46,10 @@ final class LibraryModel {
         /// The appstore build this was installed from (a project's build the Mac kept), so a later
         /// build is recognised as an update. nil for apps from a source or a file.
         var appstoreBuildId: String?
+        /// The watch app Apparition installed on the Watches in `watchUDIDs`, so removing the app
+        /// can remove it there too (a watch app installed this way isn't tied to its iPhone app).
+        var watchAppId: String?
+        var watchUDIDs: [String]?
     }
 
     /// Apparition's own refreshes: it re-signs and reinstalls itself (`refreshSelf`).
@@ -949,6 +953,50 @@ final class LibraryModel {
         probe.pairingProblem.map(PairingRecord.message) ?? Self.noUDID
     }
 
+    /// The watch app the install in progress put on a Watch, for its library record.
+    private var lastWatchInstall: (appId: String, udids: [String])?
+
+    /// Removes an app from the device (and its watch app from the Watches Apparition put it on),
+    /// then from the library. Every step runs whatever the others do, and the library entry goes
+    /// last no matter what: a device that can't be reached must not leave an app stuck in the
+    /// list. Returns what didn't come off the device, for the status, or nil when all did.
+    func removeFromDeviceAndLibrary(_ id: String) async -> String? {
+        guard let app = installed.first(where: { $0.id == id }) else { return nil }
+        var problems: [String] = []
+        let watchId = app.watchAppId, watchUDIDs = app.watchUDIDs ?? []
+        let bundleId = app.installedBundleId
+        let missing = isMissingFromDevice(app)
+        let ran = await exclusive("remove \(app.name)") {
+            if let watchId {
+                for udid in watchUDIDs {
+                    let outcome = await self.probe.uninstallWatchApp(host: self.probe.defaultTunnelHost, port: self.probe.defaultTunnelPort,
+                                                                     watchUDID: udid, bundleId: watchId) { [weak self] in
+                        Task { @MainActor in self?.status = "Tap Trust on the Watch to let Apparition remove \(app.name) there" }
+                    }
+                    if outcome != "ok" { problems.append("the Watch copy: \(Self.installFailure(outcome))") }
+                }
+            }
+            if let bundleId, bundleId != Bundle.main.bundleIdentifier, !missing {
+                let outcome = await self.probe.uninstall(host: self.probe.defaultTunnelHost, port: self.probe.defaultTunnelPort, bundleId: bundleId)
+                if outcome == "ok" {
+                    self.assignments.remove(target: bundleId)
+                    self.save()
+                } else {
+                    problems.append("\(ThisDevice.noun): \(Self.installFailure(outcome))")
+                }
+            }
+            return problems.isEmpty ? "ok" : "partial"
+        }
+        if ran == nil { return "Apparition is busy; try again in a moment" }
+        do {
+            try removeInstalled(id)
+        } catch {
+            problems.append("the library couldn't be saved: \(error.localizedDescription)")
+        }
+        if !problems.isEmpty { log.error("removal left \(problems.count, privacy: .public) parts behind") }
+        return problems.isEmpty ? nil : "Removed from the library, but not from " + problems.joined(separator: "; ") + ". Delete what is left by hand."
+    }
+
     /// Whether the IPA or app at `path` carries a watch app, by the install inventory.
     nonisolated static func hasWatchApp(_ path: String) -> Bool {
         let reply = AccountModel.call(apparition_install_inventory(path))
@@ -963,11 +1011,15 @@ final class LibraryModel {
     /// itself for App Store and paid-team profiles, so a free account's goes this way. Returns a
     /// note for the status, or nil when the app has no watch app to install.
     private func installWatchApp(signed: [String: Any], signedPath: String, appName: String) async -> String? {
+        lastWatchInstall = nil
         guard let watches = signed["watches"] as? [[String: Any]], !watches.isEmpty else { return nil }
         let watchDir = URL(fileURLWithPath: signedPath).appendingPathComponent("Watch")
         guard let app = (try? FileManager.default.contentsOfDirectory(at: watchDir, includingPropertiesForKeys: nil))?
             .first(where: { $0.pathExtension == "app" }) else { return nil }
         var notes: [String] = []
+        let watchId = (NSDictionary(contentsOf: app.appendingPathComponent("Info.plist")))?["CFBundleIdentifier"] as? String
+        var installedOn: [String] = []
+        defer { if let watchId, !installedOn.isEmpty { lastWatchInstall = (watchId, installedOn) } }
         for watch in watches {
             guard let udid = watch["udid"] as? String else { continue }
             let name = watch["name"] as? String ?? "Apple Watch"
@@ -976,6 +1028,7 @@ final class LibraryModel {
                                                       watchUDID: udid, appPath: app.path) { [weak self] in
                 Task { @MainActor in self?.status = "Tap Trust on \(name) to let Apparition install there" }
             }
+            if outcome == "ok" { installedOn.append(udid) }
             notes.append(outcome == "ok" ? "installed on \(name)" : "not installed on \(name): \(Self.installFailure(outcome))")
         }
         return notes.joined(separator: "; ")
@@ -1118,6 +1171,10 @@ final class LibraryModel {
             assignments.complete(target: target, team: team)
         }
         record.installedBundleId = main?.bundleId
+        if let watch = lastWatchInstall {
+            record.watchAppId = watch.appId
+            record.watchUDIDs = watch.udids
+        }
         record.signedAt = DebugTime.iso(Date())
         record.expiresAt = main?.profileExpires
         record.signedWith = signing.signerName(signer)

@@ -1285,7 +1285,7 @@ function installPlanPrompt(prompt) {
     input.disabled = (prompt.unsupported ?? []).includes(extension.id) || (prompt.appleId && extension.extensionKit);
     if (input.disabled) input.checked = false;
     inputs.push(input);
-    row.append(input, document.createTextNode(`${extension.name} (${extension.id})${input.disabled ? (prompt.appleId ? " — ExtensionKit requires imported profiles" : " — no imported profile covers this extension") : ""}`));
+    row.append(input, document.createTextNode(`${extension.watch ? "Apple Watch app: " : ""}${extension.name} (${extension.id})${extension.watch ? " — installed on the paired Watch, uses an App ID; untick to keep the Watch free" : ""}${input.disabled ? (prompt.appleId ? " — ExtensionKit requires imported profiles" : " — no imported profile covers this extension") : ""}`));
     box.append(row);
   }
   if (!inputs.length) box.append(document.createTextNode("This app has no embedded extensions."));
