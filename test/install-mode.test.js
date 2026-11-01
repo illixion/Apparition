@@ -4,10 +4,23 @@ const assert = require('node:assert/strict');
 const { createPresence, resolveInstallMode, validInstallMode, PRESENCE_TTL_MS } = require('../lib/install-mode');
 const { ledgerEntryFromReport, ReportError } = require('../lib/installs');
 
-test('an old request keeps its meaning: deploy false builds only, anything else installs from the Mac', () => {
-  assert.equal(resolveInstallMode({ device: 'AVP' }), 'mac');
-  assert.equal(resolveInstallMode({ deploy: true, device: 'AVP' }), 'mac');
-  assert.equal(resolveInstallMode({ deploy: false, device: 'AVP' }), 'none');
+test('an old request is auto, and deploy false still builds only', () => {
+  const presence = createPresence();
+  assert.equal(resolveInstallMode({ device: 'AVP', presence }), 'mac', 'closed Apparition: the Xcode tunnel, as before');
+  assert.equal(resolveInstallMode({ deploy: true, device: 'AVP', presence }), 'mac');
+  assert.equal(resolveInstallMode({ deploy: false, device: 'AVP', presence }), 'none');
+  presence.touch('AVP');
+  assert.equal(resolveInstallMode({ device: 'AVP', presence }), 'device', 'open Apparition: it installs the build itself');
+  assert.equal(resolveInstallMode({ deploy: false, device: 'AVP', presence }), 'none');
+});
+
+test('a launch needs the tunnel, so auto never leaves it to the device; an explicit device is the caller\'s choice', () => {
+  const presence = createPresence();
+  presence.touch('AVP');
+  assert.equal(resolveInstallMode({ device: 'AVP', presence, launch: true }), 'mac');
+  assert.equal(resolveInstallMode({ install: 'auto', device: 'AVP', presence, launch: true }), 'mac');
+  assert.equal(resolveInstallMode({ install: 'device', device: 'AVP', presence, launch: true }), 'device');
+  assert.equal(resolveInstallMode({ install: 'none', device: 'AVP', presence, launch: true }), 'none');
 });
 
 test('an explicit mode is taken as given, whatever is open', () => {

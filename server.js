@@ -424,8 +424,9 @@ function resolveBuildSettings(rc, branch, platform) {
 // install = how the build reaches the device (lib/install-mode.js): `mac` installs through
 // devicectl (the Xcode tunnel) in the same build-and-sign run, `device` keeps the build for the
 // device's own Apparition to download and install, `none` only builds, `auto` picks `device` while
-// that device's Apparition is open and `mac` otherwise. Without `install`, `deploy: false` means
-// `none` and anything else `mac`, as before. Only `mac` needs the Mac to reach the device.
+// that device's Apparition is open and `mac` otherwise (or whenever the app is to be launched
+// afterwards, which only the tunnel can do). Without `install`, `deploy: false` means `none` and
+// anything else `auto`. Only `mac` needs the Mac to reach the device.
 function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, injectBackend = 'dynamic', deploy, install }) {
   if (!['dynamic', 'apparition'].includes(injectBackend)) throw new Error('injectBackend must be dynamic or apparition');
   if (!validInstallMode(install)) throw new Error('install must be auto, mac, device or none');
@@ -437,7 +438,7 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDe
     const pc = rc.platforms.find(p => p.device === t.device && (!t.platform || p.platform === t.platform));
     // A request naming a target that isn't configured used to build and install the first one.
     if (!pc) throw new Error(`${repo} has no target ${t.device}${t.platform ? ` (${t.platform})` : ''}`);
-    const via = resolveInstallMode({ install, deploy, device: pc.device, presence });
+    const via = resolveInstallMode({ install, deploy, device: pc.device, presence, launch: !!launch });
     return {
       id: state.nextBuildId++,
       batchId: null,

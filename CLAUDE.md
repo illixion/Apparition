@@ -126,12 +126,12 @@ A repo's `macApps: [{name, platform, bundleId, branch}]` lists Mac apps download
 
 ## Install modes (how a build reaches its device)
 
-`POST /api/service/v1/build` takes `install` (`lib/install-mode.js`); the web page and old clients send `deploy` and keep their meaning (`deploy: false` is `none`, anything else `mac`).
+`POST /api/service/v1/build` takes `install` (`lib/install-mode.js`). A request without it is `auto`, except that `deploy: false` is `none`, so the web page and old clients get the device's own install while its Apparition is open and the Xcode tunnel otherwise.
 
 - `mac`: `build-and-sign` installs through `devicectl` (the Xcode tunnel) in the same run. Quickest, and the only mode that can launch (`run`/`mcp`) from here. The Mac must reach the device. If that install fails, the signed build has been kept already: `build-and-sign` prints its `Build ID:` as soon as it is kept, so the failed job carries `buildId` and `keptBuildId` and the device's own Apparition can still install it.
 - `device`: `--no-deploy`. The build is kept and the Apparition app on the device downloads the IPA over the service's HTTPS address (`/artifacts/<id>/download`), signs it with its own identity and installs it. Needs nothing from the Mac's network, so it works over Tailscale and for free Apple IDs. The ledger is not touched at build time: the device reports the install with `POST /api/service/v1/installs {device, bundleId, buildId}`, and the service fills in repo, branch, commit and version from its own records (`lib/installs.js`), recording it `confirmed: true, via: 'apparition'`.
 - `none`: build and keep only; the ledger records an unconfirmed guess (the old OTA behaviour).
-- `auto`: `device` while that device's Apparition is open, else `mac`. Apparition names its device in an `X-Apparition-Device` header (percent-encoded) on every service request; a device unheard of for 20 s counts as closed (`lib/install-mode.js`, `appsOpen` in the state). A closed Apparition cannot take an install, so the Xcode tunnel is the fallback and stays how a terminal or the web page deploys.
+- `auto`: `device` while that device's Apparition is open, else `mac`; always `mac` when the request asks to launch the app (`run`), since only the tunnel can start a process. Apparition names its device in an `X-Apparition-Device` header (percent-encoded) on every service request; a device unheard of for 20 s counts as closed (`lib/install-mode.js`, `appsOpen` in the state). A closed Apparition cannot take an install, so the Xcode tunnel is the fallback and stays how a terminal or the web page deploys.
 
 A build request naming a target that isn't configured is refused; it used to build and install the first target.
 
