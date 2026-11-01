@@ -11,6 +11,10 @@ const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
 const { readBuild, listBuilds, defaultStore: defaultBuildStore } = require('./lib/artifacts');
 const resignTool = require('./lib/resign');
+const { createPresence, resolveInstallMode, validInstallMode } = require('./lib/install-mode');
+const { ledgerEntryFromReport } = require('./lib/installs');
+// Devices whose Apparition is open right now (they name themselves on every service request).
+const presence = createPresence();
 
 const ROOT = __dirname;
 // APPSTORE_CONFIG and APPSTORE_DATA relocate the config and the runtime data
@@ -316,6 +320,12 @@ async function refreshAllDevices() {
   await Promise.allSettled([...names].map(refreshDeviceApps));
 }
 
+// The last "Build ID:" build-and-sign printed: its report names it, and so does the line it
+// prints as soon as the build is kept (before any install can fail).
+function buildIdFromLog(log) {
+  return [...String(log || '').matchAll(/^\s*Build ID:\s+([A-Za-z0-9-]+)\s*$/gm)].pop()?.[1] || null;
+}
+
 // ---------- build queue (serialized PER REPO; different repos run concurrently) ----------
 // build-and-sign writes into $PROJECT_ROOT/build, which is shared by every
 // platform of a given repo checkout — two concurrent invocations for the
@@ -410,25 +420,36 @@ function resolveBuildSettings(rc, branch, platform) {
 // store's own devicectl launch). mcp without launch installs only, like
 // build-and-sign --mcp without --run; buildDebug = --debug
 // (Debug configuration); inject = --inject (patchable build)
-function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, injectBackend = 'dynamic', deploy }) {
+//
+// install = how the build reaches the device (lib/install-mode.js): `mac` installs through
+// devicectl (the Xcode tunnel) in the same build-and-sign run, `device` keeps the build for the
+// device's own Apparition to download and install, `none` only builds, `auto` picks `device` while
+// that device's Apparition is open and `mac` otherwise. Without `install`, `deploy: false` means
+// `none` and anything else `mac`, as before. Only `mac` needs the Mac to reach the device.
+function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, injectBackend = 'dynamic', deploy, install }) {
   if (!['dynamic', 'apparition'].includes(injectBackend)) throw new Error('injectBackend must be dynamic or apparition');
+  if (!validInstallMode(install)) throw new Error('install must be auto, mac, device or none');
   const rc = CONFIG.repos.find(r => r.name === repo);
   if (!rc) throw new Error(`unknown repo: ${repo}`);
   if (!rc.platforms?.length) throw new Error(`${repo} has no device platforms to deploy to`);
   const targetList = (targets && targets.length) ? targets : [{ device: device || rc.platforms[0].device, branch }];
   const jobs = targetList.map(t => {
-    const pc = rc.platforms.find(p => p.device === t.device && (!t.platform || p.platform === t.platform)) || rc.platforms[0];
+    const pc = rc.platforms.find(p => p.device === t.device && (!t.platform || p.platform === t.platform));
+    // A request naming a target that isn't configured used to build and install the first one.
+    if (!pc) throw new Error(`${repo} has no target ${t.device}${t.platform ? ` (${t.platform})` : ''}`);
+    const via = resolveInstallMode({ install, deploy, device: pc.device, presence });
     return {
       id: state.nextBuildId++,
       batchId: null,
       repo, branch: t.branch || 'current',
       platform: pc.platform, device: pc.device, bundleId: pc.bundleId,
-      // deploy:false = OTA-only build — build-and-sign gets --no-deploy so an
-      // unreachable device can't fail the build; the run/launch step and the
-      // install ledger are skipped too (nothing landed on the device)
-      noDeploy: deploy === false,
-      mcp: !!launch && !!mcp && deploy !== false,
-      run: !!launch && !mcp && deploy !== false,
+      installVia: via,
+      // Only `mac` deploys inside build-and-sign. Any other mode passes --no-deploy, so a device
+      // the Mac can't reach can't fail the build, and the run/launch step and the install
+      // ledger are skipped too (nothing landed on the device from here).
+      noDeploy: via !== 'mac',
+      mcp: !!launch && !!mcp && via === 'mac',
+      run: !!launch && !mcp && via === 'mac',
       buildDebug: !!buildDebug,
       inject: !!inject, injectBackend,
       status: 'queued', queuedAt: Date.now(),
@@ -581,7 +602,7 @@ async function executeBuild(job) {
 
     // The public build identity links this job, its trace credential and retained
     // symbol set without reading the secret-bearing credential from the IPA.
-    job.buildId = [...String(liveLogs.get(job.id) || '').matchAll(/^\s*Build ID:\s+([A-Za-z0-9-]+)\s*$/gm)].pop()?.[1] || null;
+    job.buildId = buildIdFromLog(liveLogs.get(job.id));
     const kept = job.buildId ? readBuild(job.buildId, { store: buildStore(), verify: true }) : null;
     if (kept) {
       if (kept.manifest.app.bundleId !== job.bundleId) throw new Error('build manifest bundle identity differs from the requested target');
@@ -659,7 +680,9 @@ async function executeBuild(job) {
     // for the remote-dev case (branch/commit tracking while away from the
     // LAN beats nothing), so it's kept but flagged `confirmed: false` for
     // the UI to display distinctly rather than asserting it as installed.
-    if (!job.altSource && !job.forResign) {
+    // A `device` build is installed by the device's Apparition, which reports it when it has
+    // (POST /api/service/v1/installs): nothing is claimed here.
+    if (!job.altSource && !job.forResign && job.installVia !== 'device') {
       state.installs[job.device] = state.installs[job.device] || {};
       state.installs[job.device][job.bundleId] = {
         repo: job.repo, branch: job.builtBranch, commit: job.commit, buildId: job.buildId,
@@ -670,6 +693,7 @@ async function executeBuild(job) {
     job.status = 'success';
     if (job.altSource) log(`\n==> Store: AltSource build of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) ready for download\n`);
     else if (job.forResign) log(`\n==> Store: built ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) for the re-sign queued after it\n`);
+    else if (job.installVia === 'device') log(`\n==> Store: built ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}); ${job.device}'s Apparition installs it\n`);
     else log(job.noDeploy
       ? `\n==> Store: OTA-only build of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) — recorded as an unconfirmed guess, not deployed to ${job.device}\n`
       : `\n==> Store: recorded install of ${job.bundleId} ${version || ''} (${job.builtBranch}@${job.commit}) on ${job.device}\n`);
@@ -688,7 +712,13 @@ async function executeBuild(job) {
   } catch (e) {
     if (job.status !== 'cancelled') job.status = 'failed';
     job.error = String(e.message || e);
+    // build-and-sign keeps the signed build before it installs (and says so), so an install the
+    // Mac couldn't make (the device was asleep or out of reach) leaves a kept build behind.
+    // Tie it to the job so a client can still install it, from the device itself.
+    job.buildId = job.buildId || buildIdFromLog(liveLogs.get(job.id));
+    if (job.buildId && job.status === 'failed' && !job.noDeploy) job.keptBuildId = job.buildId;
     log(`\n==> Store: build ${job.status}: ${job.error}\n`);
+    if (job.keptBuildId) log(`==> Store: the signed build ${job.keptBuildId} was kept and can be installed from the device\n`);
   } finally {
     if (cloneDir) {
       activeClones.delete(path.dirname(cloneDir));
@@ -827,7 +857,7 @@ async function executeResign(job) {
     });
     job.resign.result = result.mode;
     if (result.backup) job.resign.backup = result.backup;
-    job.buildId = [...String(liveLogs.get(job.id) || '').matchAll(/^\s*Build ID:\s+([A-Za-z0-9-]+)\s*$/gm)].pop()?.[1] || null;
+    job.buildId = buildIdFromLog(liveLogs.get(job.id));
     if (job.status !== 'cancelled') job.status = 'success';
     if (result.mode !== 'dry-run' && job.buildId) {
       const before = state.installs?.[job.device]?.[job.bundleId];
@@ -1257,7 +1287,16 @@ const { createAuth, parseCookies } = require('./lib/auth');
 const { createDebug } = require('./lib/debug');
 const auth = createAuth(DATA_DIR);
 const patchingTargets = new Set();
-const service = require('./lib/service').createService({ auth, config: () => CONFIG, json, readBody,
+const service = require('./lib/service').createService({ auth, config: () => CONFIG, json, readBody, presence,
+  // The device installed a kept build itself: record it as a fact (nothing here reaches the device).
+  reportInstall: report => {
+    const { device, bundleId, entry } = ledgerEntryFromReport(report, { repos: CONFIG.repos, builds: state.builds,
+      readBuild: id => readBuild(id, { store: buildStore() }) });
+    state.installs[device] = state.installs[device] || {};
+    state.installs[device][bundleId] = entry;
+    saveState();
+    return entry;
+  },
   inject: async ({ repo, target, files }) => {
     const key = `${target.bundleId}@${target.device}`;
     if (patchingTargets.has(key)) throw new Error('A patch is already in progress for this app and device.');
@@ -1574,6 +1613,8 @@ async function stateBundle() {
     devices: state.devices,
     deviceApps: state.deviceApps,
     installs: state.installs,
+    // Devices whose Apparition is open (`install: auto` goes to them, not through devicectl).
+    appsOpen: presence.open(),
     ota: state.ota,
     debugApps: debugAppsCached(),
     authRequired: !!CONFIG.passwordHash,

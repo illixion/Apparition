@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A personal, LAN-only "app store": a single-file Node.js HTTP server that builds dev iOS / visionOS / tvOS / iPad apps from local git checkouts, signs and installs them onto physical Apple devices, and tracks what each device is running. The web UI at `127.0.0.1:<port>` shows every configured repo, its current git HEAD, and each target device's install status, with one-click "Build + Install".
+A personal "app store": a single-file Node.js HTTP server that builds dev iOS / visionOS / tvOS / iPad apps from local git checkouts, signs and installs them onto physical Apple devices, and tracks what each device is running. The web UI at `127.0.0.1:<port>` shows every configured repo, its current git HEAD, and each target device's install status, with one-click "Build + Install".
 
 It orchestrates two external tools: `bin/build-and-sign` (xcodebuild + codesign + deploy) and `xcrun devicectl` (device inventory + install). It is not itself an Xcode project.
 
@@ -122,5 +122,24 @@ A repo's `macApps: [{name, platform, bundleId, branch}]` lists Mac apps download
 - **`bin/build-and-sign`** — (lives in this repo; a local `~/bin/build-and-sign` should be a symlink to it so the terminal and the store run the same code) bash script that builds, signs, and deploys. Reads signing material from `~/.config/build-signing/global.conf` plus each repo's `scripts/build-signing.conf` (or `build-signing.conf`). Repo-specific behavior belongs in that conf (`PRE_BUILD_HOOK`, `EXTRA_BUILD_SETTINGS`), never in `server.js`.
 - **Build output is per checkout, locked, and reaped** (2026-10-08). `build-and-sign` puts DerivedData in `<checkout>/build/DerivedData` (and `DerivedData-inject` for `--inject`), never under the git common dir: it used to, which made every worktree of a repo build into the main checkout's cache, with different sources and package clones at other paths, so they rebuilt each other's products and corrupted them when concurrent. It also takes a per-checkout lock (`build/.build-and-sign.lock`, pid-verified, a dead holder's is stolen) so two runs in one checkout queue instead of colliding; `--sign-dylib` skips it. This covers builds the store's per-repo queue never sees (an agent running the script in a worktree). Storage: `apple-worktree remove` deletes a worktree's build with it and `apple-worktree gc` (also run by `new`) drops idle worktrees' build output; the store deletes a build clone's DerivedData after the build (an `--inject` build keeps `DerivedData-inject`, which patches compile against) and deletes clones untouched for `cloneMaxAgeDays` (config, default 7), never one in use. Don't point an agent's own `xcodebuild -derivedDataPath` at `build/DerivedData` while a deploy may run there; use `build-and-sign --no-deploy`, which takes the lock.
 - **Bounded cache storage** (2026-10-09). A normal checkout retains only `build/DerivedData` and `build/DerivedData-inject`; while holding its build lock, `build-and-sign` removes other direct-child Xcode DerivedData trees from that checkout's `build/`. It recognizes Xcode caches by `Info.plist` plus `Build/Products` and `Build/Intermediates.noindex`, leaving archives and other build outputs alone. Xcode's global DerivedData is not touched. Ad-hoc Xcode builds that write their own DerivedData under a repo's `build/` are removed the next time `build-and-sign` runs there.
-- **`xcrun devicectl`** (Xcode) — device inventory and install; target devices must be paired and reachable.
+- **`xcrun devicectl`** (Xcode) — device inventory and the Xcode-tunnel install. Only the `mac` install mode needs it: that device must be paired with the Mac and reachable from it. See "Install modes".
+
+## Install modes (how a build reaches its device)
+
+`POST /api/service/v1/build` takes `install` (`lib/install-mode.js`); the web page and old clients send `deploy` and keep their meaning (`deploy: false` is `none`, anything else `mac`).
+
+- `mac`: `build-and-sign` installs through `devicectl` (the Xcode tunnel) in the same run. Quickest, and the only mode that can launch (`run`/`mcp`) from here. The Mac must reach the device. If that install fails, the signed build has been kept already: `build-and-sign` prints its `Build ID:` as soon as it is kept, so the failed job carries `buildId` and `keptBuildId` and the device's own Apparition can still install it.
+- `device`: `--no-deploy`. The build is kept and the Apparition app on the device downloads the IPA over the service's HTTPS address (`/artifacts/<id>/download`), signs it with its own identity and installs it. Needs nothing from the Mac's network, so it works over Tailscale and for free Apple IDs. The ledger is not touched at build time: the device reports the install with `POST /api/service/v1/installs {device, bundleId, buildId}`, and the service fills in repo, branch, commit and version from its own records (`lib/installs.js`), recording it `confirmed: true, via: 'apparition'`.
+- `none`: build and keep only; the ledger records an unconfirmed guess (the old OTA behaviour).
+- `auto`: `device` while that device's Apparition is open, else `mac`. Apparition names its device in an `X-Apparition-Device` header (percent-encoded) on every service request; a device unheard of for 20 s counts as closed (`lib/install-mode.js`, `appsOpen` in the state). A closed Apparition cannot take an install, so the Xcode tunnel is the fallback and stays how a terminal or the web page deploys.
+
+A build request naming a target that isn't configured is refused; it used to build and install the first target.
+
+### What still needs the Mac to reach the device
+
+Not every part has a device-side replacement yet:
+- `lib/resign.js` re-signs in place and moves the app's data with `devicectl` (copy, uninstall, install). Apparition on the device can re-sign a kept IPA with its own identities instead.
+- The device-app inventory (`devicectl device info apps`, refreshed at startup and after `mac` installs) feeds the web page's staleness column; the ledger is the source of truth for everything else.
+- Live debugging and `inject` find an app by Bonjour (LAN) or by the session record `build-and-sign --run --mcp` writes after a `devicectl` launch. An app that Apparition launched on the device leaves neither.
+- Crash-log pulling (`devicectl`) is off.
 - Every repo in `config.json` must be a real git checkout on disk with a valid `build-signing.conf`.

@@ -1399,6 +1399,10 @@ with open(sys.argv[1], "w") as handle:
     json.dump(record, handle)
 ' "$WORK_DIR/manifest-options.json"
 BUILD_MANIFEST="$(node "$MANIFEST_TOOL" publish "$WORK_DIR/manifest-options.json")"
+# The build is kept from here on. Say so now, not only in the report below: the install that
+# follows can fail (the device asleep, out of the Mac's reach), and the store reads this line to
+# tie the kept build to its job so the device's own Apparition can still install it.
+printf '  %-12s %s\n' "Build ID:" "$BUILD_ID"
 
 # Step 9: Deploy to device
 if [[ "$MACOS_BUILD" == true ]]; then

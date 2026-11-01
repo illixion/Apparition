@@ -291,3 +291,161 @@ test('native build options preserve a known backend and reject guesses', async (
   await service(req({ ...valid, injectBackend: 'jit' }), res, new URL('http://test/api/service/v1/build'));
   assert.equal(res.status, 400);
 });
+
+test('the service advertises install modes and device-reported installs', async () => {
+  const r = await request('/api/service');
+  assert.ok(r.body.capabilities.includes('install-modes'));
+  assert.ok(r.body.capabilities.includes('report-install'));
+});
+
+test('a build names how it reaches the device, and only a known mode is accepted', async () => {
+  const config = { passwordHash: 'hash', repos: [{ name: 'Example', branches: ['main'], platforms: [
+    { device: 'AVP', platform: 'visionOS' },
+  ] }] };
+  const service = createService({ auth: { check: () => true }, config: () => config,
+    readBody: async req => req.body, json: (res, status, body) => Object.assign(res, { status, body }) });
+  const req = body => ({ method: 'POST', headers: { authorization: 'Bearer ' + 'a'.repeat(43) }, body });
+  const url = new URL('http://test/api/service/v1/build');
+  const valid = { repo: 'Example', device: 'AVP', targetPlatform: 'visionOS', branch: 'main' };
+  for (const install of ['auto', 'mac', 'device', 'none']) {
+    const result = await service(req({ ...valid, install }), {}, url);
+    assert.equal(result.body.install, install);
+  }
+  assert.equal((await service(req(valid), {}, url)).body.install, undefined);
+  for (const install of ['ota', 7, null]) {
+    const res = {};
+    await service(req({ ...valid, install }), res, url);
+    assert.equal(res.status, 400);
+  }
+});
+
+test('a client that names its device on a request is open, until it goes quiet', async () => {
+  const { createPresence } = require('../lib/install-mode');
+  const presence = createPresence();
+  const config = { passwordHash: 'hash', repos: [] };
+  const service = createService({ auth: { check: () => true }, config: () => config, presence,
+    readBody: async req => req.body, json: (res, status, body) => Object.assign(res, { status, body }) });
+  const req = device => ({ method: 'GET', headers: { authorization: 'Bearer ' + 'a'.repeat(43),
+    ...(device === undefined ? {} : { 'x-apparition-device': device }) } });
+  const url = new URL('http://test/api/service/v1/state');
+  await service(req(encodeURIComponent("Ixion's Vision Pro")), {}, url);
+  assert.equal(presence.listening("Ixion's Vision Pro"), true);
+  await service(req('%E0%A4%A'), {}, url);        // malformed escape: ignored, not an error
+  await service(req(undefined), {}, url);
+  assert.deepEqual(presence.open(), ["ixion's vision pro"]);
+  // An unauthenticated request never marks anything open.
+  const closed = createPresence();
+  const denied = createService({ auth: { check: () => false }, config: () => ({ passwordHash: 'hash', repos: [] }), presence: closed,
+    readBody: async req => req.body, json: (res, status, body) => Object.assign(res, { status, body }) });
+  const res = {};
+  await denied(req('AVP'), res, url);
+  assert.equal(res.status, 401);
+  assert.deepEqual(closed.open(), []);
+});
+
+test('an install report is recorded by the service from its own records, over the native session only', async () => {
+  const body = { device: 'AVP', bundleId: 'com.example.nothing', buildId: 'fixture-build' };
+  assert.equal((await request('/api/service/v1/installs', { method: 'POST', body })).status, 401);
+  const token = await connect();
+  const refused = await request('/api/service/v1/installs', { method: 'POST', token, body });
+  assert.equal(refused.status, 400);       // not a configured target: nothing is written
+  assert.match(refused.body.error, /not a configured target/);
+  assert.equal((await request('/api/service/v1/installs', { method: 'POST', token, body: { nonsense: true } })).status, 400);
+  const state = await request('/api/service/v1/state', { token });
+  assert.equal(state.body.installs.AVP, undefined);   // the refused report wrote nothing
+  assert.deepEqual(state.body.appsOpen, []);
+});
+
+test('install modes: only `mac` uses the Xcode tunnel, a failed tunnel install still leaves its build, and the device reports its own', async () => {
+  const { execFileSync } = require('node:child_process');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'install-modes-'));
+  const calls = path.join(work, 'calls.log'), failure = path.join(work, 'fail-install'), fake = path.join(work, 'build-and-sign');
+  // A stand-in build-and-sign: it keeps the build and says so before it installs, as the real one
+  // does, and the install then fails while `fail-install` exists (a device out of the Mac's reach).
+  fs.writeFileSync(fake, `#!/bin/bash
+echo "$*" >> ${JSON.stringify(calls)}
+id="modes-$(date +%s%N)"; d="$APPARITION_BUILD_DIR/$id"; mkdir -p "$d"; printf 'ipa' > "$d/app.ipa"
+sha=$(shasum -a 256 "$d/app.ipa" | cut -d' ' -f1); mv "$d/app.ipa" "$d/$sha.ipa"
+printf '{"format":"apparition-build/1","buildId":"%s","platform":"visionOS","app":{"bundleId":"com.example.modes","version":"1.0","build":"abc1234"},"artifact":{"kind":"ipa","sha256":"%s","bytes":3,"file":"%s.ipa"}}' "$id" "$sha" "$sha" > "$d/manifest.json"
+printf '  %-12s %s\\n' "Build ID:" "$id"
+if [[ " $* " != *" --no-deploy "* && -e ${JSON.stringify(failure)} ]]; then echo "ERROR: Device 'fixture-modes' not found. Is it connected and paired?" >&2; exit 1; fi
+printf '  %-12s %s\\n' "Build ID:" "$id"
+exit 0
+`, { mode: 0o755 });
+  const project = path.join(dir, 'Modes'); fs.mkdirSync(project);
+  execFileSync('git', ['init', '-b', 'main', project], { stdio: 'ignore' });
+  execFileSync('git', ['-C', project, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '--allow-empty', '-m', 'init'], { stdio: 'ignore' });
+  const configFile = path.join(dir, 'config.json');
+  const config = JSON.parse(fs.readFileSync(configFile));
+  config.buildAndSign = fake;
+  config.repos.push({ name: 'Modes', path: project, branches: [], platforms: [{ platform: 'visionOS', device: 'fixture-modes', bundleId: 'com.example.modes' }] });
+  fs.writeFileSync(configFile + '.next', JSON.stringify(config)); fs.renameSync(configFile + '.next', configFile);
+  const token = await connect();
+  for (let attempt = 0; attempt < 30; ++attempt) {
+    if ((await request('/api/service/v1/state', { token })).body.repos.some(r => r.name === 'Modes')) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const build = async options => {
+    const reply = await request('/api/service/v1/build', { method: 'POST', token,
+      body: { repo: 'Modes', device: 'fixture-modes', targetPlatform: 'visionOS', branch: 'current', ...options } });
+    assert.equal(reply.status, 200, JSON.stringify(reply.body));
+    const id = reply.body.jobs[0].id;
+    for (let attempt = 0; attempt < 150; ++attempt) {
+      const job = (await request('/api/service/v1/state', { token })).body.builds.find(j => j.id === id);
+      if (job && ['success', 'failed'].includes(job.status)) return job;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.fail('the build did not finish');
+  };
+  const ledger = async () => (await request('/api/service/v1/state', { token })).body.installs['fixture-modes']?.['com.example.modes'];
+  const lastCall = () => fs.readFileSync(calls, 'utf8').trim().split('\n').pop();
+
+  // device: built and kept, never sent through the tunnel, and nothing claimed about the device.
+  const device = await build({ install: 'device', run: true, mcp: true });
+  assert.equal(device.status, 'success', device.error);
+  assert.equal(device.installVia, 'device'); assert.equal(device.noDeploy, true);
+  assert.equal(device.run, false); assert.equal(device.mcp, false, 'a launch needs the tunnel; the device launches its own copy');
+  assert.match(lastCall(), /--no-deploy/);
+  assert.equal(await ledger(), undefined);
+
+  // The device installed it and says so: the service records it from its own records.
+  const report = body => request('/api/service/v1/installs', { method: 'POST', token, body });
+  const told = await report({ device: 'fixture-modes', bundleId: 'com.example.modes', buildId: device.buildId });
+  assert.equal(told.status, 200, JSON.stringify(told.body));
+  assert.equal(told.body.install.via, 'apparition'); assert.equal(told.body.install.confirmed, true);
+  assert.equal(told.body.install.commit, device.commit); assert.equal(told.body.install.version, '1.0');
+  assert.equal((await ledger()).buildId, device.buildId);
+  assert.equal((await report({ device: 'fixture-modes', bundleId: 'com.example.modes', buildId: 'no-such-build' })).status, 404);
+
+  // mac: build-and-sign installs through devicectl itself. When that fails the build is still kept.
+  fs.writeFileSync(failure, '');
+  const failed = await build({ install: 'mac' });
+  assert.equal(failed.status, 'failed'); assert.equal(failed.installVia, 'mac');
+  assert.doesNotMatch(lastCall(), /--no-deploy/);
+  assert.ok(failed.keptBuildId, 'the kept build is tied to the failed job');
+  assert.equal(failed.keptBuildId, failed.buildId);
+  assert.notEqual(failed.buildId, device.buildId);
+  assert.equal((await ledger()).buildId, device.buildId, 'a failed install changes nothing about what is on the device');
+  const artifacts = (await request('/api/service/v1/artifacts', { token })).body.builds;
+  assert.ok(artifacts.some(a => a.buildId === failed.keptBuildId));
+  fs.rmSync(failure);
+  const installed = await build({ install: 'mac' });
+  assert.equal(installed.status, 'success', installed.error);
+  assert.equal((await ledger()).buildId, installed.buildId); assert.equal((await ledger()).confirmed, true);
+
+  // The old request shape: deploy false builds only.
+  const legacy = await build({ deploy: false });
+  assert.equal(legacy.installVia, 'none'); assert.equal(legacy.noDeploy, true);
+
+  // auto: the Xcode tunnel while that device's Apparition is closed, the device while it is open.
+  assert.equal((await build({ install: 'auto' })).installVia, 'mac');
+  const open = await request('/api/service/v1/state', { token, headers: { 'X-Apparition-Device': 'Fixture-Modes' } });
+  assert.deepEqual(open.body.appsOpen, ['fixture-modes']);
+  assert.deepEqual((await request('/api/service/v1/state', { token })).body.appsOpen, ['fixture-modes']);
+  assert.equal((await build({ install: 'auto' })).installVia, 'device');
+
+  // A target that isn't configured is refused rather than built as the first one.
+  const refused = await request('/api/service/v1/build', { method: 'POST', token,
+    body: { repo: 'Modes', device: 'someone-else', targetPlatform: 'visionOS', branch: 'current' } });
+  assert.equal(refused.status, 400);
+});
