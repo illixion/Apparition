@@ -13,11 +13,12 @@ use std::{
     fs::File,
     io::{BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use idevice::{
     RsdService,
+    core_device::AppServiceClient,
     afc::{AfcClient, opcode::AfcFopenMode},
     installation_proxy::InstallationProxyClient,
 };
@@ -141,11 +142,13 @@ fn file_mode(meta: &std::fs::Metadata, data: &[u8], source_mode: Option<u32>) ->
 
 /// Packs the signed app at `app_path` (reusing `source_ipa`'s unchanged entries when given),
 /// uploads the IPA to PublicStaging over the tunnel and installs it.
-/// Returns `{ok, elapsedMs, packMs, uploadMs, bytes, files, reused, queued}`.
+/// Returns `{ok, elapsedMs, packMs, uploadMs, bytes, files, reused, queued, closed}`.
 ///
-/// With `detach_after_ms` > 0, stops waiting that long after asking for the install and
-/// returns `queued: true`. Installing over the calling app itself needs this: installd holds
-/// the update until the app closes, as it does for App Store updates, and applies it then.
+/// An update of an app that is running is held by installd until the app closes, so the app is
+/// closed first, as Xcode does (`close_running`), and `closed` says whether it was. The calling
+/// app itself is never closed. With `detach_after_ms` > 0, stops waiting that long after asking
+/// for the install and returns `queued: true`. Installing over the calling app itself needs
+/// this, as does an app that couldn't be closed: installd applies the update when it closes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_install_ipa(
     adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
@@ -200,25 +203,31 @@ pub async fn install(
         file.close().await?;
         let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
 
+        // Closed only now, once the upload is done, so the app stays usable while it's sent.
+        let closed = match crate::api::bundle_id(app_path) {
+            Some(bundle_id) => close_running(adapter, handshake, &bundle_id).await,
+            None => false,
+        };
+
         let mut installer = InstallationProxyClient::connect_rsd(adapter, handshake).await?;
         if detach_after_ms == 0 {
             installer.install(staged, None).await.context("Install failed")?;
-            return Ok::<_, Report>((upload_ms, false));
+            return Ok::<_, Report>((upload_ms, false, closed));
         }
         match tokio::time::timeout(std::time::Duration::from_millis(detach_after_ms), installer.install(staged, None)).await {
             Ok(done) => {
                 done.context("Install failed")?;
-                Ok((upload_ms, false))
+                Ok((upload_ms, false, closed))
             }
             Err(_) => {
                 tracing::info!("install still waiting after {detach_after_ms} ms; leaving it queued");
-                Ok((upload_ms, true))
+                Ok((upload_ms, true, closed))
             }
         }
     }
     .await;
     let _ = std::fs::remove_file(&out);
-    let (upload_ms, queued) = result?;
+    let (upload_ms, queued, closed) = result?;
     Ok(json!({
         "elapsedMs": started.elapsed().as_millis() as u64,
         "packMs": pack_ms,
@@ -227,5 +236,113 @@ pub async fn install(
         "files": packed.files,
         "reused": packed.reused,
         "queued": queued,
+        "closed": closed,
     }))
+}
+
+/// How long a running app gets to exit on SIGTERM before it's killed, and then to be gone.
+const CLOSE_GRACE: Duration = Duration::from_secs(3);
+const KILL_WAIT: Duration = Duration::from_secs(2);
+/// The most closing may take in all, so a device that stops answering can't hold up the install.
+const CLOSE_LIMIT: Duration = Duration::from_secs(15);
+
+/// Closes `bundle_id` on the device if it's running, so installd can apply an update of it
+/// straight away instead of holding it until the person closes the app: SIGTERM through
+/// CoreDevice's appservice (what `devicectl device process terminate` sends), then SIGKILL if
+/// it's still running after `CLOSE_GRACE`. The calling app is left alone: closing it would end
+/// this install. True when an app was running and is now closed; anything that goes wrong only
+/// leaves the update to wait, as before, so it's logged rather than returned.
+pub async fn close_running(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    bundle_id: &str,
+) -> bool {
+    match tokio::time::timeout(CLOSE_LIMIT, try_close(adapter, handshake, bundle_id)).await.unwrap_or_else(|_| Err(report!("timed out").into())) {
+        Ok(closed) => closed,
+        Err(error) => {
+            tracing::warn!("couldn't close {bundle_id} before updating it, so the update waits until it's closed: {}", crate::errors::describe(&error));
+            false
+        }
+    }
+}
+
+async fn try_close(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    bundle_id: &str,
+) -> Result<bool, Report> {
+    use crate::jit::{AppProcess, app_process};
+    let AppProcess::Running { pid, executable } = app_process(adapter, handshake, bundle_id).await? else {
+        return Ok(false);
+    };
+    if is_this_app(&executable) {
+        tracing::info!("{bundle_id} is this app; its update applies when it closes");
+        return Ok(false);
+    }
+    tracing::info!("closing {bundle_id} (pid {pid}) so its update applies now");
+    let mut apps = AppServiceClient::connect_rsd(adapter, handshake).await.context("appservice connect failed")?;
+    apps.send_signal(pid, SIGTERM).await.context("Can't signal the running app")?;
+    if gone(&mut apps, pid, CLOSE_GRACE).await? {
+        return Ok(true);
+    }
+    tracing::info!("{bundle_id} still running after SIGTERM; killing it");
+    apps.send_signal(pid, SIGKILL).await.context("Can't kill the running app")?;
+    if gone(&mut apps, pid, KILL_WAIT).await? {
+        return Ok(true);
+    }
+    bail!("pid {pid} is still running after SIGKILL")
+}
+
+const SIGTERM: u32 = 15;
+const SIGKILL: u32 = 9;
+
+/// Waits up to `limit` for `pid` to leave the device's process list.
+async fn gone<R: idevice::ReadWrite>(apps: &mut AppServiceClient<R>, pid: u32, limit: Duration) -> Result<bool, Report> {
+    let deadline = Instant::now() + limit;
+    loop {
+        let processes = apps.list_processes().await.context("Can't list the device's processes")?;
+        if !processes.iter().any(|p| p.pid == pid) {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+/// Whether the process at `executable` (a CoreDevice executable URL) is this one. Matched on the
+/// install's own directory (`<container UUID>/<name>.app`), which is unique per install, so an
+/// app of the same name on another device never matches; the pid alone could.
+fn is_this_app(executable: &str) -> bool {
+    std::env::current_exe().is_ok_and(|this| is_install_of(executable, &this))
+}
+
+/// Whether `executable` is inside the same installed bundle as the binary at `this`.
+fn is_install_of(executable: &str, this: &Path) -> bool {
+    let Some(bundle) = this.parent().filter(|dir| dir.extension().is_some_and(|ext| ext == "app")) else {
+        return false;
+    };
+    let Some(container) = bundle.parent().and_then(Path::file_name) else { return false };
+    let suffix = format!("{}/{}/", container.to_string_lossy(), bundle.file_name().unwrap_or_default().to_string_lossy());
+    executable.contains(&suffix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn knows_its_own_install_only() {
+        let this = Path::new("/private/var/containers/Bundle/Application/1A2B/Apparition.app/Apparition");
+        let own = "file:///private/var/containers/Bundle/Application/1A2B/Apparition.app/Apparition";
+        let reinstalled = "file:///private/var/containers/Bundle/Application/9F9F/Apparition.app/Apparition";
+        let other = "file:///private/var/containers/Bundle/Application/1A2B/Other.app/Other";
+        assert!(is_install_of(own, this));
+        assert!(!is_install_of(reinstalled, this));
+        assert!(!is_install_of(other, this));
+        // A Mac app or a command line is never on the device it installs to.
+        assert!(!is_install_of(own, Path::new("/Applications/Apparition.app/Contents/MacOS/Apparition")));
+        assert!(!is_install_of(own, Path::new("/usr/local/bin/apparition")));
+    }
 }

@@ -105,19 +105,52 @@ impl Drop for Registration {
 
 /// The pid of `bundle_id`'s running process, if it runs.
 pub async fn running_pid(adapter: &mut AdapterHandle, handshake: &mut RsdHandshake, bundle_id: &str) -> Result<Option<u64>, Report> {
-    let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
+    match app_process(adapter, handshake, bundle_id).await? {
+        AppProcess::NotInstalled => bail!("{bundle_id} isn't installed"),
+        AppProcess::NotRunning => Ok(None),
+        AppProcess::Running { pid, .. } => Ok(Some(pid as u64)),
+    }
+}
+
+pub enum AppProcess {
+    NotInstalled,
+    NotRunning,
+    /// `executable` is the process's executable URL as CoreDevice gives it.
+    Running { pid: u32, executable: String },
+}
+
+/// Whether the user app `bundle_id` is installed and running: where it's installed, from
+/// installation_proxy, then the process running from there, from CoreDevice's process list.
+/// Not CoreDevice's app list: a headset on visionOS 27 never answers `listapps` over this
+/// tunnel, while `listprocesses` on the same connection answers at once.
+pub async fn app_process(adapter: &mut AdapterHandle, handshake: &mut RsdHandshake, bundle_id: &str) -> Result<AppProcess, Report> {
+    let mut installer = idevice::installation_proxy::InstallationProxyClient::connect_rsd(adapter, handshake)
+        .await
+        .context("installation_proxy connect failed")?;
+    let apps = installer.get_apps(Some("User"), Some(vec![bundle_id.to_string()])).await.context("Can't look up the app")?;
+    let Some(path) = apps.get(bundle_id).and_then(|info| info.as_dictionary()?.get("Path")?.as_string().map(str::to_string)) else {
+        return Ok(AppProcess::NotInstalled);
+    };
+    let bundle = bundle_dir(&path);
+    let mut processes = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
         .await
         .context("appservice connect failed")?;
-    let list = apps.list_apps(false, true, false, false, false).await.context("Can't list the device's apps")?;
-    let Some(app) = list.iter().find(|app| app.bundle_identifier == bundle_id) else {
-        bail!("{bundle_id} isn't installed");
-    };
-    let bundle = format!("{}/", app.path.trim_end_matches('/'));
-    let processes = apps.list_processes().await.context("Can't list the device's processes")?;
+    let processes = processes.list_processes().await.context("Can't list the device's processes")?;
     Ok(processes
         .iter()
-        .find(|p| p.executable_url.as_ref().is_some_and(|url| url.relative.contains(&bundle)))
-        .map(|p| p.pid as u64))
+        .find_map(|p| {
+            let url = &p.executable_url.as_ref()?.relative;
+            url.contains(&bundle).then(|| AppProcess::Running { pid: p.pid, executable: url.clone() })
+        })
+        .unwrap_or(AppProcess::NotRunning))
+}
+
+/// An installed bundle's path as it appears inside its processes' executable URLs:
+/// installation_proxy says `/private/var/containers/…` and CoreDevice may say `/var/containers/…`
+/// (`/var` links to `/private/var`), so the leading `/private` is dropped, and a trailing `/`
+/// keeps `Foo.app` from matching `Foo.appex` or `Foo.app2`.
+fn bundle_dir(path: &str) -> String {
+    format!("{}/", path.trim_end_matches('/').trim_start_matches("/private"))
 }
 
 /// Serves `target`'s JIT requests until it detaches, exits or is killed. `wait_seconds` (0: no
@@ -841,6 +874,14 @@ fn attach_target(command: &str) -> Option<Option<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matches_a_bundle_under_either_var_path() {
+        let bundle = bundle_dir("/private/var/containers/Bundle/Application/E340/Hypnos.app");
+        assert!("file:///private/var/containers/Bundle/Application/E340/Hypnos.app/Hypnos".contains(&bundle));
+        assert!("file:///var/containers/Bundle/Application/E340/Hypnos.app/Hypnos".contains(&bundle));
+        assert!(!"file:///var/containers/Bundle/Application/E340/Hypnos.app2/Hypnos".contains(&bundle));
+    }
 
     #[test]
     fn finds_attach_targets() {

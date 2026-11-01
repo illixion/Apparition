@@ -1208,7 +1208,7 @@ function done() {
   $(panel, "title").textContent = result.watchOnly ? `${name} is on ${watchNames}.` : `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your device"}.`;
   $(panel, "lede").textContent = result.watchOnly ? `Sent to the Apple Watch through ${result.deviceName ?? "the iPhone"}.` : result.queued
     ? `Sent in ${result.seconds?.toFixed(1)} s, and ${result.deviceName ?? "the device"} is still installing it. If the app is open there, the update finishes when it's closed.`
-    : `Installed in ${result.seconds?.toFixed(1)} s.`;
+    : `Installed in ${result.seconds?.toFixed(1)} s.${result.closed ? " It was open there, so it was closed for the update." : ""}`;
 
   const next = $(panel, "next");
   const add = (/** @type {string} */ text) => {

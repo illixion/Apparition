@@ -996,8 +996,9 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             }
             stage(&app, "installing", json!({ "device": info.name, "update": existing.is_some() && data_mode != "discard" }));
             let source = prepared.path.is_file().then_some(prepared.path.as_path());
-            // An update of an app that's open waits in installd until it closes, so only an
-            // update stops waiting after 20 s; a new install, however large, is waited for.
+            // The install closes an app that's open before updating it; one it couldn't close
+            // waits in installd until it's closed, so only an update stops waiting after 20 s.
+            // A new install, however large, is waited for.
             let reply = tunnel.install(&signed_path, source, if existing.is_some() && data_mode != "discard" { 20_000 } else { 0 }).await?;
 
             // The watch app, if one was kept, goes to each paired Watch through the phone: iOS only
@@ -1073,6 +1074,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 "update": existing.is_some() && data_mode != "discard",
                 "seconds": reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0,
                 "queued": reply["queued"].as_bool() == Some(true),
+                "closed": reply["closed"].as_bool() == Some(true),
                 "strippedExtensions": stripped,
                 "watches": watch_installs,
                 "isApparition": is_apparition,

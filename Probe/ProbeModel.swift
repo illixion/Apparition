@@ -411,6 +411,7 @@ final class ProbeModel {
                                  Double(bytes) / 1e6, reply["packMs"] as? Int ?? 0, reply["reused"] as? Int ?? 0,
                                  reply["files"] as? Int ?? 0, reply["uploadMs"] as? Int ?? 0)
             }
+            if reply["closed"] as? Bool == true { detail += ", after closing the running app" }
             log.info("\(detail, privacy: .public)")
             return { attempt in attempt.detail = detail }
         }

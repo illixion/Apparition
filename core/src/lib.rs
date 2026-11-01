@@ -1067,6 +1067,10 @@ pub unsafe extern "C" fn apparition_install(
         let handshake = unsafe { &mut (*handshake).0 };
         let started = std::time::Instant::now();
         runtime().block_on(crate::stop::stoppable(async {
+            // installd holds an update of a running app until it closes: close it first.
+            if let Some(bundle_id) = crate::api::bundle_id(&app_path) {
+                crate::ipa::close_running(adapter, handshake, &bundle_id).await;
+            }
             isideload::sideload::install::install_app_rsd(adapter, handshake, &app_path, |progress| {
                 tracing::info!("install progress {progress}%");
             })

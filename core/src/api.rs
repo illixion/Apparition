@@ -337,6 +337,12 @@ impl Tunnel {
         crate::jit::running_pid(&mut self.adapter, &mut self.handshake, bundle_id).await
     }
 
+    /// Closes `bundle_id` if it's running (never the calling app); true when it was. See
+    /// `crate::ipa::close_running`, which `install` runs before an update.
+    pub async fn close_running(&mut self, bundle_id: &str) -> bool {
+        crate::ipa::close_running(&mut self.adapter, &mut self.handshake, bundle_id).await
+    }
+
     /// Launches or attaches to an app and serves its JIT requests until it no longer needs a
     /// debugger. See `crate::jit::serve`.
     pub async fn serve_jit(

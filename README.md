@@ -658,7 +658,7 @@ is deleted when the screen closes. Anyone with the file and its password can sig
 Apple ID, so give it only to an app you trust; if it gets out, revoke the certificate in
 Certificates & App IDs.
 
-An update of an app that is open on the headset finishes when it's closed. It never revokes a
+An app that is open on the headset is closed before its update installs, as Xcode does, so the update applies straight away; only Apparition's update of itself waits until you close it. It never revokes a
 certificate on its own: with no free slot it offers to receive another Apparition's key, then to
 revoke one you choose.
 
