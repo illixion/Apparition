@@ -342,6 +342,8 @@ final class LibraryModel {
         var sourceUpdates: [String] = []
         /// What could not be reached or verified.
         var failures: [String] = []
+        /// The same updates, as `UpdateNotice` announces them.
+        var announcements: [UpdateNotice.Item] = []
 
         var summary: String {
             var parts: [String] = []
@@ -356,7 +358,8 @@ final class LibraryModel {
     /// sources that installed apps came from (no other). The one place updates are looked for, and
     /// only when a person asks (Shortcuts' Check for Updates option), so nothing leaves the device
     /// on its own. The asks go out side by side and change what the Library offers: its Update
-    /// buttons read the stored listings, so they are ready when it opens.
+    /// buttons read the stored listings, so they are ready when it opens. A new update also gets
+    /// one quiet notification (`UpdateNotice`).
     func checkExternalUpdates() async -> ExternalCheck {
         let ids = Set(installed.map(\.source)).intersection(sources.map(\.id))
         async let release: Void = checkForUpdate()
@@ -365,15 +368,21 @@ final class LibraryModel {
         }
         await release
         var found = ExternalCheck(apparition: availableUpdate?.version)
+        if let version = found.apparition {
+            found.announcements.append(.init(key: "apparition|\(version)", title: "Apparition \(version)"))
+        }
         if let error = updateCheck.error { found.failures.append("Couldn't check for a new Apparition: \(error)") }
         for source in sources where ids.contains(source.id) {
             if let error = source.error { found.failures.append("\(source.name ?? source.id): \(error)") }
             for record in installed where record.source == source.id {
                 if let listed = source.apps.first(where: { $0.id == record.id }), listed.version != record.version {
                     found.sourceUpdates.append("\(record.name) \(listed.version)")
+                    found.announcements.append(.init(key: "\(source.id)|\(record.id)|\(listed.version)", title: "\(record.name) \(listed.version)"))
                 }
             }
         }
+        // Once per update, quietly, unless Settings turned it off.
+        await UpdateNotice.announce(found.announcements)
         return found
     }
 

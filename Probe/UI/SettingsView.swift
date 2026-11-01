@@ -12,6 +12,8 @@ struct SettingsView: View {
     @AppStorage("pairedUDID") private var pairedUDID: String?
     @AppStorage("pairedName") private var pairedName: String?
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
+    @AppStorage(UpdateNotice.enabledKey) private var notifyAboutUpdates = true
+    @State private var notificationsDenied = false
     @State private var confirmForget = false
     @State private var confirmSignOut = false
     @State private var sharingSigning = false
@@ -26,6 +28,9 @@ struct SettingsView: View {
                 accountSection
                 pairingSection
                 shortcutsSection
+                #if !os(tvOS)
+                notificationsSection
+                #endif
                 advancedSection
                 aboutSection
             }
@@ -181,6 +186,25 @@ struct SettingsView: View {
             Text("Unattended refreshes need Remember password on and the companion reachable.")
         }
     }
+
+    #if !os(tvOS)
+    private var notificationsSection: some View {
+        Section {
+            Toggle("Notify about available updates", isOn: $notifyAboutUpdates)
+                .onChange(of: notifyAboutUpdates) { _, on in
+                    guard on else { return }
+                    Task { await UpdateNotice.requestAccess(); notificationsDenied = await UpdateNotice.isDenied() }
+                }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            Text(notificationsDenied && notifyAboutUpdates
+                 ? "Notifications are off for Apparition in the system's Settings, so this can't show anything."
+                 : "A quiet notification, with no sound, once for each update that a check finds. Apparition looks for updates only when you ask (Check for Update, Reload Sources) or when the Refresh Apps shortcut's Check for Updates is on.")
+        }
+        .task { notificationsDenied = await UpdateNotice.isDenied() }
+    }
+    #endif
 
     private var advancedSection: some View {
         Section("Advanced") {

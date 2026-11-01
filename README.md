@@ -424,6 +424,10 @@ release site, Reload Sources in Browse fetches the sources, and the Refresh Apps
 signing: the release site, and only the sources your installed apps came from. Off by default.
 Nothing fetches any of them in the background, and the Library opens without a request.
 
+When one of those checks finds an update, Apparition posts one quiet notification (no sound, in
+the notification list) for it, and says nothing more about that update on later checks. Settings,
+Notifications turns it off.
+
 ## Shortcuts automation
 
 Background refresh is not reliable, so the dependable way to keep apps signed is a
