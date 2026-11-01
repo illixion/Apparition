@@ -142,13 +142,13 @@ struct LibraryView: View {
 
     private var refreshAllButton: some View {
         Button {
-            Task { await library.refresh(force: false, margin: LibraryModel.buttonRefreshMargin, trigger: "button") }
+            Task { await library.refresh(force: false, trigger: "button") }
         } label: {
             Label("Refresh Expiring", systemImage: "arrow.triangle.2.circlepath")
         }
         .buttonStyle(.borderedProminent)
-        .disabled(library.busy || model.busy || !library.hasExpiring)
-        .help("Re-sign and reinstall the apps with 4 days or less left. Each app's own Refresh button refreshes it whatever it has left.")
+        .disabled(library.busy || model.busy || !library.hasDue)
+        .help("Re-sign and reinstall the apps with 3 days or less left. Each app's own Refresh button refreshes it whatever it has left.")
     }
 
     @ViewBuilder
@@ -570,7 +570,14 @@ struct LibraryView: View {
                         }
                     }
                 }
-                Text("Refreshes itself with \(library.signing.signerName(library.selfSigner)) once due, after the other apps. The update applies the next time Apparition closes.")
+                if library.availableUpdate == nil, library.updateCheck.checkedAt != nil {
+                    if let error = library.updateCheck.error {
+                        Note(text: "Couldn't check for an update: \(error)", kind: .error).lineLimit(3)
+                    } else {
+                        Note(text: "Apparition is up to date.", kind: .success)
+                    }
+                }
+                Text("Refreshes itself with \(library.signing.signerName(library.selfSigner)) once due, after the other apps. It looks for a newer Apparition by itself only then, because installing one re-signs it; Check for Update asks whenever you want. The update applies the next time Apparition closes.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 12) {
@@ -582,6 +589,18 @@ struct LibraryView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(library.busy || model.busy)
+                    } else {
+                        Button {
+                            Task { await library.checkForUpdate(force: true) }
+                        } label: {
+                            if library.updateCheck.checking {
+                                ProgressView()
+                            } else {
+                                Label("Check for Update", systemImage: "arrow.down.circle.dotted")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(library.updateCheck.checking)
                     }
                     Button {
                         confirmingSelfRefresh = true
@@ -605,7 +624,7 @@ struct LibraryView: View {
             return StatusPill(text: "Expired \(expires.relativeToNow)", systemImage: "xmark.circle.fill", tint: .red)
         }
         return StatusPill(text: "Expires \(expires.relativeToNow)", systemImage: "clock",
-                          tint: left <= LibraryModel.buttonRefreshMargin ? .orange : .green)
+                          tint: left <= LibraryModel.refreshMargin ? .orange : .green)
     }
 
     // MARK: App card
@@ -648,7 +667,7 @@ struct LibraryView: View {
         if left <= 0 {
             return StatusPill(text: "Expired \(expires.relativeToNow)", systemImage: "xmark.circle.fill", tint: .red)
         }
-        let tint: Color = left <= LibraryModel.buttonRefreshMargin ? .orange : .green
+        let tint: Color = left <= LibraryModel.refreshMargin ? .orange : .green
         return StatusPill(text: "Expires \(expires.relativeToNow)", systemImage: "clock", tint: tint)
     }
 

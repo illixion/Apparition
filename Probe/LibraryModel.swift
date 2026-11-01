@@ -93,15 +93,13 @@ final class LibraryModel {
     nonisolated static let processingTaskId = "com.illixion.apparition.refresh-processing"
     /// Test hook: the next background run refreshes everything, due or not.
     nonisolated static let forceNextBackgroundKey = "forceNextBackgroundRefresh"
-    /// Free-account profiles last 7 days; an unattended run (background task, Shortcuts without
-    /// "All Apps") refreshes an app once fewer than this many are left.
+    /// Free-account profiles last 7 days. This is the one number for "needs a refresh": the Library's
+    /// Refresh button, background runs and Shortcuts' Refresh Apps (without "All Apps") only re-sign
+    /// an app with this long or less left, and the automatic check for a new Apparition waits for
+    /// it too. Every re-sign is a round of requests to Apple (a sign-in, the certificate and the
+    /// profile), so an app with days to spare costs those for nothing. What a person asks for by
+    /// name (an app's own Refresh, Install update, `force`) ignores it.
     nonisolated static let refreshMargin: TimeInterval = 3 * 24 * 3600
-    /// What the Library's Refresh button covers: apps with this long or less left. A little wider
-    /// than the unattended margin, so pressing it a day early still helps, but it never re-signs an
-    /// app that has plenty of time. Every re-sign is a round of requests to Apple (a sign-in, the
-    /// certificate and the profile), so an app with days to spare costs those for nothing. Per-app
-    /// Refresh buttons and `force` runs ignore it.
-    nonisolated static let buttonRefreshMargin: TimeInterval = 4 * 24 * 3600
 
     private(set) var sources: [Sources.Source] = []
     private(set) var installed: [InstalledApp] = []
@@ -634,17 +632,17 @@ final class LibraryModel {
         incoming = nil
     }
 
-    /// Re-signs and reinstalls every kept app that expires within `margin` (all of them with
+    /// Re-signs and reinstalls every kept app that expires within `refreshMargin` (all of them with
     /// `force`). Called by the background task, by Shortcuts and by the Library's button. With
     /// nothing due it ends without signing in or contacting Apple at all.
     @discardableResult
-    func refresh(force: Bool, margin: TimeInterval = LibraryModel.refreshMargin, trigger: String) async -> RefreshRun {
+    func refresh(force: Bool, trigger: String) async -> RefreshRun {
         var run = RefreshRun(startedAt: DebugTime.iso(Date()), trigger: trigger)
         refreshRuns.insert(run, at: 0)
         save()
-        let due = installed.filter { force || Self.isDue($0, within: margin) }
+        let due = installed.filter { force || Self.isDue($0) }
         // Apparition itself only when due, even with force: each update waits for the app to close.
-        let selfDue = selfIsDue(within: force ? Self.refreshMargin : margin)
+        let selfDue = selfIsDue
         if due.isEmpty && !selfDue {
             run.results["-"] = "nothing due"
         } else if busy {
@@ -683,18 +681,15 @@ final class LibraryModel {
         return run
     }
 
-    /// Whether the app has `margin` or less of its signature left. One that was never signed has
-    /// no expiry and needs signing, so it counts.
-    nonisolated static func isDue(_ app: InstalledApp, within margin: TimeInterval = LibraryModel.refreshMargin, now: Date = Date()) -> Bool {
+    /// Whether the app has `refreshMargin` or less of its signature left. One that was never signed
+    /// has no expiry and needs signing, so it counts.
+    nonisolated static func isDue(_ app: InstalledApp, now: Date = Date()) -> Bool {
         guard let expires = expiryDate(app) else { return true }
-        return expires.timeIntervalSince(now) <= margin
+        return expires.timeIntervalSince(now) <= refreshMargin
     }
 
-    /// Whether the Library's Refresh button has anything to do: an app, or Apparition itself, with
-    /// `buttonRefreshMargin` or less left.
-    var hasExpiring: Bool {
-        installed.contains { Self.isDue($0, within: Self.buttonRefreshMargin) } || selfIsDue(within: Self.buttonRefreshMargin)
-    }
+    /// Whether a refresh run has anything to do: an app, or Apparition itself, that is due.
+    var hasDue: Bool { installed.contains { Self.isDue($0) } || selfIsDue }
 
     /// When the app's signing profile runs out, if it was signed here.
     nonisolated static func expiryDate(_ app: InstalledApp) -> Date? {
@@ -1079,11 +1074,9 @@ final class LibraryModel {
         signing.identities.first { !$0.expired && selfApp?.certificateIds.contains($0.id) == true }?.id ?? SigningStore.appleID
     }
 
-    var selfIsDue: Bool { selfIsDue(within: Self.refreshMargin) }
-
-    func selfIsDue(within margin: TimeInterval) -> Bool {
+    var selfIsDue: Bool {
         guard let expires = selfApp?.expires else { return false }
-        return expires.timeIntervalSinceNow <= margin
+        return expires.timeIntervalSinceNow <= Self.refreshMargin
     }
 
     /// A newer release this copy can install: one for this platform, signed by a release key.
@@ -1093,9 +1086,13 @@ final class LibraryModel {
         return latest
     }
 
-    /// Asks apparition.illixion.com for the latest release, at most every 6 hours unless `force`.
+    /// Asks apparition.illixion.com for the latest release. Without `force` (the automatic check
+    /// when the Library opens) it asks only while Apparition is due for a refresh, since installing
+    /// the update re-signs it and an early re-sign is a round of requests to Apple for nothing; and
+    /// at most every 6 hours. `force` is a person asking, and always asks.
     func checkForUpdate(force: Bool = false) async {
         if updateCheck.checking { return }
+        if !force, !selfIsDue { return }
         if !force, let checked = updateCheck.checkedAt, Date().timeIntervalSince(checked) < 6 * 3600 { return }
         updateCheck.checking = true
         defer { updateCheck.checking = false }
