@@ -33,7 +33,9 @@ struct DeveloperView: View {
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if service.connected { connected } else { DeveloperConnectView(service: service) }
+                if service.connected { connected }
+                else if service.isRestoring { ProgressView("Connecting to the build service…").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                else { DeveloperConnectView(service: service) }
             }
             .navigationTitle("Developer")
             .navigationDestination(for: DeveloperRoute.self) { route in
@@ -86,6 +88,9 @@ struct DeveloperView: View {
 
     private var projects: some View {
         Form {
+            if service.state == nil {
+                Section { HStack(spacing: 12) { ProgressView(); Text("Loading projects…").foregroundStyle(.secondary) } }
+            }
             if !service.message.isEmpty {
                 Section { Text(service.message).accessibilityIdentifier("buildServiceStatus") }
             }

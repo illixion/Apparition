@@ -191,6 +191,7 @@ final class BuildService {
         let token: String
         let capabilities: [String]?
     }
+    private struct Advertisement: Decodable { let capabilities: [String]? }
     private struct BuildReply: Decodable { let jobs: [Job] }
     private struct Log: Decodable { let chunk: String }
     private struct OK: Decodable { let ok: Bool }
@@ -201,7 +202,13 @@ final class BuildService {
             switch self {
             case .address: "Use an HTTPS service address, or HTTP on localhost. Do not include credentials, a path or query."
             case .response: "The service returned an unsupported or oversized response."
-            case .rejected(let status): status == 401 ? "Connect to the build service again." : "The service refused the request (HTTP \(status))."
+            case .rejected(let status):
+                switch status {
+                case 401: "Connect to the build service again."
+                // A proxy in front of the service answers these while the service itself is down or restarting.
+                case 502, 503, 504: "The build service isn't answering right now (HTTP \(status))."
+                default: "The service refused the request (HTTP \(status))."
+                }
             case .refused(let reason): reason
             case .expired: "The connection changed; try again."
             }
@@ -235,6 +242,12 @@ final class BuildService {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let passwords: BuildServicePasswords
     @ObservationIgnored private var restoreAttempted = false
+    /// A poll failed and none has succeeded since: the service is down or restarting, so what it
+    /// advertised (`capabilities`) may be out of date once it answers again.
+    @ObservationIgnored private var unreachable = false
+    /// The sentence a failed poll left in `message`, so a later success clears that and nothing else.
+    @ObservationIgnored private var pollMessage: String?
+    @ObservationIgnored private var capabilitiesFetchedAt = Date.distantPast
 
     init(defaults: UserDefaults = .standard, passwords: BuildServicePasswords = .keychain) {
         self.defaults = defaults
@@ -327,7 +340,8 @@ final class BuildService {
                 throw Failure.rejected(401)
             }
             let refreshed: String
-            do { refreshed = try await openSession(at: base, password: password).token }
+            let advertised: Set<String>
+            do { (refreshed, advertised) = try await openSession(at: base, password: password) }
             catch Failure.rejected(401) {
                 guard expected == generation else { throw Failure.expired }
                 passwords.delete(base.absoluteString); connected = false; self.token = nil
@@ -335,6 +349,8 @@ final class BuildService {
             }
             guard expected == generation else { throw Failure.expired }
             self.token = refreshed
+            // A new session means the service restarted, perhaps as a newer version.
+            capabilities = advertised; capabilitiesFetchedAt = Date()
             reply = try await request("api/service/v1/" + path, at: base, token: refreshed, body: body)
         }
         guard expected == generation else { throw Failure.expired }
@@ -375,7 +391,8 @@ final class BuildService {
             guard let url = destination else { throw Failure.address }
             let opened = try await openSession(at: url, password: password)
             guard expected == generation else { throw Failure.expired }
-            base = url; token = opened.token; capabilities = opened.capabilities; connected = true; restoreAttempted = true
+            base = url; token = opened.token; capabilities = opened.capabilities; capabilitiesFetchedAt = Date()
+            connected = true; restoreAttempted = true; unreachable = false; pollMessage = nil
             defaults.set(url.absoluteString, forKey: "buildServiceURL")
             let saved = !rememberPassword || passwords.save(url.absoluteString, password)
             message = saved ? "Connected." : "Connected, but the password could not be saved in this device's Keychain."
@@ -401,21 +418,56 @@ final class BuildService {
     /// Only the projects, devices and jobs: cheap enough to poll while a build runs.
     func refreshState() async {
         guard connected else { return }
-        do { state = try await authenticated("state") } catch { message = error.localizedDescription }
+        do {
+            state = try await authenticated("state")
+            if pollSucceeded() { await refreshCapabilities() }
+        } catch { pollFailed(error) }
     }
+
+    /// What the service can do, asked again: it may have been restarted as a newer version since the
+    /// session opened (a restart that keeps sessions never shows up as a 401). Without `force`, at
+    /// most once a minute.
+    func refreshCapabilities(force: Bool = true) async {
+        guard connected, force || Date().timeIntervalSince(capabilitiesFetchedAt) > 60 else { return }
+        guard let reply: Advertisement = try? await authenticated("capabilities") else { return }
+        capabilities = Set(reply.capabilities ?? [])
+        capabilitiesFetchedAt = Date()
+    }
+
+    private func pollFailed(_ error: Error) {
+        unreachable = true
+        pollMessage = error.localizedDescription
+        message = error.localizedDescription
+    }
+
+    /// Notes that the service answered. A message an earlier failed poll left is not true any more.
+    /// Returns whether the service had been unreachable.
+    @discardableResult
+    private func pollSucceeded() -> Bool {
+        let recovered = unreachable
+        unreachable = false
+        if let pollMessage, message == pollMessage { message = "" }
+        pollMessage = nil
+        return recovered
+    }
+
+    /// The first request after a connection is being restored, before there is anything to show.
+    var isRestoring: Bool { !connected && (busy || (rememberPassword && !restoreAttempted && hasRememberedPassword)) }
 
     func refresh() async {
         guard connected else { return }
         do {
             let next: State = try await authenticated("state")
             state = next
+            pollSucceeded()
+            await refreshCapabilities(force: false)
             let builds: Artifacts = try await authenticated("artifacts")
             artifacts = builds.builds
             let submitted: Traces = try await authenticated("traces")
             traces = submitted.traces
             let crashes: CrashLogs = try await authenticated("crashlogs")
             crashLogs = crashes.crashLogs
-        } catch { message = error.localizedDescription }
+        } catch { pollFailed(error) }
     }
 
     /// Downloads one immutable appstore artifact with the service bearer. The caller hands this

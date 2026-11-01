@@ -78,6 +78,29 @@ extension BuildService.Job {
     }
 }
 
+/// A service that goes down and comes back, perhaps as another version: the error a proxy gave
+/// while it was down doesn't stay on screen, and what it can do is asked again.
+@MainActor func checkServiceRestart(_ service: BuildService, origin: String) async throws {
+    func control(_ mode: String) async throws { _ = try await URLSession.shared.data(from: URL(string: origin + "control/" + mode)!) }
+    precondition(service.installsOnDevice)
+    try await control("outage")
+    await service.refreshState()
+    precondition(service.message == "The build service isn't answering right now (HTTP 502).", service.message)
+    // It comes back as an older version, with its sessions intact.
+    try await control("downgraded")
+    await service.refreshState()
+    precondition(service.message.isEmpty, "the outage's message should clear once it answers: \(service.message)")
+    precondition(!service.installsOnDevice, "an older service can't take builds for the device, and the app must notice")
+    // And back to the newer one: an explicit check (what Apparition does when it comes to the front).
+    try await control("normal")
+    await service.refreshCapabilities()
+    precondition(service.installsOnDevice)
+    // Someone else's message is not removed by a poll.
+    service.message = "Queued build #7."
+    await service.refreshState()
+    precondition(service.message == "Queued build #7.")
+}
+
 @main struct CheckBuildService {
     @MainActor static func main() async throws {
         for address in ["http://192.168.1.2", "https://user:password@example.com", "https://example.com/path", "https://example.com?q=1", "file:///tmp/a"] {
@@ -146,6 +169,7 @@ extension BuildService.Job {
         precondition(chained?.id == 4 && service.message == "Queued build #3, then re-sign #4.", service.message)
         precondition(project.git?.commit == "abc1234" && service.artifacts(for: project).count == 1)
         try await checkDeviceInstall(service, project: project)
+        try await checkServiceRestart(service, origin: origin)
         await service.disconnect()
         precondition(!service.canResign && !service.connected && service.state == nil && service.detail.isEmpty)
         precondition(stored[origin] == nil)

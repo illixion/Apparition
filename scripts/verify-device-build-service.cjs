@@ -17,12 +17,15 @@ let job = null, resignJob = null, deviceJob = null, revoked = false, redirected 
 const reports = [];
 const resigns = [];
 let successfulConnections = 0, expiredOnce = false;
+// What the fake service is doing, set by the check through /control/<mode>: 'normal', 'outage' (a proxy's 502) or 'downgraded' (restarted as an older version).
+let mode = 'normal';
 const requests = [];
 const server = http.createServer(async (req, res) => {
   try {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : null;
     requests.push(req.url);
+    if (req.url.startsWith('/control/')) { mode = req.url.slice('/control/'.length); return res.writeHead(200).end('{}'); }
     assert.equal(req.headers.cookie, undefined);
     const json = value => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
     if (req.url === '/api/service/connect') {
@@ -46,6 +49,9 @@ const server = http.createServer(async (req, res) => {
     // Every request names the device it comes from, percent-encoded, so the service knows Apparition is open.
     assert.equal(req.headers['x-apparition-device'], 'Fixture%20Vision%20Pro');
     assert.equal(revoked, false);
+    if (mode === 'outage') { res.writeHead(502, { 'Content-Type': 'text/html' }); return res.end('<html>Bad Gateway</html>'); }
+    if (req.url === '/api/service/v1/capabilities') return json({ protocol: 'apparition-service', version: 1,
+      capabilities: mode === 'downgraded' ? ['builds', 'resign'] : ['builds', 'resign', 'resign-build', 'install-modes', 'report-install'] });
     if (req.url === '/api/service/v1/state') {
       if (deviceJob) {
         devicePolls++;

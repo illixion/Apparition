@@ -61,6 +61,8 @@ final class DeveloperModel {
     /// Xcode tunnel only when Apparition is closed). Returns when Apparition leaves the front.
     func keepPresent(while active: @MainActor () -> Bool) async {
         await service.restoreConnection()
+        // The service may have been restarted (as a newer version) while Apparition was away.
+        await service.refreshCapabilities()
         while service.connected, active(), !Task.isCancelled {
             await service.refreshState()
             try? await Task.sleep(for: .seconds(8))
