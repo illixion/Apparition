@@ -854,7 +854,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let inventory = apparition_core::install_plan::inspect(&prepared.path)?;
             let is_apparition = inventory.id == APPARITION_ID;
             // A watch app needs the paired Watch registered on the team; only the iPhone can say which.
-            let watches = if inventory.has_watch_app() && api::Platform::of_product(&info.product_type) == api::Platform::IOS {
+            let watches = if (inventory.has_watch_app() || apparition_core::install_plan::is_watch_only(&prepared.path)) && api::Platform::of_product(&info.product_type) == api::Platform::IOS {
                 tunnel.paired_watches().await.unwrap_or_default()
             } else {
                 Vec::new()
@@ -962,6 +962,34 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let bundle_id = api::bundle_id(&signed_path).ok_or_else(|| rootcause::report!("The signed app has no bundle ID"))?;
 
             if bundle_id != target { return Err(rootcause::report!("Signer changed the reviewed App ID. Review the install again")); }
+            if signed["watchOnly"].as_bool() == Some(true) {
+                // A watchOS app on its own: it goes to each Watch through the phone, nothing to the phone.
+                let mut watch_installs = Vec::new();
+                for watch in &watches {
+                    stage(&app, "watch", json!({ "name": watch.name, "trust": false }));
+                    let waiting = |_: &str| stage(&app, "watch", json!({ "name": watch.name, "trust": true }));
+                    let result = async {
+                        let mut companion = tunnel.watch(&watch.udid, &state.store.dir, &waiting).await?;
+                        companion.install(&signed_path, &|_| {}).await
+                    }
+                    .await;
+                    watch_installs.push(match result {
+                        Ok(reply) => json!({ "name": watch.name, "seconds": reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0 }),
+                        Err(error) => json!({ "name": watch.name, "error": error.to_string() }),
+                    });
+                }
+                if watch_installs.iter().all(|w| w["error"].is_string()) {
+                    let first = watch_installs.first().and_then(|w| w["error"].as_str()).unwrap_or("no Apple Watch");
+                    return Err(rootcause::report!("The watch app didn't install: {first}"));
+                }
+                return Ok(json!({
+                    "bundleId": bundle_id, "deviceName": info.name, "update": false, "seconds": 0.0, "queued": false,
+                    "strippedExtensions": stripped, "watches": watch_installs, "watchOnly": true, "isApparition": false,
+                    "migration": Value::Null, "migrationPending": false, "handoff": Value::Null, "handoffError": Value::Null,
+                    "pairingHandedOver": false, "platform": api::Platform::of_product(&info.product_type).os_name(),
+                    "appleId": apple_id.map(|(email, _)| email),
+                }));
+            }
             let existing = tunnel.installed_app(&bundle_id).await?;
             if data_mode == "discard" && existing.is_some() {
                 tunnel.uninstall(&bundle_id).await?;

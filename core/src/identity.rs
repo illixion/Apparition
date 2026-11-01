@@ -502,9 +502,28 @@ pub unsafe extern "C" fn apparition_app_info(path: *const c_char) -> *mut c_char
     reply((|| app_summary(&PathBuf::from(unsafe { text(path) }?)))())
 }
 
+/// Whether `app` is a watchOS app on its own (an IPA whose main app is the Watch app), rather
+/// than an iPhone app that carries one.
+pub fn is_watch_only(app: &Path) -> bool {
+    let Some(info) = app_info(app) else { return false };
+    let list = |key| info.get(key).and_then(plist::Value::as_array).cloned().unwrap_or_default();
+    let platforms = list("CFBundleSupportedPlatforms");
+    if !platforms.is_empty() {
+        return platforms.iter().all(|p| p.as_string() == Some("WatchOS"));
+    }
+    let family = list("UIDeviceFamily");
+    !family.is_empty() && family.iter().all(|f| f.as_unsigned_integer() == Some(4))
+}
+
 /// Refuses an app built only for other devices than `platform`'s, before signing it spends one of
 /// a free team's App IDs on something that can't install. An app that doesn't say is let through.
 pub fn check_app_platform(app: &Path, platform: Platform) -> Result<(), Report> {
+    if is_watch_only(app) {
+        if platform == Platform::IOS {
+            return Ok(());
+        }
+        bail!("This is an Apple Watch app. Install it through an iPhone with the Watch paired, not on {}", platform.os_name());
+    }
     let built = app_info(app).map(|info| Platform::of_app(&info)).unwrap_or_default();
     if built.is_empty() || built.iter().any(|&b| platform.runs(b)) {
         return Ok(());

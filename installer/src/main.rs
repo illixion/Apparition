@@ -810,7 +810,7 @@ async fn sign_with_apple_id(options: &Options, udid: &str, name: &str, strip: bo
 fn report_signed(signed: &serde_json::Value) -> Result<PathBuf, Error> {
     let signed_path = PathBuf::from(signed["signedPath"].as_str().ok_or_else(|| fail("signing returned no app"))?);
     if let Some(stripped) = signed["strippedExtensions"].as_array().filter(|s| !s.is_empty()) {
-        println!("Removed extensions no profile covers: {stripped:?}");
+        println!("Removed extensions no profile covers: {stripped:?}. A watch app needs a profile that covers it and lists the Watch.");
     }
     if let Some(capabilities) = signed.get("capabilities") {
         println!("Capabilities asked for: {}", capabilities["requested"]);
@@ -1012,7 +1012,8 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
     let info = tunnel.device_info().await?;
     // A watch app needs the paired Watch registered with it; only the iPhone can say which.
     if api::Platform::of_product(&info.product_type) == api::Platform::IOS
-        && apparition_core::install_plan::inspect(&options.ipa).is_ok_and(|inventory| inventory.has_watch_app())
+        && (apparition_core::install_plan::is_watch_only(&options.ipa)
+            || apparition_core::install_plan::inspect(&options.ipa).is_ok_and(|inventory| inventory.has_watch_app()))
     {
         for watch in tunnel.paired_watches().await? {
             println!("Paired Apple Watch: {} ({}, watchOS {}).", watch.name, watch.product_type, watch.os_version);
@@ -1047,6 +1048,14 @@ async fn sign_and_install(
     };
     let signed_path = report_signed(&signed)?;
     let installed_id = api::bundle_id(&signed_path).ok_or_else(|| fail("the signed app has no bundle ID"))?;
+    if signed["watchOnly"].as_bool() == Some(true) {
+        // A watchOS app on its own: it goes to the Watch through the iPhone, and nothing to the phone.
+        let watches = signed["watches"].as_array().cloned().unwrap_or_default();
+        if install_on_watches(&watches, &signed_path, tunnel).await? == 0 {
+            return Err(fail("the watch app didn't install on any Apple Watch"));
+        }
+        return Ok(());
+    }
 
     // installd holds an update of an open app until it closes.
     let installed = tunnel.installed_app(&installed_id).await?;
@@ -1092,22 +1101,32 @@ async fn install_watch_apps(signed: &serde_json::Value, signed_path: &Path, tunn
         println!("The signed app has no watch app left to install.");
         return Ok(());
     };
+    install_on_watches(watches, &app, tunnel).await?;
+    Ok(())
+}
+
+/// Puts the signed watch app `app` on each of `watches` through the iPhone; how many took it.
+async fn install_on_watches(watches: &[serde_json::Value], app: &Path, tunnel: &mut api::Tunnel) -> Result<usize, Error> {
     let dir = store().dir.clone();
+    let mut installed = 0;
     for watch in watches {
         let (Some(udid), Some(name)) = (watch["udid"].as_str(), watch["name"].as_str()) else { continue };
         println!("Installing the watch app on {name}…");
         let waiting = |what: &str| println!("{what}");
         let result = async {
             let mut companion = tunnel.watch(udid, &dir, &waiting).await?;
-            companion.install(&app, &|_| {}).await
+            companion.install(app, &|_| {}).await
         }
         .await;
         match result {
-            Ok(reply) => println!("Installed on {name} in {:.1} s.", reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0),
-            Err(error) => println!("Couldn't install on {name}: {error}"),
+            Ok(reply) => {
+                installed += 1;
+                println!("Installed on {name} in {:.1} s.", reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0)
+            }
+            Err(error) => println!("Couldn't install on {name}: {error}\n  If the app was signed with your own certificate, its profile has to list this Watch's UDID ({udid}) as well as the iPhone's."),
         }
     }
-    Ok(())
+    Ok(installed)
 }
 
 /// Puts what signed Apparition in its Files inbox, so it can refresh itself and its apps:

@@ -2,6 +2,7 @@
 use std::path::{Path, PathBuf};
 use isideload::sideload::application::Application;
 use rootcause::prelude::*;
+pub use crate::identity::is_watch_only;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,6 +25,8 @@ pub struct Inventory {
     pub id: String,
     pub name: String,
     pub extensions: Vec<Extension>,
+    /// The app is itself a watchOS app (a bare Watch IPA): it goes to the Watch, not the iPhone.
+    pub watch_only: bool,
 }
 
 impl Inventory {
@@ -113,7 +116,7 @@ pub fn inspect(path: &Path) -> Result<Inventory, Report> {
         }
     }
     extensions.sort_by(|a,b| a.id.cmp(&b.id));
-    Ok(Inventory { id: app.main_bundle_id()?, name: app.main_app_name()?, extensions })
+    Ok(Inventory { id: app.main_bundle_id()?, name: app.main_app_name()?, extensions, watch_only: is_watch_only(path) })
 }
 
 /// Copies the IPA `src` to `dst` without its watch app (`Payload/X.app/Watch/`), for an install

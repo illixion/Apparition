@@ -614,8 +614,12 @@ pub async fn sign_with_apple_id_as(
     // A watch app is installed by the Watch, which checks its profile lists the Watch's UDID.
     // Watches share the iOS device list (Xcode's portal data: watchOS inherits iOS, with no
     // sub-platform as tvOS has), and the watch app's App ID gets an iOS team profile like the rest.
-    let has_watch_app = install_plan::inspect(&app_path).is_ok_and(|inventory| inventory.has_watch_app());
+    let watch_only = identity::is_watch_only(&app_path);
+    let has_watch_app = watch_only || install_plan::inspect(&app_path).is_ok_and(|inventory| inventory.has_watch_app());
     let watches = if has_watch_app { watch::known(&session.data_dir, udid) } else { Vec::new() };
+    if watch_only && watches.is_empty() {
+        bail!("This is an Apple Watch app, but no Apple Watch paired with this iPhone is known. Connect the iPhone so Apparition can see its Watch, then try again");
+    }
     let dev = session.sideloader.get_dev_session();
     dev.ensure_device_registered(&team, device_name, udid, None)
         .await
@@ -649,6 +653,10 @@ pub async fn sign_with_apple_id_as(
     let mut result = json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped});
     if has_watch_app {
         result["watches"] = json!(watches);
+    }
+    if watch_only {
+        // The signed app is itself the Watch app: nothing goes to the iPhone.
+        result["watchOnly"] = json!(true);
     }
     if !capabilities.is_empty() {
         let signed_with: Vec<&str> = identity::app_entitlements(&signed)

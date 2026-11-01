@@ -1204,8 +1204,9 @@ function done() {
   const result = state.result ?? {};
   const isApparition = result.isApparition ?? (result.bundleId ?? "").startsWith("com.illixion.apparition");
   const name = isApparition ? "Apparition" : result.label ?? result.bundleId;
-  $(panel, "title").textContent = `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your device"}.`;
-  $(panel, "lede").textContent = result.queued
+  const watchNames = (result.watches ?? []).filter((/** @type {any} */ w) => !w.error).map((/** @type {any} */ w) => w.name).join(", ");
+  $(panel, "title").textContent = result.watchOnly ? `${name} is on ${watchNames}.` : `${name} is ${result.update ? "updated" : "on"} ${result.deviceName ?? "your device"}.`;
+  $(panel, "lede").textContent = result.watchOnly ? `Sent to the Apple Watch through ${result.deviceName ?? "the iPhone"}.` : result.queued
     ? `Sent in ${result.seconds?.toFixed(1)} s, and ${result.deviceName ?? "the device"} is still installing it. If the app is open there, the update finishes when it's closed.`
     : `Installed in ${result.seconds?.toFixed(1)} s.`;
 
@@ -1215,7 +1216,7 @@ function done() {
     li.textContent = text;
     next.append(li);
   };
-  add(`Open ${name} from the device's apps.`);
+  add(result.watchOnly ? `Open ${name} from the Watch's apps.` : `Open ${name} from the device's apps.`);
   add(`If ${result.platform ?? "visionOS"} says the developer isn't trusted, trust it in Settings > General > VPN & Device Management.`);
   if (isApparition && result.handoff === "appleId")
     add(`Sign in to Apparition with ${result.appleId}. It finds the certificate this computer shared, so the two use one of the account's certificate slots.`);

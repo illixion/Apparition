@@ -1003,7 +1003,7 @@ final class LibraryModel {
         guard reply["ok"] as? Bool == true, let raw = reply["inventory"],
               let data = try? JSONSerialization.data(withJSONObject: raw),
               let inventory = try? JSONDecoder().decode(InstallInventory.self, from: data) else { return false }
-        return inventory.extensions.contains { $0.watch == true }
+        return inventory.watchOnly == true || inventory.extensions.contains { $0.watch == true }
     }
 
     /// Installs the signed watch app inside `signedPath` on each Apple Watch the signing
@@ -1014,8 +1014,15 @@ final class LibraryModel {
         lastWatchInstall = nil
         guard let watches = signed["watches"] as? [[String: Any]], !watches.isEmpty else { return nil }
         let watchDir = URL(fileURLWithPath: signedPath).appendingPathComponent("Watch")
-        guard let app = (try? FileManager.default.contentsOfDirectory(at: watchDir, includingPropertiesForKeys: nil))?
-            .first(where: { $0.pathExtension == "app" }) else { return nil }
+        let app: URL
+        if signed["watchOnly"] as? Bool == true {
+            app = URL(fileURLWithPath: signedPath)
+        } else if let inside = (try? FileManager.default.contentsOfDirectory(at: watchDir, includingPropertiesForKeys: nil))?
+            .first(where: { $0.pathExtension == "app" }) {
+            app = inside
+        } else {
+            return nil
+        }
         var notes: [String] = []
         let watchId = (NSDictionary(contentsOf: app.appendingPathComponent("Info.plist")))?["CFBundleIdentifier"] as? String
         var installedOn: [String] = []
@@ -1152,7 +1159,9 @@ final class LibraryModel {
             record.discardDestinationData = nil
             upsert(record)
         }
-        let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
+        let watchOnly = signed["watchOnly"] as? Bool == true
+        // A bare Watch app goes only to the Watch, through the iPhone.
+        let outcome = watchOnly ? "ok" : await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           sourceIPA: path)
         var watchNote: String?
         if outcome == "ok" || outcome == "queued" {
@@ -1167,10 +1176,14 @@ final class LibraryModel {
         guard outcome == "ok" else {
             return fail(&record, Self.installFailure(outcome))
         }
+        if watchOnly, lastWatchInstall == nil {
+            return fail(&record, "The watch app didn't install on the Apple Watch" + (watchNote.map { ": " + $0 } ?? ""))
+        }
         if let target = main?.bundleId, let team = main?.profileTeam {
             assignments.complete(target: target, team: team)
         }
-        record.installedBundleId = main?.bundleId
+        // A bare Watch app isn't on the iPhone: only its watch record says where it is.
+        record.installedBundleId = watchOnly ? nil : main?.bundleId
         if let watch = lastWatchInstall {
             record.watchAppId = watch.appId
             record.watchUDIDs = watch.udids
@@ -1617,6 +1630,7 @@ extension LibraryModel {
         let id: String
         let name: String
         let extensions: [InstallExtension]
+        var watchOnly: Bool? = nil
     }
     struct InstallReview: Identifiable {
         let id = UUID()
