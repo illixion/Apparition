@@ -39,9 +39,10 @@ struct RootView: View {
     let account: AccountModel
     let library: LibraryModel
     let companions: CompanionFinder
-    @State private var buildService = BuildService()
-    /// The Developer tab's navigation: a project name opens that project's page.
-    @State private var developerPath: [String] = []
+    /// The build service, which project each app belongs to, and installing a project's build here.
+    @State private var developer: DeveloperModel
+    /// The Developer tab's navigation: a project opens its page, on a tab.
+    @State private var developerPath: [DeveloperRoute] = []
 
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @AppStorage(RootView.setupFinishedKey) private var setupFinished = false
@@ -61,6 +62,7 @@ struct RootView: View {
         self.account = account
         self.library = library
         self.companions = companions
+        _developer = State(initialValue: DeveloperModel(service: BuildService(), library: library, probe: model))
         _tab = State(initialValue: SetupStatus.opensOnLibrary(model: model, account: account) ? .library : .setup)
     }
 
@@ -86,6 +88,12 @@ struct RootView: View {
                 if !shown && tab == .diagnostics { tab = .settings }
             }
             .onAppear { model.startBrowsing() }
+            // Tell the build service Apparition is open here, so it lets this device install its own
+            // builds and keeps the Xcode tunnel for when Apparition is closed.
+            .task(id: scenePhase == .active) {
+                guard scenePhase == .active else { return }
+                await developer.keepPresent(while: { scenePhase == .active })
+            }
             // Certificates and profiles: put in Files > Apparition > Signing, or shared or opened here.
             .onChange(of: scenePhase, initial: true) { _, phase in
                 if phase == .active { Task { await library.signing.scanInbox() } }
@@ -234,14 +242,14 @@ struct RootView: View {
             switch shown {
             case .library:
                 LibraryView(model: model, account: account, library: library,
-                            service: buildService,
+                            developer: developer,
                             onDeveloper: { developerPath = []; tab = .developer },
-                            onOpenProject: { name in developerPath = [name]; tab = .developer },
+                            onOpenProject: { project, section in developerPath = [DeveloperRoute(project: project, tab: section)]; tab = .developer },
                             onBrowse: { tab = .browse }, onSetup: openSetup)
             case .browse:
                 BrowseView(model: model, account: account, library: library, onSetup: openSetup)
             case .developer:
-                DeveloperView(service: buildService, library: library, path: $developerPath)
+                DeveloperView(developer: developer, library: library, path: $developerPath)
             case .setup:
                 SetupView(model: model, account: account, companions: companions) {
                     setupFinished = true

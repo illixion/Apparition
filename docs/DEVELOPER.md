@@ -73,22 +73,24 @@ access or code changes.
 
 Before you connect, it shows how to get started. Once connected it has four sections.
 
-**Projects.** One card or row per project, showing its branch and commit and whether the checkout
-has uncommitted changes. Each project lists its **targets**, one per device it installs on, with
-what the Mac installed there last, whether that is still the checkout's commit, and whether the
-device is reachable now. Each target can:
+**Projects.** One row per project, showing its branch and commit and whether the checkout has
+uncommitted changes. Each project lists its **targets**, one per device it installs on, with what
+was installed there last and whether that is still the checkout's commit. Open a project for its
+page, which has a header (the target, a status badge, where it stands) and tabs:
 
-- **Install on _device_**: build and install it there. Under **Build options** you can choose the
-  branch, launch it after installing, allow debug access (the device still asks), enable live
-  patching, or build the Debug configuration.
-- **Build only**: build and sign it without installing it. The Mac keeps the IPA, so you can
-  download it, install it over the air, install it on this device through Apparition's own signing
-  (on a device: **Install … on this headset**), or re-sign it later.
-- **Re-sign…**: see below.
+- **Overview**: **Build & Install** for the target, by the best route available (see "How a build
+  reaches a device"), with the other route as a secondary button. Also what is installed, and a
+  newer kept build to install when there is one.
+- **Builds**: the build options (branch, launch after installing, debug access, live patching and
+  its backend), **Build only** in its own section so it isn't hit by accident, recent builds with
+  their logs, and the kept builds (every signed build the Mac made, exactly as signed), each
+  installable here.
+- **Live**: patch the running app (see "Live patches"). Shown only when the service offers it.
+- **Reports**: this project's crash logs and traces.
+- **Signing**: how the copy on this device is signed and when it expires, with a Refresh; and, from
+  the Mac, **Re-sign…** (below).
 
-A project also lists its **kept builds** (every signed build the Mac made, exactly as signed) and
-how many crash logs and traces its apps have. On a device, open a project to see all of this; the
-Library's **Open Project** goes straight there.
+The Library's project cards link into the same page, and to its Reports tab when they show crashes.
 
 **Activity.** The build queue: what is running or queued first, then recent builds, each with its
 log and, while it runs, a Cancel. Builds of one project run one at a time.
@@ -102,6 +104,41 @@ dev builds with a debug server; inspecting one asks for approval on the device.
 build-and-sign's certificates and profiles into Apparition's Signing folder on a paired device, so
 Apparition there can sign with your developer certificate instead of an Apple ID. Nothing is
 reinstalled; enter each `.p12`'s password on the device once.
+
+## How a build reaches a device
+
+There are two routes, and Apparition picks the first one that works.
+
+1. **On this device (the default).** The Mac builds the project and keeps the signed IPA. Apparition
+   downloads it from the build service over HTTPS, signs it with this device's own identity (Apple
+   ID or an imported certificate) and installs it through its usual route. The Mac never touches the
+   device, so this works away from home over Tailscale, and with a free Apple ID. The app joins the
+   Library like any other: it is refreshed before its profile expires, and a newer kept build shows
+   as an update (optionally installed automatically). The first install shows the usual review of
+   which App IDs it takes; later ones re-sign with that plan and ask nothing. With a free Apple ID the
+   app gets the team's suffix on its bundle ID and counts against the App ID limit, like any app
+   Apparition signs.
+2. **From the Mac through Xcode's tunnel (secondary).** `build-and-sign` installs it with
+   `devicectl` using the Mac's own certificate. It is the quick way to update a build, the only route
+   that can launch the app from the build, and it keeps the Mac's profile, but the Mac has to reach
+   the device on the network, and Apparition isn't involved. It is also what happens when Apparition
+   is closed: the service lets a device install its own build only while that device's Apparition is
+   open (Apparition names its device on every request and goes quiet when closed), and uses the tunnel
+   otherwise, for builds started from the web page or elsewhere too.
+
+A target on another device, or a device Apparition can't sign for yet, goes through the tunnel, and
+the page says what would make the first route work. A failed tunnel install keeps its build, so the
+page offers to install that build here instead. After an install here, Apparition tells the service,
+so the install history on the Mac and in other clients is right.
+
+## Linking apps to projects
+
+An app on the device belongs to a project when its bundle identifier matches a target's, exactly or
+with the team suffix a free Apple ID adds, or a `.debug` suffix. Anything else, an Xcode build under
+another identifier say, shows under **Other Apps** with **Link to Project…**: choose the target and
+the app is shown with that project's builds, updates and reports. A link survives refreshes, can be
+changed or removed from the card's menu, and an app you unlink isn't matched again. Without a build
+service at all, apps installed by Xcode still list there (debuggable ones) with JIT launch.
 
 ## Re-signing an app with another profile
 
@@ -129,8 +166,9 @@ Then:
 - **Check first** only tests that the app's data can be reached. It builds and changes nothing.
 - Choosing to discard data skips the backup.
 
-Re-signing needs the device reachable from the Mac. An over-the-air install can't change an
-installed app's App ID.
+Re-signing replaces the app in place through the Xcode tunnel and moves its data, so it needs the
+device reachable from the Mac; the page says so when it isn't. To change which identity signs the
+copy on this device, change the app's signer in the Library instead.
 
 ## When something doesn't work
 
@@ -153,6 +191,15 @@ redirects. The service decides what is allowed: configured projects, targets, br
 profiles only.
 
 ### Live patches from Developer or the CLI
+
+Live patching is a **build setting** (`--inject`), so building with it needs no tunnel and works with
+either install route. Patching the running app is a request to the service, which compiles the edited
+sources on the Mac and sends them to the app's debug server, so the device only needs HTTPS to the
+service. The Live tab therefore doesn't depend on whether the Mac can install to the device. What it
+does need is a patchable build that is running and an app the Mac can find: discovery uses Bonjour on
+the local network, or the session record `build-and-sign --run --mcp` writes after a tunnel launch.
+An app Apparition launched itself leaves neither, so patching one away from the network the Mac is on
+is not yet verified.
 
 Build options in the native and desktop Developer views offer **Patch backend** when
 live patching is enabled. Swift dynamic replacement is the default. The experimental

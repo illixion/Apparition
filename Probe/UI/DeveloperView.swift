@@ -13,14 +13,22 @@ enum DeveloperSection: String, CaseIterable, Identifiable {
 /// devices and collects their crash logs and traces. Before connecting this explains what that
 /// is and how to set it up; once connected it shows the projects (each opens its own page),
 /// the build queue, reports grouped by app, and the connection itself.
+/// A project's page, and the tab to open it on.
+struct DeveloperRoute: Hashable {
+    var project: String
+    var tab: ProjectTab = .overview
+}
+
 struct DeveloperView: View {
-    @Bindable var service: BuildService
+    let developer: DeveloperModel
     let library: LibraryModel
-    /// Project names, so the Library can open a project's page.
-    @Binding var path: [String]
+    /// Projects' pages, so the Library can open one (on a tab).
+    @Binding var path: [DeveloperRoute]
     @State private var section: DeveloperSection = .projects
     @State private var resigning: ResignTarget?
     @Environment(\.scenePhase) private var scenePhase
+
+    private var service: BuildService { developer.service }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -28,8 +36,9 @@ struct DeveloperView: View {
                 if service.connected { connected } else { DeveloperConnectView(service: service) }
             }
             .navigationTitle("Developer")
-            .navigationDestination(for: String.self) { name in
-                ProjectDetailView(service: service, library: library, name: name, resigning: $resigning)
+            .navigationDestination(for: DeveloperRoute.self) { route in
+                ProjectDetailView(developer: developer, library: library, name: route.project, resigning: $resigning,
+                                  initialTab: route.tab)
             }
             .toolbar {
                 if service.connected { Button("Refresh", systemImage: "arrow.clockwise") { Task { await service.refresh() } } }
@@ -82,7 +91,7 @@ struct DeveloperView: View {
             }
             Section {
                 ForEach(service.state?.repos ?? []) { project in
-                    NavigationLink(value: project.name) { ProjectRow(service: service, project: project) }
+                    NavigationLink(value: DeveloperRoute(project: project.name)) { ProjectRow(service: service, project: project) }
                 }
                 if service.state?.repos.isEmpty == true {
                     Text("No projects yet. Register one from Apparition on the Mac, or add it to appstore's config.json.")
@@ -123,174 +132,6 @@ private struct ProjectRow: View {
             }
         }
         .padding(.vertical, 6)
-    }
-}
-
-/// One project: per target, what is installed and the three things to do about it; then build
-/// options, recent builds, kept builds and reports.
-struct ProjectDetailView: View {
-    let service: BuildService
-    let library: LibraryModel
-    let name: String
-    @Binding var resigning: ResignTarget?
-    @State private var branch = "current"
-    @State private var launch = false
-    @State private var debug = true
-    @State private var patch = false
-    @State private var injectBackend = "dynamic"
-    @State private var downloadingID: String?
-
-    var body: some View {
-        Form {
-            if let project = service.project(named: name) {
-                content(project)
-            } else {
-                Text("\(name) is no longer configured on the Mac.").foregroundStyle(.secondary)
-            }
-        }
-        .navigationTitle(name)
-    }
-
-    @ViewBuilder
-    private func content(_ project: BuildService.Project) -> some View {
-        if !service.message.isEmpty { Section { Text(service.message) } }
-        if let label = project.gitLabel {
-            Section { LabeledContent("Checkout", value: label) }
-        }
-        ForEach(project.platforms, id: \.self) { target in
-            targetSection(project, target)
-        }
-        Section {
-            Picker("Branch", selection: $branch) {
-                Text("Current checkout").tag("current")
-                ForEach((project.branches ?? []).filter { $0 != "current" }, id: \.self) { Text($0).tag($0) }
-            }
-            Toggle("Launch after installing", isOn: $launch)
-            Toggle("Debug access", isOn: $debug)
-            Toggle("Live patching", isOn: $patch)
-            if patch && service.capabilities.contains("entry-patching") {
-                Picker("Patch backend", selection: $injectBackend) {
-                    Text("Swift dynamic replacement").tag("dynamic")
-                    Text("Apparition entry boundaries (experimental)").tag("apparition")
-                }
-            }
-        } header: {
-            Text("Build options")
-        } footer: {
-            Text("These apply to Install and Build only above. Live patching adds instrumentation and can reduce performance. Debug access still asks for approval on the device. The Apparition backend needs explicitly declared entry boundaries; use apparition inject on the build Mac to attach, patch and detach.")
-        }
-        let jobs = service.jobs(for: project)
-        if !jobs.isEmpty {
-            Section("Recent builds") {
-                ForEach(jobs.prefix(5)) { job in DeveloperJobRow(service: service, job: job) }
-                if !service.detail.isEmpty { DeveloperLogText(text: service.detail) }
-            }
-        }
-        let kept = service.artifacts(for: project)
-        if !kept.isEmpty {
-            Section {
-                ForEach(kept.prefix(8)) { artifact in keptRow(project, artifact) }
-            } header: {
-                Text("Kept builds")
-            } footer: {
-                Text("Every signed build the Mac made, kept exactly as signed.")
-            }
-        }
-        DeveloperReportsList(service: service, bundleIds: Set(project.platforms.compactMap(\.bundleId)))
-    }
-
-    private func targetSection(_ project: BuildService.Project, _ target: BuildService.Target) -> some View {
-        let device = service.device(named: target.device)
-        let latest = service.latestArtifact(project: project, target: target, bundleId: target.bundleId ?? "")
-        return Section {
-            LabeledContent("Installed", value: service.installSummary(project: project, target: target))
-            if device == nil {
-                Text("\(target.device) isn't paired with the Mac, so it can only be installed from a kept build.").font(.footnote).foregroundStyle(.secondary)
-            } else if device?.reachable == false {
-                Text("\(target.device) isn't reachable from the Mac right now.").font(.footnote).foregroundStyle(.secondary)
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Install on \(target.device)").font(.headline)
-                Button("Build & install on \(target.device)") { submit(project, target, deploy: true) }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("developerBuildAndInstall")
-            }
-            .padding(.vertical, 6)
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Build without installing").font(.headline)
-                Button("Build only") { submit(project, target, deploy: false) }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("developerBuildOnly")
-                Text("Keeps a signed IPA on the Mac to install here, over the air, or re-sign.").font(.footnote).foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 6)
-            if service.capabilities.contains("entry-patching") {
-                Button("Patch running app") { Task { await service.inject(project: project, target: target) } }
-                Text("Applies edited sources from the Mac checkout. The app must already be running with live patching enabled; code changes still ask for approval.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            if let latest, fitsHere(target) {
-                installHereButton(latest)
-            }
-            if let source = service.resignSource(for: project, target: target) {
-                Button { resigning = ResignTarget(source: source, devices: [target.device]) } label: {
-                    Label("Re-sign with another profile…", systemImage: "signature")
-                }
-            }
-        } header: {
-            Text("\(target.device) · \(target.platform)")
-        }
-        .disabled(service.busy)
-    }
-
-    private func keptRow(_ project: BuildService.Project, _ artifact: BuildService.Artifact) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("\(artifact.app.name ?? artifact.app.bundleId) · \(artifact.platform)").font(.headline)
-            Text(artifact.app.build ?? artifact.buildId).font(.caption.monospaced()).foregroundStyle(.secondary)
-            HStack {
-                if let target = project.platforms.first(where: { $0.platform.caseInsensitiveCompare(artifact.platform) == .orderedSame }), fitsHere(target) {
-                    installHereButton(artifact)
-                }
-                if service.canResign {
-                    Button("Re-sign…") { resigning = ResignTarget(artifact: artifact, devices: service.devices(for: artifact)) }
-                }
-            }
-            .buttonStyle(.bordered)
-        }
-        .padding(.vertical, 4)
-    }
-
-    /// Downloads a kept build and hands it to the Library, which signs it with this device's
-    /// signer and opens the usual install review. Nothing goes through the Mac's devicectl.
-    private func installHereButton(_ artifact: BuildService.Artifact) -> some View {
-        Button {
-            guard downloadingID == nil, library.incoming == nil else { return }
-            downloadingID = artifact.id
-            Task {
-                defer { downloadingID = nil }
-                do {
-                    let file = try await service.download(artifact)
-                    defer { try? FileManager.default.removeItem(at: file) }
-                    await library.receiveAppFile(file)
-                } catch { service.message = error.localizedDescription }
-            }
-        } label: {
-            if downloadingID == artifact.id { ProgressView("Downloading…") }
-            else { Label("Install \(artifact.app.build ?? "kept build") on this \(ThisDevice.noun)", systemImage: "arrow.down.app") }
-        }
-        .disabled(downloadingID != nil || library.busy || library.incoming != nil)
-    }
-
-    /// A target this device can install itself: it is the target, or the platform suits it.
-    private func fitsHere(_ target: BuildService.Target) -> Bool {
-        if let paired = UserDefaults.standard.string(forKey: "pairedName"),
-           target.device.caseInsensitiveCompare(paired) == .orderedSame { return true }
-        return ThisDevice.preferredBuildPlatforms(deviceFamily: nil).contains(target.platform.lowercased())
-    }
-
-    private func submit(_ project: BuildService.Project, _ target: BuildService.Target, deploy: Bool) {
-        Task { await service.build(project: project, target: target, branch: branch,
-                                   deploy: deploy, launch: launch, debug: debug, patch: patch, injectBackend: injectBackend) }
     }
 }
 
@@ -517,6 +358,7 @@ extension BuildService {
     func installSummary(project: Project, target: Target) -> String {
         guard let install = install(for: target) else { return "not installed from the Mac yet" }
         var parts = ["installed \(install.commit ?? install.buildNo ?? install.buildId ?? "a build")"]
+        if install.via == "apparition" { parts.append("by Apparition on the device") }
         if let resigned = install.resigned { parts.append("re-signed with \(resigned)") }
         else if install.confirmed == false { parts.append("offered as a download") }
         if let head = project.git?.commit, let commit = install.commit, install.branch == project.git?.branch {

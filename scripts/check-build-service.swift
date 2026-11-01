@@ -5,6 +5,79 @@ import Foundation
 /// macOS check has no UIKit, so a stand-in answers with the headset's.
 enum ThisDevice { static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [String] { ["visionos"] } }
 
+/// The device's own install route: build for the device, wait for the job, tell the service, and
+/// the choice between that route and the Xcode tunnel.
+@MainActor func checkDeviceInstall(_ service: BuildService, project: BuildService.Project) async throws {
+    precondition(service.installsOnDevice && service.state?.appsOpen == ["fixture vision pro"])
+    let target = project.platforms[0]
+    let queued = await service.build(project: project, target: target, branch: "current", install: .device,
+                                     launch: true, debug: true, patch: true)
+    precondition(queued?.id == 5 && queued?.installVia == "device" && queued?.kind == "Build for the device", service.message)
+    let done = await service.finished(queued!, every: .milliseconds(20), upTo: .seconds(5))
+    precondition(done?.status == "success" && done?.buildId == "device-build", "the job should finish with its kept build")
+    precondition(service.artifact(buildId: "device-build")?.app.build == "def5678", "the kept build is listed once the job ends")
+    let reported = await service.reportInstall(target: target, buildId: "device-build")
+    precondition(reported, service.message)
+    // A job that never ends is given up on instead of waited for forever.
+    let never = BuildService.Job.fixture(id: 99)
+    let gave = await service.finished(never, every: .milliseconds(10), upTo: .milliseconds(60))
+    precondition(gave == nil)
+
+    // Which route installs a target: the device itself when it can, the Xcode tunnel behind it.
+    func facts(here: Bool = true, service installs: Bool = true, signing: Bool = true, pairing: Bool = true,
+               mac: Bool? = true, known: Bool = true) -> InstallOptions {
+        InstallOptions(.init(targetIsThisDevice: here, serviceInstallsOnDevice: installs, canSignHere: signing,
+                             canReachInstaller: pairing, macSeesDevice: mac, macKnowsDevice: known, deviceName: "AVP"))
+    }
+    let both = facts()
+    precondition(both.preferred == .thisDevice && both.secondary == .xcodeTunnel && both.unavailable == nil)
+    precondition(InstallRoute.thisDevice.mode == .device && InstallRoute.xcodeTunnel.mode == .mac)
+    // Over Tailscale the Mac can't reach the device, and nothing is lost: the device route still works.
+    let away = facts(mac: false)
+    precondition(away.preferred == .thisDevice && away.secondary == nil && away.tunnelProblem == "The Mac can't reach AVP right now.")
+    // Apparition can't sign yet: the Xcode tunnel carries it, and says what would unlock the device route.
+    let unsigned = facts(signing: false)
+    precondition(unsigned.preferred == .xcodeTunnel && unsigned.secondary == nil && unsigned.thisDeviceProblem?.contains("Apple ID") == true)
+    // A target on another device, or an old service: only the tunnel.
+    precondition(facts(here: false).preferred == .xcodeTunnel && facts(service: false).preferred == .xcodeTunnel)
+    // A service that doesn't say whether the Mac sees the device is not treated as unreachable.
+    precondition(facts(mac: nil).canUseTunnel)
+    // Nothing can install it: both reasons are given, not just one.
+    let stuck = facts(signing: false, mac: false)
+    precondition(stuck.preferred == nil && stuck.unavailable?.contains("Apple ID") == true && stuck.unavailable?.contains("can't reach") == true)
+    precondition(facts(signing: false, known: false).tunnelProblem == "AVP is not paired with the Mac.")
+
+    // Apps on the device belong to a project by link first, then by bundle identifier modulo a team or debug suffix.
+    precondition(BundleIdentity.base("com.example.fixture.ABCDE12345") == "com.example.fixture")
+    precondition(BundleIdentity.base("com.example.fixture.debug") == "com.example.fixture")
+    precondition(BundleIdentity.base("com.example.fixture.debug.ABCDE12345") == "com.example.fixture")
+    precondition(BundleIdentity.base("com.example.fixture") == "com.example.fixture" && BundleIdentity.base("com.example") == "com.example")
+    precondition(!BundleIdentity.matches(installed: "com.example.other.ABCDE12345", target: "com.example.fixture"))
+    var links = ProjectLinks()
+    let team = "com.example.fixture.ABCDE12345"
+    let proposed = service.projectFor(bundleId: team, deviceFamily: [7], preferredDevice: "AVP", links: links)
+    precondition(proposed?.project.name == "Fixture" && proposed?.target.device == "AVP" && proposed?.link == nil, "a team-suffixed copy is proposed for its project")
+    precondition(service.projectFor(bundleId: "com.example.fixture", deviceFamily: nil, preferredDevice: "Phone", links: links)?.target.device == "Phone")
+    precondition(service.projectFor(bundleId: "com.example.unrelated", deviceFamily: nil, preferredDevice: "AVP", links: links) == nil)
+    links.set(ProjectLink(project: "Fixture", device: "Phone", platform: "iOS", chosen: true), for: team)
+    let chosen = service.projectFor(bundleId: team, deviceFamily: [7], preferredDevice: "AVP", links: links)
+    precondition(chosen?.target.device == "Phone" && chosen?.link?.chosen == true, "a person's link outranks the match")
+    links.set(ProjectLink(project: "Gone", device: "AVP", platform: "visionOS", chosen: true), for: team)
+    precondition(service.projectFor(bundleId: team, deviceFamily: nil, preferredDevice: nil, links: links) == nil, "a link to a project that no longer exists links to nothing")
+    links.unlink(team)
+    precondition(links.isUnlinked(team) && service.projectFor(bundleId: team, deviceFamily: [7], preferredDevice: "AVP", links: links) == nil,
+                 "an unlinked app is not matched again")
+    let restored = try JSONDecoder().decode(ProjectLinks.self, from: JSONEncoder().encode(links))
+    precondition(restored == links)
+}
+
+extension BuildService.Job {
+    /// A job as the service describes a queued one, for checking what happens when it never ends.
+    static func fixture(id: Int) -> BuildService.Job {
+        try! JSONDecoder().decode(BuildService.Job.self, from: Data(#"{"id":\#(id),"repo":"Fixture","platform":"visionOS","status":"running"}"#.utf8))
+    }
+}
+
 @main struct CheckBuildService {
     @MainActor static func main() async throws {
         for address in ["http://192.168.1.2", "https://user:password@example.com", "https://example.com/path", "https://example.com?q=1", "file:///tmp/a"] {
@@ -19,6 +92,8 @@ enum ThisDevice { static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [
         var stored: [String: String] = [:]
         let passwords = BuildServicePasswords(load: { stored[$0] }, save: { stored[$0] = $1; return true },
             delete: { origin in if let origin { stored.removeValue(forKey: origin) } else { stored.removeAll() } })
+        // The name Xcode shows for this device: sent on every request so the service knows Apparition is open.
+        defaults.set("Fixture Vision Pro", forKey: "pairedName")
         let service = BuildService(defaults: defaults, passwords: passwords)
         service.address = base
         await service.connect(password: "fixture-password")
@@ -35,10 +110,11 @@ enum ThisDevice { static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [
         await other.restoreConnection()
         precondition(!other.connected)
         let project = service.state!.repos[0]
-        await service.build(project: project, target: project.platforms[0], branch: "current", deploy: false,
-                            launch: true, debug: true, patch: false)
-        precondition(service.state?.builds.count == 1, service.message)
+        let queuedBuild = await service.build(project: project, target: project.platforms[0], branch: "current", install: .none,
+                                              launch: true, debug: true, patch: false)
+        precondition(queuedBuild?.id == 1 && service.state?.builds.count == 1, service.message)
         let job = service.state!.builds[0]
+        precondition(job.kind == "Build only" && job.installVia == "none")
         await service.log(job)
         precondition(service.detail == "fixture build log")
         await service.cancel(job)
@@ -69,6 +145,7 @@ enum ThisDevice { static func preferredBuildPlatforms(deviceFamily: [Int]?) -> [
         let chained = await service.resign(.build(project, phone), device: "Phone", profile: profiles[0], keepData: true, dryRun: false)
         precondition(chained?.id == 4 && service.message == "Queued build #3, then re-sign #4.", service.message)
         precondition(project.git?.commit == "abc1234" && service.artifacts(for: project).count == 1)
+        try await checkDeviceInstall(service, project: project)
         await service.disconnect()
         precondition(!service.canResign && !service.connected && service.state == nil && service.detail.isEmpty)
         precondition(stored[origin] == nil)

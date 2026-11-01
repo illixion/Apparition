@@ -72,14 +72,28 @@ final class BuildService {
         let commit: String?
         let builtBranch: String?
         let error: String?
+        /// How the service was asked to get the build onto the device (`mac`, `device`, `none`).
+        let installVia: String?
+        /// A build the Mac made and kept but could not install itself (the tunnel failed): it can
+        /// still be installed from the device.
+        let keptBuildId: String?
         var cancellable: Bool { status == "queued" || status == "running" }
         var active: Bool { cancellable }
         /// What the job is, in words, from the flags the service sets.
         var kind: String {
             if let resign { return resign.dryRun == true ? "Re-sign check" : "Re-sign" }
             if forResign == true { return "Build for re-sign" }
-            return noDeploy == true ? "Build only" : "Build & install"
+            switch installVia {
+            case "device": return "Build for the device"
+            case "mac": return "Build & install from the Mac"
+            case "none": return "Build only"
+            default: return noDeploy == true ? "Build only" : "Build & install"
+            }
         }
+    }
+    /// How a build reaches the device (the service's `install`). The Xcode tunnel is `mac`.
+    enum InstallMode: String, Sendable {
+        case auto, mac, device, none
     }
     /// A device the Mac can install to (the service leaves simulators out).
     struct Device: Decodable, Identifiable {
@@ -101,6 +115,8 @@ final class BuildService {
         let confirmed: Bool?
         let resigned: String?
         let at: Double?
+        /// `apparition` when the device installed it itself and said so; nil for the Mac's own installs.
+        let via: String?
     }
     struct State: Decodable {
         let host: String?
@@ -108,8 +124,10 @@ final class BuildService {
         let builds: [Job]
         let devices: Devices?
         let installs: [String: [String: Install]]?
+        /// Devices (lowercased names) whose Apparition is open now; `install: auto` goes to them.
+        let appsOpen: [String]?
 
-        private enum CodingKeys: String, CodingKey { case host, repos, builds, devices, installs }
+        private enum CodingKeys: String, CodingKey { case host, repos, builds, devices, installs, appsOpen }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             host = try c.decodeIfPresent(String.self, forKey: .host)
@@ -118,6 +136,7 @@ final class BuildService {
             // Extras for display: an entry the client doesn't understand must not cost the projects.
             devices = try? c.decodeIfPresent(Devices.self, forKey: .devices)
             installs = try? c.decodeIfPresent([String: [String: Install]].self, forKey: .installs)
+            appsOpen = try? c.decodeIfPresent([String].self, forKey: .appsOpen)
         }
     }
     struct Artifact: Decodable, Identifiable {
@@ -246,11 +265,27 @@ final class BuildService {
         return url
     }
 
+    /// Authorizes a request, and names this device on it so the service knows Apparition is open
+    /// here (a build asked for `install: auto` then goes to the device, not through the Xcode
+    /// tunnel). A closed Apparition sends nothing, and the service stops counting it.
+    private func stamp(_ request: inout URLRequest, token: String) {
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let name = announcedDevice, let encoded = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) {
+            request.setValue(encoded, forHTTPHeaderField: "X-Apparition-Device")
+        }
+    }
+
+    /// The name Xcode shows for this device: the paired name Apparition keeps.
+    var announcedDevice: String? {
+        guard let name = defaults.string(forKey: "pairedName")?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else { return nil }
+        return name
+    }
+
     private func request<T: Decodable>(_ path: String, at base: URL, token: String? = nil,
                                        body: [String: Any]? = nil) async throws -> T {
         var request = URLRequest(url: base.appendingPathComponent(path))
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if let token { stamp(&request, token: token) }
         if let body {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -363,6 +398,12 @@ final class BuildService {
         }
     }
 
+    /// Only the projects, devices and jobs: cheap enough to poll while a build runs.
+    func refreshState() async {
+        guard connected else { return }
+        do { state = try await authenticated("state") } catch { message = error.localizedDescription }
+    }
+
     func refresh() async {
         guard connected else { return }
         do {
@@ -388,7 +429,7 @@ final class BuildService {
         guard let url = components.url else { throw Failure.response }
         var request = URLRequest(url: url)
         request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        stamp(&request, token: token)
         let (temporary, response) = try await session.download(for: request)
         guard let response = response as? HTTPURLResponse else { throw Failure.response }
         guard response.statusCode == 200 else { throw Failure.rejected(response.statusCode) }
@@ -486,7 +527,7 @@ final class BuildService {
         guard let url = components.url else { throw Failure.address }
         var request = URLRequest(url: url)
         request.setValue("text/plain", forHTTPHeaderField: "Accept")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        stamp(&request, token: token)
         let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw Failure.response }
         let limit = 8 * 1024 * 1024
@@ -525,18 +566,62 @@ final class BuildService {
     /// The project a configured bundle ID belongs to.
     func project(named name: String) -> Project? { state?.repos.first { $0.name == name } }
 
-    func build(project: Project, target: Target, branch: String, deploy: Bool, launch: Bool, debug: Bool, patch: Bool, injectBackend: String = "dynamic") async {
-        guard !busy else { return }
+    /// Asks the Mac to build a target. `install` says how the build reaches the device: `.device`
+    /// builds and keeps it for Apparition on the device to install (no Mac-to-device route needed),
+    /// `.mac` installs through the Xcode tunnel, `.none` only builds. Returns the queued job.
+    @discardableResult
+    func build(project: Project, target: Target, branch: String, install: InstallMode, launch: Bool, debug: Bool, patch: Bool, injectBackend: String = "dynamic") async -> Job? {
+        guard !busy else { return nil }
         busy = true
         defer { busy = false }
         do {
+            // `deploy` is what a service without install modes understands; it reads `install` when it can.
             let reply: BuildReply = try await authenticated("build", body: ["repo": project.name, "device": target.device,
-                "targetPlatform": target.platform, "branch": branch, "deploy": deploy, "run": deploy && launch,
+                "targetPlatform": target.platform, "branch": branch, "install": install.rawValue, "deploy": install != .none,
+                "run": install == .mac && launch,
                 "mcp": debug, "inject": patch, "injectBackend": injectBackend, "buildDebug": false])
             message = reply.jobs.first.map { "Queued build #\($0.id)." } ?? "Build queued."
             await refresh()
-        } catch { message = error.localizedDescription }
+            return reply.jobs.first
+        } catch { message = error.localizedDescription; return nil }
     }
+
+    /// Polls until the job has finished (or the connection is lost, or the task is cancelled), and
+    /// returns it as the service last described it.
+    func finished(_ job: Job, every interval: Duration = .seconds(2), upTo limit: Duration = .seconds(3600)) async -> Job? {
+        let deadline = ContinuousClock.now + limit
+        while ContinuousClock.now < deadline, !Task.isCancelled, connected {
+            await refreshState()
+            if let current = state?.builds.first(where: { $0.id == job.id }), !current.active {
+                await refresh()
+                return current
+            }
+            try? await Task.sleep(for: interval)
+        }
+        return nil
+    }
+
+    /// Whether the connected service can hand builds to the device's own Apparition and takes its
+    /// word that it installed one (`install: device`, `POST /installs`).
+    var installsOnDevice: Bool { connected && capabilities.contains("install-modes") && capabilities.contains("report-install") }
+
+    private struct InstallReport: Decodable { let ok: Bool }
+
+    /// Tells the service this device installed a kept build, so its ledger (and every other client)
+    /// shows it. Best effort: an install that happened is not undone by the service not hearing of it.
+    @discardableResult
+    func reportInstall(target: Target, buildId: String) async -> Bool {
+        guard installsOnDevice, let bundleId = target.bundleId else { return false }
+        do {
+            let reply: InstallReport = try await authenticated("installs", body: ["device": target.device,
+                "bundleId": bundleId, "buildId": buildId, "platform": target.platform])
+            await refreshState()
+            return reply.ok
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    /// The kept build with this identity, from the last listing.
+    func artifact(buildId: String) -> Artifact? { artifacts.first { $0.buildId == buildId } }
 
     func inject(project: Project, target: Target) async {
         guard !busy else { return }

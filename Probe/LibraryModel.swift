@@ -43,6 +43,9 @@ final class LibraryModel {
         var discardDestinationData: Bool?
         var needsInstallReview: Bool?
         var reviewedBundleId: String?
+        /// The appstore build this was installed from (a project's build the Mac kept), so a later
+        /// build is recognised as an update. nil for apps from a source or a file.
+        var appstoreBuildId: String?
     }
 
     /// Apparition's own refreshes: it re-signs and reinstalls itself (`refreshSelf`).
@@ -493,6 +496,18 @@ final class LibraryModel {
         }
         discardIncoming()
         incoming = .reading(fileName)
+        do {
+            incoming = .ready(try await keepAppFile(url, fileName: fileName))
+            log.info("received an app file")
+        } catch {
+            incoming = .failed(file: fileName, message: "\(error)")
+            log.error("could not read an app file: \(String(describing: error))")
+        }
+        account.refreshDownloads()
+    }
+
+    /// Copies an .ipa (or the app in a .deb) into the apps folder as an IPA and reads which app it is.
+    private func keepAppFile(_ url: URL, fileName: String) async throws -> IncomingApp {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let folder = AccountModel.appsDir
@@ -502,37 +517,44 @@ final class LibraryModel {
             try? FileManager.default.removeItem(at: part)
             try? FileManager.default.removeItem(at: kept)
         }
-        do {
-            // Off the main actor: an app is hundreds of megabytes to copy, and a package is repacked.
-            try await Task.detached {
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                try FileManager.default.copyItem(at: url, to: part)
-                try await Self.keepAsIPA(part, to: kept, subject: fileName)
-            }.value
-            let info = await Task.detached { AccountModel.call(apparition_app_info(kept.path)) }.value
-            guard info["ok"] as? Bool == true, let bundleId = info["bundleId"] as? String else {
-                throw IDevice.ProbeError("\(fileName): \(info["error"] as? String ?? "no app in it")")
-            }
-            let name = info["name"] as? String ?? bundleId
-            let version = info["version"] as? String ?? ""
-            let safe = bundleId.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
-            let file = "file_\(safe)-\(version).ipa"
-            let destination = folder.appendingPathComponent(file)
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: kept, to: destination)
-            incoming = .ready(IncomingApp(bundleId: bundleId, name: name, version: version, ipaFile: file, fileName: fileName))
-            log.info("received an app file")
-        } catch {
-            incoming = .failed(file: fileName, message: "\(error)")
-            log.error("could not read an app file: \(String(describing: error))")
+        // Off the main actor: an app is hundreds of megabytes to copy, and a package is repacked.
+        try await Task.detached {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: url, to: part)
+            try await Self.keepAsIPA(part, to: kept, subject: fileName)
+        }.value
+        let info = await Task.detached { AccountModel.call(apparition_app_info(kept.path)) }.value
+        guard info["ok"] as? Bool == true, let bundleId = info["bundleId"] as? String else {
+            throw IDevice.ProbeError("\(fileName): \(info["error"] as? String ?? "no app in it")")
         }
-        account.refreshDownloads()
+        let name = info["name"] as? String ?? bundleId
+        let version = info["version"] as? String ?? ""
+        let safe = bundleId.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        let file = "file_\(safe)-\(version).ipa"
+        let destination = folder.appendingPathComponent(file)
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: kept, to: destination)
+        return IncomingApp(bundleId: bundleId, name: name, version: version, ipaFile: file, fileName: fileName)
     }
 
     /// Signs and installs the app `receiveAppFile` read, and keeps it refreshed like any other.
     func installIncoming(signer: String? = nil, takeOver: String? = nil) async {
         guard case .ready(let app) = incoming else { return }
         incoming = nil
+        await installKept(app, source: Self.fileSource, buildId: nil, signer: signer, takeOver: takeOver, reviewing: .always)
+    }
+
+    /// Whether an install shows the review of which App IDs it takes.
+    private enum Review {
+        /// Every time: a foreground install of a file or a source's app.
+        case always
+        /// Only the first time. An app that already has a reviewed plan is re-signed with it, as a
+        /// refresh is, so updating a project's app from a new build asks nothing.
+        case unlessPlanned
+    }
+
+    @discardableResult
+    private func installKept(_ app: IncomingApp, source: String, buildId: String?, signer: String?, takeOver: String?, reviewing: Review) async -> String? {
         installErrors[app.bundleId] = nil
         defer {
             let failed = "install \(app.name): error: "
@@ -540,16 +562,20 @@ final class LibraryModel {
                 installErrors[app.bundleId] = String(status.dropFirst(failed.count))
             }
         }
-        await exclusive("install \(app.name)") {
+        return await exclusive("install \(app.name)") {
             // The same app from a source keeps its source; a file just replaces the kept copy.
             let existing = self.installed.first { $0.id == app.bundleId }
-            var record = existing ?? InstalledApp(id: app.bundleId, source: Self.fileSource, name: app.name, version: app.version,
+            var record = existing ?? InstalledApp(id: app.bundleId, source: source, name: app.name, version: app.version,
                                                   ipaFile: app.ipaFile, stripExtensions: true)
             record.version = app.version
             record.ipaFile = app.ipaFile
+            if let buildId { record.appstoreBuildId = buildId }
             if let signer { record.signWith = signer }
             if let takeOver { record.takeOver = takeOver }
-            guard try await self.reviewInstall(&record) else { return "cancelled" }
+            let planned = existing?.reviewedBundleId != nil && existing?.needsInstallReview != true
+            if reviewing == .always || !planned {
+                guard try await self.reviewInstall(&record) else { return "cancelled" }
+            }
             if let old = existing?.ipaFile, old != app.ipaFile {
                 try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(old))
             }
@@ -558,6 +584,38 @@ final class LibraryModel {
             self.account.refreshDownloads()
             return outcome
         }
+    }
+
+    // MARK: Builds from an appstore project
+
+    /// What the library lists as the source of an app a project's kept build made.
+    nonisolated static func projectSource(_ project: String) -> String { "appstore: \(project)" }
+
+    enum ProjectInstall: Equatable {
+        case installed(String)
+        /// The person turned the review down.
+        case cancelled
+        case failed(String)
+    }
+
+    /// Installs a build the Mac kept for a project: reads the IPA, signs it with this device's signer
+    /// and installs it through Apparition's own route, and keeps it refreshed like any app. It shows
+    /// nothing of its own: the review of App IDs appears only the first time, and nothing is shown
+    /// for an app that is already planned. `buildId` is the kept build, remembered so a newer one
+    /// reads as an update.
+    func installProjectBuild(_ file: URL, project: String, buildId: String) async -> ProjectInstall {
+        guard !busy else { return .failed("Apparition is busy with another install.") }
+        let app: IncomingApp
+        do { app = try await keepAppFile(file, fileName: file.lastPathComponent) }
+        catch { return .failed("\(error)") }
+        account.refreshDownloads()
+        guard let outcome = await installKept(app, source: Self.projectSource(project), buildId: buildId,
+                                              signer: nil, takeOver: nil, reviewing: .unlessPlanned) else {
+            return .failed("Apparition is busy with another install.")
+        }
+        if outcome.hasPrefix("ok") { return .installed(app.name) }
+        if outcome == "cancelled" { return .cancelled }
+        return .failed(outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome)
     }
 
     /// Drops the app `receiveAppFile` read, and its kept copy unless the library uses it.
@@ -1287,17 +1345,23 @@ final class LibraryModel {
         save()
     }
 
-    private func exclusive(_ label: String, _ body: () async throws -> String) async {
-        guard !busy else { status = "busy"; return }
+    /// Runs one install or refresh at a time. Returns what it ended with (also kept in `status`), or
+    /// nil when another was already running and nothing ran.
+    @discardableResult
+    private func exclusive(_ label: String, _ body: () async throws -> String) async -> String? {
+        guard !busy else { status = "busy"; return nil }
         busy = true
         status = label
         defer { busy = false }
+        let result: String
         do {
-            status = "\(label): \(try await body())"
+            result = try await body()
         } catch {
-            status = stopping ? "\(label): \(Self.stoppedResult)" : "\(label): error: \(error)"
+            result = stopping ? Self.stoppedResult : "error: \(error)"
         }
+        status = "\(label): \(result)"
         log.info("\(LogScrub.text(self.status ?? ""), privacy: .public)")
+        return result
     }
 
     // MARK: Background refresh
