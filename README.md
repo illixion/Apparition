@@ -428,6 +428,22 @@ When one of those checks finds an update, Apparition posts one quiet notificatio
 the notification list) for it, and says nothing more about that update on later checks. Settings,
 Notifications turns it off.
 
+## Permission prompts
+
+Apparition asks for three things, each when it first needs it, and none of them has a reason
+beyond what its text says (the strings live in `project.yml`):
+
+- **Local Network**, when it first looks for this device's developer services, a companion or
+  a nearby device with a signing key, or connects to the build service you set up.
+- **Location** (iOS only), the first time it becomes an app's JIT debugger: location updates keep
+  it running in the background. They are dropped unread, never stored or sent. visionOS keeps it
+  running with silent audio and asks for nothing.
+- **Notifications** (alerts only, never sound), the first time a JIT session starts, or an
+  update check finds an update, or you turn on Settings, Notifications.
+
+Nothing is asked at first launch except Local Network. It uses no camera, microphone, photos,
+contacts or Face ID.
+
 ## Shortcuts automation
 
 Background refresh is not reliable, so the dependable way to keep apps signed is a
