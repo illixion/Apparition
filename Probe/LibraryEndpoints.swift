@@ -124,10 +124,12 @@ enum LibraryEndpoints {
                 guard let move else { throw SigningStore.Failure(description: outcome) }
                 return MoveState(outcome: outcome, files: move.files, bytes: move.bytes, failed: move.failed)
             },
-            .command("refreshApps", "Re-sign and reinstall installed apps that expire within 3 days (all with force). Returns at once; poll libraryState",
-                     parameters: [.boolean("force", "Refresh every installed app", default: false)]) { args in
+            .command("refreshApps", "Re-sign and reinstall installed apps that expire within 3 days (all with force; with button, what the Library's Refresh Expiring button covers: 4 days or less). Returns at once; poll libraryState",
+                     parameters: [.boolean("force", "Refresh every installed app", default: false),
+                                  .boolean("button", "Act as the Library's Refresh Expiring button", default: false)]) { args in
                 let force = args.bool("force") ?? false
-                Task { await model.refresh(force: force, trigger: "manual") }
+                let margin = args.bool("button") == true ? LibraryModel.buttonRefreshMargin : LibraryModel.refreshMargin
+                Task { await model.refresh(force: force, margin: margin, trigger: args.bool("button") == true ? "button" : "manual") }
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
             },

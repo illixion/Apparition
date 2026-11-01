@@ -142,13 +142,13 @@ struct LibraryView: View {
 
     private var refreshAllButton: some View {
         Button {
-            Task { await library.refresh(force: true, trigger: "button") }
+            Task { await library.refresh(force: false, margin: LibraryModel.buttonRefreshMargin, trigger: "button") }
         } label: {
-            Label("Refresh All", systemImage: "arrow.triangle.2.circlepath")
+            Label("Refresh Expiring", systemImage: "arrow.triangle.2.circlepath")
         }
         .buttonStyle(.borderedProminent)
-        .disabled(library.busy || model.busy || library.installed.isEmpty)
-        .help("Re-sign and reinstall every app now, so each gets a fresh 7 days")
+        .disabled(library.busy || model.busy || !library.hasExpiring)
+        .help("Re-sign and reinstall the apps with 4 days or less left. Each app's own Refresh button refreshes it whatever it has left.")
     }
 
     @ViewBuilder
@@ -605,7 +605,7 @@ struct LibraryView: View {
             return StatusPill(text: "Expired \(expires.relativeToNow)", systemImage: "xmark.circle.fill", tint: .red)
         }
         return StatusPill(text: "Expires \(expires.relativeToNow)", systemImage: "clock",
-                          tint: left < LibraryModel.refreshMargin ? .orange : .green)
+                          tint: left <= LibraryModel.buttonRefreshMargin ? .orange : .green)
     }
 
     // MARK: App card
@@ -648,7 +648,7 @@ struct LibraryView: View {
         if left <= 0 {
             return StatusPill(text: "Expired \(expires.relativeToNow)", systemImage: "xmark.circle.fill", tint: .red)
         }
-        let tint: Color = left < LibraryModel.refreshMargin ? .orange : .green
+        let tint: Color = left <= LibraryModel.buttonRefreshMargin ? .orange : .green
         return StatusPill(text: "Expires \(expires.relativeToNow)", systemImage: "clock", tint: tint)
     }
 

@@ -406,6 +406,15 @@ DebugTrace injection; see [the developer workflow](docs/DEVELOPER.md#live-patche
 General optimized functions, caller dependency tracking and automatic type migration remain
 unsupported. No application performance claim follows from these correctness tests.
 
+## What refreshes when
+
+Every re-sign is a round of requests to Apple, so Apparition only does one for an app that
+needs it. The Library's **Refresh Expiring** button covers apps with 4 days or less left
+(and Apparition itself); with none, it is greyed out and Apparition contacts Apple for
+nothing. Background runs and Shortcuts' Refresh Apps (without "All Apps") use 3 days. What
+you ask for by name ignores both: an app's own Refresh button, the Developer tab's Install
+update and "Automatically install updates", and Refresh Apps with "All Apps" on.
+
 ## Shortcuts automation
 
 Background refresh is not reliable, so the dependable way to keep apps signed is a
