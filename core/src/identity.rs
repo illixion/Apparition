@@ -894,6 +894,12 @@ pub fn sign_offline(
         for extension in app.bundle.app_extensions_mut() {
             extension.write_info()?;
         }
+        for watch in app.bundle.watch_apps_mut() {
+            watch.write_info()?;
+            for extension in watch.app_extensions_mut() {
+                extension.write_info()?;
+            }
+        }
 
         // Every extension, PlugIns/ and ExtensionKit's Extensions/, needs a profile covering its
         // (renamed) ID. One no profile covers is removed when the app allows that, else it's an error.
@@ -918,6 +924,37 @@ pub fn sign_offline(
                     "No imported profile covers the extension {id}. Import one for it, use a wildcard profile, or turn on removing extensions."
                 ),
             }
+        }
+        // A watch app and its own extensions go together: one no profile covers takes the whole
+        // watch app with it. Its profile must list the Watch as well as this device.
+        for watch in app.bundle.watch_apps() {
+            let bundles: Vec<(PathBuf, String)> = std::iter::once(watch)
+                .chain(watch.app_extensions())
+                .filter_map(|b| Some((b.bundle_dir.clone(), b.bundle_identifier()?.to_string())))
+                .collect();
+            let profiles: Vec<Option<&Profile>> = bundles
+                .iter()
+                .map(|(_, id)| if main.covers(id) { Some(main) } else { best_profile(&usable, id, None).filter(|p| p.covers(id)) })
+                .collect();
+            match profiles.iter().position(Option::is_none) {
+                None => {
+                    for ((dir, id), profile) in bundles.into_iter().zip(profiles) {
+                        by_bundle.push((id, profile.unwrap(), signed_entitlements(&dir)));
+                    }
+                }
+                Some(_) if strip_extensions => {
+                    std::fs::remove_dir_all(&watch.bundle_dir)?;
+                    stripped.push(watch.bundle_dir.file_name().unwrap_or_default().to_string_lossy().to_string());
+                }
+                Some(missing) => bail!(
+                    "No imported profile covers the watch app's {}. Import one for it that lists the Watch, use a wildcard profile, or turn on removing extensions.",
+                    bundles[missing].1
+                ),
+            }
+        }
+        let watch_dir = app.bundle.bundle_dir.join("Watch");
+        if watch_dir.is_dir() && std::fs::read_dir(&watch_dir)?.next().is_none() {
+            std::fs::remove_dir(&watch_dir)?;
         }
 
         let certificate_chain = chain(&identity.certificate, &main.parsed)?;

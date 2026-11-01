@@ -853,6 +853,12 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let info = tunnel.device_info().await?;
             let inventory = apparition_core::install_plan::inspect(&prepared.path)?;
             let is_apparition = inventory.id == APPARITION_ID;
+            // A watch app needs the paired Watch registered on the team; only the iPhone can say which.
+            let watches = if inventory.has_watch_app() && api::Platform::of_product(&info.product_type) == api::Platform::IOS {
+                tunnel.paired_watches().await.unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let assignment_path = state.store.dir.join("app-id-assignments.json");
             let mut assignments = read_assignments(&assignment_path).map_err(|e| rootcause::report!("{}", e.message))?;
             let (team, ids) = {
@@ -894,7 +900,8 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 "destination": tunnel.installed_app(&default_target).await?,
                 "previous": previous.as_ref().map(|a| &a.target),
                 "selected": previous.as_ref().map(|a| a.extensions.clone()).unwrap_or_default(),
-                "available": ids["availableQuantity"], "dataSource": data_source
+                "available": ids["availableQuantity"], "dataSource": data_source,
+                "watches": watches.iter().map(|w| &w.name).collect::<Vec<_>>()
             })) {
                 Answer::InstallPlan { target, extensions, data_mode } => (target, extensions, data_mode),
                 _ => return Err(rootcause::report!("Installation cancelled before signing")),
@@ -965,6 +972,27 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             // update stops waiting after 20 s; a new install, however large, is waited for.
             let reply = tunnel.install(&signed_path, source, if existing.is_some() && data_mode != "discard" { 20_000 } else { 0 }).await?;
 
+            // The watch app, if one was kept, goes to each paired Watch through the phone: iOS only
+            // copies a watch app over itself for App Store and paid-team profiles.
+            let mut watch_installs = Vec::new();
+            if let Some(watch_app) = std::fs::read_dir(signed_path.join("Watch")).ok()
+                .and_then(|entries| entries.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "app")))
+            {
+                for watch in &watches {
+                    stage(&app, "watch", json!({ "name": watch.name, "trust": false }));
+                    let waiting = |_: &str| stage(&app, "watch", json!({ "name": watch.name, "trust": true }));
+                    let result = async {
+                        let mut companion = tunnel.watch(&watch.udid, &state.store.dir, &waiting).await?;
+                        companion.install(&watch_app, &|_| {}).await
+                    }
+                    .await;
+                    watch_installs.push(match result {
+                        Ok(reply) => json!({ "name": watch.name, "seconds": reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0 }),
+                        Err(error) => json!({ "name": watch.name, "error": error.to_string() }),
+                    });
+                }
+            }
+
             let mut migration = Value::Null;
             let mut migration_pending = false;
             if data_mode == "keep" && let Some(from) = &move_from && from != &bundle_id
@@ -1018,6 +1046,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 "seconds": reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0,
                 "queued": reply["queued"].as_bool() == Some(true),
                 "strippedExtensions": stripped,
+                "watches": watch_installs,
                 "isApparition": is_apparition,
                 "migration": migration,
                 "migrationPending": migration_pending,

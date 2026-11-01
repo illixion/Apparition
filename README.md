@@ -546,6 +546,7 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `pairing hand-off` | Gives Apparition, already installed on an iPhone, iPad or Apple TV, its pairing with that device, without reinstalling it. |
 | `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (and `--anisette <url>` where there's no built-in one) or `--p12 <file> --profile <file>`. |
 | `sign <app.ipa or .deb>` | Signs for a paired device and installs nothing; says which capabilities the app got. |
+| `watches [--device <name>] [--install <signed watch .app>]` | Lists the Apple Watches paired with an iPhone, and can put an already signed watch app on them through the phone. |
 | `jit <bundle ID>` | Is the app's debugger from this computer so it can use JIT: launches it, or with `--attach` takes the running process, and serves its JIT requests. |
 | `certificates`, `app-ids` | Show what uses up a free account's two certificates and ten App IDs, and free one you choose after you confirm. |
 | `signing receive`, `send`, `hand-off`, `share`, `import` | Move the Apple ID's certificate key between your devices and computers; see Sharing one certificate below. |
@@ -555,6 +556,16 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `anisette import [--accept-unverified] <file>…`, `anisette import --reset` | Troubleshooting, for "Couldn't fetch Apple's anisette libraries": use the Apple Music APK, or its two libraries, from a file you got from Apple, in place of the download. `--accept-unverified` uses files that don't match the tested version (an unsupported setup, warned about everywhere). `--reset` goes back to fetching Apple's. Steps in [When Apparition can't fetch Apple's libraries](#when-apparition-cant-fetch-apples-libraries). |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
 | `link` | Puts `apparition` on your `PATH` (above). |
+
+**Apple Watch apps.** An iPhone app that carries a watch app (`Watch/` inside the IPA) installs
+on the paired Apple Watch too: Apparition asks the iPhone which Watch it is paired with, registers
+the Watch on the team, signs the watch app with its own App ID and profile, installs the iPhone
+app, and then puts the watch app on the Watch directly through the phone. iOS itself only copies a
+watch app over for App Store and paid-team profiles, so a free account's watch app would never
+arrive without this step. The Watch asks to trust the computer the first time (tap Trust on the
+Watch); the record is kept. The watch app is one of the items in Install Options, so it can be
+left off to save an App ID. Nothing on the Watch itself needs setting up: no Developer Mode, no
+Wi-Fi, and the Watch stays on Bluetooth.
 
 Anything that signs in asks for the Apple ID's password, and for the 2FA code when Apple sends
 one, in the terminal; neither is kept unless you turn on Remember password on the device.

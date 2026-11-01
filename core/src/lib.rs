@@ -34,6 +34,7 @@ pub mod package;
 pub mod install_plan;
 mod jit;
 mod tunnel;
+pub mod watch;
 pub mod stop;
 #[cfg(all(feature = "anisette", unix))]
 pub mod anisette;
@@ -610,10 +611,20 @@ pub async fn sign_with_apple_id_as(
         .filter(|(entitlement, _)| asked.get(entitlement).and_then(plist::Value::as_boolean) == Some(true))
         .map(|(_, capability)| capability.to_string())
         .collect();
+    // A watch app is installed by the Watch, which checks its profile lists the Watch's UDID.
+    // Watches share the iOS device list (Xcode's portal data: watchOS inherits iOS, with no
+    // sub-platform as tvOS has), and the watch app's App ID gets an iOS team profile like the rest.
+    let has_watch_app = install_plan::inspect(&app_path).is_ok_and(|inventory| inventory.has_watch_app());
+    let watches = if has_watch_app { watch::known(&session.data_dir, udid) } else { Vec::new() };
     let dev = session.sideloader.get_dev_session();
     dev.ensure_device_registered(&team, device_name, udid, None)
         .await
         .context("Device registration failed")?;
+    for watch in &watches {
+        dev.ensure_device_registered(&team, &watch.name, &watch.udid, None)
+            .await
+            .context(format!("Registering the Apple Watch {} failed", watch.name))?;
+    }
     let devices = dev.list_devices(&team, None).await?;
     let registered: Vec<Value> = devices
         .iter()
@@ -636,6 +647,9 @@ pub async fn sign_with_apple_id_as(
     }
     let (signed, _) = signed.context("Signing failed")?;
     let mut result = json!({"signedPath": signed.to_string_lossy(), "devices": registered, "strippedExtensions": stripped});
+    if has_watch_app {
+        result["watches"] = json!(watches);
+    }
     if !capabilities.is_empty() {
         let signed_with: Vec<&str> = identity::app_entitlements(&signed)
             .map(|e| CAPABILITIES.iter().filter(|(key, _)| e.contains_key(key)).map(|(key, _)| *key).collect())

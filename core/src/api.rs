@@ -212,8 +212,7 @@ async fn trust(
 }
 
 /// A random (version 4) UUID in capitals, the form lockdown's HostID takes.
-#[cfg(feature = "desktop")]
-fn random_uuid() -> String {
+pub(crate) fn random_uuid() -> String {
     use ring::rand::SecureRandom;
     let mut b = [0u8; 16];
     let _ = ring::rand::SystemRandom::new().fill(&mut b);
@@ -275,6 +274,24 @@ impl Tunnel {
             product_type: value("ProductType").await?,
             os_version: value("ProductVersion").await?,
         })
+    }
+
+    /// The Apple Watches paired with this iPhone; empty for any other device. Signing an app
+    /// with a watch app for this phone registers them (it remembers what this said).
+    pub async fn paired_watches(&mut self) -> Result<Vec<crate::watch::PairedWatch>, Report> {
+        crate::watch::paired_and_remembered(&mut self.adapter, &mut self.handshake).await
+    }
+
+    /// The Watch `udid`, paired with this iPhone, through the phone's companion_proxy: its
+    /// lockdown services, for installing its watch app directly. The trust record lives in
+    /// `dir`; the first time, the Watch asks to trust the computer and `waiting` is told.
+    pub async fn watch<'a>(
+        &'a mut self,
+        udid: &str,
+        dir: &Path,
+        waiting: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<crate::watch::Companion<'a>, Report> {
+        crate::watch::Companion::connect(&mut self.adapter, &mut self.handshake, udid, dir, waiting).await
     }
 
     /// Removes an installed copy and its app container. Keychain and shared groups may remain.
@@ -708,7 +725,30 @@ mod desktop {
             if device.platform() != super::Platform::IOS {
                 return super::connect(address, &hostname(), &mut pairing, pin).await;
             }
-            match super::connect_verified(address, &hostname(), &mut pairing).await {
+            let connected = super::connect_verified(address, &hostname(), &mut pairing).await;
+            // An iPhone's RemotePairing port isn't fixed and changes as it restarts, so a refused
+            // or silent address is looked up again under the device's name and remembered.
+            if let Err(error) = &connected
+                && !super::is_pairing_rejected(error)
+            {
+                for found in browse(3).await.unwrap_or_default().into_iter().filter(|f| !f.ready_to_pair && f.name == device.name) {
+                    for candidate in found.addresses.iter().filter(|a| a.is_ipv4()).chain(found.addresses.iter().filter(|a| !a.is_ipv4())) {
+                        let candidate = SocketAddr::new(*candidate, found.port);
+                        if candidate == address {
+                            continue;
+                        }
+                        if let Ok(tunnel) = super::connect_verified(candidate, &hostname(), &mut pairing).await {
+                            let mut devices = self.devices();
+                            if let Some(saved) = devices.iter_mut().find(|d| d.udid == device.udid) {
+                                (saved.address, saved.port) = (candidate.ip(), candidate.port());
+                                let _ = self.save(&devices);
+                            }
+                            return Ok(tunnel);
+                        }
+                    }
+                }
+            }
+            match connected {
                 Err(error) if super::is_pairing_rejected(&error) => Err(error.context(format!(
                     "{} no longer trusts this computer's pairing. Pair again with `apparition pair --usb` (over Wi-Fi works once it trusts this computer).",
                     device.name

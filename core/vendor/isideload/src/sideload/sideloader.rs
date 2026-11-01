@@ -209,6 +209,11 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
             .await?;
 
         let mut provisioning_profiles: Vec<(String, Profile, Dictionary)> = Vec::new();
+        let watch_ids: Vec<String> = app
+            .watch_bundles()
+            .iter()
+            .filter_map(|b| b.bundle_identifier().map(str::to_owned))
+            .collect();
 
         match extensions_behavior {
             ExtensionsBehavior::ReuseMain => {
@@ -226,29 +231,34 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
                     ));
                 }
             }
-            ExtensionsBehavior::RegisterAll => {
-                for id in app_ids
-                    .into_iter()
-                    .filter(|id| id.identifier != main_app_id.identifier)
-                {
-                    let bundle_id = id.identifier.clone();
+            ExtensionsBehavior::RegisterAll => {}
+        }
+        // Every App ID registered besides the main one gets its own profile: all extensions
+        // under RegisterAll, and watch apps always.
+        for id in app_ids
+            .into_iter()
+            .filter(|id| id.identifier != main_app_id.identifier)
+        {
+            let bundle_id = id.identifier.clone();
+            let for_watch = watch_ids.contains(&bundle_id);
 
-                    let profile = self
-                        .dev_session
-                        .download_team_provisioning_profile(&team, &id, profile_platform.clone())
-                        .await
-                        .context(format!(
-                            "Failed to download provisioning profile for {}",
-                            bundle_id
-                        ))?;
+            let profile = self
+                .dev_session
+                .download_team_provisioning_profile(
+                    &team,
+                    &id,
+                    if for_watch { Some(DeveloperDeviceType::Watchos) } else { profile_platform.clone() },
+                )
+                .await
+                .context(format!(
+                    "Failed to download provisioning profile for {}",
+                    bundle_id
+                ))?;
 
-                    let parsed_profile =
-                        ProvisioningProfile::parse(profile.encoded_profile.as_ref())?;
-                    let entitlements = parsed_profile.entitlements().clone();
+            let parsed_profile = ProvisioningProfile::parse(profile.encoded_profile.as_ref())?;
+            let entitlements = parsed_profile.entitlements().clone();
 
-                    provisioning_profiles.push((bundle_id, profile, entitlements));
-                }
-            }
+            provisioning_profiles.push((bundle_id, profile, entitlements));
         }
 
         if let Some(callback) = &progress_callback {
@@ -263,6 +273,12 @@ impl<C: MaxCertsCallback, E: ExtensionsBehaviorCallback> Sideloader<C, E> {
         }
         for ext in app.bundle.frameworks_mut() {
             ext.write_info()?;
+        }
+        for watch in app.bundle.watch_apps_mut() {
+            watch.write_info()?;
+            for ext in watch.app_extensions_mut() {
+                ext.write_info()?;
+            }
         }
 
         // isideload_vfs::fs::write(

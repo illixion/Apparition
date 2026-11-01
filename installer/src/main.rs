@@ -177,6 +177,7 @@ async fn main() -> ExitCode {
         Some("install") => install(&args[1..]).await,
         Some("sign") => sign(&args[1..]).await,
         Some("jit") => jit(&args[1..]).await,
+        Some("watches") => watches(&args[1..]).await,
         Some("inject") => inject::run(&args[1..]).await,
         Some("xcode") => xcode::run(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
@@ -792,6 +793,15 @@ fn report_signed(signed: &serde_json::Value) -> Result<PathBuf, Error> {
         }
         println!("  signed with: {}", capabilities["signed"]);
     }
+    if let Some(watches) = signed["watches"].as_array() {
+        match watches.as_slice() {
+            [] => println!("The app has a watch app, but no Apple Watch paired with this device is known, so it can't install on one."),
+            watches => {
+                let names: Vec<&str> = watches.iter().filter_map(|w| w["name"].as_str()).collect();
+                println!("Registered the Apple Watch {} for its watch app.", names.join(", "));
+            }
+        }
+    }
     Ok(signed_path)
 }
 
@@ -841,6 +851,39 @@ async fn sign_unpacked(options: &Options) -> Result<(), Error> {
     };
     let signed_path = report_signed(&signed)?;
     println!("Signed for {}, nothing installed: {}", device.name, signed_path.display());
+    Ok(())
+}
+
+/// `watches`: the Apple Watches paired with an iPhone, which signing an app with a watch app
+/// registers on the team alongside the phone.
+async fn watches(args: &[String]) -> Result<(), Error> {
+    let (device, install) = match args {
+        [] => (None, None),
+        [flag, name] if flag == "--device" => (Some(name.as_str()), None),
+        [flag, app] if flag == "--install" => (None, Some(PathBuf::from(app))),
+        [flag, name, flag2, app] if flag == "--device" && flag2 == "--install" => (Some(name.as_str()), Some(PathBuf::from(app))),
+        _ => return Err(fail("usage: apparition watches [--device <name or UDID>] [--install <signed watch .app>]")),
+    };
+    let device = find_device(device)?;
+    println!("Connecting to {}…", device.name);
+    let mut tunnel = store().connect(&device, || ask("The device wants to pair again. PIN: ")).await?;
+    let watches = tunnel.paired_watches().await?;
+    if watches.is_empty() {
+        println!("No Apple Watch is paired with {}.", device.name);
+    }
+    for watch in &watches {
+        println!("  {} ({}) {} watchOS {}", watch.name, watch.udid, watch.product_type, watch.os_version);
+    }
+    if let Some(app) = install {
+        let dir = store().dir.clone();
+        for watch in &watches {
+            println!("Installing {} on {}…", app.display(), watch.name);
+            let waiting = |what: &str| println!("{what}");
+            let mut companion = tunnel.watch(&watch.udid, &dir, &waiting).await?;
+            let reply = companion.install(&app, &|_| {}).await?;
+            println!("Installed on {} in {:.1} s.", watch.name, reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0);
+        }
+    }
     Ok(())
 }
 
@@ -939,6 +982,14 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
     let pin = || ask("The headset wants to pair again. PIN: ");
     let mut tunnel = store().connect(device, pin).await?;
     let info = tunnel.device_info().await?;
+    // A watch app needs the paired Watch registered with it; only the iPhone can say which.
+    if api::Platform::of_product(&info.product_type) == api::Platform::IOS
+        && apparition_core::install_plan::inspect(&options.ipa).is_ok_and(|inventory| inventory.has_watch_app())
+    {
+        for watch in tunnel.paired_watches().await? {
+            println!("Paired Apple Watch: {} ({}, watchOS {}).", watch.name, watch.product_type, watch.os_version);
+        }
+    }
     let strip = !options.keep_extensions;
     sign_and_install(options, &info, &mut tunnel, scratch, strip).await
 }
@@ -989,12 +1040,44 @@ async fn sign_and_install(
     } else {
         println!("Installed in {seconds:.1} s.");
     }
+    install_watch_apps(&signed, &signed_path, tunnel).await?;
 
     if options.handoff && installed_id.starts_with(APPARITION_ID) {
         if store().hand_over_pairing(tunnel, &installed_id, &info.udid).await? {
             println!("Gave Apparition its pairing with this device.");
         }
         handoff(options, tunnel, &installed_id, apple_id.as_ref()).await?;
+    }
+    Ok(())
+}
+
+/// Installs the signed watch app on each Apple Watch the signing registered, straight through
+/// the iPhone: iOS only copies a watch app to the Watch itself for App Store and paid-team
+/// profiles, so a free account's has to go this way.
+async fn install_watch_apps(signed: &serde_json::Value, signed_path: &Path, tunnel: &mut api::Tunnel) -> Result<(), Error> {
+    let Some(watches) = signed["watches"].as_array().filter(|w| !w.is_empty()) else { return Ok(()) };
+    let watch_dir = signed_path.join("Watch");
+    let Some(app) = std::fs::read_dir(&watch_dir)
+        .ok()
+        .and_then(|entries| entries.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "app")))
+    else {
+        println!("The signed app has no watch app left to install.");
+        return Ok(());
+    };
+    let dir = store().dir.clone();
+    for watch in watches {
+        let (Some(udid), Some(name)) = (watch["udid"].as_str(), watch["name"].as_str()) else { continue };
+        println!("Installing the watch app on {name}…");
+        let waiting = |what: &str| println!("{what}");
+        let result = async {
+            let mut companion = tunnel.watch(udid, &dir, &waiting).await?;
+            companion.install(&app, &|_| {}).await
+        }
+        .await;
+        match result {
+            Ok(reply) => println!("Installed on {name} in {:.1} s.", reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0),
+            Err(error) => println!("Couldn't install on {name}: {error}"),
+        }
     }
     Ok(())
 }

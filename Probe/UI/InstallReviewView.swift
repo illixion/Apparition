@@ -65,6 +65,9 @@ struct InstallReviewView: View {
                             VStack(alignment: .leading) {
                                 Text(item.name)
                                 Text(item.id).font(.caption).foregroundStyle(.secondary)
+                                if item.watch == true {
+                                    Text("Apple Watch app: installed on the Watch paired with this iPhone, through it. Needs an App ID of its own.").font(.caption)
+                                }
                                 if review.unsupported.contains(item.id) {
                                     Text(review.appleID ? "ExtensionKit signing requires imported provisioning profiles." : "No imported profile covers this extension on this device.").font(.caption)
                                 }

@@ -18,6 +18,8 @@ pub struct Bundle {
 
     app_extensions: Vec<Bundle>,
     frameworks: Vec<Bundle>,
+    /// watchOS apps an iOS app carries in `Watch/`, which iOS copies to the paired Watch.
+    watch_apps: Vec<Bundle>,
     _libraries: Vec<String>,
 }
 
@@ -81,6 +83,25 @@ impl Bundle {
             Vec::new()
         };
 
+        // Load watchOS apps from the Watch directory
+        let watch_dir = bundle_path.join("Watch");
+        let watch_apps = if isideload_vfs::fs::metadata(&watch_dir).is_ok() {
+            isideload_vfs::fs::read_dir(&watch_dir)
+                .context(SideloadError::InvalidBundle(
+                    "Failed to read Watch directory".to_string(),
+                ))?
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
+                        && entry.path().extension().is_some_and(|ext| ext == "app")
+                        && isideload_vfs::fs::metadata(&entry.path().join("Info.plist")).is_ok()
+                })
+                .filter_map(|entry| Bundle::new(entry.path()).ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // Find all .dylib files in the bundle directory (recursive)
         let libraries = find_dylibs(&bundle_path, &bundle_path)?;
 
@@ -89,6 +110,7 @@ impl Bundle {
             bundle_dir: bundle_path,
             app_extensions,
             frameworks,
+            watch_apps,
             _libraries: libraries,
         })
     }
@@ -135,6 +157,42 @@ impl Bundle {
         &mut self.app_extensions
     }
 
+    pub fn watch_apps(&self) -> &[Bundle] {
+        &self.watch_apps
+    }
+
+    pub fn watch_apps_mut(&mut self) -> &mut [Bundle] {
+        &mut self.watch_apps
+    }
+
+    /// Repoints the IDs a watch bundle names its companion by, `WKCompanionAppBundleIdentifier`
+    /// (a watch app's iOS app) and `NSExtension.NSExtensionAttributes.WKAppBundleIdentifier`
+    /// (a WatchKit extension's watch app), from IDs under `old_prefix` to the same under
+    /// `new_prefix`. The Watch refuses a pair whose IDs don't agree.
+    pub fn rebase_companion_ids(&mut self, old_prefix: &str, new_prefix: &str) {
+        let rebase = |value: &mut Value| {
+            if let Value::String(id) = value
+                && let Some(rest) = id.strip_prefix(old_prefix)
+                && (rest.is_empty() || rest.starts_with('.'))
+            {
+                *id = format!("{new_prefix}{rest}");
+            }
+        };
+        if let Some(value) = self.app_info.get_mut("WKCompanionAppBundleIdentifier") {
+            rebase(value);
+        }
+        if let Some(value) = self
+            .app_info
+            .get_mut("NSExtension")
+            .and_then(Value::as_dictionary_mut)
+            .and_then(|e| e.get_mut("NSExtensionAttributes"))
+            .and_then(Value::as_dictionary_mut)
+            .and_then(|a| a.get_mut("WKAppBundleIdentifier"))
+        {
+            rebase(value);
+        }
+    }
+
     pub fn frameworks(&self) -> &[Bundle] {
         &self.frameworks
     }
@@ -167,6 +225,7 @@ impl Bundle {
             bundle_dir: dylib_path,
             app_extensions: Vec::new(),
             frameworks: Vec::new(),
+            watch_apps: Vec::new(),
             _libraries: Vec::new(),
         }
     }
@@ -185,6 +244,11 @@ impl Bundle {
         }
 
         for bundle in &self.frameworks {
+            bundles.push(bundle.clone());
+            bundle.collect_nested_bundles_into(bundles);
+        }
+
+        for bundle in &self.watch_apps {
             bundles.push(bundle.clone());
             bundle.collect_nested_bundles_into(bundles);
         }

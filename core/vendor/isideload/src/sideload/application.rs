@@ -164,27 +164,47 @@ impl Application {
         main_app_bundle_id: &str,
         main_app_id_str: &str,
     ) -> Result<(), Report> {
-        let extensions = self.bundle.app_extensions_mut();
-        for ext in extensions.iter_mut() {
-            if let Some(id) = ext.bundle_identifier() {
+        // Every sub-bundle keeps its suffix under the new ID: PlugIns, and watch apps (with
+        // their own PlugIns), which also name the bundle they belong to.
+        let rename = |bundle: &mut Bundle, kind: &str| -> Result<(), Report> {
+            if let Some(id) = bundle.bundle_identifier() {
                 if !(id.starts_with(main_app_bundle_id) && id.len() > main_app_bundle_id.len()) {
                     bail!(SideloadError::InvalidBundle(format!(
-                        "Extension {} is not part of the main app bundle identifier: {}",
-                        ext.bundle_name().unwrap_or("Unknown"),
+                        "{} {} is not part of the main app bundle identifier: {}",
+                        kind,
+                        bundle.bundle_name().unwrap_or("Unknown"),
                         id
                     )));
-                } else {
-                    ext.set_bundle_identifier(&format!(
-                        "{}{}",
-                        main_app_id_str,
-                        &id[main_app_bundle_id.len()..]
-                    ));
                 }
+                let renamed = format!("{}{}", main_app_id_str, &id[main_app_bundle_id.len()..]);
+                bundle.set_bundle_identifier(&renamed);
+            }
+            bundle.rebase_companion_ids(main_app_bundle_id, main_app_id_str);
+            Ok(())
+        };
+        for ext in self.bundle.app_extensions_mut() {
+            rename(ext, "Extension")?;
+        }
+        for watch in self.bundle.watch_apps_mut() {
+            rename(watch, "Watch app")?;
+            for ext in watch.app_extensions_mut() {
+                rename(ext, "Watch extension")?;
             }
         }
         self.bundle.set_bundle_identifier(main_app_id_str);
 
         Ok(())
+    }
+
+    /// The watch apps in `Watch/` and their extensions: each needs an App ID and profile of its
+    /// own whatever the extensions behavior, since the Watch checks them for its own UDID.
+    pub fn watch_bundles(&self) -> Vec<&Bundle> {
+        let mut bundles = Vec::new();
+        for watch in self.bundle.watch_apps() {
+            bundles.push(watch);
+            bundles.extend(watch.app_extensions());
+        }
+        bundles
     }
 
     pub async fn register_app_ids(
@@ -204,6 +224,7 @@ impl Application {
                 bundles_with_app_id.extend(extension_refs);
             }
         }
+        bundles_with_app_id.extend(self.watch_bundles());
 
         let list_app_ids_response = dev_session
             .list_app_ids(team, None)

@@ -879,7 +879,7 @@ function signInError(/** @type {any} */ error, /** @type {boolean} */ usingServe
 // ------------------------------------------------------------ 5. install
 
 /** Install stages, in order. */
-const STAGES = ["release", "download", "connecting", "signing", "installing", "handoff"];
+const STAGES = ["release", "download", "connecting", "signing", "installing", "watch", "handoff"];
 
 function install() {
   panel.append(template("t-install"));
@@ -970,7 +970,8 @@ function install() {
       await listen("stage", (/** @type {any} */ e) => {
         const { stage, detail } = e.payload;
         const text =
-          stage === "connecting" ? detail : stage === "signing" ? signingLabel() : stage === "installing" ? (detail.update ? "Updating" : "") : "";
+          stage === "connecting" ? detail : stage === "signing" ? signingLabel() : stage === "installing" ? (detail.update ? "Updating" : "")
+          : stage === "watch" ? (detail.trust ? `Tap Trust on ${detail.name}` : detail.name) : "";
         reach(stage, text);
       }),
     );
@@ -1001,6 +1002,9 @@ function install() {
         options: { udid: state.device.udid, handOff: state.handOff },
       });
       for (const s of ["connecting", "signing", "installing"]) mark(s, "done");
+      const watches = result.watches ?? [];
+      mark("watch", !watches.length ? "skipped" : watches.every((w) => !w.error) ? "done" : "failed",
+        watches.map((w) => (w.error ? `${w.name}: ${w.error}` : w.name)).join(", "));
       mark("handoff", result.handoff ? "done" : result.handoffError ? "failed" : "skipped");
       state.result = { ...result, label: key === "latest" ? "Apparition" : basename(key ?? "") };
       cleanup();
@@ -1227,6 +1231,7 @@ function done() {
   if (result.migrationPending) notes.push("The new app is installed, but its data transfer is incomplete. The old copy was kept. Install again with Keep existing app data to retry.");
   if (result.handoffError) notes.push(`Couldn't share the signing with Apparition (${result.handoffError}). Sign in there yourself instead.`);
   if (result.strippedExtensions?.length) notes.push(`Left out extensions: ${result.strippedExtensions.join(", ")}.`);
+  for (const w of result.watches ?? []) notes.push(w.error ? `The watch app didn't install on ${w.name}: ${w.error}` : `The watch app is on ${w.name}.`);
   extra.hidden = !notes.length;
   extra.textContent = notes.join(" ");
 

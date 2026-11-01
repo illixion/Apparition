@@ -949,6 +949,38 @@ final class LibraryModel {
         probe.pairingProblem.map(PairingRecord.message) ?? Self.noUDID
     }
 
+    /// Whether the IPA or app at `path` carries a watch app, by the install inventory.
+    nonisolated static func hasWatchApp(_ path: String) -> Bool {
+        let reply = AccountModel.call(apparition_install_inventory(path))
+        guard reply["ok"] as? Bool == true, let raw = reply["inventory"],
+              let data = try? JSONSerialization.data(withJSONObject: raw),
+              let inventory = try? JSONDecoder().decode(InstallInventory.self, from: data) else { return false }
+        return inventory.extensions.contains { $0.watch == true }
+    }
+
+    /// Installs the signed watch app inside `signedPath` on each Apple Watch the signing
+    /// registered (`signed["watches"]`), through the iPhone. iOS only copies a watch app over
+    /// itself for App Store and paid-team profiles, so a free account's goes this way. Returns a
+    /// note for the status, or nil when the app has no watch app to install.
+    private func installWatchApp(signed: [String: Any], signedPath: String, appName: String) async -> String? {
+        guard let watches = signed["watches"] as? [[String: Any]], !watches.isEmpty else { return nil }
+        let watchDir = URL(fileURLWithPath: signedPath).appendingPathComponent("Watch")
+        guard let app = (try? FileManager.default.contentsOfDirectory(at: watchDir, includingPropertiesForKeys: nil))?
+            .first(where: { $0.pathExtension == "app" }) else { return nil }
+        var notes: [String] = []
+        for watch in watches {
+            guard let udid = watch["udid"] as? String else { continue }
+            let name = watch["name"] as? String ?? "Apple Watch"
+            status = "Installing \(appName) on \(name)…"
+            let outcome = await probe.installWatchApp(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort,
+                                                      watchUDID: udid, appPath: app.path) { [weak self] in
+                Task { @MainActor in self?.status = "Tap Trust on \(name) to let Apparition install there" }
+            }
+            notes.append(outcome == "ok" ? "installed on \(name)" : "not installed on \(name): \(Self.installFailure(outcome))")
+        }
+        return notes.joined(separator: "; ")
+    }
+
     private func deviceUDID() async -> String? {
         if UserDefaults.standard.string(forKey: "pairedUDID") == nil {
             await probe.identify(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
@@ -1020,6 +1052,11 @@ final class LibraryModel {
         let signed: [String: Any]
         if signer == SigningStore.appleID {
             if let reason = await signInFailure() { return fail(&record, reason) }
+            // A watch app needs the paired Watch registered on the team; only the iPhone can say which.
+            if ThisDevice.noun == "iPhone", Self.hasWatchApp(signingPath) {
+                status = "Asking \(ThisDevice.name) about its Apple Watch…"
+                _ = await probe.pairedWatches(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
+            }
             if let target = record.assignedBundleId {
                 guard record.assignedTeam == account.team?.id else { return fail(&record, "This App ID is assigned to another team. Review the install with the selected Apple ID first.") }
                 let selectedPath = signingPath
@@ -1064,6 +1101,10 @@ final class LibraryModel {
         }
         let outcome = await probe.install(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, appPath: signedPath,
                                           sourceIPA: path)
+        var watchNote: String?
+        if outcome == "ok" || outcome == "queued" {
+            watchNote = await installWatchApp(signed: signed, signedPath: signedPath, appName: record.name)
+        }
         try? FileManager.default.removeItem(atPath: signedPath)
         if let blocking = AppLimit.blockingApps(in: outcome) {
             appLimit = AppLimit(blocking: blocking, appName: record.name, retry: .app(id: record.id))
@@ -1089,7 +1130,7 @@ final class LibraryModel {
         } else {
             record.takeOver = nil
         }
-        return "ok, expires \(record.expiresAt ?? "?")" + moved
+        return "ok, expires \(record.expiresAt ?? "?")" + moved + (watchNote.map { "; " + $0 } ?? "")
     }
 
     /// Copies the data of `previousId`, the app's copy under another bundle ID, to the copy just
@@ -1512,6 +1553,8 @@ extension LibraryModel {
         let name: String
         let path: String
         let extensionKit: Bool
+        /// A watchOS app in `Watch/`, installed on the paired Apple Watch through the iPhone.
+        var watch: Bool?
     }
     struct InstallInventory: Codable, Sendable {
         let id: String

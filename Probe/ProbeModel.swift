@@ -420,6 +420,51 @@ final class ProbeModel {
         return outcome
     }
 
+    /// An Apple Watch paired with the iPhone, as apparition_paired_watches lists it.
+    struct PairedWatch: Codable, Sendable, Equatable {
+        let udid: String
+        let name: String
+        let productType: String
+        let osVersion: String
+    }
+
+    /// The Apple Watches paired with the iPhone (none on any other device), read through the
+    /// tunnel so that signing a watch app registers them. Nil when the tunnel failed.
+    func pairedWatches(host: String, port: Int) async -> [PairedWatch]? {
+        let target = tunnelTarget(host: host, port: port)
+        final class Box: @unchecked Sendable { var watches: [PairedWatch]? }
+        let box = Box()
+        let outcome = await run(action: "watches", host: host, port: port) { file, context in
+            let reply = try IDevice.pairedWatches(target: target, hostname: Self.hostname, file: file, pin: nil, context: context)
+            guard reply["ok"] as? Bool == true, let raw = reply["watches"] else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "watch lookup failed")
+            }
+            let watches = try JSONDecoder().decode([PairedWatch].self, from: JSONSerialization.data(withJSONObject: raw))
+            box.watches = watches
+            let detail = watches.isEmpty ? "no Apple Watch paired" : watches.map(\.name).joined(separator: ", ")
+            return { attempt in attempt.detail = detail }
+        }
+        return outcome == "ok" ? box.watches : nil
+    }
+
+    /// Installs the signed watch app at `appPath` on the Watch `watchUDID` through the iPhone.
+    /// `waiting` runs when the Watch is showing its trust prompt, the first time. "ok" or what failed.
+    func installWatchApp(host: String, port: Int, watchUDID: String, appPath: String,
+                         waiting: @escaping @Sendable () -> Void) async -> String {
+        let target = tunnelTarget(host: host, port: port)
+        let recordDir = AccountModel.dataDir.path
+        return await run(action: "install watch app", host: host, port: port) { file, context in
+            let reply = try IDevice.installWatchApp(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                    watchUDID: watchUDID, recordDir: recordDir, appPath: appPath, waiting: waiting)
+            guard reply["ok"] as? Bool == true else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "watch install failed")
+            }
+            let detail = "installed in \(reply["elapsedMs"] as? Int ?? 0) ms (\(reply["files"] as? Int ?? 0) files)"
+            log.info("\(detail, privacy: .public)")
+            return { attempt in attempt.detail = detail }
+        }
+    }
+
     /// Lists the headset's user apps through the tunnel and keeps the list (device-apps.json),
     /// so the Library can show it before the next tunnel opens.
     @discardableResult

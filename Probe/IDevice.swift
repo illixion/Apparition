@@ -190,6 +190,39 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and lists the Apple Watches paired with the iPhone at its other end
+    /// (apparition_paired_watches), which signing then registers for a watch app.
+    static func pairedWatches(target: Target, hostname: String, file: PairingFile,
+                              pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_paired_watches(adapter, handshake))
+        }
+    }
+
+    /// A box for the callback apparition_install_watch_app makes while the Watch shows its
+    /// trust prompt.
+    final class WaitingBox {
+        let waiting: @Sendable () -> Void
+        init(_ waiting: @escaping @Sendable () -> Void) { self.waiting = waiting }
+    }
+
+    /// Opens a tunnel and installs the signed watch app at `appPath` on the Watch `watchUDID`
+    /// through the iPhone (apparition_install_watch_app). `waiting` runs when the Watch is
+    /// showing its trust prompt, the first time.
+    static func installWatchApp(target: Target, hostname: String, file: PairingFile,
+                                pin: PinCallback?, context: UnsafeMutableRawPointer,
+                                watchUDID: String, recordDir: String, appPath: String,
+                                waiting: @escaping @Sendable () -> Void) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let box = Unmanaged.passRetained(WaitingBox(waiting))
+            defer { box.release() }
+            return AccountModel.call(apparition_install_watch_app(adapter, handshake, watchUDID, recordDir, appPath, { raw in
+                guard let raw else { return }
+                Unmanaged<WaitingBox>.fromOpaque(raw).takeUnretainedValue().waiting()
+            }, box.toOpaque()))
+        }
+    }
+
     /// Opens a tunnel and lists every user app on the device (apparition_list_apps).
     static func listApps(target: Target, hostname: String, file: PairingFile,
                          pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> [String: Any] {

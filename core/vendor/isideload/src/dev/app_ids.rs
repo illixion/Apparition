@@ -158,6 +158,12 @@ pub trait AppIdsApi {
         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
     ) -> Result<Profile, Report> {
         let requested_platform = device_type.into();
+        // A watch app takes the iOS profile: the portal has no watchos/ path, and its
+        // `Platform` list ("iOS", "xrOS", "visionOS") is what Xcode's own watch profiles carry.
+        let requested_platform = match requested_platform {
+            Some(DeveloperDeviceType::Watchos) => Some(DeveloperDeviceType::Ios),
+            other => other,
+        };
         let tvos = matches!(requested_platform.as_ref(), Some(DeveloperDeviceType::Tvos));
         let mut body = plist!(dict {
             "teamId": &team.team_id,

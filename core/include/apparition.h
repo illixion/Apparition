@@ -167,6 +167,20 @@ char *apparition_pair_relay(const char *relay, unsigned short port, const char *
 char *apparition_install_ipa(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                              const char *app_path, const char *source_ipa, uint64_t detach_after_ms);
 
+// The Apple Watches paired with the iPhone at the other end of the tunnel ({watches: [{udid,
+// name, productType, osVersion}]}); empty on any other device. Call before signing an app that
+// has a watch app: signing registers the Watches this last reported for the phone.
+char *apparition_paired_watches(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake);
+
+// Installs the signed watch app at app_path (the Watch/X.app inside a signed app) on the Watch
+// watch_udid through the iPhone at the other end of the tunnel: the phone's companion_proxy
+// forwards the Watch's lockdown, and the app streams over its streaming_zip_conduit. The Watch's
+// trust record is kept under record_dir; the first time, the Watch asks to trust this device and
+// waiting(context) is called while that prompt is up. Replies {elapsedMs, bytes, files}.
+char *apparition_install_watch_app(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                   const char *watch_udid, const char *record_dir, const char *app_path,
+                                   void (*waiting)(void *context), void *context);
+
 // The account's development certificates and App IDs (core/src/account.rs). Revoking a
 // certificate stops apps signed with it from launching; ask the user first.
 char *apparition_list_certificates(void);
