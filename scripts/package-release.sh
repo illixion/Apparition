@@ -11,6 +11,12 @@
 #                                                           static command line, and the
 #                                                           desktop app as an AppImage and a .deb
 #
+# and the app's symbols into build/dsyms/<version>/, apart from those, because the release site
+# takes exactly the files above (publish.py refuses any other name):
+#
+#   Apparition-<version>-<visionOS|iOS|tvOS>-dSYMs.zip      for reading crash reports from that
+#                                                           IPA; published on the GitHub release
+#
 #   scripts/package-release.sh 0.2.0
 #   scripts/package-release.sh 0.2.0 --linux        # also Linux x86_64 and arm64
 #   LINUX_X86_64_HOST=tuxpc scripts/package-release.sh 0.2.0 --linux   # x86_64 natively there
@@ -226,6 +232,9 @@ fi
 
 # ------------------------------------------------------------------ the app
 if has app; then
+  SYMBOLS="$ROOT/build/dsyms/$VERSION"
+  rm -rf "$SYMBOLS"
+  mkdir -p "$SYMBOLS"
   xcodegen generate --quiet
   # One IPA per platform: <build-core.sh platform> <SDK> <name in the file name>.
   for spec in "visionos xros visionOS" "ios iphoneos iOS" "tvos appletvos tvOS"; do
@@ -250,6 +259,25 @@ if has app; then
       echo "error: the $name Apparition.app embeds extensions; each costs a free account an App ID" >&2
       exit 1
     fi
+    # The symbols of this very binary. Signing on the device changes the signature, not the
+    # binary's UUID, so they match every copy installed from this IPA, and a crash report from
+    # any of them (MetricKit's binaryUUID, an .ips) symbolicates against them.
+    products="$WORK/DerivedData/Build/Products/Release-$sdk"
+    executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")"
+    dsym="$products/Apparition.app.dSYM"
+    [[ -d "$dsym" ]] || { echo "error: no dSYM for the $name app at $dsym" >&2; exit 1; }
+    app_uuids="$(xcrun dwarfdump --uuid "$app/$executable" | awk '{print $2}' | sort)"
+    dsym_uuids="$(xcrun dwarfdump --uuid "$dsym" | awk '{print $2}' | sort)"
+    [[ -n "$app_uuids" && "$app_uuids" == "$dsym_uuids" ]] \
+      || { echo "error: the $name dSYM ($dsym_uuids) isn't the app's ($app_uuids)" >&2; exit 1; }
+    # Every dSYM the build made (the app's, and any framework's), in one zip per platform.
+    (cd "$products" && zip -qryX "$SYMBOLS/Apparition-$VERSION-$name-dSYMs.zip" ./*.dSYM)
+    # With the dSYM made, the binary's debug map (stabs pointing at the build's object files,
+    # 3.5 MB in 0.4.5) is dead weight, so it goes, as an Xcode archive would do. strip -S keeps
+    # the UUID and every function symbol, which on-device backtraces and the profiler read.
+    xcrun strip -S "$app/$executable"
+    [[ "$(xcrun dwarfdump --uuid "$app/$executable" | awk '{print $2}' | sort)" == "$app_uuids" ]] \
+      || { echo "error: stripping changed the $name app's UUID" >&2; exit 1; }
     rm -rf "$WORK/ipa"
     mkdir -p "$WORK/ipa/Payload"
     ditto "$app" "$WORK/ipa/Payload/Apparition.app"
@@ -329,4 +357,8 @@ LINUX_PIDS=()
 rm -rf "$WORK"
 echo "==> built into $OUT:"
 (cd "$OUT" && ls -l | sed 's/^/    /')
+if has app; then
+  echo "==> symbols in $SYMBOLS (for the GitHub release, not the site):"
+  (cd "$SYMBOLS" && ls -l | sed 's/^/    /')
+fi
 echo "    Upload them, then on the site: scripts/publish.py add $VERSION $OUT --url-base <where they are>"

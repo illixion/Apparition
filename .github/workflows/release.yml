@@ -53,6 +53,7 @@ jobs:
     name: Plan
     runs-on: ubuntu-24.04
     outputs:
+      parts: ${{ steps.plan.outputs.parts }}
       warm: ${{ steps.plan.outputs.warm }}
       apple: ${{ steps.plan.outputs.apple }}
       linux: ${{ steps.plan.outputs.linux }}
@@ -134,6 +135,14 @@ jobs:
         with:
           name: apple-${{ matrix.part }}
           path: Apparition/build/release/*/*
+          if-no-files-found: error
+      # The IPAs' symbols, in an artifact of their own: the release site takes every file of the
+      # release artifact as a release file, and refuses these.
+      - uses: actions/upload-artifact@v7
+        if: matrix.part == 'app' && needs.plan.outputs.warm != 'true'
+        with:
+          name: dsyms
+          path: Apparition/build/dsyms/*/*
           if-no-files-found: error
 
   linux:
@@ -221,11 +230,30 @@ jobs:
           find files -mindepth 1 -type d -empty -delete
           cd files && ls -l && sha256sum Apparition-* | tee SHA256SUMS
           { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v8
+        if: contains(format(',{0},', needs.plan.outputs.parts), ',app,')
+        with:
+          name: dsyms
+          path: symbols
+      - name: List the symbols
+        if: contains(format(',{0},', needs.plan.outputs.parts), ',app,')
+        run: |
+          set -o pipefail
+          cd symbols && ls -l && sha256sum Apparition-* | tee SHA256SUMS
+          { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/attest-build-provenance@v4
         with:
-          subject-path: "files/Apparition-*"
+          subject-path: |
+            files/Apparition-*
+            symbols/Apparition-*
       - uses: actions/upload-artifact@v7
         with:
           name: release-${{ env.VERSION }}
           # Only the release's own files: publish.py takes every file in the folder as one.
           path: files/Apparition-*
+      # The symbols go on the GitHub release beside the IPAs, but not to the site.
+      - uses: actions/upload-artifact@v7
+        if: contains(format(',{0},', needs.plan.outputs.parts), ',app,')
+        with:
+          name: dsyms-${{ env.VERSION }}
+          path: symbols/Apparition-*

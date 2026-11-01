@@ -99,3 +99,6 @@ opt-level = 3
 
 [profile.release]
 lto = "thin"
+# File and line for the core's frames in a crash report. The DWARF goes into the app's dSYM;
+# package-release.sh strips the debug map it leaves in the binary.
+debug = "line-tables-only"

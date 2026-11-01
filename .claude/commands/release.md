@@ -56,9 +56,10 @@ The release stays a **draft** until it is blessed: a draft is private, and (with
 
 - The artifact name depends on how the run started: `release-vx.y.z` for a tag push (the version carries its `v`), but `release-x.y.z` for a hand-dispatched run (the workflow's `VERSION` is the `version` input as typed, no `v`). Check with `gh api repos/illixion/Apparition/actions/runs/<id>/artifacts` or the run page, then `gh run download <id> -R illixion/Apparition -n <name> -D build/release/x.y.z`.
 - A partial run uploads only the files of the parts it built. That is expected; check the set against the parts you asked for.
-- `for f in build/release/x.y.z/Apparition-*; do gh attestation verify "$f" -R illixion/Apparition; done`. Every file must verify.
+- When the run built `app`, also download its symbols, named the same way with `dsyms-` in place of `release-`, into their own folder: `gh run download <id> -R illixion/Apparition -n dsyms-<v or no v>x.y.z -D build/dsyms/x.y.z`. Expect one `Apparition-x.y.z-<visionOS|iOS|tvOS>-dSYMs.zip` per IPA. Never put them in `build/release/x.y.z`: `publish.py add` refuses any file that isn't a release file.
+- `for f in build/release/x.y.z/Apparition-* build/dsyms/x.y.z/Apparition-*; do gh attestation verify "$f" -R illixion/Apparition; done`. Every file must verify.
 - Draft the release notes from the commit summary and show them to the user for approval.
-- Create the draft. Full release, tag pushed: `gh release create vx.y.z build/release/x.y.z/Apparition-* -R illixion/Apparition --draft --verify-tag --title "Apparition x.y.z" --notes "<approved notes>"`. Partial release, or any run without a tag: the same command with `--target <full sha of the built commit>` in place of `--verify-tag`.
+- Create the draft, with the symbols as assets too (add `build/dsyms/x.y.z/Apparition-*` after the release files when the run built `app`). Full release, tag pushed: `gh release create vx.y.z build/release/x.y.z/Apparition-* build/dsyms/x.y.z/Apparition-* -R illixion/Apparition --draft --verify-tag --title "Apparition x.y.z" --notes "<approved notes>"`. Partial release, or any run without a tag: the same command with `--target <full sha of the built commit>` in place of `--verify-tag`.
 - Download the draft's assets back (`gh release download vx.y.z -R illixion/Apparition -D <empty dir>`, which works for a draft) and check each file's `sha256sum` against the build's. Once published the files can't be replaced, so a wrong upload is found here or not at all.
 
 ## 6. Bless, then publish
