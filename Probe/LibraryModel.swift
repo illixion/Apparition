@@ -95,10 +95,11 @@ final class LibraryModel {
     nonisolated static let forceNextBackgroundKey = "forceNextBackgroundRefresh"
     /// Free-account profiles last 7 days. This is the one number for "needs a refresh": the Library's
     /// Refresh button, background runs and Shortcuts' Refresh Apps (without "All Apps") only re-sign
-    /// an app with this long or less left, and the automatic check for a new Apparition waits for
-    /// it too. Every re-sign is a round of requests to Apple (a sign-in, the certificate and the
-    /// profile), so an app with days to spare costs those for nothing. What a person asks for by
-    /// name (an app's own Refresh, Install update, `force`) ignores it.
+    /// an app with this long or less left, and the Library says which apps are there from the
+    /// stored expiry dates, with no request. Every re-sign is a round of requests to Apple (a
+    /// sign-in, the certificate and the profile), so an app with days to spare costs those for
+    /// nothing. What a person asks for by name (an app's own Refresh, Install update, `force`)
+    /// ignores it.
     nonisolated static let refreshMargin: TimeInterval = 3 * 24 * 3600
 
     private(set) var sources: [Sources.Source] = []
@@ -309,22 +310,71 @@ final class LibraryModel {
         save()
     }
 
+    /// Fetches every source again. Only ever asked for by hand (Browse's Reload Sources) or by
+    /// `checkExternalUpdates`; nothing contacts a source on its own.
     func refreshSources() async {
         for source in sources { await refreshSource(source.id) }
     }
 
     private func refreshSource(_ id: String) async {
+        guard let start = sources.firstIndex(where: { $0.id == id }) else { return }
+        let fetched: Result<(name: String, apps: [Sources.App]), Error>
+        do { fetched = .success(try await Sources.fetch(sources[start])) } catch { fetched = .failure(error) }
+        // Sources can be fetched side by side, or removed meanwhile: find this one again.
         guard let index = sources.firstIndex(where: { $0.id == id }) else { return }
-        do {
-            let (name, apps) = try await Sources.fetch(sources[index])
+        switch fetched {
+        case .success(let (name, apps)):
             sources[index].name = name
             sources[index].apps = apps
             sources[index].error = nil
-        } catch {
+        case .failure(let error):
             sources[index].error = "\(error)"
         }
         sources[index].fetchedAt = DebugTime.iso(Date())
         save()
+    }
+
+    /// What `checkExternalUpdates` found.
+    struct ExternalCheck: Sendable {
+        /// The newer Apparition that is available, if any.
+        var apparition: String?
+        /// Installed apps whose source lists another version, as "Name version".
+        var sourceUpdates: [String] = []
+        /// What could not be reached or verified.
+        var failures: [String] = []
+
+        var summary: String {
+            var parts: [String] = []
+            if let apparition { parts.append("Apparition \(apparition) is available") }
+            if !sourceUpdates.isEmpty { parts.append("Updates: " + sourceUpdates.joined(separator: ", ")) }
+            parts += failures
+            return parts.isEmpty ? "No updates found" : parts.joined(separator: ". ")
+        }
+    }
+
+    /// Asks the external servers whether anything is newer: the release site for Apparition, and the
+    /// sources that installed apps came from (no other). The one place updates are looked for, and
+    /// only when a person asks (Shortcuts' Check for Updates option), so nothing leaves the device
+    /// on its own. The asks go out side by side and change what the Library offers: its Update
+    /// buttons read the stored listings, so they are ready when it opens.
+    func checkExternalUpdates() async -> ExternalCheck {
+        let ids = Set(installed.map(\.source)).intersection(sources.map(\.id))
+        async let release: Void = checkForUpdate()
+        await withTaskGroup(of: Void.self) { group in
+            for id in ids { group.addTask { await self.refreshSource(id) } }
+        }
+        await release
+        var found = ExternalCheck(apparition: availableUpdate?.version)
+        if let error = updateCheck.error { found.failures.append("Couldn't check for a new Apparition: \(error)") }
+        for source in sources where ids.contains(source.id) {
+            if let error = source.error { found.failures.append("\(source.name ?? source.id): \(error)") }
+            for record in installed where record.source == source.id {
+                if let listed = source.apps.first(where: { $0.id == record.id }), listed.version != record.version {
+                    found.sourceUpdates.append("\(record.name) \(listed.version)")
+                }
+            }
+        }
+        return found
     }
 
     // MARK: Install and refresh
@@ -688,8 +738,11 @@ final class LibraryModel {
         return expires.timeIntervalSince(now) <= refreshMargin
     }
 
+    /// How many apps (Apparition itself included) are due, from the stored expiry dates alone.
+    var dueCount: Int { installed.filter { Self.isDue($0) }.count + (selfIsDue ? 1 : 0) }
+
     /// Whether a refresh run has anything to do: an app, or Apparition itself, that is due.
-    var hasDue: Bool { installed.contains { Self.isDue($0) } || selfIsDue }
+    var hasDue: Bool { dueCount > 0 }
 
     /// When the app's signing profile runs out, if it was signed here.
     nonisolated static func expiryDate(_ app: InstalledApp) -> Date? {
@@ -1086,14 +1139,11 @@ final class LibraryModel {
         return latest
     }
 
-    /// Asks apparition.illixion.com for the latest release. Without `force` (the automatic check
-    /// when the Library opens) it asks only while Apparition is due for a refresh, since installing
-    /// the update re-signs it and an early re-sign is a round of requests to Apple for nothing; and
-    /// at most every 6 hours. `force` is a person asking, and always asks.
-    func checkForUpdate(force: Bool = false) async {
+    /// Asks apparition.illixion.com for the latest release. Only when a person asks (the card's
+    /// Check for Update, Shortcuts' Check for Updates option): Apparition never contacts the release
+    /// site on its own.
+    func checkForUpdate() async {
         if updateCheck.checking { return }
-        if !force, !selfIsDue { return }
-        if !force, let checked = updateCheck.checkedAt, Date().timeIntervalSince(checked) < 6 * 3600 { return }
         updateCheck.checking = true
         defer { updateCheck.checking = false }
         do {

@@ -21,9 +21,11 @@ enum IntentEndpoints {
                 }
             },
             .command("intentRefresh", "Run the Refresh Apps action's logic and wait for it (up to 5 min): waits for a run already going, then returns the count and the summary the action would show",
-                     parameters: [.boolean("allApps", "Refresh every app, not only those expiring within 3 days", default: false)],
+                     parameters: [.boolean("allApps", "Refresh every app, not only those expiring within 3 days", default: false),
+                                  .boolean("checkForUpdates", "Also ask the release site and the installed apps' sources for updates, alongside the signing", default: false)],
                      timeout: .seconds(300)) { args in
-                try await ShortcutActions.refresh(force: args.bool("allApps") ?? false, trigger: "intent-endpoint",
+                try await ShortcutActions.refresh(force: args.bool("allApps") ?? false,
+                                                  checkForUpdates: args.bool("checkForUpdates") ?? false, trigger: "intent-endpoint",
                                                   library: library, probe: probe, account: account)
             },
             .command("intentLaunchJIT", "Run the Launch with JIT action's logic for an installed app (intentApps id). Returns after the first seconds of the launch; the JIT session continues, poll probeState",

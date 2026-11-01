@@ -31,6 +31,8 @@ enum ShortcutActions {
         /// What the action shows: "Refreshed UTM; expires Oct 18", "Nothing due", the error.
         var summary: String
         var results: [String: String]
+        /// What the update check found, when the action was asked to look.
+        var updates: [String]?
     }
 
     static func register(probe: ProbeModel, account: AccountModel, library: LibraryModel) {
@@ -59,8 +61,14 @@ enum ShortcutActions {
     /// Refreshes the apps that are due (all with `force`) and waits for the run to finish.
     /// A refresh or install already running is waited for first, never doubled. Cancelling
     /// stops the wait only: an install in flight finishes, so no app is left half-installed.
-    static func refresh(force: Bool, trigger: String, library: LibraryModel, probe: ProbeModel,
+    ///
+    /// With `checkForUpdates` it also asks the external servers (the release site, and the sources
+    /// installed apps came from) whether anything is newer, at the same time as the signing, so
+    /// the Library's Update buttons are ready when the run ends. That is the only way Apparition
+    /// contacts them without a person pressing a button in the app.
+    static func refresh(force: Bool, checkForUpdates: Bool = false, trigger: String, library: LibraryModel, probe: ProbeModel,
                         account: AccountModel, progress: Progress? = nil) async throws -> RefreshOutcome {
+        let check = checkForUpdates ? Task { await library.checkExternalUpdates() } : nil
         let waited = library.busy
         if waited { log.info("refresh waits for a run already in progress") }
         guard try await waitUntil(.seconds(15 * 60), { !library.busy }) else {
@@ -87,7 +95,11 @@ enum ShortcutActions {
         }
         progress?.completedUnitCount = progress?.totalUnitCount ?? 0
 
-        let outcome = describe(box.run!, library: library, waited: waited)
+        var outcome = describe(box.run!, library: library, waited: waited)
+        if let found = await check?.value {
+            outcome.summary += ". " + found.summary
+            outcome.updates = found.sourceUpdates + (found.apparition.map { ["Apparition \($0)"] } ?? [])
+        }
         log.info("refresh (\(trigger, privacy: .public)): \(outcome.refreshed, privacy: .public) refreshed, \(outcome.failed, privacy: .public) failed")
         return outcome
     }

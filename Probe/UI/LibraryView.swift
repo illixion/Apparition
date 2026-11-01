@@ -79,7 +79,6 @@ struct LibraryView: View {
                 }
                 .padding(32)
             }
-            .task { await library.checkForUpdate() }
             .task(id: pendingRemoval?.token) {
                 guard let confirmation = pendingRemoval else { return }
                 try? await Task.sleep(for: .seconds(10))
@@ -462,6 +461,17 @@ struct LibraryView: View {
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
+                // From the stored expiry dates: nothing is asked of Apple or anyone else.
+                TimelineView(.periodic(from: .now, by: 60)) { _ in
+                    if library.dueCount > 0 {
+                        HStack(spacing: 12) {
+                            Text("·").foregroundStyle(.tertiary)
+                            Text("^[\(library.dueCount) app](inflect: true) due for refresh")
+                                .font(.title3)
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                }
             }
             if library.busy {
                 HStack(spacing: 12) {
@@ -577,7 +587,7 @@ struct LibraryView: View {
                         Note(text: "Apparition is up to date.", kind: .success)
                     }
                 }
-                Text("Refreshes itself with \(library.signing.signerName(library.selfSigner)) once due, after the other apps. It looks for a newer Apparition by itself only then, because installing one re-signs it; Check for Update asks whenever you want. The update applies the next time Apparition closes.")
+                Text("Refreshes itself with \(library.signing.signerName(library.selfSigner)) once due, after the other apps. It never looks for a newer Apparition on its own: Check for Update asks, and so does the Refresh Apps shortcut's Check for Updates option. The update applies the next time Apparition closes.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 12) {
@@ -591,7 +601,7 @@ struct LibraryView: View {
                         .disabled(library.busy || model.busy)
                     } else {
                         Button {
-                            Task { await library.checkForUpdate(force: true) }
+                            Task { await library.checkForUpdate() }
                         } label: {
                             if library.updateCheck.checking {
                                 ProgressView()

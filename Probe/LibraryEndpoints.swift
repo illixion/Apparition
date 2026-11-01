@@ -145,7 +145,7 @@ enum LibraryEndpoints {
             },
             .command("checkUpdate", "Ask the release site for the latest Apparition, verified against the release keys",
                      timeout: .seconds(60)) { _ in
-                await model.checkForUpdate(force: true)
+                await model.checkForUpdate()
                 return UpdateState(current: SelfUpdate.currentVersion, latest: model.updateCheck.latest,
                                    available: model.availableUpdate?.version, error: model.updateCheck.error,
                                    site: SelfUpdate.site, testSigners: SelfUpdate.signers != nil)

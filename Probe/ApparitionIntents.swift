@@ -19,7 +19,7 @@ import Foundation
 struct RefreshAppsIntent: AppIntent, ProgressReportingIntent {
     static let title: LocalizedStringResource = "Refresh Apps"
     static let description = IntentDescription(
-        "Re-signs and reinstalls the apps Apparition installed that expire within 3 days, or all of them. Opens Apparition and waits for the refresh to finish, which can take a few minutes. Returns how many apps were refreshed.",
+        "Re-signs and reinstalls the apps Apparition installed that expire within 3 days, or all of them. Can also look for updates while it signs. Opens Apparition and waits for the refresh to finish, which can take a few minutes. Returns how many apps were refreshed.",
         categoryName: "Apps"
     )
     static let openAppWhenRun = true
@@ -29,11 +29,14 @@ struct RefreshAppsIntent: AppIntent, ProgressReportingIntent {
     @Parameter(title: "All Apps", description: "Refresh every app, not only those expiring within 3 days", default: false)
     var allApps: Bool
 
+    @Parameter(title: "Check for Updates", description: "Also ask the release site and the sources your apps came from whether anything is newer, while signing. Off, Apparition contacts none of them.", default: false)
+    var checkForUpdates: Bool
+
     static var parameterSummary: some ParameterSummary {
         When(\.$allApps, .equalTo, true) {
-            Summary("Refresh all apps") { \.$allApps }
+            Summary("Refresh all apps") { \.$allApps; \.$checkForUpdates }
         } otherwise: {
-            Summary("Refresh apps that are due") { \.$allApps }
+            Summary("Refresh apps that are due") { \.$allApps; \.$checkForUpdates }
         }
     }
 
@@ -43,7 +46,7 @@ struct RefreshAppsIntent: AppIntent, ProgressReportingIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<Int> & ProvidesDialog {
-        let outcome = try await ShortcutActions.refresh(force: allApps, trigger: "shortcut", library: library,
+        let outcome = try await ShortcutActions.refresh(force: allApps, checkForUpdates: checkForUpdates, trigger: "shortcut", library: library,
                                                         probe: probe, account: account, progress: progress)
         // Nothing went through and something failed: fail the action, so an automation
         // reports it rather than looking like it worked.

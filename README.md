@@ -415,16 +415,20 @@ use it; with nothing due the button is greyed out and Apparition contacts Apple 
 Asking by name ignores it: an app's own Refresh button, the Developer tab's Install update
 and "Automatically install updates", and Refresh Apps with "All Apps" on.
 
-External servers follow the same rule. Apparition looks for a newer release of itself
-automatically only while it is due itself (installing one re-signs it), and Check for Update
-on its card asks any time. Sources are fetched only when you add one or press Reload Sources
-in Browse; nothing fetches them in the background.
+Which apps are due is read from the stored expiry dates, so the Library shows "N apps due for
+refresh" and tints their pills orange without asking anyone.
+
+Apparition contacts external servers only when you ask. Check for Update on its card asks the
+release site, Reload Sources in Browse fetches the sources, and the Refresh Apps shortcut has a
+**Check for Updates** option that does both for what is installed, at the same time as the
+signing: the release site, and only the sources your installed apps came from. Off by default.
+Nothing fetches any of them in the background, and the Library opens without a request.
 
 ## Shortcuts automation
 
 Background refresh is not reliable, so the dependable way to keep apps signed is a
 Shortcuts automation. Apparition offers three actions: **Refresh Apps** (apps that expire
-within 3 days, or all with "All Apps"; returns how many it refreshed), **Launch with JIT**
+within 3 days, or all with "All Apps", and optionally checking for updates; returns how many it refreshed), **Launch with JIT**
 (an installed app, through the companion or LocalDevVPN) and **Open Apparition**. Each
 opens Apparition and runs there, because a refresh takes 40 to 150 s. Siri knows them too:
 "Refresh apps in Apparition", "Launch UTM with JIT in Apparition".
