@@ -7,8 +7,18 @@ import DebugTraceServer
 /// unpatched controls. Reports land in Documents/textpatch-*.json for devicectl to copy off.
 @main
 struct ApparitionLabApp: App {
-    @State private var lines: [String] = []
-    @State private var started = false
+    // Store DynamicProperty values directly: this lab deliberately avoids
+    // replaying attached State macros during whole-module caller audits.
+    private var lineState = State(initialValue: [String]())
+    private var startedState = State(initialValue: false)
+    private var lines: [String] {
+        get { lineState.wrappedValue }
+        nonmutating set { lineState.wrappedValue = newValue }
+    }
+    private var started: Bool {
+        get { startedState.wrappedValue }
+        nonmutating set { startedState.wrappedValue = newValue }
+    }
 
     init() {
         DebugTrace.configure(.init(subsystems: ["com.illixion.apparition.lab"]))

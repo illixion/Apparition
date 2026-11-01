@@ -234,3 +234,33 @@ repeating. Migration is an application operation on first use after code has
 loaded, separate from the native entry transaction. Read DebugTrace's
 `Docs/live-patching.md`, “Explicit state generations,” for ownership, concurrency
 and rollback limits before applying the pattern to app state.
+
+For cross-file optimized callers, the lab's
+`Lab/DebugTraceImplementationDomain/` contains separate leaf, caller and entry
+sources. Launch the lab with the same build command above, then run:
+
+```sh
+python3 scripts/test-entry-domain.py --device AVP
+```
+
+The script changes only the leaf at first and verifies that both entry results
+change through the untouched caller file. It then checks refusal of an outside
+caller and a snippet that directly accesses helpers, changes a helper signature
+alongside its caller, and restores the original entries in the same process.
+Source is restored in `finally`; if the experiment fails after applying a patch,
+relaunch the baseline lab before repeating it.
+
+These directories opt into complete domain recompilation, including peer-file
+edits when the CLI selects only one file. Helpers use internal implementation
+enums and remain inside that domain; callers use the explicit public boundaries.
+The driver checks build/live/candidate whole-module SIL and reports
+`domainCoverage` in the ordinary CLI/MCP result. This supports app-module domains
+with the existing scalar/String restrictions. Read DebugTrace's live-patching
+guide, “Covering optimized callers across source files,” for the exact coverage,
+source-capture and compilation-cost limits.
+
+Whole-module coverage currently refuses macro expansions and requires the captured
+compiler driver/frontend fingerprints. The lab stores its SwiftUI `State` dynamic
+properties explicitly so its module can be audited without replaying attached
+`@State` macros. Apps that use macros can still use private single-file groups;
+extending whole-module coverage to them requires actual compiler build inputs.
