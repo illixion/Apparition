@@ -85,7 +85,6 @@ page, which has a header (the target, a status badge, where it stands) and tabs:
   its backend), **Build only** in its own section so it isn't hit by accident, recent builds with
   their logs, and the kept builds (every signed build the Mac made, exactly as signed), each
   installable here.
-- **Live**: patch the running app (see "Live patches"). Shown only when the service offers it.
 - **Reports**: this project's crash logs and traces.
 - **Signing**: how the copy on this device is signed and when it expires, with a Refresh; and, from
   the Mac, **Re-sign…** (below).
@@ -190,16 +189,16 @@ Keychain if you allow it), sends only identifiers to the service and never file 
 redirects. The service decides what is allowed: configured projects, targets, branches and
 profiles only.
 
-### Live patches from Developer or the CLI
+### Live patches
 
-Live patching is a **build setting** (`--inject`), so building with it needs no tunnel and works with
-either install route. Patching the running app is a request to the service, which compiles the edited
-sources on the Mac and sends them to the app's debug server, so the device only needs HTTPS to the
-service. The Live tab therefore doesn't depend on whether the Mac can install to the device. What it
-does need is a patchable build that is running and an app the Mac can find: discovery uses Bonjour on
-the local network, or the session record `build-and-sign --run --mcp` writes after a tunnel launch.
-An app Apparition launched itself leaves neither, so patching one away from the network the Mac is on
-is not yet verified.
+Live patching is a **build setting** (`--inject`): the Developer views only toggle it for a build
+(**Live patching** in the project's Builds tab), and building with it works with either install
+route. Patching itself happens from the Mac, through the `inject` MCP tool or the CLI, so the
+mobile app has no Live tab. The Mac compiles the edited sources and sends them to the app's debug
+server. It needs a patchable build that is running and an app the Mac can find: discovery uses
+Bonjour on the local network, or the session record `build-and-sign --run --mcp` writes after a
+tunnel launch. An app Apparition launched itself leaves neither, so patching one away from the
+network the Mac is on is not yet verified.
 
 Build options in the native and desktop Developer views offer **Patch backend** when
 live patching is enabled. Swift dynamic replacement is the default. The experimental
@@ -208,14 +207,14 @@ explicit synchronous Swift boundaries; it does not support arbitrary optimized
 functions or mutation of existing type layouts. Setup and restrictions are in
 [DebugTrace's live-patching guide](../../DebugTrace/Docs/live-patching.md#apparition-native-entry-backend-experimental).
 
-After launching the patchable build, edit its sources on the build Mac and choose
-**Patch running app** for that project/device. The authenticated service asks its local
+After launching the patchable build, edit its sources on the build Mac and patch that
+project/device. The service's `inject` route (what the MCP tool calls) asks its local
 Apparition CLI to attach, compile and sign, request device approval, apply and detach.
-The button applies changed files from the captured build, including shared packages;
+It applies changed files from the captured build, including shared packages;
 use the CLI's `--file` option to select files when other edits are present. Patching
 never builds, installs or relaunches an app. Build-only also never attaches a debugger.
-The service advertises `entry-patching` only in versions with this route; older clients
-and services retain the existing build controls.
+The service advertises `entry-patching` only in versions with this route; the Patch backend
+choice appears only for those.
 
 On the Mac with Xcode, the captured build products and current DebugTrace tools:
 

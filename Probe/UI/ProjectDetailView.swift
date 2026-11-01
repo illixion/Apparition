@@ -5,14 +5,13 @@ import SwiftUI
 enum ProjectTab: String, CaseIterable, Identifiable {
     case overview = "Overview"
     case builds = "Builds"
-    case live = "Live"
     case reports = "Reports"
     case signing = "Signing"
     var id: String { rawValue }
 }
 
 /// One project: a header saying where its target stands, then tabs for installing it, building it,
-/// patching it while it runs, reading its reports and how it is signed.
+/// reading its reports and how it is signed.
 struct ProjectDetailView: View {
     let developer: DeveloperModel
     let library: LibraryModel
@@ -50,10 +49,7 @@ struct ProjectDetailView: View {
     }
 
     private func tabs(_ project: BuildService.Project) -> [ProjectTab] {
-        var shown: [ProjectTab] = [.overview, .builds]
-        if service.capabilities.contains("entry-patching") { shown.append(.live) }
-        shown += [.reports, .signing]
-        return shown
+        [.overview, .builds, .reports, .signing]
     }
 
     private func title(_ item: ProjectTab, _ project: BuildService.Project) -> String {
@@ -83,11 +79,10 @@ struct ProjectDetailView: View {
                 .padding(.vertical, 12)
                 .accessibilityIdentifier("projectSection")
                 Form {
-                    if !service.message.isEmpty && current != .live { Section { Text(service.message) } }
+                    if !service.message.isEmpty { Section { Text(service.message) } }
                     switch current {
                     case .overview: overview(project, target)
                     case .builds: builds(project, target)
-                    case .live: live(project, target)
                     case .reports: DeveloperReportsList(service: service, bundleIds: Set(project.platforms.compactMap(\.bundleId)))
                     case .signing: signing(project, target)
                     }
@@ -262,7 +257,7 @@ struct ProjectDetailView: View {
         } header: {
             Text("Build options")
         } footer: {
-            Text("These apply to every build started here. Live patching is a build setting: it adds instrumentation, so the app runs slower, but patching it afterwards needs no tunnel. Debug access still asks for approval on the device.")
+            Text("These apply to every build started here. Live patching is a build setting: it adds instrumentation, so the app runs slower. You patch the running app from the Mac (the `inject` tool), which needs no tunnel. Debug access still asks for approval on the device.")
         }
         Section {
             Button("Build only") { Task { await developer.buildOnly(project: project, target: target, options: options) } }
@@ -310,22 +305,6 @@ struct ProjectDetailView: View {
             .buttonStyle(.bordered)
         }
         .padding(.vertical, 4)
-    }
-
-    // MARK: Live
-
-    @ViewBuilder
-    private func live(_ project: BuildService.Project, _ target: BuildService.Target) -> some View {
-        Section {
-            Button("Patch running app") { Task { await service.inject(project: project, target: target) } }
-                .disabled(service.busy)
-            if !service.message.isEmpty { Text(service.message) }
-            if !service.detail.isEmpty { DeveloperLogText(text: service.detail) }
-        } header: {
-            Text("Patch \(target.device)")
-        } footer: {
-            Text("The Mac compiles the edited sources and sends them to the running app, which still asks to allow code changes. It needs a build made with live patching (turn it on in Builds) and the app running. Building and installing aren't involved, so this works the same however the app got here.")
-        }
     }
 
     // MARK: Signing

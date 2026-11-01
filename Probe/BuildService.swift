@@ -675,24 +675,6 @@ final class BuildService {
     /// The kept build with this identity, from the last listing.
     func artifact(buildId: String) -> Artifact? { artifacts.first { $0.buildId == buildId } }
 
-    func inject(project: Project, target: Target) async {
-        guard !busy else { return }
-        busy = true
-        defer { busy = false }
-        do {
-            // The Mac compiles the edited sources; the target still asks to allow code changes.
-            let reply: PatchReply = try await authenticated("inject", body: ["repo": project.name,
-                "device": target.device, "targetPlatform": target.platform])
-            message = reply.isError == true ? "Patch refused. Check the reported hint." : "Patch completed."
-            detail = reply.content.map(\.text).joined(separator: "\n")
-        } catch { message = error.localizedDescription }
-    }
-    private struct PatchReply: Decodable {
-        struct Content: Decodable { let text: String }
-        let content: [Content]
-        let isError: Bool?
-    }
-
     // MARK: Re-sign
 
     var canResign: Bool { connected && capabilities.contains("resign") }
