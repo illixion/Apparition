@@ -1,6 +1,8 @@
 # Plan: DebugTrace in the public Apparition
 
-Status: agreed 2026-11-01, not started (except release dSYMs, done). Apparition is the first public
+Status: agreed 2026-11-01. Done: release dSYMs; in DebugTrace (`2f1fef8`), capture categories,
+the per-capture privacy override, staged capture (`stage` → `remove` → `seal`), HPKE `.trace`
+encryption and `debugtrace-decrypt`. Apparition is the first public
 app to ship DebugTrace's debug server and trace reports to everyone. Because it doesn't ship on
 the App Store, the server can be offered to anyone. A person with a free Apple ID can then help
 develop it from their own Mac. The DebugTrace parts are generic, so later public apps reuse them.
@@ -161,8 +163,9 @@ DebugTrace can't import RAVESDK, because RAVESDK depends on it. So:
 
 ## Order
 
-1. DebugTrace: start and stop, categories and privacy override, staged capture with the preview
-   browser, HPKE plus decrypt, approvals tied to a credential, the transport seam (`swift test`).
+1. DebugTrace: start and stop, categories and privacy override (done), staged capture (done) with
+   the preview browser, HPKE plus decrypt (done), approvals tied to a credential, the transport
+   seam (`swift test`).
 2. Apparition Phase 1: Report a Problem. It can ship alone.
 3. The RAVESDK target, the helper, and `debugtrace-mcp` support.
 4. Apparition Phase 2: pairing, the password, the timer, privacy.
