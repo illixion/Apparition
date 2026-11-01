@@ -21,7 +21,8 @@ describe('listing', () => {
       { name: 'A', path: '/a', branches: ['dev', 'main'], platforms: [
         { platform: 'iOS', bundleId: 'com.example.a', device: 'Phone' },
         { platform: 'iPad', bundleId: 'com.example.a', device: 'Pad' },
-        { platform: 'visionOS', bundleId: 'com.example.a.vision', device: 'AVP' }] },
+        { platform: 'visionOS', bundleId: 'com.example.a.vision', device: 'AVP' },
+        { platform: 'watchOS', bundleId: 'com.example.a.watchkitapp', device: 'Watch' }] },
       { name: 'B', path: '/b', branches: ['feature'], altSource: false, platforms: [
         { platform: 'iOS', bundleId: 'com.example.b', device: 'Phone' }] },
       { name: 'C', path: '/c', branches: ['x', 'y'], altSource: { branch: 'y', platforms: ['tvOS'] }, platforms: [
@@ -39,6 +40,10 @@ describe('listing', () => {
     ]);
     assert.equal(apps[0].developerName, 'Ixion');
     assert.equal(apps[0].slug, 'com.example.a-iOS');
+  });
+
+  test('a watchOS row is never a feed app: the watch app ships inside the iPhone IPA', () => {
+    assert.ok(!allSourceApps(config).some(a => a.platform === 'watchOS'));
   });
 
   test('one source per offered platform name, aliases included', () => {
