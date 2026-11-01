@@ -435,14 +435,15 @@ beyond what its text says (the strings live in `project.yml`):
 
 - **Local Network**, when it first looks for this device's developer services, a companion or
   a nearby device with a signing key, or connects to the build service you set up.
-- **Location** (iOS only), the first time it becomes an app's JIT debugger: location updates keep
-  it running in the background. They are dropped unread, never stored or sent. visionOS keeps it
-  running with silent audio and asks for nothing.
-- **Notifications** (alerts only, never sound), the first time a JIT session starts, or an
-  update check finds an update, or you turn on Settings, Notifications.
+- **Location** (iOS only), the first time it becomes an app's JIT debugger. It is needed to keep
+  Apparition running in the background while it serves JIT, and the updates are dropped unread,
+  never stored or sent. visionOS keeps it running with silent audio and asks for nothing.
+- **Notifications** (alerts only, never sound), at first launch, so the first update a Shortcuts
+  run finds can be announced without a prompt nobody sees. Skipped if Settings, Notifications is
+  off, and asked when you turn that on.
 
-Nothing is asked at first launch except Local Network. It uses no camera, microphone, photos,
-contacts or Face ID.
+At first launch Apparition asks for Local Network and Notifications. It uses no camera,
+microphone, photos, contacts or Face ID.
 
 ## Shortcuts automation
 

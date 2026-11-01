@@ -123,7 +123,7 @@ targets:
         BGTaskSchedulerPermittedIdentifiers:
           - com.illixion.apparition.refresh
           - com.illixion.apparition.refresh-processing
-        NSLocationWhenInUseUsageDescription: Apparition keeps running while it is an app's JIT debugger by keeping location updates on. It never reads, stores or sends your location.
+        NSLocationWhenInUseUsageDescription: Location access is needed to keep Apparition running in the background while it is an app's JIT debugger, so the app keeps its JIT. Apparition never reads, stores or sends your location.
         NSLocalNetworkUsageDescription: Apparition finds this device's own developer services, an Apparition companion on your computer, and your other devices that share a signing key, and connects to them and to the build service you set up.
         NSBonjourServices:
           - _remotepairing._tcp

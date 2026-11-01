@@ -36,7 +36,7 @@ enum UpdateNotice {
         guard enabled, !items.isEmpty else { return false }
         let seen = Set(UserDefaults.standard.stringArray(forKey: announcedKey) ?? [])
         guard items.contains(where: { !seen.contains($0.key) }) else { return false }
-        // Asks the first time (Apparition is in front: a Shortcuts action opens it); a "no" is final.
+        // Normally asked at first launch already; asks here only if that never happened.
         guard await requestAccess() else { return false }
 
         let content = UNMutableNotificationContent()
@@ -60,7 +60,8 @@ enum UpdateNotice {
     }
 
     /// Whether notifications are allowed, asking if that was never asked (alert only: nothing here
-    /// makes a sound).
+    /// makes a sound). Apparition asks at first launch, and again here when Settings turns the
+    /// switch on; a "no" is final until the person changes it in the system's Settings.
     @discardableResult
     static func requestAccess() async -> Bool {
         #if os(tvOS)

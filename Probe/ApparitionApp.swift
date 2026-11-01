@@ -46,6 +46,9 @@ struct ApparitionApp: App {
             RootView(model: model, account: account, library: library, companions: companions)
                 .debugApprovalPrompts()
                 .task { await library.scheduleRefreshIfNeeded() }
+                // Asked at first launch, while Apparition is in front: the first update may be found
+                // by a Shortcuts run nobody is watching. Skipped when Settings turned it off.
+                .task { if UpdateNotice.enabled { await UpdateNotice.requestAccess() } }
                 .onChange(of: scenePhase) { _, phase in
                     if phase != .active { StateVault.sync() }
                     // A computer may have handed over a pairing while Apparition was away.
