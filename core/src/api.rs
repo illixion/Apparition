@@ -391,6 +391,11 @@ impl Tunnel {
         crate::ipa::install(&mut self.adapter, &mut self.handshake, app_path, source_ipa, detach_after_ms).await
     }
 
+    /// Installs an IPA already signed for this device, as it is. See `crate::ipa::install_signed_ipa`.
+    pub async fn install_signed_ipa(&mut self, ipa: &Path, bundle_id: Option<&str>, detach_after_ms: u64) -> Result<Value, Report> {
+        crate::ipa::install_signed_ipa(&mut self.adapter, &mut self.handshake, ipa, bundle_id, detach_after_ms).await
+    }
+
     /// Writes files into an installed app's Documents folder through house_arrest, under
     /// `folder` (created if missing; "" for Documents itself). Works for apps that share files with Files
     /// (UIFileSharingEnabled), Apparition among them.

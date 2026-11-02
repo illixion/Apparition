@@ -39,6 +39,9 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       version and build. Over this pairing's own tunnel, so it never asks a PIN and Xcode's
       tools never notice: unlike `devicectl device info apps`, it leaves a sleeping Apple TV
       asleep even while Xcode's DeviceHub is running. --json for programs.
+  apparition push <signed.ipa> [--device <name or UDID>] [--json]
+      Install an IPA that is already signed for the device (a build tool's output) as it is,
+      over the same tunnel as `apps`: no re-signing, and a sleeping Apple TV stays asleep.
   apparition pair [<address>[:<port>]]
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
@@ -186,6 +189,7 @@ async fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("devices") => devices().await,
         Some("apps") => apps(&args[1..]).await,
+        Some("push") => push(&args[1..]).await,
         Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
@@ -556,6 +560,48 @@ async fn apps(args: &[String]) -> Result<(), Error> {
     println!("{} apps on {}:", apps.len(), device.name);
     for app in &apps {
         println!("  {}  {}  {} ({})", app.bundle_id, app.name, app.version.as_deref().unwrap_or("?"), app.build.as_deref().unwrap_or("?"));
+    }
+    Ok(())
+}
+
+/// `push`: installs an IPA that is already signed for the device (a build tool's output), as it
+/// is, over this pairing's own tunnel, like `apps`: no CoreDevice, so Xcode's DeviceHub never
+/// opens the device's HID service and a sleeping Apple TV stays asleep. Never asks a PIN.
+async fn push(args: &[String]) -> Result<(), Error> {
+    let usage = || fail("usage: apparition push <signed.ipa> [--device <name or UDID>] [--json]");
+    let (mut ipa, mut wanted, mut json) = (None, None, false);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--device" => wanted = Some(args.next().ok_or_else(usage)?.as_str()),
+            "--json" => json = true,
+            other if !other.starts_with("--") && ipa.is_none() => ipa = Some(PathBuf::from(other)),
+            _ => return Err(usage()),
+        }
+    }
+    let ipa = ipa.ok_or_else(usage)?;
+    if !ipa.is_file() {
+        return Err(fail(format!("{} isn't a file", ipa.display())));
+    }
+    let bundle_id = apparition_core::install_plan::inspect(&ipa).map_err(|e| fail(format!("{}: {e}", ipa.display())))?.id;
+    let device = find_device(wanted)?;
+    let mut tunnel = store().connect_verified(&device).await?;
+    // As in `install`: only an update can be held for an app that won't close, so only an
+    // update stops waiting (after 20 s); a new install is waited for.
+    let detach_after_ms = if tunnel.installed_app(&bundle_id).await?.is_some() { 20_000 } else { 0 };
+    let reply = tunnel.install_signed_ipa(&ipa, Some(&bundle_id), detach_after_ms).await?;
+    if json {
+        let mut reply = reply;
+        reply["device"] = device.udid.clone().into();
+        reply["bundleId"] = bundle_id.into();
+        println!("{}", serde_json::to_string(&reply)?);
+        return Ok(());
+    }
+    let seconds = reply["elapsedMs"].as_u64().unwrap_or(0) as f64 / 1000.0;
+    if reply["queued"].as_bool() == Some(true) {
+        println!("Sent {bundle_id} to {} in {seconds:.1} s; it finishes installing when the app is closed.", device.name);
+    } else {
+        println!("Installed {bundle_id} on {} in {seconds:.1} s.", device.name);
     }
     Ok(())
 }

@@ -186,12 +186,61 @@ pub async fn install(
     let pack_ms = started.elapsed().as_millis() as u64;
     tracing::info!("packed {} files ({} reused) into {} bytes in {pack_ms} ms", packed.files, packed.reused, packed.bytes);
 
-    let result = async {
-        let staged = format!("PublicStaging/{}", out.file_name().unwrap().to_string_lossy());
+    let bundle_id = crate::api::bundle_id(app_path);
+    let result = upload_and_install(adapter, handshake, &out, bundle_id.as_deref(), detach_after_ms, started).await;
+    let _ = std::fs::remove_file(&out);
+    let (upload_ms, queued, closed) = result?;
+    Ok(json!({
+        "elapsedMs": started.elapsed().as_millis() as u64,
+        "packMs": pack_ms,
+        "uploadMs": upload_ms,
+        "bytes": packed.bytes,
+        "files": packed.files,
+        "reused": packed.reused,
+        "queued": queued,
+        "closed": closed,
+    }))
+}
+
+/// Installs an IPA that is already signed for the device, as it is: uploaded to PublicStaging
+/// and handed to installd, with no unpacking, signing or repacking. For build tools that sign
+/// themselves (`apparition push`). `bundle_id` is the app's, so a running copy is closed first.
+/// Returns `{elapsedMs, uploadMs, bytes, queued, closed}`.
+pub async fn install_signed_ipa(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    ipa: &Path,
+    bundle_id: Option<&str>,
+    detach_after_ms: u64,
+) -> Result<serde_json::Value, Report> {
+    let started = Instant::now();
+    let bytes = std::fs::metadata(ipa)?.len();
+    let (upload_ms, queued, closed) = upload_and_install(adapter, handshake, ipa, bundle_id, detach_after_ms, started).await?;
+    Ok(json!({
+        "elapsedMs": started.elapsed().as_millis() as u64,
+        "uploadMs": upload_ms,
+        "bytes": bytes,
+        "queued": queued,
+        "closed": closed,
+    }))
+}
+
+/// Uploads `ipa` to PublicStaging and installs it; `(upload_ms, queued, closed)`.
+async fn upload_and_install(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    out: &Path,
+    bundle_id: Option<&str>,
+    detach_after_ms: u64,
+    started: Instant,
+) -> Result<(u64, bool, bool), Report> {
+    let base_ms = started.elapsed().as_millis() as u64;
+    {
+        let staged = format!("PublicStaging/{}", out.file_name().ok_or_else(|| report!("bad IPA path"))?.to_string_lossy());
         let mut afc = AfcClient::connect_rsd(adapter, handshake).await?;
         let _ = afc.mk_dir("PublicStaging").await;
         let mut file = afc.open(staged.clone(), AfcFopenMode::WrOnly).await?;
-        let mut input = BufReader::new(File::open(&out)?);
+        let mut input = BufReader::new(File::open(out)?);
         let mut buffer = vec![0u8; UPLOAD_CHUNK];
         loop {
             let read = input.read(&mut buffer)?;
@@ -201,11 +250,11 @@ pub async fn install(
             file.write_entire(&buffer[..read]).await?;
         }
         file.close().await?;
-        let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
+        let upload_ms = started.elapsed().as_millis() as u64 - base_ms;
 
         // Closed only now, once the upload is done, so the app stays usable while it's sent.
-        let closed = match crate::api::bundle_id(app_path) {
-            Some(bundle_id) => close_running(adapter, handshake, &bundle_id).await,
+        let closed = match bundle_id {
+            Some(bundle_id) => close_running(adapter, handshake, bundle_id).await,
             None => false,
         };
 
@@ -225,19 +274,6 @@ pub async fn install(
             }
         }
     }
-    .await;
-    let _ = std::fs::remove_file(&out);
-    let (upload_ms, queued, closed) = result?;
-    Ok(json!({
-        "elapsedMs": started.elapsed().as_millis() as u64,
-        "packMs": pack_ms,
-        "uploadMs": upload_ms,
-        "bytes": packed.bytes,
-        "files": packed.files,
-        "reused": packed.reused,
-        "queued": queued,
-        "closed": closed,
-    }))
 }
 
 /// How long a running app gets to exit on SIGTERM before it's killed, and then to be gone.
