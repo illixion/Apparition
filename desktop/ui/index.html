@@ -11,13 +11,13 @@
 <body>
 <header class="top" data-tauri-drag-region>
   <div class="brand" data-tauri-drag-region>
-    <img src="logo.svg" alt="" width="30" height="30">
-    <span>Apparition</span>
+    <img src="logo.svg" alt="" width="30" height="30" data-tauri-drag-region>
+    <span data-tauri-drag-region>Apparition</span>
   </div>
-  <div class="views" role="tablist" aria-label="Views">
-    <button type="button" role="tab" id="tab-install" aria-selected="true" aria-controls="view-install">Install</button>
-    <button type="button" role="tab" id="tab-companion" aria-selected="false" aria-controls="view-companion">Companion <span class="tab-dot" id="companion-dot" hidden></span></button>
-    <button type="button" role="tab" id="tab-developer" aria-selected="false" aria-controls="view-developer">Developer</button>
+  <div class="views" role="tablist" aria-label="Views" data-tauri-drag-region>
+    <button type="button" role="tab" id="tab-install" aria-selected="true" aria-controls="view-install" data-tauri-drag-region>Install</button>
+    <button type="button" role="tab" id="tab-companion" aria-selected="false" aria-controls="view-companion" data-tauri-drag-region>Companion <span class="tab-dot" id="companion-dot" hidden data-tauri-drag-region></span></button>
+    <button type="button" role="tab" id="tab-developer" aria-selected="false" aria-controls="view-developer" data-tauri-drag-region>Developer</button>
   </div>
   <div id="setup-badge" class="setup-badge" role="status" hidden><span id="setup-badge-text"></span></div>
 </header>
