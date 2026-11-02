@@ -42,6 +42,20 @@ const normalizePrefixes = p => Array.isArray(p) ? p : [p];
 // device's UniversalHIDService, which wakes a sleeping Apple TV (tested 2026-11-02: same call,
 // DeviceHub running = ATV wakes, DeviceHub quit = it stays asleep). `list devices` opens no tunnel.
 const ledgerOnlyDevices = cfg => (Array.isArray(cfg?.ledgerOnlyDevices) ? cfg.ledgerOnlyDevices : []).filter(d => typeof d === 'string');
+// Devices whose app list is read WITHOUT CoreDevice: config.json `quietAppsDevices` maps a device
+// name to the pymobiledevice3 pairing-record identifier that `bin/quiet-apps` lists it by. That
+// tool builds its own userspace tunnel over the device's RemotePairing service, so Apple's
+// remoted never registers the device and DeviceHub never touches its HID service: the device can
+// be read on every refresh, asleep or not. A device named here is read even if it is also
+// ledger-only (the ledger-only skip exists only for devices with no quiet route).
+const quietAppsDevices = cfg => {
+  const m = cfg?.quietAppsDevices;
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
+  return Object.fromEntries(Object.entries(m).filter(([, id]) => typeof id === 'string' && id.length > 0));
+};
+// Devices the store skips on a plain refresh: ledger-only ones without a quiet route.
+const skippedDevices = cfg => ledgerOnlyDevices(cfg).filter(d => !quietAppsDevices(cfg)[d]);
+const QUIET_APPS_TOOL = path.join(__dirname, 'bin', 'quiet-apps');
 let BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
 
 // Watch config.json for changes and reload it
@@ -280,6 +294,20 @@ async function devicectlJson(args, timeout) {
   }
 }
 
+// The app list of a `quietAppsDevices` device, in devicectl's `{result:{apps:[...]}}` shape, from
+// `bin/quiet-apps` (config `quietAppsTool` overrides the path). The tool prints `{error}` and
+// exits non-zero when the device is off the network or its pairing record is missing.
+async function quietAppsJson(recordId) {
+  const tool = typeof CONFIG.quietAppsTool === 'string' && CONFIG.quietAppsTool ? CONFIG.quietAppsTool : QUIET_APPS_TOOL;
+  const r = await run(tool, ['--identifier', recordId], { timeout: 90000 });
+  let j = null;
+  try { j = JSON.parse(r.stdout); } catch { /* not JSON: report the raw output below */ }
+  if (r.code !== 0 || !j || j.error) {
+    throw new Error(j?.error || (r.stderr || r.stdout || 'quiet-apps failed').trim().split('\n').pop());
+  }
+  return j;
+}
+
 async function refreshDeviceList() {
   const j = await devicectlJson(['list', 'devices'], 60000);
   const devices = (j.result?.devices || []).map(d => ({
@@ -300,11 +328,14 @@ const appRefreshInFlight = new Set();
 // `force` reads a ledger-only device anyway: for the caller who knows it is awake (it was just
 // installed to) or who asked for it.
 async function refreshDeviceApps(deviceName, { force = false } = {}) {
-  if (!force && ledgerOnlyDevices(CONFIG).includes(deviceName)) return;
+  const quietId = quietAppsDevices(CONFIG)[deviceName];
+  if (!force && !quietId && ledgerOnlyDevices(CONFIG).includes(deviceName)) return;
   if (appRefreshInFlight.has(deviceName)) return;
   appRefreshInFlight.add(deviceName);
   try {
-    const j = await devicectlJson(['device', 'info', 'apps', '--device', deviceName], 90000);
+    const j = quietId
+      ? await quietAppsJson(quietId)
+      : await devicectlJson(['device', 'info', 'apps', '--device', deviceName], 90000);
     const apps = {};
     for (const a of j.result?.apps || []) {
       if (!BUNDLE_PREFIXES.some(p => a.bundleIdentifier.startsWith(p))) continue;
@@ -1626,7 +1657,7 @@ async function stateBundle() {
     repos,
     devices: state.devices,
     deviceApps: state.deviceApps,
-    ledgerOnly: ledgerOnlyDevices(CONFIG),
+    ledgerOnly: skippedDevices(CONFIG),
     installs: state.installs,
     // Devices whose Apparition is open (`install: auto` goes to them, not through devicectl).
     appsOpen: presence.open(),
@@ -1957,7 +1988,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req).catch(() => ({}));
       const force = body?.force === true;
       refreshAllDevices({ force }); // async
-      return json(res, 200, { ok: true, skipped: force ? [] : configuredDevices().filter(d => ledgerOnlyDevices(CONFIG).includes(d)) });
+      return json(res, 200, { ok: true, skipped: force ? [] : configuredDevices().filter(d => skippedDevices(CONFIG).includes(d)) });
     }
     if (url.pathname === '/api/crashlogs' && req.method === 'GET') {
       return json(res, 200, { crashLogs: crashLogs.list(), pull: crashLogs.status() });
@@ -2074,4 +2105,5 @@ if (require.main === module) {
 
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
-  deployDefaults, staleClones, normalizeExcludes, cloneTree, siblingPackages, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes, ledgerOnlyDevices };
+  deployDefaults, staleClones, normalizeExcludes, cloneTree, siblingPackages, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes, ledgerOnlyDevices,
+  quietAppsDevices, skippedDevices, refreshDeviceApps, _state: () => state };

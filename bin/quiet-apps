@@ -1,0 +1,22 @@
+#!/bin/sh
+# List a device's apps WITHOUT touching CoreDevice, so Xcode's DeviceHub never learns of a
+# tunnel and never opens the device's UniversalHID service (which wakes a sleeping Apple TV
+# when the connection later drops; see CLAUDE.md "Devices that wake on contact").
+#
+# It rides pymobiledevice3's pure-Python userspace tunnel over the device's RemotePairing
+# service (the one Xcode's wireless pairing uses) with pymobiledevice3's OWN pairing record,
+# so it needs no root and nothing of Apple's: not remoted, not CoreDeviceService.
+#
+# Usage: quiet-apps --identifier <RemotePairing identifier> [--timeout 20] [--all]
+#        quiet-apps --browse                 (print adverts and which have a pairing record)
+# Pair once (TV: Settings > Remotes and Devices > Remote App and Devices; type the PIN it shows):
+#        pymobiledevice3 remote pair
+# Output: {"result":{"apps":[{"bundleIdentifier","name","version","bundleVersion"}]}}
+#
+# QUIET_APPS_PYTHON overrides the interpreter (default: the uv tool env of pymobiledevice3).
+PY="${QUIET_APPS_PYTHON:-$HOME/.local/share/uv/tools/pymobiledevice3/bin/python}"
+if [ ! -x "$PY" ]; then
+  echo "quiet-apps: python with pymobiledevice3 not found at $PY (uv tool install pymobiledevice3)" >&2
+  exit 69
+fi
+exec "$PY" -I "$(dirname "$0")/quiet-apps.py" "$@"
