@@ -453,7 +453,10 @@ struct LibraryView: View {
     private var summary: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
-                Text("^[\(library.installed.count) app](inflect: true)")
+                // Library apps that belong to an appstore project are listed under Your Projects, not here.
+                Text(apps.count == library.installed.count ? "^[\(apps.count) app](inflect: true)"
+                     : apps.isEmpty ? "^[\(library.installed.count) app](inflect: true), under Your Projects"
+                     : "^[\(library.installed.count) app](inflect: true), \(library.installed.count - apps.count) under Your Projects")
                     .font(.title3.weight(.semibold))
                 if let next = apps.compactMap(LibraryModel.expiryDate).first {
                     Text("·").foregroundStyle(.tertiary)
