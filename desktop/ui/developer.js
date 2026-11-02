@@ -146,7 +146,7 @@ export class DeveloperView {
     for (const [key] of SECTIONS) { this.panes[key] = element('div', 'dev-pane'); this.panes[key].setAttribute('role', 'tabpanel'); }
 
     this.resign = this.resignSection();
-    this.projects = this.block('Projects', 'Each tile is a device the project installs on. Install builds and installs it there; Build only keeps a signed IPA to download or re-sign. Device-side installs retain an unsigned IPA for Apparition to sign on the device.', true);
+    this.projects = this.block('Projects', 'Each tile is a device the project installs on. Install builds and installs it there; Build only keeps a signed IPA to download or re-sign. Device-side installs retain an unsigned IPA for Apparition to sign on the device.');
     this.registration = this.registrationForm(); this.registration.hidden = true;
     this.artifacts = this.block('Other kept builds', 'Builds the Mac kept that no project here installs, such as Xcode products registered by hand.');
     this.artifacts.hidden = true;
@@ -683,7 +683,7 @@ export class DeveloperView {
     return counts;
   }
 
-  // One tile-card per project, two to a row. A card's controls are rebuilt only when what it
+  // One compact list card per project. A card's controls are rebuilt only when what it
   // shows changes, and what the person set on it (branch, options, kept builds opened) is
   // remembered, so a choice in progress survives the 4-second refresh.
   renderProjects(repos) {
