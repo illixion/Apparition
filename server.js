@@ -55,6 +55,8 @@ const skippedDevices = cfg => ledgerOnlyDevices(cfg).filter(d => !quietAppsDevic
 // The Apparition command line: config `apparitionCli`, else the user's install, else PATH.
 function apparitionCli() {
   if (typeof CONFIG.apparitionCli === 'string' && CONFIG.apparitionCli) return CONFIG.apparitionCli;
+  // The Apparition desktop app hosting this server passes the CLI it carries.
+  if (process.env.APPARITION_CLI) return process.env.APPARITION_CLI;
   const local = path.join(os.homedir(), '.local/bin/apparition');
   return fs.existsSync(local) ? local : 'apparition';
 }
@@ -1821,7 +1823,7 @@ const server = http.createServer(async (req, res) => {
     if (native.handled) return;
     if (native.path) url.pathname = native.path;
     if (!native.authorized && !webUiOn() && !machineRoute(req, url)) {
-      return sendText(res, 404, 'The web UI is off. Turn it on in Apparition: Developer › This Mac.');
+      return sendText(res, 404, 'The web UI is off. Turn it on in Apparition: Developer › Devices & signing › Web UI and other devices.');
     }
 
     // ---- reachable without a session ----

@@ -11,6 +11,19 @@ Two parts, which ship together:
 - **`bin/build-and-sign`**: a bash script that builds, signs and installs one app from the git repo
   it is run in. The server calls it, and you can run it directly.
 
+## Two ways to run it
+
+- **Inside the Apparition desktop app (a Mac you work at).** Apparition carries this service and
+  runs it on your Mac's Node.js while it is open, as its GUI: Developer in Apparition has the
+  projects, builds, reports and settings. Config and data live in
+  `~/Library/Application Support/Apparition/Service/`. The web pages are off until you turn them
+  on with a password (Developer › Devices & signing › Web UI and other devices); the same password
+  lets Apparition on another device connect. Apps' trace uploads, OTA links, the AltStore feed and
+  Mac downloads work whenever the app is open. To run a checkout instead of the bundled copy, put
+  `{"checkout": "/path/to/appstore"}` in that folder's `host.json`.
+- **On its own (a server).** `node server.js` under launchd, systemd or a terminal, as below. The
+  web UI is the GUI then, and Apparition connects to it like any other Mac's service.
+
 ## Requirements
 
 - macOS with Xcode (`xcodebuild`, `xcrun devicectl`) and Node 18 or newer (also required

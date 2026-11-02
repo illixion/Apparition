@@ -16,7 +16,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
-const DATA = process.env.APPSTORE_DATA || path.join(ROOT, 'data');
+// The Apparition desktop app keeps the service it runs in Application Support; a checkout run
+// directly keeps it in ../data. APPSTORE_DATA wins over both.
+const HOSTED_DIR = path.join(require('node:os').homedir(), 'Library/Application Support/Apparition/Service');
+const DATA = process.env.APPSTORE_DATA || (fs.existsSync(path.join(HOSTED_DIR, 'data')) ? path.join(HOSTED_DIR, 'data') : path.join(ROOT, 'data'));
 const CRASH_DIR = path.join(DATA, 'crashlogs');
 const TRACE_DIR = path.join(DATA, 'traces');
 
@@ -70,7 +73,7 @@ function show(id) {
 }
 
 function symbolicateTool() {
-  const config = readJson(process.env.APPSTORE_CONFIG || path.join(ROOT, 'config.json')) || {};
+  const config = readJson(process.env.APPSTORE_CONFIG || (DATA === path.join(HOSTED_DIR, 'data') ? path.join(HOSTED_DIR, 'config.json') : path.join(ROOT, 'config.json'))) || {};
   const tool = config.symbolicateTool || (config.debugtraceTool && path.join(path.dirname(config.debugtraceTool), 'debugtrace-symbolicate'))
     || path.join(process.env.HOME, 'Projects/DebugTrace/Tools/debugtrace-symbolicate');
   return fs.existsSync(tool) ? tool : fail(`debugtrace-symbolicate not found at ${tool}; set symbolicateTool in config.json`);
