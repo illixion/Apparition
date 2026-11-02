@@ -450,7 +450,7 @@
     <a href="#history" data-view="history">History</a>
   </nav>
   <span class="tools">
-    <button class="ghost" id="refreshdev" title="Ask devicectl for each device's installed apps again">↻ devices</button>
+    <button class="ghost" id="refreshdev" title="Ask devicectl for each device's installed apps again. Devices in ledgerOnlyDevices are skipped, since that wakes them; Alt-click reads them too.">↻ devices</button>
     <button class="ghost" id="signout" hidden>Sign out</button>
   </span>
 </header>
@@ -815,7 +815,7 @@ document.addEventListener('click', async e=>{
   if (row) { openPane(Number(row.dataset.open)); return; }
   if (t.id==='closePane'){ $('#buildpane').classList.remove('open'); paneBuild=null; return; }
   if (t.id==='cancelBtn' && paneBuild!=null) { await api(`/api/builds/${paneBuild}/cancel`,{method:'POST'}); poll(); return; }
-  if (t.id==='refreshdev'){ t.textContent='↻ …'; await api('/api/refresh-devices',{method:'POST'});
+  if (t.id==='refreshdev'){ t.textContent='↻ …'; await api('/api/refresh-devices',{method:'POST',body:JSON.stringify({force:!!e.altKey})});
     setTimeout(()=>{t.textContent='↻ devices'; poll();}, 4000); return; }
 });
 

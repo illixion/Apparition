@@ -17,9 +17,13 @@ function agoFrom(now, t){ if(!t) return '—'; const s=(now-t)/1000;
 // "-dirty"), not the version. Returns a compact {dot,label,detail} plus
 // whatever's needed to draw the OTA reinstall affordance for this platform.
 function platformStatus(p, g, S, now = Date.now()) {
-  const inv = S.deviceApps[p.device];
-  const dev = inv?.apps?.[p.bundleId];
+  // A ledger-only device is never queried on its own (that wakes it), so an inventory older than
+  // the store's own last install there is stale: judge it from the ledger instead.
+  const ledgerOnly = (S.ledgerOnly || []).includes(p.device);
   const led = S.installs[p.device]?.[p.bundleId];
+  const inv0 = S.deviceApps[p.device];
+  const inv = ledgerOnly && led && (inv0?.fetchedAt || 0) < (led.at || 0) ? undefined : inv0;
+  const dev = inv?.apps?.[p.bundleId];
   const ota = S.ota?.[p.bundleId + '|' + p.platform];
   const isSha = s => /^[0-9a-f]{7,40}$/i.test(s || '');
   const rawBuild = dev?.buildNo || '';
@@ -35,6 +39,13 @@ function platformStatus(p, g, S, now = Date.now()) {
   if (inv?.error) {
     dot = 'bad'; label = 'inventory error';
     detail = `devicectl inventory failed ${agoFrom(now, inv.erroredAt)}: ${inv.error}`;
+  } else if (!dev && ledgerOnly && led) {
+    const note = `Judged from the store's ledger (${esc(led.branch)}@${esc(led.commit)}): this device is not queried, because reading its apps wakes it. `;
+    if (!comparable) { dot = 'info'; label = 'installed'; detail = note + 'The recorded commit is not a recognizable git SHA.'; }
+    else if (match && !g.dirty) { dot = 'ok'; label = 'up to date'; detail = note + `Matches ${esc(g.branch)}@${head}.`; }
+    else if (match) { dot = 'warn'; label = 'dirty match'; detail = note + 'Commit matches, but the source has uncommitted changes.'; }
+    else if (otherBranch) { dot = 'info'; label = `from ${led.branch}`; detail = note + `Not the currently selected ${esc(g.branch)}.`; }
+    else { dot = 'bad'; label = 'out of date'; detail = note + `Repo HEAD is now ${head} — deploy to update.`; }
   } else if (!dev) {
     if (inv) { dot = 'muted'; label = 'not installed'; detail = 'Not present on this device per the last devicectl inventory.'; }
     else { dot = 'muted'; label = 'pending…'; detail = 'Device inventory has not been fetched yet.'; }

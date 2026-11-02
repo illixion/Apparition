@@ -40,6 +40,12 @@ Either form's value may itself be an object `{ "<platform>": [...], "*": [...] }
 - **Device I/O** (`devicectlJson`): runs `xcrun devicectl ... --json-output <tmpfile>`, reads and parses the temp file (devicectl writes JSON to a file, not stdout). `gitInfo()` is cached 10s per repo path.
 - **HTTP API:** `GET /api/state`, `POST /api/build` `{repo, targets:[{device,branch}], run, deploy}` (also accepts singular `device`/`branch` as an alias for a one-target batch) → `{jobs:[...]}`, `GET /api/builds/:id/log?offset=N` (incremental tail), `POST /api/builds/:id/cancel`, `POST /api/refresh-devices`, plus static serving from `public/`. A `targets` array of more than one device fans out into a batch (`state.builds[].batchId` shared across the group) that queues together but still runs one job at a time — see the build-queue note above. Branch is per-target, not per-batch, so a repo's `deviceBranches` mapping (e.g. building the headset from a feature branch while the phone stays on `main`) can be deployed in one batch.
 
+## Devices that wake on contact (`ledgerOnlyDevices`)
+
+Reading a device's app list (`devicectl device info apps`) opens a CoreDevice tunnel, and while Xcode's **DeviceHub** is running that makes DeviceHub connect to the device's `UniversalHIDService`, which wakes a sleeping Apple TV. Measured 2026-11-02 on the ATV (CEC off, user watching it): `list devices` x3 stayed asleep (it opens no tunnel); `info apps` with DeviceHub running woke it, twice; the same call with DeviceHub quit (graceful `osascript quit`) returned the full list and left it asleep. DeviceHub is not started by devicectl and lingers once something launches it. The 5-min crash-log pull was the same mechanism.
+
+`config.json`'s top-level `ledgerOnlyDevices` (device names as devicectl shows them) makes the store skip `info apps` for those devices at startup and on the `↻ devices` button (Alt-click, or `POST /api/refresh-devices {force:true}`, reads them anyway). Their row is judged from the install ledger (`public/freshness.js`), unless an inventory is newer than the ledger entry. Installs and re-signs still refresh them with `force`: the device is awake then. `list devices` always runs; it is passive. Any other tunnel call (`launch`, `install`, copy) still wakes a device while DeviceHub is up.
+
 ## The version-freshness model (important, non-obvious)
 
 `lib/artifacts.js` and `bin/build-manifest` retain immutable signed outputs under

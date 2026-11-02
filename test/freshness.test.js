@@ -94,3 +94,26 @@ describe('agoFrom / esc', () => {
     assert.equal(esc(null), '');
   });
 });
+
+describe('platformStatus on a ledger-only device', () => {
+  const led = { branch: 'main', commit: 'abc1234', at: NOW - 3_600_000, confirmed: true };
+  const st = (extra = {}) => ({ ...state({ inv: null, led }), ledgerOnly: ['Phone'], ...extra });
+  test('no inventory: judged from the ledger instead of waiting on a fetch', () => {
+    const r = status(st());
+    assert.equal(r.label, 'up to date'); assert.match(r.detail, /not queried/);
+  });
+  test('ledger commit behind HEAD: out of date', () => {
+    assert.equal(status(st(), { ...HEAD, commit: 'fffffff' }).label, 'out of date');
+  });
+  test('an inventory older than the last install is ignored', () => {
+    const s = st({ deviceApps: { Phone: { fetchedAt: NOW - 86_400_000, apps: { [P.bundleId]: { version: '1.0', buildNo: 'fffffff' } } } } });
+    assert.equal(status(s).label, 'up to date');
+  });
+  test('an inventory newer than the last install still wins', () => {
+    const s = st({ deviceApps: { Phone: { fetchedAt: NOW - 60_000, apps: { [P.bundleId]: { version: '1.0', buildNo: 'fffffff' } } } } });
+    assert.equal(status(s).label, 'out of date');
+  });
+  test('without ledger-only, an empty state still says pending', () => {
+    assert.equal(status({ ...st(), ledgerOnly: [] }).label, 'pending…');
+  });
+});

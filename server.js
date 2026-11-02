@@ -36,6 +36,12 @@ const DEFAULT_BUILD_AND_SIGN = path.join(ROOT, 'bin', 'build-and-sign');
 // repos outside the main namespace (e.g. org.example.*) can still be
 // tracked from device inventory.
 const normalizePrefixes = p => Array.isArray(p) ? p : [p];
+// Devices the store never opens a tunnel to on its own: config.json `ledgerOnlyDevices`, by the
+// name devicectl shows. Reading a device's app list (`devicectl device info apps`) opens a
+// CoreDevice tunnel, and while Xcode's DeviceHub is running that makes DeviceHub connect to the
+// device's UniversalHIDService, which wakes a sleeping Apple TV (tested 2026-11-02: same call,
+// DeviceHub running = ATV wakes, DeviceHub quit = it stays asleep). `list devices` opens no tunnel.
+const ledgerOnlyDevices = cfg => (Array.isArray(cfg?.ledgerOnlyDevices) ? cfg.ledgerOnlyDevices : []).filter(d => typeof d === 'string');
 let BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
 
 // Watch config.json for changes and reload it
@@ -291,7 +297,10 @@ async function refreshDeviceList() {
 }
 
 const appRefreshInFlight = new Set();
-async function refreshDeviceApps(deviceName) {
+// `force` reads a ledger-only device anyway: for the caller who knows it is awake (it was just
+// installed to) or who asked for it.
+async function refreshDeviceApps(deviceName, { force = false } = {}) {
+  if (!force && ledgerOnlyDevices(CONFIG).includes(deviceName)) return;
   if (appRefreshInFlight.has(deviceName)) return;
   appRefreshInFlight.add(deviceName);
   try {
@@ -313,11 +322,15 @@ async function refreshDeviceApps(deviceName) {
   }
 }
 
-async function refreshAllDevices() {
-  try { await refreshDeviceList(); } catch { /* keep cache */ }
+function configuredDevices() {
   const names = new Set();
   for (const r of CONFIG.repos) for (const p of r.platforms) names.add(p.device);
-  await Promise.allSettled([...names].map(refreshDeviceApps));
+  return [...names];
+}
+
+async function refreshAllDevices({ force = false } = {}) {
+  try { await refreshDeviceList(); } catch { /* keep cache */ }
+  await Promise.allSettled(configuredDevices().map(d => refreshDeviceApps(d, { force })));
 }
 
 // The last "Build ID:" build-and-sign printed: its report names it, and so does the line it
@@ -732,7 +745,7 @@ async function executeBuild(job) {
     // keep only the last few live logs in memory; files persist
     if (liveLogs.size > 5) liveLogs.delete(liveLogs.keys().next().value);
   }
-  if (job.status === 'success' && !job.noDeploy) refreshDeviceApps(job.device); // async, best-effort
+  if (job.status === 'success' && !job.noDeploy) refreshDeviceApps(job.device, { force: true }); // async, best-effort; the device was just installed to, so it is awake
 }
 
 // Re-signs an app already on a device from the exact IPA the store kept for it (lib/resign.js),
@@ -877,7 +890,7 @@ async function executeResign(job) {
     stream.end();
     if (liveLogs.size > 5) liveLogs.delete(liveLogs.keys().next().value);
   }
-  if (job.status === 'success' && !job.resign.dryRun) refreshDeviceApps(job.device);
+  if (job.status === 'success' && !job.resign.dryRun) refreshDeviceApps(job.device, { force: true }); // just re-signed on it, so it is awake
 }
 
 function cancelBuild(id) {
@@ -1613,6 +1626,7 @@ async function stateBundle() {
     repos,
     devices: state.devices,
     deviceApps: state.deviceApps,
+    ledgerOnly: ledgerOnlyDevices(CONFIG),
     installs: state.installs,
     // Devices whose Apparition is open (`install: auto` goes to them, not through devicectl).
     appsOpen: presence.open(),
@@ -1939,8 +1953,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: cancelBuild(Number(m[1])) });
     }
     if (url.pathname === '/api/refresh-devices' && req.method === 'POST') {
-      refreshAllDevices(); // async
-      return json(res, 200, { ok: true });
+      // Ledger-only devices are skipped (reading their apps wakes them) unless `{force: true}`.
+      const body = await readBody(req).catch(() => ({}));
+      const force = body?.force === true;
+      refreshAllDevices({ force }); // async
+      return json(res, 200, { ok: true, skipped: force ? [] : configuredDevices().filter(d => ledgerOnlyDevices(CONFIG).includes(d)) });
     }
     if (url.pathname === '/api/crashlogs' && req.method === 'GET') {
       return json(res, 200, { crashLogs: crashLogs.list(), pull: crashLogs.status() });
@@ -2057,4 +2074,4 @@ if (require.main === module) {
 
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
-  deployDefaults, staleClones, normalizeExcludes, cloneTree, siblingPackages, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes };
+  deployDefaults, staleClones, normalizeExcludes, cloneTree, siblingPackages, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes, ledgerOnlyDevices };
