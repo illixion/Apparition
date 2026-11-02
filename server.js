@@ -84,6 +84,25 @@ const watchConfig = () => fs.watch(path.dirname(CONFIG_PATH), (eventType, filena
     }
   }, 500);
 });
+// Hosted by the Apparition desktop app (APPSTORE_HOSTED=1), which is then the GUI: it runs
+// this server as its child and talks to it with a token it writes as the first line of stdin
+// (never argv or the environment). The server ends when that pipe closes, so it never outlives
+// the app. The web pages are off unless `webUi` is true and a password is set; apps' signed
+// uploads, OTA, AltSource and Mac downloads keep working either way. Run directly (launchd,
+// systemd, a terminal), nothing here changes.
+const HOSTED = process.env.APPSTORE_HOSTED === '1';
+let HOST_TOKEN = null;
+const webUiOn = () => !HOSTED || (CONFIG.webUi === true && !!CONFIG.passwordHash);
+// Writes config.json atomically and applies it now (the watcher reloads it again, harmlessly).
+function updateConfig(change) {
+  const next = change(JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')));
+  const tmp = `${CONFIG_PATH}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tmp, CONFIG_PATH);
+  CONFIG = next;
+  BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
+  return next;
+}
 const DATA_DIR = process.env.APPSTORE_DATA || path.join(ROOT, 'data');
 const LOG_DIR = path.join(DATA_DIR, 'logs');
 const CLONE_DIR = path.join(DATA_DIR, 'build-clones');
@@ -1351,11 +1370,25 @@ const TRACE_KEEP = 300;
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 fs.mkdirSync(TRACE_DIR, { recursive: true });
 
-const { createAuth, parseCookies } = require('./lib/auth');
+const { createAuth, parseCookies, hashPassword } = require('./lib/auth');
 const { createDebug } = require('./lib/debug');
 const auth = createAuth(DATA_DIR);
 const patchingTargets = new Set();
 const service = require('./lib/service').createService({ auth, config: () => CONFIG, json, readBody, presence,
+  hostToken: () => HOST_TOKEN,
+  host: {
+    status: () => ({ hosted: HOSTED, port: CONFIG.port, webUi: CONFIG.webUi === true, passwordSet: !!CONFIG.passwordHash,
+      webUiOn: webUiOn(), configPath: CONFIG_PATH, dataDir: DATA_DIR }),
+    // {enabled, password?}: a new password replaces the old one (ending every browser and
+    // device session); turning the web UI on needs one, given now or set before.
+    setWebUi: ({ enabled, password }) => {
+      if (typeof enabled !== 'boolean' || (password !== undefined && (typeof password !== 'string' || password.length < 8 || password.length > 256))) {
+        throw Object.assign(new Error('Send enabled, and a password of 8 to 256 characters if you set one.'), { status: 400 });
+      }
+      if (enabled && !password && !CONFIG.passwordHash) throw Object.assign(new Error('Set a password to turn the web UI on.'), { status: 400 });
+      updateConfig(c => ({ ...c, webUi: enabled, ...(password ? { passwordHash: hashPassword(password) } : {}) }));
+    },
+  },
   // The device installed a kept build itself: record it as a fact (nothing here reaches the device).
   reportInstall: report => {
     const { device, bundleId, entry } = ledgerEntryFromReport(report, { repos: CONFIG.repos, builds: state.builds,
@@ -1740,7 +1773,14 @@ function brand() {
 }
 const isHttps = req => requestBase(req).startsWith('https://');
 const sessionToken = req => parseCookies(req.headers.cookie)[auth.COOKIE];
-const signedIn = req => !CONFIG.passwordHash || auth.check(sessionToken(req), CONFIG.passwordHash);
+// Run directly with no password, the store is open (a banner says so). Hosted, no password means
+// no browser sessions at all: the app talks to it with its own token.
+const signedIn = req => HOSTED
+  ? !!CONFIG.passwordHash && auth.check(sessionToken(req), CONFIG.passwordHash)
+  : !CONFIG.passwordHash || auth.check(sessionToken(req), CONFIG.passwordHash);
+// What stays reachable with the web UI off: what apps and devices fetch with their own signatures.
+const machineRoute = (req, url) => (req.method === 'POST' && url.pathname === '/api/traces')
+  || (req.method === 'GET' && /^\/(ota|altsource|mac)\//.test(url.pathname));
 
 // SameSite=Strict already keeps the cookie off other sites' requests; this
 // also refuses any state-changing request whose Origin isn't this host.
@@ -1780,6 +1820,9 @@ const server = http.createServer(async (req, res) => {
     const native = await service(req, res, url);
     if (native.handled) return;
     if (native.path) url.pathname = native.path;
+    if (!native.authorized && !webUiOn() && !machineRoute(req, url)) {
+      return sendText(res, 404, 'The web UI is off. Turn it on in Apparition: Developer › This Mac.');
+    }
 
     // ---- reachable without a session ----
     if (url.pathname === '/api/login' && req.method === 'POST') {
@@ -2114,7 +2157,24 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-if (require.main === module) {
+// Hosted: the first stdin line is the app's token; the pipe closing means the app is gone.
+function hostHandshake(start) {
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => {
+    if (HOST_TOKEN) return;
+    buffer += chunk;
+    const nl = buffer.indexOf('\n');
+    if (nl < 0) return;
+    const token = buffer.slice(0, nl).trim();
+    if (!/^[A-Za-z0-9_-]{43}$/.test(token)) { console.error('hosted: bad token on stdin'); process.exit(2); }
+    HOST_TOKEN = token;
+    start();
+  });
+  process.stdin.on('end', () => { console.log('hosted: the app is gone, stopping'); process.exit(0); });
+}
+
+if (require.main === module) (HOSTED ? hostHandshake : f => f())(() => {
   watchConfig();
   server.listen(CONFIG.port, '127.0.0.1', () => {
     console.log(`appstore listening on http://127.0.0.1:${CONFIG.port}`);
@@ -2127,7 +2187,7 @@ if (require.main === module) {
     reapBuildClones();
     backfillOta().catch(e => console.error('OTA backfill failed:', e)); // adopt pre-ledger IPAs
   });
-}
+});
 
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
