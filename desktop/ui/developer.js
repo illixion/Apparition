@@ -100,7 +100,7 @@ export class DeveloperView {
     this.section = 'projects';
     this.showAllJobs = false;
     root.append(element('h1', '', 'Developer'));
-    root.append(element('p', 'lede', 'Build your own Xcode projects on this Mac, install them on your devices, and bring their crash logs and traces back to the project.'));
+    root.append(element('p', 'lede', 'Build and iterate on your Apple-device apps, install them through Apparition, and keep development builds refreshed beyond the free account window. Launch with JIT, apply live Swift patches, and inspect reports from the project.'));
     this.intro = this.introCard();
     this.hostCard = this.hostSection();
     const form = element('form', 'dev-card dev-connect');
@@ -176,10 +176,10 @@ export class DeveloperView {
   introCard() {
     const card = element('section', 'dev-card dev-intro');
     card.append(element('h2', 'small', 'Get started'));
-    card.append(element('p', '', 'The Developer tools work with Apparition Store, an open-source build service you run on your own Mac. It builds your projects with its build-and-sign script and your developer certificate, installs them on devices paired with the Mac, keeps every signed build, and collects crash logs and debug traces. Apparition connects to it from this Mac or from a headset, iPhone or Apple TV.'));
+    card.append(element('p', '', 'Apparition Store is an open-source build service that runs on a Mac with Xcode. It builds your projects and keeps the artifacts. Install through Apparition on the device to sign with that device’s Apple ID or certificate; direct Mac installs use the Mac’s development certificate and profile. The service also collects debug traces and crash reports. Apparition connects to it from this Mac or from a headset, iPhone or Apple TV.'));
     const steps = element('ol', 'dev-steps');
     for (const text of [
-      'Get Apparition Store from GitHub and follow its README. It needs Xcode, Node 18 and a paid developer certificate with a development profile.',
+      'Get Apparition Store from GitHub and follow its README. The build host needs macOS, Xcode and Node 18. A paid certificate and development profile are only needed for direct Mac installs; device-side installs use the identity in Apparition on the device.',
       'Set a service password: node server.js set-password.',
       'Start it (node server.js, or as a launch agent), then connect below. Register your projects here once connected.',
     ]) steps.append(element('li', '', text));
@@ -192,7 +192,7 @@ export class DeveloperView {
   aboutSection() {
     const card = element('section', 'dev-card dev-about');
     card.append(element('h2', 'small', 'About Apparition Store'));
-    card.append(element('p', '', 'Apparition Store is an open-source build service that runs on your Mac and gives Apparition a second backend for developer work. It builds your Xcode projects with your own certificate, installs them on devices paired with the Mac, keeps every signed build, re-signs apps with another profile, and collects crash logs and debug traces. It is a separate Node.js project (Node 18 and Xcode on the Mac), developed on GitHub.'));
+    card.append(element('p', '', 'Apparition Store is an open-source build service that runs on a Mac with Xcode. It builds your projects and keeps artifacts. Device-side installs are signed by Apparition on the device; direct Mac installs use the Mac’s development certificate and profile. The service also re-signs apps with another profile and collects debug traces and crash reports.'));
     const links = element('div', 'service-row');
     links.append(button('Apparition Store on GitHub', () => this.open('store'), 'button quiet small'), button('Developer guide', () => this.open('guide'), 'button quiet small'));
     card.append(links);
@@ -584,7 +584,7 @@ export class DeveloperView {
   hostSection() {
     const card = element('section', 'dev-card dev-host');
     card.append(element('h2', 'small', 'Build service on this Mac'));
-    this.hostText = element('p', '', 'Apparition runs Apparition Store, the build service, while it is open: it builds your Xcode projects with your certificate, installs them on your devices, keeps every signed build and collects crash logs and traces.');
+    this.hostText = element('p', '', 'Apparition runs Apparition Store while it is open. It builds your Xcode projects and keeps each artifact. Device-side installs are signed by Apparition on the device; direct Mac installs use this Mac’s development certificate and profile.');
     this.hostProblem = element('p', 'status error'); this.hostProblem.hidden = true;
     const row = element('div', 'service-row');
     this.hostStart = button('Start', () => this.startLocal(), 'button primary');
