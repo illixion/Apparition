@@ -250,6 +250,15 @@ pub async fn connect_verified(device: SocketAddr, hostname: &str, pairing: &mut 
 
 pub use crate::tunnel::{PairingRejected, is_pairing_rejected};
 
+/// An installed app, as [`Tunnel::installed_apps`] lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InstalledApp {
+    pub bundle_id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub build: Option<String>,
+}
+
 /// The device's identity, from lockdown over the tunnel.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DeviceInfo {
@@ -329,6 +338,29 @@ impl Tunnel {
         let prefix = format!("{id}.");
         let mut found: Vec<String> = apps.keys().filter(|app| *app == id || app.starts_with(&prefix)).cloned().collect();
         found.sort();
+        Ok(found)
+    }
+
+    /// The installed apps (user apps, or every app with `all`) with the Info.plist fields a build
+    /// tool compares: `CFBundleVersion` is where build-and-sign stamps the git commit. Through
+    /// installation_proxy, which answers over this tunnel (CoreDevice's `listapps` doesn't).
+    pub async fn installed_apps(&mut self, all: bool) -> Result<Vec<InstalledApp>, Report> {
+        let mut installer =
+            idevice::installation_proxy::InstallationProxyClient::connect_rsd(&mut self.adapter, &mut self.handshake)
+                .await
+                .context("installation_proxy connect failed")?;
+        let apps = installer.get_apps(Some(if all { "Any" } else { "User" }), None).await?;
+        let text = |info: &plist::Value, key: &str| info.as_dictionary().and_then(|d| d.get(key)).and_then(|v| v.as_string()).map(str::to_string);
+        let mut found: Vec<InstalledApp> = apps
+            .iter()
+            .map(|(bundle_id, info)| InstalledApp {
+                name: text(info, "CFBundleDisplayName").or_else(|| text(info, "CFBundleName")).unwrap_or_else(|| bundle_id.clone()),
+                version: text(info, "CFBundleShortVersionString"),
+                build: text(info, "CFBundleVersion"),
+                bundle_id: bundle_id.clone(),
+            })
+            .collect();
+        found.sort_by(|a, b| a.bundle_id.cmp(&b.bundle_id));
         Ok(found)
     }
 
@@ -724,13 +756,25 @@ mod desktop {
         /// to pair again; an iPhone or iPad has no PIN screen, so a pairing it turns down is an
         /// error saying to pair again over usbmuxd.
         pub async fn connect(&self, device: &PairedDevice, pin: impl Fn() -> String) -> Result<Tunnel, Report> {
+            if device.platform() == super::Platform::IOS {
+                return self.connect_verified(device).await;
+            }
+            let (mut pairing, address) = self.pairing_of(device)?;
+            super::connect(address, &hostname(), &mut pairing, pin).await
+        }
+
+        fn pairing_of(&self, device: &PairedDevice) -> Result<(RpPairingFile, SocketAddr), Report> {
             let data = std::fs::read(self.dir.join("pairings").join(&device.pairing))
                 .context(format!("The pairing with {} is missing; pair again", device.name))?;
-            let mut pairing = RpPairingFile::from_bytes(&data)?;
-            let address = SocketAddr::new(device.address, device.port);
-            if device.platform() != super::Platform::IOS {
-                return super::connect(address, &hostname(), &mut pairing, pin).await;
-            }
+            Ok((RpPairingFile::from_bytes(&data)?, SocketAddr::new(device.address, device.port)))
+        }
+
+        /// Opens a tunnel to a paired device without ever asking for a PIN: a pairing the device
+        /// turns down is an error (see [`is_pairing_rejected`](super::is_pairing_rejected)), so a
+        /// program with nobody at a terminal fails at once instead of waiting on a pair-setup. If
+        /// the saved address doesn't answer, the device is looked up again under its name.
+        pub async fn connect_verified(&self, device: &PairedDevice) -> Result<Tunnel, Report> {
+            let (mut pairing, address) = self.pairing_of(device)?;
             let connected = super::connect_verified(address, &hostname(), &mut pairing).await;
             // An iPhone's RemotePairing port isn't fixed and changes as it restarts, so a refused
             // or silent address is looked up again under the device's name and remembered.
@@ -755,11 +799,16 @@ mod desktop {
                 }
             }
             match connected {
-                Err(error) if super::is_pairing_rejected(&error) => Err(error.context(format!(
-                    "{} no longer trusts this computer's pairing. Pair again with `apparition pair --usb` (over Wi-Fi works once it trusts this computer).",
-                    device.name
-                ))
-                .into_dynamic()),
+                Err(error) if super::is_pairing_rejected(&error) => {
+                    let how = if device.platform() == super::Platform::IOS {
+                        "`apparition pair --usb` (over Wi-Fi works once it trusts this computer)"
+                    } else {
+                        "`apparition pair`"
+                    };
+                    Err(error
+                        .context(format!("{} no longer trusts this computer's pairing. Pair again with {how}.", device.name))
+                        .into_dynamic())
+                }
                 other => other,
             }
         }

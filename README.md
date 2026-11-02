@@ -517,6 +517,7 @@ companion (`apparition relay`, `apparition anisette serve|up|down`):
     apparition pair       # with Settings > General > Remote Devices open; type the PIN
     apparition pair --usb # an iPhone or iPad: a cable until it trusts this computer, then Wi-Fi works too
     apparition pairing hand-off   # give an Apparition already installed there its pairing
+    apparition apps --device ATV --json   # what it has installed, with versions; never wakes a sleeping Apple TV
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969

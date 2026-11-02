@@ -34,6 +34,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
 
   apparition devices
       Devices on this network that are paired or waiting to pair.
+  apparition apps [--device <name or UDID>] [--all] [--json]
+      What a paired device has installed (user apps; --all for every app), with each app's
+      version and build. Over this pairing's own tunnel, so it never asks a PIN and Xcode's
+      tools never notice: unlike `devicectl device info apps`, it leaves a sleeping Apple TV
+      asleep even while Xcode's DeviceHub is running. --json for programs.
   apparition pair [<address>[:<port>]]
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
@@ -180,6 +185,7 @@ async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("devices") => devices().await,
+        Some("apps") => apps(&args[1..]).await,
         Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
@@ -520,6 +526,36 @@ async fn devices() -> Result<(), Error> {
     for found in browse(3).await? {
         let state = if found.ready_to_pair { "ready to pair" } else { "RemotePairing" };
         println!("  {} [{state}] {:?} port {}", found.name, found.addresses, found.port);
+    }
+    Ok(())
+}
+
+/// `apps`: what a paired device has installed, over this pairing's own tunnel. Nothing of
+/// Apple's is involved (no CoreDevice, no remoted), so Xcode's DeviceHub never learns of the
+/// tunnel and never opens the device's HID service, whose dropped connection wakes a sleeping
+/// Apple TV. That is what makes it usable from a build tool that polls. Never asks a PIN.
+async fn apps(args: &[String]) -> Result<(), Error> {
+    let usage = || fail("usage: apparition apps [--device <name or UDID>] [--all] [--json]");
+    let (mut wanted, mut all, mut json) = (None, false, false);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--device" => wanted = Some(args.next().ok_or_else(usage)?.as_str()),
+            "--all" => all = true,
+            "--json" => json = true,
+            _ => return Err(usage()),
+        }
+    }
+    let device = find_device(wanted)?;
+    let mut tunnel = store().connect_verified(&device).await?;
+    let apps = tunnel.installed_apps(all).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "device": device.udid, "name": device.name, "apps": apps }))?);
+        return Ok(());
+    }
+    println!("{} apps on {}:", apps.len(), device.name);
+    for app in &apps {
+        println!("  {}  {}  {} ({})", app.bundle_id, app.name, app.version.as_deref().unwrap_or("?"), app.build.as_deref().unwrap_or("?"));
     }
     Ok(())
 }
