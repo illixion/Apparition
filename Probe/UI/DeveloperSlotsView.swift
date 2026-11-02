@@ -222,7 +222,7 @@ struct DeveloperSlotsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if let expires = SigningStore.date(certificate.expires) {
-                    Text(expires < Date() ? "Expired \(expires.relativeToNow)" : "Expires \(expires.relativeToNow)")
+                    Text(expires < Date() ? "Expired \(expires.relativeToNowRoundedDays)" : "Expires \(expires.relativeToNowRoundedDays)")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -314,7 +314,7 @@ struct DeveloperSlotsView: View {
                         StatusPill(text: "Used by \(app.name)", systemImage: "square.stack.3d.up", tint: .blue)
                     }
                     if let expires = SigningStore.date(appID.expires) {
-                        Text(expires < Date() ? "Expired \(expires.relativeToNow)" : "Expires \(expires.relativeToNow)")
+                        Text(expires < Date() ? "Expired \(expires.relativeToNowRoundedDays)" : "Expires \(expires.relativeToNowRoundedDays)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }

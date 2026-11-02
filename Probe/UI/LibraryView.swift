@@ -634,9 +634,9 @@ struct LibraryView: View {
         }
         let left = expires.timeIntervalSinceNow
         if left <= 0 {
-            return StatusPill(text: "Expired \(expires.relativeToNow)", systemImage: "xmark.circle.fill", tint: .red)
+            return StatusPill(text: "Expired \(expires.relativeToNowRoundedDays)", systemImage: "xmark.circle.fill", tint: .red)
         }
-        return StatusPill(text: "Expires \(expires.relativeToNow)", systemImage: "clock",
+        return StatusPill(text: "Expires \(expires.relativeToNowRoundedDays)", systemImage: "clock",
                           tint: left <= LibraryModel.refreshMargin ? .orange : .green)
     }
 
@@ -678,10 +678,10 @@ struct LibraryView: View {
         }
         let left = expires.timeIntervalSinceNow
         if left <= 0 {
-            return StatusPill(text: "Expired \(expires.relativeToNow)", systemImage: "xmark.circle.fill", tint: .red)
+            return StatusPill(text: "Expired \(expires.relativeToNowRoundedDays)", systemImage: "xmark.circle.fill", tint: .red)
         }
         let tint: Color = left <= LibraryModel.refreshMargin ? .orange : .green
-        return StatusPill(text: "Expires \(expires.relativeToNow)", systemImage: "clock", tint: tint)
+        return StatusPill(text: "Expires \(expires.relativeToNowRoundedDays)", systemImage: "clock", tint: tint)
     }
 
     @ViewBuilder

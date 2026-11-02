@@ -152,10 +152,31 @@ struct DigitCodeField: View {
 extension Date {
     /// "in 5 days", "2 hours ago".
     var relativeToNow: String {
+        relativeDescription(for: self)
+    }
+
+    /// Rounds the short signing window to the nearest whole day. RelativeDateTimeFormatter
+    /// truncates partial days, so a profile renewed for seven days appeared as six immediately.
+    var relativeToNowRoundedDays: String {
+        let now = Date()
+        let remaining = timeIntervalSince(now)
+        let magnitude = abs(remaining)
+        guard magnitude >= 36 * 60 * 60, magnitude <= 10 * 24 * 60 * 60 else {
+            return relativeDescription(for: self, relativeTo: now)
+        }
+        let days = Int((magnitude / (24 * 60 * 60)).rounded())
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day]
+        formatter.unitsStyle = .full
+        let quantity = formatter.string(from: TimeInterval(days * 24 * 60 * 60)) ?? "\(days) days"
+        return remaining > 0 ? "in \(quantity)" : "\(quantity) ago"
+    }
+
+    private func relativeDescription(for date: Date, relativeTo now: Date = Date()) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         formatter.dateTimeStyle = .named
-        return formatter.localizedString(for: self, relativeTo: Date())
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 
     static func iso(_ text: String?) -> Date? {

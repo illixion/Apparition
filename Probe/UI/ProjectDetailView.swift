@@ -315,7 +315,7 @@ struct ProjectDetailView: View {
         Section {
             if let record {
                 LabeledContent("Signed with", value: record.signedWith ?? "not signed yet")
-                if let expires = LibraryModel.expiryDate(record) { LabeledContent("Expires", value: expires.relativeToNow) }
+                if let expires = LibraryModel.expiryDate(record) { LabeledContent("Expires", value: expires.relativeToNowRoundedDays) }
                 if let error = record.lastError { Note(text: error, kind: .error) }
                 Button("Refresh now") { Task { await library.refresh(appId: record.id) } }
                     .buttonStyle(.bordered)

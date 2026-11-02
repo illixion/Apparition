@@ -130,10 +130,10 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 .pill.mono { font-family: var(--mono); font-weight: 500; }
 .pill.jobstate { text-transform: capitalize; }
 /* A grid of tiles: two to a row, one on a narrow window. */
-.dev-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
+.dev-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
 .dev-grid > .hint { grid-column: 1 / -1; }
 @media (max-width: 54rem) { .dev-grid { grid-template-columns: minmax(0, 1fr); } }
-.dev-project { display: flex; flex-direction: column; gap: .9rem; padding: 1.15rem 1.2rem; border: 1px solid var(--line);
+.dev-project { display: flex; flex-direction: column; gap: .7rem; padding: .875rem 1rem; border: 1px solid var(--line);
   border-radius: var(--radius-l); background: color-mix(in srgb, var(--surface) 55%, transparent); min-width: 0; }
 .dev-project-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; }
 .dev-project-title { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; min-width: 0; }

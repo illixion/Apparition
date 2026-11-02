@@ -300,7 +300,7 @@ struct SigningView: View {
     @ViewBuilder
     private func expiryText(_ text: String?) -> some View {
         if let expires = SigningStore.date(text) {
-            Text(expires < Date() ? "Expired \(expires.relativeToNow)" : "Expires \(expires.relativeToNow)")
+            Text(expires < Date() ? "Expired \(expires.relativeToNowRoundedDays)" : "Expires \(expires.relativeToNowRoundedDays)")
                 .font(.callout)
                 .foregroundStyle(expires < Date() ? .red : .secondary)
         }
