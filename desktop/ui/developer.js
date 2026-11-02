@@ -814,7 +814,7 @@ export class DeveloperView {
     }
     const installButton = button(`Install on ${target.device}`, () => submit(true, installButton), 'button primary small');
     const buildOnly = button('Build only', () => submit(false, buildOnly), 'button quiet small');
-    buildOnly.title = 'Builds and signs without installing; the kept IPA can be downloaded, installed over the air or re-signed.';
+    buildOnly.title = 'Builds and keeps the IPA without installing. Download it to open in Apparition, or use it for a re-sign.';
     actions.append(installButton, buildOnly);
     if (this.capabilities.has('resign') && !/^macos$/i.test(target.platform)) {
       // The exact build on the device if the Mac kept it; otherwise build it first, if the Mac can.
