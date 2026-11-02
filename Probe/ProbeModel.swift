@@ -150,6 +150,36 @@ final class ProbeModel {
 
     nonisolated static let selfTunnelPortKey = "selfTunnelPort"
 
+    /// Finds a companion again by its Bonjour name; set by the app to `CompanionFinder.locate`.
+    var locateCompanion: (@MainActor (String) async -> CompanionFinder.Companion?)?
+    /// Called when a found companion answered at a new address: (old relay, new companion).
+    var onCompanionMoved: (@MainActor (String, CompanionFinder.Companion) -> Void)?
+    /// The saved companion address answered since the app last came to the front.
+    private var companionChecked = false
+
+    /// Forgets that the companion answered, so the next action checks it again (the network
+    /// may have changed while Apparition was in the background).
+    func companionMayHaveMoved() { companionChecked = false }
+
+    /// Before an action through the companion: when the saved address doesn't answer and the
+    /// companion was found by name, finds it again and switches to where it is now. An
+    /// address typed by hand (Tailscale) has no Bonjour name and is kept as it is.
+    func prepareRoute(host: String) async {
+        guard host == Self.relayHost, connectionMode == .companion, !companionChecked,
+              let name = companionName, let old = relay else { return }
+        if await CompanionFinder.answers(relay: old) {
+            companionChecked = true
+            return
+        }
+        guard let found = await locateCompanion?(name) else { return }
+        companionChecked = true
+        guard found.relay != old else { return }
+        log.info("companion moved, now using its new address")
+        useCompanion(found.relay, name: found.name)
+        unreachableMode = nil
+        onCompanionMoved?(old, found)
+    }
+
     func tunnelTarget(host: String, port: Int) -> IDevice.Target {
         if host == Self.relayHost, let relay {
             return IDevice.Target(host: "0.0.0.0", port: UInt16(port), relay: relay)
@@ -366,6 +396,7 @@ final class ProbeModel {
     }
 
     func tunnel(host: String, port: Int) async {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         // Diagnostics: the one tunnel that may pair-set-up (asking for the PIN) when there's no
         // pairing yet or the device turns the saved one down.
@@ -382,6 +413,7 @@ final class ProbeModel {
     /// Reads the device's UDID and name through the tunnel and saves them for signing.
     @discardableResult
     func identify(host: String, port: Int) async -> String {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         return await run(action: "identify", host: host, port: port) { file, box in
             let peer = try IDevice.identify(target: target, hostname: Self.hostname, file: file,
@@ -396,6 +428,7 @@ final class ProbeModel {
     /// itself until it closes), or what failed.
     func install(host: String, port: Int, appPath: String, sourceIPA: String? = nil, asIPA: Bool = true,
                  detachAfterMs: UInt64 = 0) async -> String {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         let outcome = await run(action: "install", host: host, port: port) { file, box in
             let reply = try IDevice.install(target: target, hostname: Self.hostname, file: file,
@@ -432,6 +465,7 @@ final class ProbeModel {
     /// The Apple Watches paired with the iPhone (none on any other device), read through the
     /// tunnel so that signing a watch app registers them. Nil when the tunnel failed.
     func pairedWatches(host: String, port: Int) async -> [PairedWatch]? {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         final class Box: @unchecked Sendable { var watches: [PairedWatch]? }
         let box = Box()
@@ -452,6 +486,7 @@ final class ProbeModel {
     /// `waiting` runs when the Watch is showing its trust prompt, the first time. "ok" or what failed.
     func installWatchApp(host: String, port: Int, watchUDID: String, appPath: String,
                          waiting: @escaping @Sendable () -> Void) async -> String {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         let recordDir = AccountModel.dataDir.path
         return await run(action: "install watch app", host: host, port: port) { file, context in
@@ -469,6 +504,7 @@ final class ProbeModel {
     /// Removes `bundleId` from the Watch `watchUDID` through the iPhone. "ok" or what failed.
     func uninstallWatchApp(host: String, port: Int, watchUDID: String, bundleId: String,
                            waiting: @escaping @Sendable () -> Void) async -> String {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         let recordDir = AccountModel.dataDir.path
         return await run(action: "remove watch app", host: host, port: port) { file, context in
@@ -485,6 +521,7 @@ final class ProbeModel {
     /// so the Library can show it before the next tunnel opens.
     @discardableResult
     func listApps(host: String, port: Int) async -> String {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         let box = AppsBox()
         let outcome = await run(action: "apps", host: host, port: port) { file, context in
@@ -511,6 +548,7 @@ final class ProbeModel {
     /// the kept app list. Returns "ok" or what failed.
     @discardableResult
     func uninstall(host: String, port: Int, bundleId: String) async -> String {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         let outcome = await run(action: "uninstall", host: host, port: port) { file, box in
             let reply = try IDevice.uninstall(target: target, hostname: Self.hostname, file: file,
@@ -552,6 +590,7 @@ final class ProbeModel {
     /// (apparition_migrate_container). Changes nothing in `from`. Returns "ok" and what was copied,
     /// or what failed.
     func migrateData(host: String, port: Int, from: String, to: String) async -> (outcome: String, move: DataMove?) {
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         let box = MoveBox()
         let outcome = await run(action: "migrate", host: host, port: port) { file, context in
@@ -652,6 +691,7 @@ final class ProbeModel {
             report(await run(action: "jit", host: host, port: port, exclusive: false) { _, _ in { _ in } })
             return
         }
+        await prepareRoute(host: host)
         let target = tunnelTarget(host: host, port: port)
         jitSessions.insert(bundleId)
         await keepAlive.prepare()
@@ -757,6 +797,7 @@ final class ProbeModel {
             // Only the default route: a pairing against another host says nothing about it.
             if host == defaultTunnelHost, Self.isUnreachable(attempts[index].outcome ?? "") {
                 unreachableMode = connectionMode
+                companionChecked = false
             }
         }
         return attempts[index].outcome ?? "unknown"

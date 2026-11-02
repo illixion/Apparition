@@ -31,6 +31,15 @@ struct ApparitionApp: App {
         LibraryEndpoints.register(library, account: account)
         library.registerBackgroundTasks()
         CompanionEndpoints.register(_companions.wrappedValue, probe: model)
+        let finder = _companions.wrappedValue
+        model.locateCompanion = { [weak finder] name in await finder?.locate(name: name) }
+        // An anisette server on the companion moved with it.
+        model.onCompanionMoved = { [weak account] old, found in
+            guard let account, let anisette = found.anisetteURL,
+                  let oldHost = old.split(separator: ":").first,
+                  URL(string: account.anisetteURL)?.host == String(oldHost) else { return }
+            account.anisetteURL = anisette
+        }
         DeveloperSlotsEndpoints.register()
         #if !APPARITION_RELEASE
         ExperimentEndpoints.register(probe: model, account: account)
@@ -53,6 +62,7 @@ struct ApparitionApp: App {
                     if phase != .active { StateVault.sync() }
                     // A computer may have handed over a pairing while Apparition was away.
                     if phase == .active { model.refreshPairing() }
+                    if phase == .background { model.companionMayHaveMoved() }
                 }
         }
         #if !os(tvOS)

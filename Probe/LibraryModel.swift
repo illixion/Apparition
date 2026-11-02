@@ -1079,6 +1079,8 @@ final class LibraryModel {
         if removedWhileBusy.contains(record.id) { return Self.stoppedResult }
         if record.needsInstallReview == true { return fail(&record, "Review Install Options before refreshing with a different signer") }
         if let missingPairing { return fail(&record, missingPairing) }
+        // Before signing: an anisette server on the companion moves with it.
+        await probe.prepareRoute(host: probe.defaultTunnelHost)
         guard let udid = await deviceUDID() else {
             return fail(&record, noUDIDReason)
         }
@@ -1325,6 +1327,7 @@ final class LibraryModel {
     /// under the same bundle ID and team, and installs it over the running copy, which keeps
     /// the app's data.
     private func signAndInstallSelf(runStartedAt: String?, update: SelfUpdate.Downloaded? = nil) async -> String {
+        await probe.prepareRoute(host: probe.defaultTunnelHost)
         guard let me = selfApp, let team = me.teamId else {
             return selfFail("this copy of Apparition has no provisioning profile to renew")
         }
