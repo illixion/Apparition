@@ -31,8 +31,8 @@ Two parts, which ship together:
 - Bash 4+ (`brew install bash`); the script's shebang is `/opt/homebrew/bin/bash`.
 - For Mac-side signed installs: a paid Apple Developer account, a development certificate
   exported as `.p12`, and a **wildcard development provisioning profile** listing your devices
-  (see below). Device-side installs still use a retained build from this service, then sign it
-  with the identity configured in Apparition on the device.
+  (see below). For device-side installs, the service retains an unsigned IPA and the device signs
+  it with the Apple ID or certificate configured in Apparition.
 - Devices paired with this Mac in Xcode.
 
 Live patching additionally needs DebugTrace's `debugtrace-mcp` and `debugtrace-inject` tools on
@@ -65,7 +65,9 @@ Extensions and watch apps need their own profiles when the profile isn't a wildc
    ```
 
 2. In each app repo, add a `build-signing.conf` (or `scripts/build-signing.conf`) from
-   `examples/build-signing.conf.example` and **gitignore it**.
+   `examples/build-signing.conf.example` and **gitignore it**. Device-side installs need project,
+   scheme, target, platform and bundle ID settings. Mac-side installs also need certificate, team
+   and profile settings.
 3. Optionally put `bin/build-and-sign` on your PATH, for example
    `ln -s "$PWD/bin/build-and-sign" ~/bin/build-and-sign`, then run it from inside an app repo:
 

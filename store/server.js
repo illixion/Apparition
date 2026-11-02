@@ -640,6 +640,8 @@ async function executeBuild(job) {
 
     const buildArgs = [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
     if (job.noDeploy) buildArgs.push('--no-deploy');
+    // Device-side signing owns provisioning, so the Mac only compiles and retains an unsigned IPA.
+    if (job.installVia === 'device') buildArgs.push('--unsigned');
     // Always say which: build-and-sign may default to a debug session
     // (MCP_DEFAULT=on), and a store-launched deploy must not become one.
     if (job.mcp) buildArgs.push('--run', '--mcp');

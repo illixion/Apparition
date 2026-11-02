@@ -28,8 +28,11 @@ access or code changes.
 ## What you need
 
 - A Mac with Xcode, Node 18 or newer and Homebrew's bash (`brew install bash`).
-- A paid Apple Developer account, a development certificate exported as `.p12`, and a development
-  provisioning profile listing your devices. A wildcard profile (App ID `*`) signs every app.
+- For **Mac-side signed installs**, a paid Apple Developer account, a development certificate
+  exported as `.p12`, and a development provisioning profile listing your devices. A wildcard
+  profile (App ID `*`) signs every app. For **device-side installs**, the Mac can retain an
+  unsigned build and Apparition signs it on the device with the Apple ID or certificate configured
+  there.
 - Your devices paired with the Mac in Xcode (Window > Devices and Simulators).
 - For a headset, iPhone or Apple TV away from the Mac: a way to reach the Mac over HTTPS. Tailscale
   Serve is the easy one (see "Away from home, over Tailscale" in the README).

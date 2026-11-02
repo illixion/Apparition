@@ -12,6 +12,7 @@ set -euo pipefail
 #   build-and-sign --debug          # Debug build + deploy
 #   build-and-sign --distribution   # Sign with the distribution cert/profile
 #   build-and-sign --no-deploy      # Sign but don't install to device
+#   build-and-sign --unsigned       # Keep an unsigned IPA for device-side signing
 #   build-and-sign --sign-only      # Skip build, sign existing IPA
 #   build-and-sign --ipa path.ipa   # Sign a specific IPA (implies --sign-only)
 #   build-and-sign --profile FILE   # Sign the development build with this profile instead
@@ -186,6 +187,7 @@ if [[ -z "${EXTRA_BUILD_SETTINGS+x}" ]]; then EXTRA_BUILD_SETTINGS=(); fi
 CONFIG="Release"
 SIGN_ONLY=false
 NO_DEPLOY=false
+UNSIGNED_BUILD=false
 USE_DIST=false
 RUN_APP=false
 LOG_APP=false
@@ -203,6 +205,7 @@ while [[ $# -gt 0 ]]; do
         --distribution)  USE_DIST=true; shift ;;
         --sign-only)     SIGN_ONLY=true; shift ;;
         --no-deploy)     NO_DEPLOY=true; shift ;;
+        --unsigned)      UNSIGNED_BUILD=true; NO_DEPLOY=true; shift ;;
         --run)           RUN_APP=true; shift ;;
         --log)           RUN_APP=true; LOG_APP=true; shift ;;
         --log-all)       RUN_APP=true; LOG_APP=true; LOG_ALL=true; shift ;;
@@ -327,9 +330,20 @@ if [[ "$SIGN_ONLY" == true && "$NO_DEPLOY" == false && -z "${DEVICE_NAME:-}" ]];
     NO_DEPLOY=true
 fi
 
-required_vars=(TEAM_ID DEV_P12_PATH)
-[[ "$MACOS_BUILD" == true ]] || required_vars+=(DEV_PROFILE_PATH)
-if [[ "$USE_DIST" == true ]]; then
+required_vars=()
+if [[ "$UNSIGNED_BUILD" == false ]]; then
+    required_vars+=(TEAM_ID DEV_P12_PATH)
+    [[ "$MACOS_BUILD" == true ]] || required_vars+=(DEV_PROFILE_PATH)
+fi
+if [[ "$UNSIGNED_BUILD" == true ]]; then
+    if [[ "$SIGN_ONLY" == true || "$MACOS_BUILD" == true || "$USE_DIST" == true || "$RUN_APP" == true ]]; then
+        echo "ERROR: --unsigned is only supported for a fresh mobile build kept for device-side signing" >&2
+        exit 1
+    fi
+    P12_PATH=""
+    P12_PW=""
+    PROFILE_PATH=""
+elif [[ "$USE_DIST" == true ]]; then
     required_vars+=(DIST_P12_PATH DIST_PROFILE_PATH)
 fi
 if [[ "$SIGN_ONLY" == false ]]; then
@@ -347,7 +361,9 @@ for var in "${required_vars[@]}"; do
     fi
 done
 
-if [[ "$USE_DIST" == true ]]; then
+if [[ "$UNSIGNED_BUILD" == true ]]; then
+    :
+elif [[ "$USE_DIST" == true ]]; then
     P12_PATH="$DIST_P12_PATH"
     P12_PW="$DIST_P12_PASSWORD"
     PROFILE_PATH="$DIST_PROFILE_PATH"
@@ -368,7 +384,9 @@ fi
 # (0xe8008012). Point {DEV,DIST}_WATCH_PROFILE_PATH at a watchOS profile that
 # lists the paired watch, and Watch/*.app gets that profile + its entitlements
 # instead of the app's. Unset → the app profile is reused (old behavior).
-if [[ "$USE_DIST" == true ]]; then
+if [[ "$UNSIGNED_BUILD" == true ]]; then
+    WATCH_PROFILE_PATH=""
+elif [[ "$USE_DIST" == true ]]; then
     WATCH_PROFILE_PATH="${DIST_WATCH_PROFILE_PATH:-}"
 else
     WATCH_PROFILE_PATH="${DEV_WATCH_PROFILE_PATH:-}"
@@ -382,16 +400,20 @@ fi
 # {DEV,DIST}_APPEX_PROFILE_PATH at the extension's own profile, and set
 # APPEX_BUNDLE_ID to the id that profile is for. Unset → the app profile is
 # reused and the id stays "${BUILD_BUNDLE_ID}.broadcast" (old behavior).
-if [[ "$USE_DIST" == true ]]; then
+if [[ "$UNSIGNED_BUILD" == true ]]; then
+    APPEX_PROFILE_PATH=""
+elif [[ "$USE_DIST" == true ]]; then
     APPEX_PROFILE_PATH="${DIST_APPEX_PROFILE_PATH:-}"
 else
     APPEX_PROFILE_PATH="${DEV_APPEX_PROFILE_PATH:-}"
 fi
 
-for f in "$P12_PATH" ${PROFILE_PATH:+"$PROFILE_PATH"} ${WATCH_PROFILE_PATH:+"$WATCH_PROFILE_PATH"} \
-         ${APPEX_PROFILE_PATH:+"$APPEX_PROFILE_PATH"}; do
-    [[ -f "$f" ]] || { echo "ERROR: File not found: $f" >&2; exit 1; }
-done
+if [[ "$UNSIGNED_BUILD" == false ]]; then
+    for f in "$P12_PATH" ${PROFILE_PATH:+"$PROFILE_PATH"} ${WATCH_PROFILE_PATH:+"$WATCH_PROFILE_PATH"} \
+             ${APPEX_PROFILE_PATH:+"$APPEX_PROFILE_PATH"}; do
+        [[ -f "$f" ]] || { echo "ERROR: File not found: $f" >&2; exit 1; }
+    done
+fi
 
 # --- Work dir + cleanup ---
 WORK_DIR=$(mktemp -d)
@@ -963,14 +985,20 @@ if [[ "$MACOS_BUILD" == false && ! -f "$IPA_PATH" ]]; then
     exit 1
 fi
 
-# Step 2: Import signing cert into a temporary keychain
-acquire_signing_lock
-setup_signing_keychain "$P12_PATH" "$P12_PW" >>"$LOG_FILE" 2>&1
+# Step 2: Import signing cert into a temporary keychain. Device-side signing
+# keeps the product unsigned so Apparition can sign it with the device's own
+# Apple ID or imported certificate.
+if [[ "$UNSIGNED_BUILD" == false ]]; then
+    acquire_signing_lock
+    setup_signing_keychain "$P12_PATH" "$P12_PW" >>"$LOG_FILE" 2>&1
+fi
 
 # Step 3: Extract entitlements from the provisioning profile (mobile) or
 # Xcode's target entitlements file (macOS does not use UDID-bound profiles).
 ENTITLEMENTS_PLIST="$WORK_DIR/entitlements.plist"
-if [[ "$MACOS_BUILD" == true ]]; then
+if [[ "$UNSIGNED_BUILD" == true ]]; then
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict/></plist>\n' >"$ENTITLEMENTS_PLIST"
+elif [[ "$MACOS_BUILD" == true ]]; then
     if [[ -z "$CODE_SIGN_ENTITLEMENTS_PATH" ]]; then
         printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict/></plist>\n' >"$ENTITLEMENTS_PLIST"
     else
@@ -987,7 +1015,7 @@ else
     substitute_associated_domains "$ENTITLEMENTS_PLIST" "${ASSOCIATED_DOMAINS:-}" >>"$LOG_FILE" 2>&1
 fi
 WATCH_ENTITLEMENTS_PLIST=""
-if [[ -n "$WATCH_PROFILE_PATH" ]]; then
+if [[ "$UNSIGNED_BUILD" == false && -n "$WATCH_PROFILE_PATH" ]]; then
     WATCH_ENTITLEMENTS_PLIST="$WORK_DIR/entitlements-watch.plist"
     extract_entitlements "$WATCH_PROFILE_PATH" "$WATCH_ENTITLEMENTS_PLIST"
     merge_extra_entitlements "$WATCH_ENTITLEMENTS_PLIST" "${EXTRA_ENTITLEMENTS_PLIST:-}" >>"$LOG_FILE" 2>&1
@@ -996,7 +1024,7 @@ fi
 # The extension's own entitlements, so it claims its own App ID rather than
 # the app's. No associated-domains substitution: that is an app-level grant.
 APPEX_ENTITLEMENTS_PLIST=""
-if [[ -n "$APPEX_PROFILE_PATH" ]]; then
+if [[ "$UNSIGNED_BUILD" == false && -n "$APPEX_PROFILE_PATH" ]]; then
     APPEX_ENTITLEMENTS_PLIST="$WORK_DIR/entitlements-appex.plist"
     extract_entitlements "$APPEX_PROFILE_PATH" "$APPEX_ENTITLEMENTS_PLIST"
     merge_extra_entitlements "$APPEX_ENTITLEMENTS_PLIST" "${EXTRA_ENTITLEMENTS_PLIST:-}" >>"$LOG_FILE" 2>&1
@@ -1251,13 +1279,13 @@ fi
 
 # Step 5: Embed provisioning profile (app + extension; both bundles resolve
 # their shared App Group from it at runtime)
-if [[ "$MACOS_BUILD" == false ]]; then
+if [[ "$MACOS_BUILD" == false && "$UNSIGNED_BUILD" == false ]]; then
     cp "$PROFILE_PATH" "$APP_BUNDLE/embedded.mobileprovision"
 fi
-if [[ -n "$APPEX_BUNDLE" ]]; then
+if [[ -n "$APPEX_BUNDLE" && "$UNSIGNED_BUILD" == false ]]; then
     cp "${APPEX_PROFILE_PATH:-$PROFILE_PATH}" "$APPEX_BUNDLE/embedded.mobileprovision"
 fi
-if [[ -n "$WATCH_BUNDLE" ]]; then
+if [[ -n "$WATCH_BUNDLE" && "$UNSIGNED_BUILD" == false ]]; then
     cp "${WATCH_PROFILE_PATH:-$PROFILE_PATH}" "$WATCH_BUNDLE/embedded.mobileprovision"
 fi
 
@@ -1283,21 +1311,25 @@ if [[ -n "$WATCH_ID" && -z "$WATCH_ENTITLEMENTS_PLIST" ]]; then
         cp "$ENTITLEMENTS_PLIST" "$WATCH_ENTITLEMENTS_PLIST"
     fi
 fi
-if [[ "$MACOS_BUILD" == false ]]; then
+if [[ "$MACOS_BUILD" == false && "$UNSIGNED_BUILD" == false ]]; then
     _concretize_wildcard_app_id "$ENTITLEMENTS_PLIST" "$BUILD_BUNDLE_ID"
 fi
-if [[ -n "$WATCH_ENTITLEMENTS_PLIST" && -n "$WATCH_ID" ]]; then
+if [[ "$UNSIGNED_BUILD" == false && -n "$WATCH_ENTITLEMENTS_PLIST" && -n "$WATCH_ID" ]]; then
     _concretize_wildcard_app_id "$WATCH_ENTITLEMENTS_PLIST" "$WATCH_ID"
 fi
 # A no-op for an explicit App ID, which is the only reason to configure an
 # appex profile at all; kept so the mechanism behaves the same either way.
-if [[ -n "$APPEX_ENTITLEMENTS_PLIST" && -n "$EXTENSION_ID" ]]; then
+if [[ "$UNSIGNED_BUILD" == false && -n "$APPEX_ENTITLEMENTS_PLIST" && -n "$EXTENSION_ID" ]]; then
     _concretize_wildcard_app_id "$APPEX_ENTITLEMENTS_PLIST" "$EXTENSION_ID"
 fi
 
 # Step 6: Sign
-echo "==> Signing..."
-sign_app "$APP_BUNDLE" "$SIGN_IDENTITY" "$ENTITLEMENTS_PLIST" "$KEYCHAIN_PATH" "$LOG_FILE"
+if [[ "$UNSIGNED_BUILD" == true ]]; then
+    echo "==> Keeping unsigned IPA for device-side signing"
+else
+    echo "==> Signing..."
+    sign_app "$APP_BUNDLE" "$SIGN_IDENTITY" "$ENTITLEMENTS_PLIST" "$KEYCHAIN_PATH" "$LOG_FILE"
+fi
 
 # Step 7: Repack as signed IPA (macOS artifact remains the signed .app).
 # Always into $BUILD_DIR under a name derived from TARGET_NAME (never next
@@ -1311,13 +1343,17 @@ sign_app "$APP_BUNDLE" "$SIGN_IDENTITY" "$ENTITLEMENTS_PLIST" "$KEYCHAIN_PATH" "
 if [[ "$MACOS_BUILD" == true ]]; then
     SIGNED_APP="$MACOS_APP_PATH"
 else
-    SIGNED_IPA="$BUILD_DIR/${TARGET_NAME}-signed.ipa"
+    if [[ "$UNSIGNED_BUILD" == true ]]; then
+        SIGNED_IPA="$BUILD_DIR/${TARGET_NAME}-unsigned.ipa"
+    else
+        SIGNED_IPA="$BUILD_DIR/${TARGET_NAME}-signed.ipa"
+    fi
     ( cd "$UNPACK_DIR" && rm -f "$SIGNED_IPA" && zip -qr "$SIGNED_IPA" Payload ) >>"$LOG_FILE" 2>&1
 fi
 
 # Step 8: Verify (logged only — codesign succeeding is implied by reaching
 # here under set -e; the identity/team aren't worth a report line every run)
-codesign -dvvv "$APP_BUNDLE" >>"$LOG_FILE" 2>&1
+if [[ "$UNSIGNED_BUILD" == false ]]; then codesign -dvvv "$APP_BUNDLE" >>"$LOG_FILE" 2>&1; fi
 
 # Resolve DEVICE_NAME → devicectl UUID, once; both deploy and launch need it.
 # Resolve by pattern, never by column position: the Hostname column is empty
