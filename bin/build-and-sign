@@ -1568,6 +1568,53 @@ apparition_launch() {
     mirror_launch_env
     "$(apparition_cli)" launch "$BUILD_BUNDLE_ID" --device "$DEVICE_NAME" "$@"
 }
+# Starts `apparition launch ... "$@"` detached, its output appended to $APP_LOG, and waits for
+# its "Launched application" line. Unlike devicectl, alive-but-quiet is not a launch: the
+# client sits connecting while the device's tunnel is unreachable (a headset with the
+# on-device Apparition closed), and build 646 reported such a hang as running. So after
+# APPARITION_LAUNCH_WAIT seconds it is stopped, and for a device the Mac also reaches
+# through the Xcode tunnel the on-device Apparition is opened that way and the launch
+# retried once. A quiet device is never touched with devicectl (that is what wakes it).
+# The on-device Apparition's bundle id, from global.conf; unset skips the fallback.
+APPARITION_APP_ID="${APPARITION_APP_ID:-}"
+detached_apparition_launch() {
+    local attempt wait="${APPARITION_LAUNCH_WAIT:-20}"
+    for attempt in 1 2; do
+        mirror_launch_env
+        nohup "$(apparition_cli)" launch "$BUILD_BUNDLE_ID" --device "$DEVICE_NAME" "$@" >>"$APP_LOG" 2>&1 &
+        CONSOLE_PID=$!
+        disown "$CONSOLE_PID"
+        echo "$CONSOLE_PID" > "$APP_LOG_PIDFILE"
+        for _ in $(seq 1 "$wait"); do
+            /usr/bin/grep -qi 'launched application' "$APP_LOG" 2>/dev/null && return 0
+            kill -0 "$CONSOLE_PID" 2>/dev/null || break
+            sleep 1
+        done
+        kill "$CONSOLE_PID" 2>/dev/null || true
+        rm -f "$APP_LOG_PIDFILE"
+        [[ "$attempt" == 2 ]] && break
+        if [[ -z "$APPARITION_APP_ID" ]]; then
+            echo "  Apparition could not reach $DEVICE_NAME (set APPARITION_APP_ID in global.conf to open it through the Xcode tunnel)." >&2
+            break
+        fi
+        if is_quiet_device; then
+            echo "  Apparition could not reach $DEVICE_NAME; not opening Apparition through the Xcode tunnel (it is a quiet device)." >&2
+            break
+        fi
+        echo "  Apparition could not reach $DEVICE_NAME; opening Apparition on it through the Xcode tunnel and retrying..." >&2
+        if ! xcrun devicectl device process launch --device "$DEVICE_ID" "$APPARITION_APP_ID" >>"$LOG_FILE" 2>&1; then
+            echo "  Could not open $APPARITION_APP_ID through the Xcode tunnel either." >&2
+            break
+        fi
+        sleep 4
+        echo "---- retry ----" >>"$APP_LOG"
+    done
+    echo "ERROR: Failed to launch $BUILD_BUNDLE_ID on $DEVICE_NAME through Apparition." >&2
+    echo "  Open Apparition on $DEVICE_NAME (keep it in the foreground) and deploy again with Launch." >&2
+    echo "---- launch output ----" >&2
+    tail -15 "$APP_LOG" >&2
+    exit 1
+}
 APP_LOG="$BUILD_DIR/device-console.log"
 APP_LOG_PIDFILE="$BUILD_DIR/device-console.pid"
 if [[ "$RUN_APP" == true ]]; then
@@ -1632,14 +1679,11 @@ if [[ "$RUN_APP" == true ]]; then
         # os_log privacy: values not marked `privacy: .public` read
         # "<private>" — that's the app's annotation, not a capture bug.
         if [[ "$LAUNCH_VIA" == apparition ]]; then
-            mirror_launch_env
             jit_flag=""; [[ "$JIT" == true ]] && jit_flag=--jit
-            nohup "$(apparition_cli)" launch "$BUILD_BUNDLE_ID" --device "$DEVICE_NAME" --console $jit_flag \
-                >>"$APP_LOG" 2>&1 &
+            detached_apparition_launch --console $jit_flag
         else
             nohup xcrun devicectl device process launch --console --terminate-existing \
                 --device "$DEVICE_ID" "$BUILD_BUNDLE_ID" >>"$APP_LOG" 2>&1 &
-        fi
         CONSOLE_PID=$!
         disown "$CONSOLE_PID"
         echo "$CONSOLE_PID" > "$APP_LOG_PIDFILE"
@@ -1663,6 +1707,7 @@ if [[ "$RUN_APP" == true ]]; then
             tail -15 "$APP_LOG" >&2
             exit 1
         fi
+        fi
         LAUNCH_STATUS="log"
         if [[ "$MCP_SESSION" == true ]]; then
             find_debug_server
@@ -1672,23 +1717,7 @@ if [[ "$RUN_APP" == true ]]; then
         # output (attach/detach events, no app console) in the console log file.
         echo "==> Launching $BUILD_BUNDLE_ID with JIT (session → $APP_LOG)..."
         : > "$APP_LOG"
-        mirror_launch_env
-        nohup "$(apparition_cli)" launch "$BUILD_BUNDLE_ID" --device "$DEVICE_NAME" --jit >>"$APP_LOG" 2>&1 &
-        CONSOLE_PID=$!
-        disown "$CONSOLE_PID"
-        echo "$CONSOLE_PID" > "$APP_LOG_PIDFILE"
-        LAUNCHED=false
-        for _ in $(seq 1 30); do
-            if /usr/bin/grep -qi 'launched application' "$APP_LOG" 2>/dev/null; then LAUNCHED=true; break; fi
-            if ! kill -0 "$CONSOLE_PID" 2>/dev/null; then break; fi
-            sleep 1
-        done
-        if [[ "$LAUNCHED" == false ]]; then
-            rm -f "$APP_LOG_PIDFILE"
-            echo "ERROR: Failed to launch $BUILD_BUNDLE_ID on $DEVICE_NAME with JIT" >&2
-            tail -15 "$APP_LOG" >&2
-            exit 1
-        fi
+        detached_apparition_launch --jit
         LAUNCH_STATUS="jit"
     elif [[ "$LAUNCH_VIA" == apparition ]]; then
         echo "==> Launching $BUILD_BUNDLE_ID (through Apparition's tunnel)..."
