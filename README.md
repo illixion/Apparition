@@ -878,11 +878,12 @@ The built-in server serves only devices paired with the computer. Choosing it on
 ("Pair and Use") pairs once over TCP 49161, with RAVESDK's `RAVECompanion` exchange
 (`core/src/pairing.rs` is the computer's half, held to the SDK's test vectors): both screens show
 a six-digit code, and you allow the device in the Companion tab (or answer `apparition relay` in
-its terminal) if they match. The device gets a token of its own, sealed under the key the
+its terminal) if they match. A relay with no terminal (launchd, systemd) or with `--no-prompt`
+declines and logs how to pair instead; pair once from a terminal and the device is remembered. The device gets a token of its own, sealed under the key the
 exchange agreed, and uses `http://<computer>:6969/t/<token>` as its server, which any v3 client
 takes as a base URL. Anything else on port 6969 gets 401. Unpair a device in the Companion tab or
-with `apparition relay devices forget <id>`. "Anyone on this network" (`--anisette-open`) serves
-anyone who reaches the port, for v3 clients that can't pair (SideStore, AltServer); `apparition
+with `apparition relay devices forget <id>`. The Companion tab's Advanced option "Serve anyone on
+this network, without pairing" (`--anisette-open`) serves anyone who reaches the port, for v3 clients that can't pair (SideStore, AltServer); `apparition
 anisette serve` always does. The Docker server is Dadoum's and has no access control. The token
 travels in plain HTTP, like the anisette data itself: pairing keeps out whoever merely reaches
 the port, not someone who can read your Wi-Fi traffic.

@@ -291,6 +291,10 @@ code { font: .875em/1.4 var(--mono); }
 .pairing-request p { margin: 0 0 .4rem; }
 .pairing-code { font-size: 1.8rem; font-weight: 600; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
 .companion [data-role="paired-devices"] { margin-top: 1rem; }
+.companion .access { margin-top: 1.1rem; max-width: 38rem; }
+.companion .access .group-head { display: flex; align-items: center; gap: .6rem; }
+.companion .access h3 { margin: 0; font-size: .95rem; }
+.companion [data-role="access-advanced"] { margin-top: 1rem; max-width: 38rem; }
 
 .update {
   flex: none;

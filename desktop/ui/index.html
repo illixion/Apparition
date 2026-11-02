@@ -90,9 +90,13 @@
         <button type="button" class="button quiet small" data-role="docker-up">Start the Docker server</button>
         <button type="button" class="button quiet small" data-role="docker-down">Stop it</button>
       </div>
-      <div class="modes compact" data-role="access-modes" hidden>
-        <label class="mode"><input type="radio" name="anisette-access" value="paired"><span class="mode-title">Paired devices only</span><span class="mode-text">Recommended. The first time, Apparition on a device asks to pair: both screens show a six-digit code, and you allow it here. Others on the network get nothing.</span></label>
-        <label class="mode"><input type="radio" name="anisette-access" value="open"><span class="mode-title">Anyone on this network</span><span class="mode-text">For other v3 clients (SideStore, AltServer and the like), which can't pair. Anyone who reaches port <span data-role="anisette-port">6969</span> can get anisette data made with this computer's identity.</span></label>
+      <div class="access" data-role="access" hidden>
+        <div class="group-head">
+          <h3 class="small">Who can use it</h3>
+          <span class="pill" data-role="access-pill">Paired devices only</span>
+        </div>
+        <p class="hint" data-role="access-paired-hint">The first time, Apparition on a device asks to pair: both screens show a six-digit code, and you allow it here. Others on the network get nothing.</p>
+        <p class="status error" data-role="access-open-warning" hidden>Anyone who can reach this computer on port <span data-role="anisette-port">6969</span> can get anisette data made with its identity, with no pairing. Paired devices keep working. Turn this off unless a client that can't pair needs it.</p>
       </div>
       <div class="pairing-request" data-role="pairing-request" hidden>
         <p><strong data-role="pairing-device">A device</strong> (<span data-role="pairing-peer"></span>) asks to use this computer's anisette.</p>
@@ -108,6 +112,11 @@
         <tbody></tbody>
       </table>
       <p class="status" data-role="anisette-status" hidden></p>
+      <details class="advanced" data-role="access-advanced" hidden>
+        <summary>Advanced: serve clients that can't pair</summary>
+        <p class="hint">SideStore, AltServer and other v3 clients can't pair, so they can't use this computer's anisette while it serves paired devices only.</p>
+        <label class="check"><input type="checkbox" data-role="anisette-open"><span>Serve anyone on this network, without pairing (less secure)</span></label>
+      </details>
     </div>
 
     <div class="group">

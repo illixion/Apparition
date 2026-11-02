@@ -1460,11 +1460,8 @@ function buildCompanion() {
   relayOn.addEventListener("change", () => companionCall("companion_set_relay", { on: relayOn.checked }));
   const advertiseOn = /** @type {HTMLInputElement} */ ($(companionPanel, "advertise-on"));
   advertiseOn.addEventListener("change", () => companionCall("companion_set_advertise", { on: advertiseOn.checked }));
-  companionPanel.querySelectorAll('input[name="anisette-access"]').forEach((input) =>
-    input.addEventListener("change", () =>
-      companionCall("companion_set_anisette_open", { open: /** @type {HTMLInputElement} */ (input).value === "open" }),
-    ),
-  );
+  const anisetteOpen = /** @type {HTMLInputElement} */ ($(companionPanel, "anisette-open"));
+  anisetteOpen.addEventListener("change", () => companionCall("companion_set_anisette_open", { open: anisetteOpen.checked }));
   for (const [role, allow] of [["pairing-allow", true], ["pairing-deny", false]]) {
     $(companionPanel, role).addEventListener("click", () => {
       const id = Number($(companionPanel, "pairing-request").dataset.id);
@@ -1577,12 +1574,20 @@ function drawCompanion(/** @type {any} */ status) {
   $(companionPanel, "docker-row").hidden = anisette.mode !== "local";
 
   const pairing = status.pairing;
-  $(companionPanel, "access-modes").hidden = anisette.mode !== "builtin";
-  companionPanel.querySelectorAll('input[name="anisette-access"]').forEach((el) => {
-    const input = /** @type {HTMLInputElement} */ (el);
-    input.checked = input.value === (pairing.open ? "open" : "paired");
-    input.disabled = !status.relay.on;
-  });
+  const builtin = anisette.mode === "builtin";
+  $(companionPanel, "access").hidden = !builtin;
+  const accessPill = $(companionPanel, "access-pill");
+  accessPill.textContent = pairing.open ? "Anyone on this network" : "Paired devices only";
+  accessPill.className = `pill ${pairing.open ? "warn" : "good"}`;
+  $(companionPanel, "access-paired-hint").hidden = pairing.open;
+  $(companionPanel, "access-open-warning").hidden = !pairing.open;
+  const advanced = /** @type {HTMLDetailsElement} */ ($(companionPanel, "access-advanced"));
+  advanced.hidden = !builtin;
+  // Kept open while the less secure mode is on, so the switch back is in sight.
+  if (pairing.open) advanced.open = true;
+  const anisetteOpen = /** @type {HTMLInputElement} */ ($(companionPanel, "anisette-open"));
+  anisetteOpen.checked = pairing.open;
+  anisetteOpen.disabled = !status.relay.on;
   const request = $(companionPanel, "pairing-request");
   const waiting = pairing.waiting[0];
   request.hidden = !waiting;
