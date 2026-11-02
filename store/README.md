@@ -1,8 +1,10 @@
 # Apparition Store
 
-A personal, LAN/tailnet-only "app store" for your own Apple devices. It builds apps from local git
-checkouts, signs and installs them with `xcrun devicectl`, and shows what each device is running
-against each repo's git HEAD. It also receives signed debug traces from apps that link
+A personal, LAN/tailnet-only build service for your Apple devices. It builds apps from local git
+checkouts and retains their artifacts. Apparition on a device can sign an unsigned IPA and install
+it through its own device connection; direct Mac installs use the Mac's signing assets and a
+device tunnel. The service shows what each device is running against each repo's git HEAD. It
+also receives signed debug traces from apps that link
 [DebugTrace](https://github.com/illixion/DebugTrace).
 
 Two parts, which ship together:
@@ -57,7 +59,7 @@ Extensions and watch apps need their own profiles when the profile isn't a wildc
 
 ## Setup
 
-1. Put the signing material outside any repo:
+1. Put signing material outside any repo if you will install directly from the Mac:
 
    ```sh
    mkdir -p ~/.config/build-signing/{certs,profiles}

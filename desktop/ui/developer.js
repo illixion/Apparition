@@ -146,9 +146,9 @@ export class DeveloperView {
     for (const [key] of SECTIONS) { this.panes[key] = element('div', 'dev-pane'); this.panes[key].setAttribute('role', 'tabpanel'); }
 
     this.resign = this.resignSection();
-    this.projects = this.block('Projects', 'Each tile is a device the project installs on. Install builds and installs it there; Build only keeps a signed IPA to download, install over the air or re-sign.', true);
+    this.projects = this.block('Projects', 'Each tile is a device the project installs on. Install builds and installs it there; Build only keeps a signed IPA to download or re-sign. Device-side installs retain an unsigned IPA for Apparition to sign on the device.', true);
     this.registration = this.registrationForm(); this.registration.hidden = true;
-    this.artifacts = this.block('Other kept builds', 'Signed builds the Mac kept that no project here installs, such as Xcode products registered by hand.');
+    this.artifacts = this.block('Other kept builds', 'Builds the Mac kept that no project here installs, such as Xcode products registered by hand.');
     this.artifacts.hidden = true;
     this.panes.projects.append(this.resign, this.projects, this.registration, this.artifacts);
 

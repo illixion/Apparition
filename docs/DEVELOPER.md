@@ -1,7 +1,7 @@
 # Building your own apps with Apparition
 
 Apparition can install other people's apps. With a Mac, it can also build and deploy your Xcode
-projects, launch them with JIT, apply live Swift patches, and keep signed builds available for
+projects, launch them with JIT, apply live Swift patches, and keep build artifacts available for
 refresh and diagnosis. Start a build from the headset and follow it in Activity.
 This guide explains how the pieces fit, how to set them up, and what each part of the Developer
 screen does.
@@ -9,10 +9,11 @@ screen does.
 ## The pieces
 
 - **[Apparition Store](https://github.com/illixion/Apparition/tree/main/store)** is an open-source build service that runs
-  on your Mac. It builds your projects from their Git checkouts with its `build-and-sign` script,
-  signs them with your developer certificate, and installs them on devices paired with the Mac
-  (`xcrun devicectl`). It keeps every signed build with a manifest of exactly what went into it,
-  pulls crash logs off your devices and symbolicates them, and receives debug traces from apps
+  on your Mac. It builds your projects from their Git checkouts with its `build-and-sign` script.
+  For a device-side install it keeps an unsigned IPA for Apparition to sign on the device; a
+  direct Mac install is signed with your development certificate and installed through Xcode's
+  device tunnel. It keeps build artifacts with a manifest of exactly what went into them and
+  receives debug traces from apps
   that link [DebugTrace](https://github.com/illixion/DebugTrace). It has its own web page too, but
   Apparition talks to its versioned service API.
 - **Apparition on the Mac** (the desktop app) has a **Developer** tab that connects to the Apparition Store on
@@ -30,18 +31,18 @@ access or code changes.
 - A Mac with Xcode, Node 18 or newer and Homebrew's bash (`brew install bash`).
 - For **Mac-side signed installs**, a paid Apple Developer account, a development certificate
   exported as `.p12`, and a development provisioning profile listing your devices. A wildcard
-  profile (App ID `*`) signs every app. For **device-side installs**, the Mac can retain an
-  unsigned build and Apparition signs it on the device with the Apple ID or certificate configured
-  there.
+  profile (App ID `*`) signs every app. For **device-side installs**, the Mac retains an unsigned
+  build and Apparition signs it on the device with the Apple ID or certificate configured there;
+  no Mac-side signing material is needed for that route.
 - Your devices paired with the Mac in Xcode (Window > Devices and Simulators).
 - For a headset, iPhone or Apple TV away from the Mac: a way to reach the Mac over HTTPS. Tailscale
   Serve is the easy one (see "Away from home, over Tailscale" in the README).
 
 ## Setting up
 
-1. **Set up signing for the Apparition Store.** It comes with the desktop app and runs while
-   Apparition is open (Developer shows it running). It needs Xcode and Node.js 18 on the Mac, and
-   your signing material:
+1. **Set up Apparition Store.** It comes with the desktop app and runs while Apparition is open
+   (Developer shows it running). It needs Xcode and Node.js 18 on the Mac. Add signing material
+   only if you will install directly from the Mac:
 
    ```sh
    mkdir -p ~/.config/build-signing/{certs,profiles}
@@ -81,8 +82,8 @@ page, which has a header (the target, a status badge, where it stands) and tabs:
   newer kept build to install when there is one.
 - **Builds**: the build options (branch, launch after installing, debug access, live patching and
   its backend), **Build only** in its own section so it isn't hit by accident, recent builds with
-  their logs, and the kept builds (every signed build the Mac made, exactly as signed), each
-  installable here.
+  their logs, and retained build artifacts. A device-side install signs the retained IPA on the
+  device; a direct Mac install retains the IPA signed by the Mac.
 - **Reports**: this project's crash logs and traces.
 - **Signing**: how the copy on this device is signed and when it expires, with a Refresh; and, from
   the Mac, **Re-sign…** (below).
@@ -106,7 +107,7 @@ reinstalled; enter each `.p12`'s password on the device once.
 
 There are two routes, and Apparition picks the first one that works.
 
-1. **On this device (the default).** The Mac builds the project and keeps the signed IPA. Apparition
+1. **On this device (the default).** The Mac builds the project and keeps an unsigned IPA. Apparition
    downloads it from the build service over HTTPS, signs it with this device's own identity (Apple
    ID or an imported certificate) and installs it through its usual route. The Mac never touches the
    device, so this works away from home over Tailscale, and with a free Apple ID. The app joins the
@@ -175,9 +176,9 @@ copy on this device, change the app's signer in the Library instead.
   differently. The target's device name must match the name Xcode shows.
 - **A build fails.** Read its log in Activity. The same build from a terminal is
   `build-and-sign` in the project's checkout, which prints the same output.
-- **An app crashed.** Reports can show crash logs already present in the Store and traces uploaded
-  by apps that link DebugTrace. Automatic device crash-log pulling is currently disabled, so a new
-  crash may not appear unless the app uploads a trace.
+- **An app crashed.** Reports can show older crash logs already present in the Store and traces
+  uploaded by apps that link DebugTrace. Automatic device crash-log pulling is currently disabled,
+  so a new crash may not appear unless the app uploads a trace.
 
 ## Security
 
