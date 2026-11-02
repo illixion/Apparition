@@ -42,20 +42,22 @@ const normalizePrefixes = p => Array.isArray(p) ? p : [p];
 // device's UniversalHIDService, which wakes a sleeping Apple TV (tested 2026-11-02: same call,
 // DeviceHub running = ATV wakes, DeviceHub quit = it stays asleep). `list devices` opens no tunnel.
 const ledgerOnlyDevices = cfg => (Array.isArray(cfg?.ledgerOnlyDevices) ? cfg.ledgerOnlyDevices : []).filter(d => typeof d === 'string');
-// Devices whose app list is read WITHOUT CoreDevice: config.json `quietAppsDevices` maps a device
-// name to the pymobiledevice3 pairing-record identifier that `bin/quiet-apps` lists it by. That
-// tool builds its own userspace tunnel over the device's RemotePairing service, so Apple's
-// remoted never registers the device and DeviceHub never touches its HID service: the device can
-// be read on every refresh, asleep or not. A device named here is read even if it is also
-// ledger-only (the ledger-only skip exists only for devices with no quiet route).
-const quietAppsDevices = cfg => {
-  const m = cfg?.quietAppsDevices;
-  if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
-  return Object.fromEntries(Object.entries(m).filter(([, id]) => typeof id === 'string' && id.length > 0));
-};
+// Devices whose app list is read WITHOUT CoreDevice: config.json `quietAppsDevices` names devices
+// (as both devicectl and `apparition devices` know them) that `apparition apps --device <name>`
+// reads over Apparition's own pairing and tunnel. Apple's remoted never registers that tunnel, so
+// DeviceHub never touches the device's HID service: the device can be read on every refresh,
+// asleep or not. A device named here is read even if it is also ledger-only (the ledger-only skip
+// exists only for devices with no quiet route). The device must be paired with Apparition on
+// this Mac (`apparition pair`, or `pair --usb` for an iPhone or iPad).
+const quietAppsDevices = cfg => (Array.isArray(cfg?.quietAppsDevices) ? cfg.quietAppsDevices : []).filter(d => typeof d === 'string' && d);
 // Devices the store skips on a plain refresh: ledger-only ones without a quiet route.
-const skippedDevices = cfg => ledgerOnlyDevices(cfg).filter(d => !quietAppsDevices(cfg)[d]);
-const QUIET_APPS_TOOL = path.join(__dirname, 'bin', 'quiet-apps');
+const skippedDevices = cfg => ledgerOnlyDevices(cfg).filter(d => !quietAppsDevices(cfg).includes(d));
+// The Apparition command line: config `apparitionCli`, else the user's install, else PATH.
+function apparitionCli() {
+  if (typeof CONFIG.apparitionCli === 'string' && CONFIG.apparitionCli) return CONFIG.apparitionCli;
+  const local = path.join(os.homedir(), '.local/bin/apparition');
+  return fs.existsSync(local) ? local : 'apparition';
+}
 let BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
 
 // Watch config.json for changes and reload it
@@ -295,17 +297,18 @@ async function devicectlJson(args, timeout) {
 }
 
 // The app list of a `quietAppsDevices` device, in devicectl's `{result:{apps:[...]}}` shape, from
-// `bin/quiet-apps` (config `quietAppsTool` overrides the path). The tool prints `{error}` and
-// exits non-zero when the device is off the network or its pairing record is missing.
-async function quietAppsJson(recordId) {
-  const tool = typeof CONFIG.quietAppsTool === 'string' && CONFIG.quietAppsTool ? CONFIG.quietAppsTool : QUIET_APPS_TOOL;
-  const r = await run(tool, ['--identifier', recordId], { timeout: 90000 });
+// `apparition apps --device <name> --json` (`{device, name, apps:[{bundle_id, name, version,
+// build}]}`). It never asks a PIN: a device that is off the network, or no longer trusts the
+// pairing, fails fast with its `error:` line, which lands on the device's inventory entry.
+async function quietAppsJson(deviceName) {
+  const r = await run(apparitionCli(), ['apps', '--device', deviceName, '--json'], { timeout: 90000 });
   let j = null;
   try { j = JSON.parse(r.stdout); } catch { /* not JSON: report the raw output below */ }
-  if (r.code !== 0 || !j || j.error) {
-    throw new Error(j?.error || (r.stderr || r.stdout || 'quiet-apps failed').trim().split('\n').pop());
+  if (r.code !== 0 || !Array.isArray(j?.apps)) {
+    throw new Error((r.stderr || r.stdout || 'apparition apps failed').trim().split('\n').find(l => l.startsWith('error:'))?.replace(/^error:\s*/, '')
+      || (r.stderr || r.stdout || 'apparition apps failed').trim().split('\n').pop());
   }
-  return j;
+  return { result: { apps: j.apps.map(a => ({ bundleIdentifier: a.bundle_id, name: a.name, version: a.version, bundleVersion: a.build })) } };
 }
 
 async function refreshDeviceList() {
@@ -328,13 +331,13 @@ const appRefreshInFlight = new Set();
 // `force` reads a ledger-only device anyway: for the caller who knows it is awake (it was just
 // installed to) or who asked for it.
 async function refreshDeviceApps(deviceName, { force = false } = {}) {
-  const quietId = quietAppsDevices(CONFIG)[deviceName];
-  if (!force && !quietId && ledgerOnlyDevices(CONFIG).includes(deviceName)) return;
+  const quiet = quietAppsDevices(CONFIG).includes(deviceName);
+  if (!force && !quiet && ledgerOnlyDevices(CONFIG).includes(deviceName)) return;
   if (appRefreshInFlight.has(deviceName)) return;
   appRefreshInFlight.add(deviceName);
   try {
-    const j = quietId
-      ? await quietAppsJson(quietId)
+    const j = quiet
+      ? await quietAppsJson(deviceName)
       : await devicectlJson(['device', 'info', 'apps', '--device', deviceName], 90000);
     const apps = {};
     for (const a of j.result?.apps || []) {
@@ -1348,8 +1351,7 @@ const service = require('./lib/service').createService({ auth, config: () => CON
     patchingTargets.add(key);
     try {
       const args = ['inject', target.bundleId, '--device', target.device, ...files.flatMap(f => ['--file', f])];
-      const localCli = path.join(os.homedir(), '.local/bin/apparition');
-      const result = await run(CONFIG.apparitionCli || (fs.existsSync(localCli) ? localCli : 'apparition'), args, { cwd: repo.path, timeout: 90000,
+      const result = await run(apparitionCli(), args, { cwd: repo.path, timeout: 90000,
         env: { ...process.env, ...(CONFIG.debugtraceTool ? { DEBUGTRACE_MCP: CONFIG.debugtraceTool } : {}) } });
       if (result.code !== 0) throw new Error('Patch failed: ' + (result.stdout || result.stderr).slice(-12000));
       return JSON.parse(result.stdout.trim());

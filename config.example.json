@@ -9,7 +9,7 @@
   },
   "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
   "ledgerOnlyDevices": [],
-  "quietAppsDevices": {},
+  "quietAppsDevices": [],
   "deployDefaults": { "mcp": true, "launch": false, "buildDebug": false, "inject": false },
   "altSource": { "enabled": false, "name": "Example's Apps", "developerName": "Example" },
   "repos": [
