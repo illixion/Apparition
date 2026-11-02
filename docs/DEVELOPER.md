@@ -1,7 +1,8 @@
 # Building your own apps with Apparition
 
-Apparition can install other people's apps. With a Mac, it can also build yours: start a build of
-your Xcode project from the headset, see it install, and read its crash logs on the same screen.
+Apparition can install other people's apps. With a Mac, it can also build and deploy your Xcode
+projects, launch them with JIT, apply live Swift patches, and keep signed builds available for
+refresh and diagnosis. Start a build from the headset and follow it in Activity.
 This guide explains how the pieces fit, how to set them up, and what each part of the Developer
 screen does.
 
@@ -171,9 +172,9 @@ copy on this device, change the app's signer in the Library instead.
   differently. The target's device name must match the name Xcode shows.
 - **A build fails.** Read its log in Activity. The same build from a terminal is
   `build-and-sign` in the project's checkout, which prints the same output.
-- **An app crashed.** Its crash log usually reaches Reports within a few minutes; the Mac pulls them
-  from each device while it is reachable. If nothing arrives, Apparition Store's own Traces page says why a
-  device was skipped.
+- **An app crashed.** Reports can show crash logs already present in the Store and traces uploaded
+  by apps that link DebugTrace. Automatic device crash-log pulling is currently disabled, so a new
+  crash may not appear unless the app uploads a trace.
 
 ## Security
 

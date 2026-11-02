@@ -2,7 +2,7 @@
 
 # Apparition
 
-Apparition is a sideloader that runs on the device itself. Install apps from AltStore-format
+Apparition is a developer tool and sideloader that runs on the device itself. Install apps from AltStore-format
 sources on Apple Vision Pro, iPhone, iPad or Apple TV, sign them with your own Apple ID (a free
 one works) or your own certificate, keep them refreshed, and launch them with JIT for emulators
 such as UTM. A computer puts Apparition on the device the first time. After that, refreshing
