@@ -1,0 +1,117 @@
+#!/usr/bin/env node
+'use strict';
+// What the appstore holds about crashes: the crash logs pulled off the devices and the debug
+// traces apps upload. Look here before asking the user or rebuilding with extra logging.
+//
+//   crash-reports list [--app TEXT] [--device NAME]   crash logs, then traces, newest first
+//   crash-reports show <id>                           a crash log's symbolicated stack, or a trace's MetricKit reports
+//   crash-reports done <id>... [--dry-run]            investigated and fixed: move it to the Trash
+//
+// An id is any unambiguous prefix of what `list` prints. `done` takes a crash log (its .ips, the
+// symbolicated text and the trace it is linked to) or a trace (and the crash logs linked to it).
+// It moves them to the Trash, never deletes: the server forgets a crash log whose files are gone.
+// Reads the server's data folder directly (APPSTORE_DATA, default ../data), so it needs no login.
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+const ROOT = path.join(__dirname, '..');
+// The Apparition desktop app keeps the service it runs in Application Support; a checkout run
+// directly keeps it in ../data. APPSTORE_DATA wins over both.
+const HOSTED_DIR = path.join(require('node:os').homedir(), 'Library/Application Support/Apparition/Service');
+const DATA = process.env.APPSTORE_DATA || (fs.existsSync(path.join(HOSTED_DIR, 'data')) ? path.join(HOSTED_DIR, 'data') : path.join(ROOT, 'data'));
+const CRASH_DIR = path.join(DATA, 'crashlogs');
+const TRACE_DIR = path.join(DATA, 'traces');
+
+const readJson = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
+const crashLogs = () => (readJson(path.join(CRASH_DIR, 'index.json'))?.entries || [])
+  .filter(e => fs.existsSync(path.join(CRASH_DIR, e.file))).sort((a, b) => b.capturedAt - a.capturedAt);
+const traces = () => {
+  let ids = [];
+  try { ids = fs.readdirSync(TRACE_DIR); } catch { /* none yet */ }
+  return ids.map(id => readJson(path.join(TRACE_DIR, id, 'meta.json'))).filter(Boolean).sort((a, b) => b.receivedAt - a.receivedAt);
+};
+const when = ms => new Date(ms).toLocaleString('sv-SE', { dateStyle: 'short', timeStyle: 'short' }).replace(',', '');
+const fail = m => { console.error(m); process.exit(1); };
+
+function pick(list, prefix, what) {
+  const hits = list.filter(x => x.id.startsWith(prefix.toLowerCase()));
+  return hits.length > 1 ? fail(`${prefix} matches ${hits.length} ${what}s; give more of the id`) : hits[0] || null;
+}
+
+function list(args) {
+  const opt = n => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
+  const app = (opt('--app') || '').toLowerCase(), device = opt('--device');
+  const logs = crashLogs().filter(e => (!app || `${e.appName} ${e.bundleId}`.toLowerCase().includes(app)) && (!device || e.device === device));
+  console.log(`Crash logs from devices (${logs.length}):`);
+  for (const e of logs) {
+    console.log(`  ${e.id.slice(0, 8)}  ${when(e.capturedAt)}  ${e.device.padEnd(8)} ${(e.appName || e.bundleId).padEnd(16)} ${String(e.build).padEnd(14)} ${e.exception || e.termination || ''}${e.traceId ? `  trace ${e.traceId.slice(0, 8)}` : ''}`);
+  }
+  const ts = traces().filter(t => !app || `${t.app?.name} ${t.app?.bundleId}`.toLowerCase().includes(app)
+    && (!device || t.build?.installedTo === device));
+  console.log(`Traces (${ts.length}):`);
+  for (const t of ts) {
+    const reports = (t.files || []).filter(f => f.path.startsWith('crashes/')).length;
+    console.log(`  ${t.id.slice(0, 8)}  ${when(t.receivedAt)}  ${String(t.build?.installedTo || '').padEnd(8)} ${String(t.app?.name).padEnd(16)} ${String(t.app?.build).padEnd(14)} ${reports ? `${reports} MetricKit report(s)  ` : ''}${t.note || ''}`);
+  }
+  if (!logs.length && !ts.length) console.log('  nothing: no crash has been pulled or uploaded (the poller runs every few minutes; the Traces page has "Pull now")');
+}
+
+function show(id) {
+  if (!id) fail('usage: crash-reports show <id>');
+  const log = pick(crashLogs(), id, 'crash log');
+  if (log) {
+    const text = log.symbolicated && path.join(CRASH_DIR, log.symbolicated);
+    if (text && fs.existsSync(text)) { process.stdout.write(fs.readFileSync(text)); return; }
+    return run(symbolicateTool(), [path.join(CRASH_DIR, log.file)]);
+  }
+  const trace = pick(traces(), id, 'trace');
+  if (!trace) fail(`no crash log or trace starts with ${id}`);
+  const crashes = path.join(TRACE_DIR, trace.id, 'files', 'crashes');
+  if (!fs.existsSync(crashes)) fail(`trace ${trace.id} has no MetricKit reports; its files are in ${path.join(TRACE_DIR, trace.id, 'files')}`);
+  run(symbolicateTool(), [trace.id]);
+}
+
+function symbolicateTool() {
+  const config = readJson(process.env.APPSTORE_CONFIG || (DATA === path.join(HOSTED_DIR, 'data') ? path.join(HOSTED_DIR, 'config.json') : path.join(ROOT, 'config.json'))) || {};
+  const tool = config.symbolicateTool || (config.debugtraceTool && path.join(path.dirname(config.debugtraceTool), 'debugtrace-symbolicate'))
+    || path.join(process.env.HOME, 'Projects/DebugTrace/Tools/debugtrace-symbolicate');
+  return fs.existsSync(tool) ? tool : fail(`debugtrace-symbolicate not found at ${tool}; set symbolicateTool in config.json`);
+}
+function run(cmd, args) {
+  const r = spawnSync('/usr/bin/python3', ['-I', cmd, ...args], { stdio: 'inherit', env: { ...process.env, APPSTORE_DATA: DATA } });
+  process.exit(r.status ?? 1);
+}
+
+function done(args) {
+  const dry = args.includes('--dry-run');
+  const ids = args.filter(a => !a.startsWith('--'));
+  if (!ids.length) fail('usage: crash-reports done <id>... [--dry-run]');
+  const all = crashLogs(), files = new Set();
+  const addLog = e => { files.add(path.join(CRASH_DIR, e.file)); if (e.symbolicated) files.add(path.join(CRASH_DIR, e.symbolicated)); };
+  const addTrace = t => files.add(path.join(TRACE_DIR, t.id));
+  for (const id of ids) {
+    const log = pick(all, id, 'crash log'), trace = log ? null : pick(traces(), id, 'trace');
+    if (!log && !trace) fail(`no crash log or trace starts with ${id} (see: crash-reports list)`);
+    if (log) {
+      addLog(log);
+      const linked = log.traceId && traces().find(t => t.id === log.traceId);
+      if (linked) addTrace(linked);
+    } else {
+      addTrace(trace);
+      all.filter(e => e.traceId === trace.id).forEach(addLog);
+    }
+  }
+  const existing = [...files].filter(f => fs.existsSync(f));
+  for (const f of existing) console.log(`${dry ? 'would move' : 'moving'} to Trash: ${path.relative(DATA, f)}`);
+  if (dry || !existing.length) return;
+  const r = spawnSync('/usr/bin/trash', existing, { stdio: 'inherit' });
+  if (r.status !== 0) fail('trash failed; nothing was deleted');
+  console.log('Done. The server forgets a crash log once its files are in the Trash.');
+}
+
+const [cmd, ...rest] = process.argv.slice(2);
+if (cmd === 'list') list(rest);
+else if (cmd === 'show') show(rest[0]);
+else if (cmd === 'done') done(rest);
+else fail(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 6).map(l => l.replace(/^\/\/ ?/, '')).join('\n'));

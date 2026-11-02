@@ -1,0 +1,2044 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{BRAND_TITLE}}</title>
+{{BRAND_HEAD}}
+<meta name="theme-color" content="#0a0c10">
+<style>
+  :root {
+    --bg: #0a0c10; --surface: #12151b; --surface2: #191d25; --line: #232833;
+    --fg: #e6ebf3; --dim: #7d8699; --dim2: #565e6e;
+    --accent: #4f8cff; --accent-fg: #06101f;
+    --ok: #35d399; --warn: #f5b942; --bad: #fa6464; --info: #7aa9ff;
+    /* the profiler's two kinds of code: the app's own (violet) and the system's (slate) */
+    --own: #b394ff; --own-deep: #3a2a66; --sys: #6d7a90; --sys-deep: #222a37;
+    --mono: ui-monospace, "SF Mono", "Menlo", monospace;
+    --sans: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; }
+  ::selection { background: var(--accent); color: var(--accent-fg); }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); }
+  button { background: var(--surface2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 14px; font: inherit; font-size: .82rem; font-weight: 500; cursor: pointer; }
+  button:hover { border-color: var(--dim2); }
+  button:disabled { opacity: .4; cursor: default; }
+  button:disabled:hover { border-color: var(--line); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 700; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.ghost { background: transparent; }
+  button.icon { padding: 5px 8px; font-size: .78rem; line-height: 1; }
+  button.danger { color: var(--bad); }
+  select { background: var(--surface2) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237d8699' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>") no-repeat right 7px center/11px;
+    color: var(--fg); border: 1px solid var(--line); border-radius: 7px; padding: 5px 24px 5px 9px;
+    font: inherit; font-size: .8rem; appearance: none; -webkit-appearance: none; -moz-appearance: none; }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 24px;
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(10,12,16,.92);
+    backdrop-filter: blur(8px); z-index: 5; }
+  header .wordmark { font-family: var(--mono); font-size: .92rem; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--dim); display: inline-flex; align-items: center; gap: 8px; }
+  header .wordmark .tri { display: inline-block; width: 2rem; height: 2rem; background: var(--accent);
+    clip-path: polygon(50% 12%, 92% 88%, 8% 88%); }
+  header .wordmark .brandicon { font-size: 2rem; line-height: 1; height: 2rem; width: auto; display: inline-block; }
+  header .wordmark b { color: var(--fg); }
+  header .wordmark .org { text-transform: none; letter-spacing: 0; }
+  header .fleetcount { font-family: var(--mono); font-size: .74rem; color: var(--dim2); }
+
+  main { padding: 22px 24px 320px; max-width: 1180px; margin: 0 auto; }
+  .fleet { display: flex; flex-direction: column; gap: 10px; }
+
+  /* ---- fleet card ---- */
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .cardhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 11px; flex-wrap: wrap; }
+  .reponame { font-family: var(--mono); font-weight: 700; font-size: .86rem; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--fg); }
+  .refline { font-family: var(--mono); font-size: .76rem; color: var(--dim); }
+  .refline code { color: var(--dim); }
+  .refline .dirty { color: var(--warn); }
+  .subject { font-size: .76rem; color: var(--dim2); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+  .batchflag { margin-left: auto; font-family: var(--mono); font-size: .72rem; color: var(--accent); }
+
+  /* signature element: the chip strip — click a chip to include/exclude it
+     from the next batch deploy for this repo */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+  .chip { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 9px 6px 8px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px;
+    cursor: pointer; user-select: none; transition: border-color 120ms, background 120ms; }
+  .chip:hover { border-color: var(--dim2); }
+  .chip.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); }
+  .chip input { position: absolute; opacity: 0; pointer-events: none; }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
+  .chip .dot.ok { background: var(--ok); }
+  .chip .dot.warn { background: var(--warn); }
+  .chip .dot.bad { background: var(--bad); }
+  .chip .dot.info { background: var(--info); }
+  .chip .devname { font-size: .82rem; font-weight: 600; }
+  .chip .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
+  .chip .branchtag { font-size: .68rem; color: var(--accent); font-family: var(--mono); }
+  .chip .otaicon { color: var(--dim); font-size: .76rem; padding: 1px 3px; border-radius: 4px; margin-left: 1px; }
+  .chip .otaicon:hover { color: var(--fg); background: var(--line); }
+  .chip.building { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+  .cardfoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 11px;
+    border-top: 1px solid var(--line); }
+  .runcheck { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+    color: var(--dim); cursor: pointer; user-select: none; }
+  .runcheck input { cursor: pointer; accent-color: var(--accent); }
+  .runcheck:has(input:disabled) { opacity: .45; cursor: default; }
+  .opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; }
+  .cardfoot .spacer { flex: 1 1 auto; }
+  .macapps { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .macapp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 9px 6px 8px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; }
+  .macapp.building { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+  .macapp .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
+  .macapp .dot.ok { background: var(--ok); }
+  .macapp .dot.warn { background: var(--warn); }
+  .macapp .macname { font-size: .82rem; font-weight: 600; }
+  .macapp .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
+  .macapp .macbuilt { font-size: .72rem; color: var(--dim2); font-family: var(--mono); flex: 1 1 auto; }
+  .macapp button { padding: 4px 9px; font-size: .76rem; }
+
+  /* ---- build pane ---- */
+  #buildpane { position: fixed; left: 0; right: 0; bottom: 0; background: #07090c;
+    border-top: 1px solid var(--line); height: 300px; display: none; flex-direction: column;
+    z-index: 10; box-shadow: 0 -8px 30px rgba(0,0,0,.4); }
+  #buildpane.open { display: flex; }
+  #buildpane .bar { display: flex; align-items: center; gap: 12px; padding: 9px 18px;
+    border-bottom: 1px solid var(--line); font-size: .82rem; }
+  #buildpane .bar .paneTitle { font-family: var(--mono); font-size: .78rem; color: var(--dim); }
+  .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; padding: 0 14px;
+    font-size: .76rem; margin-bottom: -1px; }
+  .tab { padding: 7px 10px; border-bottom: 2px solid transparent; cursor: pointer; color: var(--dim);
+    white-space: nowrap; font-family: var(--mono); transition: color 150ms; }
+  .tab:hover { color: var(--fg); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; }
+  #buildlog { flex: 1; overflow: auto; margin: 0; padding: 10px 18px;
+    font: .76rem/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; color: #b3c0d4; }
+
+  .status { padding: 2px 8px; border-radius: 20px; font-size: .7rem; font-weight: 700;
+    font-family: var(--mono); text-transform: uppercase; letter-spacing: .03em; }
+  .status.running { background: #103257; color: var(--info); }
+  .status.queued { background: #262b35; color: var(--dim); }
+  .status.success { background: #0e3327; color: var(--ok); }
+  .status.failed { background: #3d1a1a; color: var(--bad); }
+  .status.cancelled { background: #362c14; color: var(--warn); }
+
+  section.history { margin-top: 30px; }
+  section.history h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
+    letter-spacing: .1em; font-family: var(--mono); font-weight: 600; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  td, th { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim2); font-weight: 600; font-size: .74rem; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover { background: var(--surface); }
+  td.mono { font-family: var(--mono); color: var(--dim); font-size: .78rem; }
+  .muted { color: var(--dim2); }
+
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--surface2); border: 1px solid var(--accent); color: var(--fg);
+    padding: 10px 16px; border-radius: 10px; font-size: .84rem; z-index: 20;
+    display: none; max-width: 85%; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+  section.traces { margin-top: 30px; }
+  section.traces .tracehead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  section.traces h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
+    letter-spacing: .1em; font-family: var(--mono); font-weight: 600; margin: 0; }
+  section.traces .hint { font-size: .74rem; color: var(--dim2); }
+  section.traces.dropping { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 8px; }
+  .tracefiles { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 2px; }
+  .tracefiles a { font-family: var(--mono); font-size: .72rem; color: var(--info); text-decoration: none;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px; }
+  .tracefiles a:hover { border-color: var(--dim2); }
+  .tracenote { color: var(--fg); max-width: 340px; white-space: pre-wrap; }
+
+  /* ---- views ---- */
+  nav.views { display: flex; gap: 2px; margin-left: 14px; }
+  nav.views a { color: var(--dim); text-decoration: none; font-size: .84rem; font-weight: 500;
+    padding: 6px 11px; border-radius: 7px; display: inline-flex; align-items: center; gap: 7px; }
+  nav.views a:hover { color: var(--fg); background: var(--surface); }
+  nav.views a[aria-current="page"] { color: var(--fg); background: var(--surface2); }
+  nav.views .count { font-family: var(--mono); font-size: .7rem; color: var(--dim2); }
+  nav.views .livecount { color: var(--ok); }
+  header .tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .view { display: none; }
+  .view.active { display: block; }
+  a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; }
+  section.history, section.traces { margin-top: 0; }
+  .banner { background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
+    color: var(--fg); border-radius: 10px; padding: 10px 14px; font-size: .82rem; margin-bottom: 14px; }
+  .banner code { font-family: var(--mono); font-size: .78rem; }
+
+  /* a device chip whose app is running with its debug server */
+  .chip .live { font-family: var(--mono); font-size: .68rem; color: var(--ok); padding: 1px 4px; border-radius: 4px;
+    text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+  .chip .live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); animation: beacon 2s ease-out infinite; }
+  .chip .live:hover { background: var(--line); }
+  @keyframes beacon { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 70%,100% { box-shadow: 0 0 0 6px transparent; } }
+
+  /* ---- debug view: the rail of running apps, and the console ---- */
+  /* The console fills what's left under the header, banner or not. */
+  main.debugging { max-width: none; padding: 0; height: calc(100vh - 57px); display: flex; flex-direction: column; }
+  main.debugging .banner { margin: 10px 16px 0; }
+  main.debugging .view.active { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .debug { display: grid; grid-template-columns: 250px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
+  .rail { border-right: 1px solid var(--line); overflow-y: auto; padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
+  .rail .railnote { font-size: .76rem; color: var(--dim2); padding: 6px 8px; line-height: 1.45; }
+  .rail .railnote code { font-family: var(--mono); font-size: .72rem; color: var(--dim); }
+  .appitem { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 9px 10px; border-radius: 8px;
+    border: 1px solid transparent; background: transparent; width: 100%; }
+  .appitem:hover { background: var(--surface); border-color: transparent; }
+  .appitem[aria-current="true"] { background: var(--surface2); border-color: var(--line); }
+  .appitem .n { font-weight: 600; font-size: .86rem; display: flex; align-items: center; gap: 7px; }
+  .appitem .n .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+  .appitem .m { font-size: .72rem; color: var(--dim); font-family: var(--mono); }
+  .appitem.off { opacity: .55; cursor: default; }
+  .appitem.off .dot { background: var(--dim2); }
+
+  .console { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .conhead { display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .conhead h2 { font-size: 1.05rem; margin: 0; font-weight: 650; }
+  .conhead .meta { font-family: var(--mono); font-size: .74rem; color: var(--dim); }
+  .conhead .spacer { flex: 1; }
+  .contabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+  .contabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--dim);
+    padding: 9px 10px; font-size: .8rem; }
+  .contabs button:hover { color: var(--fg); }
+  .contabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .pane { display: none; flex: 1; min-height: 0; }
+  .pane.active { display: flex; flex-direction: column; }
+
+  .logbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  input.field { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 9px; font: inherit; font-size: .8rem; width: 240px; max-width: 100%; }
+  .logbar input[type=search] { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 5px 9px; font: inherit; font-size: .8rem; width: 220px; max-width: 100%; }
+  .streamstate { font-family: var(--mono); font-size: .72rem; color: var(--dim2); display: inline-flex; align-items: center; gap: 6px; }
+  .streamstate::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--dim2); }
+  .streamstate.live { color: var(--ok); }
+  .streamstate.live::before { background: var(--ok); }
+  .streamstate.waiting { color: var(--warn); }
+  .streamstate.waiting::before { background: var(--warn); }
+  .logbar .spacer { flex: 1; }
+  #loglines { flex: 1; overflow: auto; margin: 0; padding: 6px 0 40px; list-style: none; background: #07090c;
+    font: .76rem/1.55 var(--mono); }
+  #loglines li { display: grid; grid-template-columns: 92px 14px 130px minmax(0, 1fr); gap: 10px; padding: 0 14px; }
+  #loglines li:hover { background: #0d1015; }
+  #loglines .t { color: var(--dim2); }
+  #loglines .lv { font-weight: 700; color: var(--dim2); }
+  #loglines .c { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #loglines .msg { color: #b3c0d4; white-space: pre-wrap; word-break: break-word; }
+  #loglines li.I .lv { color: var(--dim); }
+  #loglines li.N .lv { color: var(--info); }
+  #loglines li.N .msg { color: var(--fg); }
+  #loglines li.E .lv, #loglines li.E .msg { color: var(--bad); }
+  #loglines li.F { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  #loglines li.F .lv, #loglines li.F .msg { color: var(--bad); font-weight: 700; }
+  #loglines li.D .msg { color: var(--dim); }
+  #loglines li.sys { grid-template-columns: 1fr; color: var(--dim2); font-style: italic; }
+  .jumpnew { position: absolute; right: 24px; bottom: 18px; display: none; }
+  .logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+  .endpoints { display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
+  .eplist { border-right: 1px solid var(--line); overflow-y: auto; padding: 8px; }
+  .ep { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; padding: 7px 9px; border-radius: 7px; }
+  .ep:hover { background: var(--surface); border-color: transparent; }
+  .ep[aria-current="true"] { background: var(--surface2); border-color: var(--line); }
+  .ep .en { font-family: var(--mono); font-size: .8rem; }
+  .ep .ek { font-size: .68rem; color: var(--dim2); margin-left: 6px; }
+  .ep .ek.cmd { color: var(--warn); }
+  .epdetail { overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .epdetail p.desc { margin: 0; color: var(--dim); font-size: .84rem; line-height: 1.5; max-width: 72ch; }
+  .params { display: grid; grid-template-columns: max-content minmax(0, 340px); gap: 8px 14px; align-items: center; }
+  .params label { font-family: var(--mono); font-size: .78rem; }
+  .params .pd { grid-column: 2; font-size: .72rem; color: var(--dim2); margin-top: -4px; }
+  .params input[type=text], .params input[type=number] { background: var(--surface2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 5px 9px; font: inherit; font-size: .8rem; width: 100%; }
+  pre.result { margin: 0; background: #07090c; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px;
+    font: .76rem/1.5 var(--mono); color: #b3c0d4; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 60vh; }
+  pre.result.err { color: var(--bad); }
+  img.result { max-width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+  .emptystate { margin: auto; text-align: center; color: var(--dim); max-width: 46ch; font-size: .88rem; line-height: 1.55; padding: 24px; }
+  .emptystate h2 { color: var(--fg); font-size: 1rem; margin: 0 0 6px; }
+  .emptystate code { font-family: var(--mono); font-size: .8rem; color: var(--fg); }
+
+  .eplink { font-size: .8rem; color: var(--dim); }
+  .eplink a { color: var(--info); }
+
+  /* ---- shared by the profile and memory panes ---- */
+  .scrollpane { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0 48px; }
+  .ctrlbar { display: flex; align-items: flex-end; gap: 10px 14px; flex-wrap: wrap; padding: 12px 18px;
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  .ctl { display: flex; flex-direction: column; gap: 4px; font-size: .72rem; color: var(--dim); }
+  .ctl .in { display: inline-flex; align-items: center; gap: 6px; color: var(--dim2); font-size: .76rem; }
+  .ctl input { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 5px 8px; font: inherit; font-size: .82rem; width: 72px; font-variant-numeric: tabular-nums; }
+  .ctrlbar .spacer { flex: 1; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px; background: var(--surface); gap: 2px; }
+  .seg button { border: 0; background: transparent; color: var(--dim); padding: 5px 11px; border-radius: 6px; font-size: .78rem; }
+  .seg button:hover { color: var(--fg); }
+  .seg button[aria-pressed="true"] { background: var(--surface2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+  .pbody { position: relative; z-index: 0; padding: 16px 18px; display: flex; flex-direction: column; gap: 16px; max-width: 1180px; }
+  .lede { margin: 0; color: var(--dim); font-size: .86rem; line-height: 1.55; max-width: 64ch; }
+  .lede b { color: var(--fg); font-weight: 600; }
+
+  .runstate { display: flex; flex-direction: column; gap: 8px; max-width: 520px; font-size: .84rem; color: var(--dim); }
+  .meter { height: 4px; border-radius: 2px; background: var(--surface2); overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0; background: var(--accent); animation: fill linear forwards; }
+  .meter.waiting i { width: 35%; background: var(--warn); animation: sweep 1.6s ease-in-out infinite alternate; }
+  @keyframes fill { to { width: 100%; } }
+  @keyframes sweep { from { transform: translateX(-10%); } to { transform: translateX(200%); } }
+  .runstate.waiting { color: var(--fg); }
+  .runstate.waiting q { color: var(--warn); }
+
+  .callerr { border: 1px solid color-mix(in srgb, var(--bad) 35%, var(--line)); background: color-mix(in srgb, var(--bad) 7%, var(--surface));
+    border-radius: 10px; padding: 12px 14px; max-width: 640px; display: flex; flex-direction: column; gap: 6px; font-size: .84rem; }
+  .callerr.pending { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: color-mix(in srgb, var(--warn) 7%, var(--surface)); }
+  .callerr h3 { margin: 0; font-size: .9rem; }
+  .callerr p { margin: 0; color: var(--dim); line-height: 1.5; }
+  .callerr p.hint { color: var(--fg); }
+  .callerr button { align-self: flex-start; margin-top: 4px; }
+
+  /* ---- profile ---- */
+  .profsum { display: flex; align-items: baseline; gap: 6px 18px; flex-wrap: wrap; font-size: .82rem; color: var(--dim); }
+  .profsum b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .legend { display: inline-flex; gap: 14px; font-size: .76rem; color: var(--dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend span::before { content: ''; width: 10px; height: 10px; border-radius: 3px; background: var(--sys-deep); box-shadow: inset 0 0 0 1px var(--sys); }
+  .legend .own::before { background: var(--own-deep); box-shadow: inset 0 0 0 1px var(--own); }
+  .thread { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+  .thhead { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 300px) auto; gap: 14px; align-items: center; padding: 12px 16px; }
+  .thhead h3 { margin: 0; font: 600 .86rem var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .busy { display: flex; align-items: center; gap: 10px; }
+  .busybar { flex: 1; height: 10px; border-radius: 5px; background: var(--surface2); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+  .busybar i { display: block; height: 100%; background: var(--accent); border-radius: 5px; min-width: 2px; }
+  .busybar.hot i { background: var(--warn); }
+  .busyv { font-size: .8rem; color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 82px; }
+  .busyv b { color: var(--fg); font-size: .95rem; }
+  .thmeta { font-size: .74rem; color: var(--dim2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .thtabs { padding: 0 16px 10px; }
+  .thbody { border-top: 1px solid var(--line); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; background: var(--bg); }
+  .thbody .muted { font-size: .8rem; }
+
+  /* the icicle: hot stacks merged by common prefix, outermost frame on top */
+  .ice { position: relative; width: 100%; border-radius: 6px; background:
+    repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--surface) calc(10% - 1px) 10%); }
+  .cell { position: absolute; height: 20px; padding: 0 5px; border-radius: 3px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    font: 500 .68rem/20px var(--mono); color: #c3cad6; background: var(--sys-deep); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sys) 45%, transparent); cursor: default; }
+  .cell.own { background: var(--own-deep); color: #e4d9ff; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--own) 55%, transparent); }
+  .cell.leaf { font-weight: 700; color: #fff; }
+  .cell.own.leaf { background: color-mix(in srgb, var(--own) 45%, var(--own-deep)); }
+  .cell.sys.leaf { background: color-mix(in srgb, var(--sys) 45%, var(--sys-deep)); }
+  .cell:hover { filter: brightness(1.3); z-index: 1; }
+  .icecap { font-size: .74rem; color: var(--dim2); margin: 0; }
+
+  .stacks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .stacks details { border-radius: 8px; }
+  .stacks details[open] { background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); }
+  .stacks summary { display: grid; grid-template-columns: 52px 70px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 8px;
+    cursor: pointer; border-radius: 8px; list-style: none; font-size: .8rem; }
+  .stacks summary::-webkit-details-marker { display: none; }
+  .stacks summary:hover { background: var(--surface); }
+  .stacks summary .depth { font-size: .72rem; color: var(--dim2); white-space: nowrap; }
+  .stacks summary .depth::after { content: ' ▸'; }
+  .stacks details[open] summary .depth::after { content: ' ▾'; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .share { display: block; height: 6px; border-radius: 3px; background: var(--surface2); overflow: hidden; }
+  .share i { display: block; height: 100%; background: var(--dim); border-radius: 3px; min-width: 1px; }
+  .own .share i, .share.own i { background: var(--own); }
+  .frames { list-style: none; margin: 2px 8px 10px 68px; padding: 0 0 0 12px; border-left: 1px solid var(--line); font: .74rem/1.75 var(--mono); }
+  .frames li { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+  .frames li.own { color: #d3c4ff; }
+  .frames li.leaf { color: var(--fg); font-weight: 700; }
+  .frames li.leaf::before { content: ''; position: absolute; left: -16px; top: .62em; width: 7px; height: 7px; border-radius: 50%; background: var(--sys); }
+  .frames li.leaf.own::before { background: var(--own); }
+  code.fn { font: .78rem var(--mono); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  code.fn .mod { color: var(--dim2); }
+  .own code.fn, code.fn.own { color: #e0d4ff; }
+  .own code.fn .mod { color: color-mix(in srgb, var(--own) 65%, var(--dim2)); }
+
+  table.ftable { table-layout: fixed; }
+  table.ftable td { padding: 6px 10px; vertical-align: middle; }
+  table.ftable th { padding: 4px 10px 6px; }
+  table.ftable .c-share { width: 120px; }
+  table.ftable .c-n { width: 76px; }
+  table.ftable .c-lib { width: 170px; }
+  .sharecell { display: grid; grid-template-columns: 1fr 46px; gap: 8px; align-items: center; }
+  .lib { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+    font: .72rem var(--mono); padding: 1px 7px; border-radius: 5px; color: var(--dim); background: var(--sys-deep); }
+  .lib.own { color: var(--own); background: var(--own-deep); }
+
+  /* ---- memory ---- */
+  .snaps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: .78rem; color: var(--dim); }
+  .snap { font-variant-numeric: tabular-nums; padding: 4px 10px; font-size: .76rem; }
+  .snap[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); }
+  .snap .base { color: var(--dim2); margin-left: 4px; }
+  .headroom { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .hrnum { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .hrnum b { font-size: 2.6rem; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1; }
+  .hrnum span { color: var(--dim); font-size: .88rem; }
+  .hrnum.low b { color: var(--warn); }
+  .hrnum.critical b { color: var(--bad); }
+  .hrbar { position: relative; height: 16px; border-radius: 8px; background: var(--surface2); box-shadow: inset 0 0 0 1px var(--line); }
+  .hrbar .used { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 8px; background: var(--accent); }
+  .hrbar .was { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--fg); opacity: .5; }
+  .hrbar .peak { position: absolute; top: -5px; bottom: -5px; width: 2px; background: var(--warn); }
+  .hrlegend { display: flex; gap: 6px 22px; flex-wrap: wrap; font-size: .8rem; color: var(--dim); }
+  .hrlegend b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .hrlegend .pk { color: var(--warn); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0; }
+  .stats div { border: 1px solid var(--line); border-radius: 10px; padding: 11px 13px; background: var(--surface); display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .stats dt { font-size: .74rem; color: var(--dim); }
+  .stats dd { margin: 0; font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stats dd small { font-size: .74rem; color: var(--dim2); font-weight: 400; display: block; margin-top: 2px; }
+  .delta { font-size: .74rem; font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 6px; white-space: nowrap; }
+  .delta.up { color: var(--warn); }
+  .delta.down { color: var(--ok); }
+  table.mtable td.num, table.mtable th.num { text-align: right; }
+  table.mtable td { font-variant-numeric: tabular-nums; }
+  table.mtable td .delta { display: block; margin: 0; }
+  .tablecap { font-size: .76rem; color: var(--dim2); margin: 0; }
+  .tablewrap { overflow-x: auto; }
+
+  @media (max-width: 760px) {
+    .thhead { grid-template-columns: minmax(0, 1fr) auto; }
+    .thhead .busy { grid-column: 1 / -1; grid-row: 2; }
+    table.ftable td.l, table.ftable th.l, table.ftable td.n, table.ftable th.n { display: none; }
+    table.ftable .c-share { width: 76px; }
+    .sharecell { grid-template-columns: 1fr; gap: 2px; }
+    .frames { margin-left: 12px; }
+    .stacks summary { grid-template-columns: 44px minmax(0, 1fr) auto; }
+    .stacks summary .share { display: none; }
+    .hrnum b { font-size: 2rem; }
+    .ctrlbar { padding: 10px 16px; position: static; }
+    .pbody { padding: 14px 16px; }
+    table.mtable .hide-sm { display: none; }
+  }
+  @media (max-width: 760px) {
+    header { flex-wrap: wrap; padding: 10px 16px; }
+    nav.views { margin-left: 0; order: 3; width: 100%; overflow-x: auto; }
+    main { padding: 16px 16px 320px; }
+    main.debugging { height: calc(100vh - 96px); }
+    .debug { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .rail { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; }
+    .appitem { width: auto; min-width: 160px; }
+    #loglines li { grid-template-columns: 70px 12px minmax(0, 1fr); }
+    #loglines .c { display: none; }
+    .endpoints { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .eplist { border-right: 0; border-bottom: 1px solid var(--line); max-height: 30vh; }
+  }
+
+  /* ---- panels: tunables and agent-made tuning panels ---- */
+  .tpanel { display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+  .tgroup { font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: var(--dim2); margin: 14px 0 2px; }
+  .tctl { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) 92px 22px; gap: 4px 12px; align-items: center;
+    padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
+  .tctl.tuned { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .tctl .tl { font-size: .84rem; }
+  .tctl .tk { display: block; font-family: var(--mono); font-size: .68rem; color: var(--dim2); overflow-wrap: anywhere; }
+  .tctl input[type=range] { width: 100%; accent-color: var(--accent); }
+  .tctl input[type=number], .tctl select { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 4px 7px; font: inherit; font-size: .8rem; width: 100%; font-variant-numeric: tabular-nums; }
+  .tctl .wide { grid-column: 2 / 4; }
+  .tctl .tout { grid-column: 2 / 5; font-family: var(--mono); font-size: .78rem; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tctl .tout.err { color: var(--bad); }
+  .tctl button.treset { padding: 0; width: 22px; height: 22px; border-radius: 11px; font-size: .8rem; line-height: 1; color: var(--dim); }
+  .tctl .readv { grid-column: 2 / 5; font-family: var(--mono); font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+  .tctl.missing { opacity: .6; }
+  .tnote { margin: 0 0 6px; color: var(--dim); font-size: .84rem; line-height: 1.5; max-width: 72ch; }
+  .tnote code, .lede code { font-family: var(--mono); font-size: .78rem; color: var(--fg); }
+  @media (max-width: 760px) {
+    .tctl { grid-template-columns: minmax(0, 1fr) 84px 22px; }
+    .tctl .tl { grid-column: 1 / 4; }
+    .tctl .wide, .tctl .tout, .tctl .readv { grid-column: 1 / 4; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chip .live::before, .chip.building, .meter.waiting i { animation: none; }
+    .meter i { animation: none; width: 100%; opacity: .5; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark">{{BRAND_MARK}} {{BRAND_NAME}}</span>
+  <nav class="views" aria-label="Views">
+    <a href="#deploy" data-view="deploy">Deploy <span class="count" id="fleetcount"></span></a>
+    <a href="#debug" data-view="debug">Debug <span class="count livecount" id="livecount"></span></a>
+    <a href="#traces" data-view="traces">Traces <span class="count" id="tracecount"></span></a>
+    <a href="#history" data-view="history">History</a>
+  </nav>
+  <span class="tools">
+    <button class="ghost" id="refreshdev" title="Ask devicectl for each device's installed apps again. Devices in ledgerOnlyDevices are skipped, since that wakes them; Alt-click reads them too.">↻ devices</button>
+    <button class="ghost" id="signout" hidden>Sign out</button>
+  </span>
+</header>
+<main id="main">
+  <div class="banner" id="openbanner" hidden>No password is set, so anyone who can reach this page can build, install and debug.
+    Set one with <code>node server.js set-password</code>.</div>
+  <section class="view" data-view="deploy">
+    <div class="fleet" id="apps"></div>
+  </section>
+  <section class="view" data-view="debug">
+    <div class="debug">
+      <aside class="rail" id="rail" aria-label="Running apps"></aside>
+      <div class="console" id="console"></div>
+    </div>
+  </section>
+  <section class="view traces" data-view="traces" id="traces">
+    <div class="tracehead">
+      <h3>Debug traces</h3>
+      <span class="hint">Uploaded from an app's Debug Trace sheet, or drop a trace .zip here</span>
+      <span style="margin-left:auto"></span>
+      <button class="ghost" id="traceUploadBtn">Upload trace…</button>
+      <input type="file" id="traceFile" accept=".zip,application/zip" style="display:none">
+    </div>
+    <table>
+      <thead><tr><th>Received</th><th>App</th><th>Build</th><th>Device</th><th>Note</th><th></th></tr></thead>
+      <tbody id="tracelist"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <div class="tracehead" style="margin-top:28px">
+      <h3>Crash logs from devices</h3>
+      <span class="hint">Pulled from each device's crash logs every few minutes, even while it is locked</span>
+      <span style="margin-left:auto"></span>
+      <button class="ghost" id="crashRefreshBtn">Pull now</button>
+    </div>
+    <div class="muted" id="crashstatus" style="font-size:.74rem;margin-bottom:6px"></div>
+    <table>
+      <thead><tr><th>Crashed</th><th>App</th><th>Crash</th><th>Device</th><th></th></tr></thead>
+      <tbody id="crashlist"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </section>
+  <section class="view history" data-view="history">
+    <h3>Build history</h3>
+    <table>
+      <thead><tr><th>#</th><th>App</th><th>Ref</th><th>Device</th><th>Status</th><th>When</th><th>Took</th></tr></thead>
+      <tbody id="history"></tbody>
+    </table>
+  </section>
+</main>
+<div id="toast"></div>
+<div id="buildpane">
+  <div class="bar">
+    <span class="paneTitle" id="paneTitle"></span>
+    <span class="status" id="paneStatus"></span>
+    <span style="margin-left:auto"></span>
+    <button class="danger ghost" id="cancelBtn">Cancel</button>
+    <button class="ghost" id="closePane">Close</button>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <pre id="buildlog"></pre>
+</div>
+<script src="freshness.js"></script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+let S = null;               // last /api/state
+let paneBuild = null;       // build id shown in the log pane
+const logOffsets = {};      // build id -> log offset
+const logTexts = {};        // build id -> text fetched so far
+const sel = {};             // repo -> {branch, run, chosen:Set<device>}
+let pendingOta = null;      // {id, key, name} — auto-launch the itms install when this build succeeds
+let pendingMac = null;      // {id, slug, branch, name} — download the .app.zip when this build succeeds
+
+function ago(t){ if(!t) return '—'; const s=(Date.now()-t)/1000;
+  if(s<60) return Math.round(s)+'s ago'; if(s<3600) return Math.round(s/60)+'m ago';
+  if(s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
+function took(b){ return b.startedAt&&b.finishedAt ? Math.round((b.finishedAt-b.startedAt)/1000)+'s' : '—'; }
+function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// Dev builds keep a static version string ("1.0"), so freshness is judged from
+// the git short SHA stamped into CFBundleVersion; see freshness.js.
+function platformStatus(p, g) { return Freshness.platformStatus(p, g, S); }
+
+function render() {
+  const repos = [...(S.repos || [])].sort((a, b) =>
+    String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+  );
+
+  $('#fleetcount').textContent = repos.reduce((n,r)=>n+r.platforms.length,0) || '';
+  const live = (S.debugApps?.apps || []).filter(a => a.attachable);
+  $('#livecount').textContent = live.length ? `${live.length} live` : '';
+  $('#openbanner').hidden = !!S.authRequired;
+  $('#signout').hidden = !S.authRequired;
+
+  $('#apps').innerHTML = repos.map(r=>{
+    const g = r.git||{};
+    const s = sel[r.name] = sel[r.name] || { branch: 'current', chosen: new Set(), ...r.deployDefaults };
+    const branches = ['current', ...r.branches.filter(b=>b!=='current')];
+    const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name && !b.macApp);
+    const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name && !b.macApp).map(b=>b.device));
+    const busy = !!runningBuild || queuedIds.size > 0;
+
+    const chips = r.platforms.map(p=>{
+      const st = platformStatus(p, g);
+      const branchOverride = r.deviceBranches?.[p.device];
+      const isSelected = s.chosen.has(p.device);
+      const isRunningHere = runningBuild && runningBuild.device === p.device;
+      const isQueuedHere = queuedIds.has(p.device);
+      const https = location.protocol === 'https:';
+      let otaIcon = '';
+      if (https) {
+        const title = st.ota
+          ? `Rebuild ${p.platform} without touching the device, then offer the OTA install link`
+          : `Build ${p.platform} for OTA install (no OTA copy published yet)`;
+        otaIcon = `<span class="otaicon" data-otabuild="${esc(r.name)}" data-device="${esc(p.device)}" title="${esc(title)}">⤓</span>`;
+      }
+      const running = live.find(a => a.bundleId === p.bundleId && String(a.device).toLowerCase() === String(p.device).toLowerCase());
+      const liveMark = running ? `<a class="live" href="#debug/${encodeURIComponent(running.id)}" title="Running now with its debug server: open the live log">live</a>` : '';
+      const title = `${esc(p.device)} · ${esc(p.platform)}\n${esc(st.detail)}`;
+      return `<label class="chip ${isSelected?'sel':''} ${isRunningHere||isQueuedHere?'building':''}" title="${title}">
+        <input type="checkbox" data-chip="${esc(r.name)}" data-device="${esc(p.device)}" ${isSelected?'checked':''}>
+        <span class="dot ${st.dot}"></span>
+        <span class="devname">${esc(p.device)}</span>
+        <span class="platname">${esc(p.platform)}</span>
+        ${branchOverride ? `<span class="branchtag">${esc(branchOverride)}</span>` : ''}
+        ${liveMark}
+        ${otaIcon}
+      </label>`;
+    }).join('');
+
+    // Mac apps download as a signed .app.zip of the selected branch's committed
+    // head, built on demand. Only the checked-out branch's head is known here,
+    // so only that branch can say whether the last build is current.
+    const macBranch = s.branch === 'current' ? g.branch : s.branch;
+    const macs = (r.macApps || []).map(m => {
+      const last = m.built.find(e => e.branch === macBranch) || m.built[0];
+      const knownHead = macBranch === g.branch && g.commit;
+      const fresh = last && knownHead && last.branch === macBranch && (last.commit.startsWith(g.commit) || g.commit.startsWith(last.commit));
+      const dot = fresh ? 'ok' : last && knownHead ? 'warn' : '';
+      const building = m.building.length > 0;
+      const info = last
+        ? `${last.branch}@${last.commit} · ${(last.size/1048576).toFixed(1)} MB · ${ago(last.at)}${fresh ? '' : knownHead ? ` · head ${g.commit} builds on download` : ''}`
+        : 'not built yet: the first download builds it';
+      const title = `${m.bundleId} · PLATFORM=${m.platform}\nBuilds the committed head of the selected branch (never uncommitted changes), signed with the development certificate.\n`
+        + `Opened from a browser download, macOS blocks it once: System Settings › Privacy & Security › Open Anyway (or xattr -dr com.apple.quarantine on the .app).`;
+      return `<div class="macapp ${building?'building':''}" title="${esc(title)}">
+        <span class="dot ${dot}"></span>
+        <span class="macname">${esc(m.name)}</span>
+        <span class="platname">${esc(m.platform)}</span>
+        <span class="macbuilt">${esc(info)}</span>
+        <button class="ghost" data-maclink="${esc(m.slug)}" data-repo="${esc(r.name)}" title="Copy a curl command that downloads the head of ${esc(macBranch)} on another Mac (signed link, no sign-in, no quarantine prompt; good for a week)">curl</button>
+        <button data-macdl="${esc(m.slug)}" data-repo="${esc(r.name)}" ${building?'disabled':''}>${building ? 'Building…' : '⤓ .app.zip'}</button>
+      </div>`;
+    }).join('');
+
+    const chosenCount = s.chosen.size;
+    const hasDevices = r.platforms.length > 0;
+    return `<div class="card">
+      <div class="cardhead">
+        <span class="reponame">${esc(r.name)}</span>
+        <span class="refline">${esc(g.branch)}@<code>${esc(g.commit)}</code>${g.dirty?' <span class="dirty">●dirty</span>':''}</span>
+        <span class="subject">${esc(g.subject||'')}</span>
+      </div>
+      ${hasDevices ? `<div class="chips">${chips}</div>` : ''}
+      ${macs ? `<div class="macapps">${macs}</div>` : ''}
+      <div class="cardfoot">
+        <select class="branchsel" data-repo="${esc(r.name)}" data-k="branch">
+          ${branches.map(b=>`<option ${s.branch===b?'selected':''}>${esc(b)}</option>`).join('')}
+        </select>
+        ${hasDevices ? `<div class="opts" role="group" aria-label="Deploy options">
+          <label class="runcheck" title="--run: launch the app on the device once it is installed. Unticked, it is installed and updates in the background">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''}>Launch app</label>
+          <label class="runcheck" title="--mcp: make the launch a debug session (console attached, session registered for agents)${s.launch?'':'. Applies only with Launch app'}">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="mcp" ${s.mcp?'checked':''} ${s.launch?'':'disabled'}>MCP</label>
+          <label class="runcheck" title="--jit: launch through Apparition, which serves the app's JIT requests (emulators, Wine, JIT VMs) for as long as it runs. The device must be paired with Apparition on this Mac${s.launch?'':'. Applies only with Launch app'}">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="jit" ${s.jit?'checked':''} ${s.launch?'':'disabled'}>JIT</label>
+          <label class="runcheck" title="--debug: build the Debug configuration instead of Release">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="buildDebug" ${s.buildDebug?'checked':''}>Debug build</label>
+          <label class="runcheck" title="--inject: build so running code can be patched live (development builds only)">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="inject" ${s.inject?'checked':''}>Inject</label>
+        </div>
+        <span class="spacer"></span>
+        <button class="primary" data-deploy="${esc(r.name)}" ${busy||chosenCount===0?'disabled':''}>
+          ${busy ? 'Deploying…' : chosenCount>1 ? `Deploy → ${chosenCount} devices` : 'Deploy'}
+        </button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // history
+  $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
+    <td class="muted">${b.id}</td><td>${esc(b.repo)}</td>
+    <td class="mono">${esc(b.builtBranch||b.branch)}${b.commit?'@'+esc(b.commit):''}${b.version?' · v'+esc(b.version):''}</td>
+    <td class="muted">${b.macApp?'⤓ .app.zip':b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':(b.run||b.mcp||b.jit)?' ▶':''}${b.jit?' JIT':''}</td>
+    <td><span class="status ${b.status}">${b.status}</span></td>
+    <td class="muted">${ago(b.startedAt||b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
+    || '<tr><td colspan="7" class="muted">No builds yet</td></tr>';
+
+  // tabs for the active + queued builds
+  const tabIds = [...(S.running||[]), ...(S.queued||[])];
+  $('#tabs').innerHTML = tabIds.map(id=>{
+    const b = S.builds.find(x=>x.id===id);
+    if (!b) return '';
+    const running = (S.running||[]).includes(id);
+    return `<div class="tab ${paneBuild===id?'active':''}" data-tab="${id}">
+      <span class="status-dot" style="background:${running?'var(--info)':'var(--dim2)'}"></span>#${b.id} ${esc(b.repo)} ${esc(b.device || b.platform)}</div>`;
+  }).join('');
+
+  if (paneBuild != null) {
+    const b = S.builds.find(x=>x.id===paneBuild);
+    if (b) {
+      $('#paneTitle').textContent = `#${b.id} ${b.repo} (${b.builtBranch||b.branch}) ${b.macApp ? '.app.zip' : b.device} · ${b.platform}`;
+      $('#paneStatus').textContent = b.status;
+      $('#paneStatus').className = 'status '+b.status;
+      $('#cancelBtn').style.display = (b.status==='running'||b.status==='queued') ? '' : 'none';
+    } else if (tabIds.length) {
+      paneBuild = tabIds[0];
+    }
+  }
+}
+
+// Every API call: a 401 means the session ended, so go sign in again.
+async function api(p, opts){
+  const r = await fetch(p, opts);
+  if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash); throw new Error('signed out'); }
+  return r.json();
+}
+async function poll(){ try { S = await api('/api/state'); render(); checkPendingOta(); checkPendingMac(); } catch{} }
+
+// "Build for OTA" second half: once the --no-deploy build lands, navigate to
+// the itms-services URL so the OS starts the install without another tap
+function checkPendingOta(){
+  if (!pendingOta) return;
+  const b = S.builds.find(x=>x.id===pendingOta.id);
+  if (!b || b.status==='running' || b.status==='queued') return;
+  const p = pendingOta; pendingOta = null;
+  if (b.status !== 'success') { toast(`OTA build of ${p.name} ${b.status} — nothing to install.`); return; }
+  const ota = S.ota?.[p.key];
+  if (!ota) { toast(`Build of ${p.name} succeeded but no published IPA was found — check the build log.`); return; }
+  toast(`Build of ${p.name} done — install requested. Confirm the OS dialog; the app then updates on the Home Screen silently.`);
+  // A signed link: the installer fetches it without this page's cookie.
+  api(`/api/ota/${encodeURIComponent(ota.slug)}/link`).then(({ manifestUrl }) => {
+    location.href = 'itms-services://?action=download-manifest&url=' + encodeURIComponent(manifestUrl);
+  }).catch(e => toast(`Couldn't get the install link: ${e.message}`));
+}
+
+// A Mac app's .app.zip: downloads straight away when the branch head is built,
+// else starts (or joins) its build and downloads once that lands.
+async function requestMacZip(slug, branch, name){
+  const r = await api(`/api/mac/${encodeURIComponent(slug)}/build`, {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({branch})});
+  if (r.error) { toast(`${name}: ${r.error}`); return; }
+  if (r.ready) {
+    location.href = r.url;
+    toast(`Downloading ${name} (${r.branch}@${r.entry.commit}). The first open is blocked once: System Settings › Privacy & Security › Open Anyway.`);
+    return;
+  }
+  pendingMac = { id: r.jobId, slug, branch, name };
+  toast(`Building ${name} from ${r.branch}@${r.commit}; the download starts when it's done. Keep this page open.`);
+  await poll(); openPane(r.jobId);
+}
+function checkPendingMac(){
+  if (!pendingMac) return;
+  const b = S.builds.find(x=>x.id===pendingMac.id);
+  if (!b || b.status==='running' || b.status==='queued') return;
+  const p = pendingMac; pendingMac = null;
+  if (b.status !== 'success') { toast(`Build of ${p.name} ${b.status}: nothing to download. See the build log.`); return; }
+  requestMacZip(p.slug, p.branch, p.name);
+}
+
+async function pollLog(){
+  if (paneBuild == null) return;
+  const id = paneBuild;
+  try {
+    const offset = logOffsets[id] || 0;
+    const r = await api(`/api/builds/${id}/log?offset=${offset}`);
+    if (r.chunk) {
+      logTexts[id] = (logTexts[id] || '') + r.chunk;
+      logOffsets[id] = r.nextOffset;
+      if (paneBuild !== id) return;
+      const el = $('#buildlog');
+      const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+      el.textContent = logTexts[id];
+      if (stick) el.scrollTop = el.scrollHeight;
+    }
+  } catch{}
+}
+
+function openPane(id){
+  paneBuild = id;
+  logOffsets[id] = logOffsets[id] || 0;
+  const el = $('#buildlog');
+  el.textContent = logTexts[id] || '';
+  $('#buildpane').classList.add('open');
+  render();
+  el.scrollTop = el.scrollHeight;
+  pollLog();
+}
+
+let toastTimer = null;
+function toast(msg){
+  const el = $('#toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ el.style.display='none'; }, 8000);
+}
+
+document.addEventListener('click', async e=>{
+  const t = e.target;
+
+  const otaIcon = t.closest?.('[data-otabuild]');
+  if (otaIcon) {
+    e.preventDefault();
+    const repoName = otaIcon.dataset.otabuild, device = otaIcon.dataset.device;
+    const repo = S.repos.find(r=>r.name===repoName);
+    const pc = repo.platforms.find(p=>p.device===device);
+    const s = sel[repoName];
+    const branch = (repo.deviceBranches?.[device]) || s.branch;
+    if (!confirm(`Build ${repoName} (${pc.platform}, ${branch}) for OTA install and offer it to ${device}?`)) return;
+    const jobs = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({repo: repoName, targets:[{device, branch}], deploy:false})});
+    const job = jobs.jobs[0];
+    pendingOta = { id: job.id, key: pc.bundleId + '|' + pc.platform, name: repoName };
+    toast(`Building ${repoName} for OTA — install onto ${device} starts automatically when the build finishes. Keep this page open.`);
+    await poll(); openPane(job.id);
+    return;
+  }
+
+  const macBtn = t.closest?.('[data-macdl], [data-maclink]');
+  if (macBtn) {
+    const repo = S.repos.find(r=>r.name===macBtn.dataset.repo);
+    const slug = macBtn.dataset.macdl || macBtn.dataset.maclink;
+    const m = repo.macApps.find(x=>x.slug===slug);
+    const branch = sel[repo.name].branch;
+    if (macBtn.dataset.macdl) { await requestMacZip(slug, branch, m.name); return; }
+    const r = await api(`/api/mac/${encodeURIComponent(slug)}/link?branch=${encodeURIComponent(branch)}`);
+    if (r.error) toast(`${m.name}: ${r.error}`); else copyText(r.curl, `curl command for ${m.name}`);
+    return;
+  }
+
+  if (t.dataset.deploy) {
+    const repoName = t.dataset.deploy;
+    const repo = S.repos.find(r=>r.name===repoName);
+    const s = sel[repoName];
+    const targets = [...s.chosen].map(device => ({
+      device, branch: repo.deviceBranches?.[device] || s.branch,
+    }));
+    if (!targets.length) return;
+    const res = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({repo: repoName, targets,
+        run: s.launch, mcp: s.mcp, jit: s.jit, buildDebug: s.buildDebug, inject: s.inject})});
+    const jobs = res.jobs || [];
+    if (jobs.length > 1) toast(`Deploying ${repoName} to ${jobs.length} devices — they'll build one after another.`);
+    await poll();
+    if (jobs.length) openPane(jobs[0].id);
+    return;
+  }
+
+  if (t.id === 'signout') {
+    await fetch('/api/logout', { method: 'POST' });
+    location.href = '/login'; return;
+  }
+  if (t.dataset.tab) { openPane(Number(t.dataset.tab)); return; }
+  const row = t.closest('[data-open]');
+  if (row) { openPane(Number(row.dataset.open)); return; }
+  if (t.id==='closePane'){ $('#buildpane').classList.remove('open'); paneBuild=null; return; }
+  if (t.id==='cancelBtn' && paneBuild!=null) { await api(`/api/builds/${paneBuild}/cancel`,{method:'POST'}); poll(); return; }
+  if (t.id==='refreshdev'){ t.textContent='↻ …'; await api('/api/refresh-devices',{method:'POST',body:JSON.stringify({force:!!e.altKey})});
+    setTimeout(()=>{t.textContent='↻ devices'; poll();}, 4000); return; }
+});
+
+document.addEventListener('change', e=>{
+  const t = e.target;
+  if (t.dataset.chip) {
+    const s = sel[t.dataset.chip];
+    if (t.checked) s.chosen.add(t.dataset.device); else s.chosen.delete(t.dataset.device);
+    render();
+  }
+  if (t.dataset.repo) {
+    sel[t.dataset.repo][t.dataset.k] = t.type==='checkbox' ? t.checked : t.value;
+    render();
+  }
+});
+
+poll();
+setInterval(poll, 4000);
+setInterval(pollLog, 1200);
+// ---- debug traces ----
+let traces = [];
+const openTraces = new Set();
+async function pollTraces(){ try { traces = (await api('/api/traces')).traces || []; renderTraces(); } catch{} }
+function renderTraces(){
+  const tb = $('#tracelist');
+  $('#tracecount').textContent = traces.length || '';
+  if (!traces.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">No traces yet.</td></tr>'; return; }
+  tb.innerHTML = traces.map(t => {
+    const b = t.build || {};
+    const open = openTraces.has(t.id);
+    const files = open ? `<tr><td></td><td colspan="5"><div class="tracefiles">${(t.files||[]).map(f =>
+      `<a href="/api/traces/${t.id}/files/${f.path.split('/').map(encodeURIComponent).join('/')}" target="_blank" rel="noopener">${esc(f.path)} <span class="muted">${(f.bytes/1024).toFixed(1)}K</span></a>`).join('')}
+      </div><div class="muted" style="font-size:.72rem">key ${esc(b.keyId)} · built ${esc(b.builtAt||'?')}${b.configuration?' · '+esc(b.configuration):''}${t.uploader?' · uploaded by '+esc(t.uploader):''} · via ${esc(t.via)} · ${esc(t.id)}</div></td></tr>` : '';
+    return `<tr class="clickable" data-trace="${t.id}">
+      <td class="mono">${ago(t.receivedAt)}</td>
+      <td><b>${esc(t.app?.name)}</b><br><span class="muted">${esc(t.app?.bundleId)}</span></td>
+      <td class="mono">${esc(b.repo||'?')} · ${esc(b.branch||'?')}@${esc(t.app?.build)}<br><span class="muted">${esc(t.app?.platform)}</span></td>
+      <td>${esc(b.installedTo||'')}<br><span class="muted">${esc(t.device?.model)} · ${esc(t.device?.os)}</span></td>
+      <td class="tracenote">${esc(t.note||'')}</td>
+      <td style="white-space:nowrap"><a href="/api/traces/${t.id}.zip"><button class="icon" title="Download zip">⤓</button></a>
+        <button class="icon danger ghost" data-tracedelete="${t.id}" title="Delete">✕</button></td>
+    </tr>${files}`;
+  }).join('');
+}
+async function uploadTrace(file){
+  if (!file) return;
+  toast(`Verifying ${file.name}…`);
+  try {
+    const r = await fetch('/api/traces', { method: 'POST', body: file,
+      headers: { 'Content-Type': 'application/zip', 'X-DebugTrace-Source': 'web' } });
+    const body = await r.json();
+    if (!r.ok) { toast(`Rejected: ${body.error}`); return; }
+    toast(body.trace.duplicate ? 'Already have that trace.' : `Verified trace from ${body.trace.app.name} ${body.trace.app.build}.`);
+    openTraces.add(body.trace.id);
+    pollTraces();
+  } catch (e) { toast(`Upload failed: ${e}`); }
+}
+document.addEventListener('click', async e => {
+  const t = e.target;
+  if (t.id === 'traceUploadBtn') { $('#traceFile').click(); return; }
+  if (t.dataset.tracedelete) {
+    e.stopPropagation();
+    if (!confirm('Delete this trace?')) return;
+    await api(`/api/traces/${t.dataset.tracedelete}/delete`, { method: 'POST' });
+    pollTraces(); return;
+  }
+  if (t.closest('a')) return;
+  const row = t.closest('[data-trace]');
+  if (row) { const id = row.dataset.trace; openTraces.has(id) ? openTraces.delete(id) : openTraces.add(id); renderTraces(); }
+});
+$('#traceFile').addEventListener('change', e => { uploadTrace(e.target.files[0]); e.target.value = ''; });
+{
+  const zone = $('#traces');
+  let depth = 0;
+  document.addEventListener('dragenter', e => { if (e.dataTransfer?.types?.includes('Files')) { depth++; zone.classList.add('dropping'); } });
+  document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; zone.classList.remove('dropping'); } });
+  document.addEventListener('dragover', e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+  document.addEventListener('drop', e => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault(); depth = 0; zone.classList.remove('dropping');
+    uploadTrace(e.dataTransfer.files[0]);
+  });
+}
+pollTraces();
+setInterval(pollTraces, 10000);
+
+// ---- crash logs pulled from devices ----
+async function pollCrashLogs(){
+  try {
+    const r = await api('/api/crashlogs');
+    const tb = $('#crashlist');
+    const pull = Object.entries(r.pull || {});
+    $('#crashstatus').innerHTML = pull.map(([d, p]) => p.error
+      ? `<b>${esc(d)}</b>: ${esc(p.error)} <span class="muted">(${ago(p.polledAt)})</span>`
+      : `<b>${esc(d)}</b>: ok <span class="muted">(${ago(p.polledAt)})</span>`).join(' &nbsp;·&nbsp; ');
+    const list = r.crashLogs || [];
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">No crash logs yet.</td></tr>'; return; }
+    tb.innerHTML = list.map(c => `<tr>
+      <td class="mono">${ago(c.capturedAt)}</td>
+      <td><b>${esc(c.appName||'')}</b><br><span class="muted">${esc(c.bundleId)}</span></td>
+      <td class="mono">${esc(c.exception||c.termination||'')}<br><span class="muted">${esc(c.build||'')} · ${esc(c.os||'')}</span></td>
+      <td>${esc(c.device)}</td>
+      <td style="white-space:nowrap">${c.symbolicated?`<a href="/api/crashlogs/${c.id}/symbolicated" target="_blank" rel="noopener">symbolicated</a> · `:''}<a href="/api/crashlogs/${c.id}/ips" target="_blank" rel="noopener">.ips</a>${c.traceId?` · <a href="#traces" data-opentrace="${c.traceId}">trace</a>`:''}</td>
+    </tr>`).join('');
+  } catch {}
+}
+document.addEventListener('click', async e => {
+  const t = e.target;
+  if (t.id === 'crashRefreshBtn') {
+    const r = await api('/api/crashlogs/refresh', { method: 'POST' });
+    if (r && r.disabled) { toast('Pulling crash logs from devices is disabled'); return; }
+    toast('Pulling crash logs…'); setTimeout(pollCrashLogs, 4000); return;
+  }
+  if (t.dataset?.opentrace) { openTraces.add(t.dataset.opentrace); renderTraces(); }
+});
+pollCrashLogs();
+setInterval(pollCrashLogs, 10000);
+
+// ---- views ----
+const VIEWS = ['deploy', 'debug', 'traces', 'history'];
+function route(){
+  const [view, arg] = (location.hash.slice(1) || 'deploy').split('/');
+  const v = VIEWS.includes(view) ? view : 'deploy';
+  document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.dataset.view === v));
+  document.querySelectorAll('nav.views a').forEach(a => {
+    if (a.dataset.view === v) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
+  // Each view starts at the top; the console's own panes scroll inside it.
+  if (route.view !== v) window.scrollTo(0, 0);
+  route.view = v;
+  $('#main').classList.toggle('debugging', v === 'debug');
+  $('#refreshdev').hidden = v !== 'deploy';
+  if (v === 'debug') {
+    const id = arg ? decodeURIComponent(arg) : null;
+    if (id !== D.id) selectApp(id);
+    refreshDebugApps();
+  } else stopStream();
+}
+window.addEventListener('hashchange', route);
+
+// ---- live debugging ----
+// D.id is the build's key id: the server maps it to the app's address and
+// token, so neither ever reaches this page.
+const D = { apps: [], error: null, id: null, tab: 'log', es: null, level: 'debug', filter: '', paused: false,
+            pending: [], help: null, ep: null, stream: 'idle', clientName: 'App Store page', per: {} };
+const MAX_LINES = 5000;
+const LEVEL_LETTER = { debug: 'D', info: 'I', notice: 'N', default: 'N', error: 'E', fault: 'F' };
+
+async function refreshDebugApps(){
+  try {
+    const r = await api('/api/debug/apps');
+    D.apps = r.apps || []; D.error = r.error || null; D.clientName = r.clientName || D.clientName;
+  } catch { return; }
+  renderRail();
+  // Never open an app on its own: the first request to it shows "Allow debug
+  // access?" on the device, so only a click on an app may make one. Listing
+  // apps is discovery only and reaches no app.
+  if (!D.id) renderConsole();
+  else renderConsoleHead();
+}
+
+function renderRail(){
+  const items = D.apps.map(a => {
+    const meta = [a.device, a.build].filter(Boolean).map(esc).join(' ');
+    if (!a.attachable) {
+      return `<div class="appitem off" title="${esc(a.reason || 'not attachable')}"><span class="n"><span class="dot"></span>${esc(a.appName || a.bundleId)}</span><span class="m">${meta}</span></div>`;
+    }
+    return `<button class="appitem" data-app="${esc(a.id)}" aria-current="${a.id === D.id}"><span class="n"><span class="dot"></span>${esc(a.appName || a.bundleId)}</span><span class="m">${meta}</span></button>`;
+  }).join('');
+  const note = D.error
+    ? `<p class="railnote">${esc(D.error)}</p>`
+    : !D.apps.length ? `<p class="railnote">Nothing running. Open a dev build that <code>build-and-sign</code> signed on a device on this network, and it appears here within a few seconds.</p>` : '';
+  $('#rail').innerHTML = items + note;
+}
+
+function currentApp(){ return D.apps.find(a => a.id === D.id); }
+
+function selectApp(id){
+  stopStream();
+  D.id = id; D.help = null; D.ep = null; D.pending = []; D.paused = false;
+  renderRail();
+  renderConsole();
+  if (id) startStream();
+}
+
+function renderConsole(){
+  const el = $('#console');
+  if (!D.id) {
+    el.innerHTML = `<div class="emptystate"><h2>No app selected</h2>
+      Pick a running app on the left to follow its log and call its debug endpoints.
+      The first time this page talks to an app, the device asks to allow it.
+      Apps appear when a dev build signed by <code>build-and-sign</code> is open on a device on this network.</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="conhead" id="conhead"></div>
+    <div class="contabs" role="tablist">
+      <button role="tab" data-contab="log" aria-selected="${D.tab==='log'}">Log</button>
+      <button role="tab" data-contab="panels" aria-selected="${D.tab==='panels'}">Panels</button>
+      <button role="tab" data-contab="profile" aria-selected="${D.tab==='profile'}">Profile</button>
+      <button role="tab" data-contab="memory" aria-selected="${D.tab==='memory'}">Memory</button>
+      <button role="tab" data-contab="endpoints" aria-selected="${D.tab==='endpoints'}">Endpoints</button>
+      <button role="tab" data-contab="info" aria-selected="${D.tab==='info'}">Info</button>
+    </div>
+    <div class="pane ${D.tab==='log'?'active':''}" data-pane="log">
+      <div class="logbar">
+        <select id="loglevel" aria-label="Lowest level shown">
+          ${['debug','info','notice','error','fault'].map(l => `<option value="${l}" ${D.level===l?'selected':''}>${l} and up</option>`).join('')}
+        </select>
+        <input type="search" id="logfilter" placeholder="Filter text" value="${esc(D.filter)}" aria-label="Show only lines containing">
+        <button class="ghost" id="logpause">${D.paused ? 'Resume' : 'Pause'}</button>
+        <button class="ghost" id="logclear">Clear</button>
+        <span class="spacer"></span>
+        <span class="streamstate" id="streamstate"></span>
+      </div>
+      <div class="logwrap">
+        <ol id="loglines" aria-live="off"></ol>
+        <button class="primary jumpnew" id="jumpnew">New lines below</button>
+      </div>
+    </div>
+    <div class="pane ${D.tab==='panels'?'active':''}" data-pane="panels"><div class="scrollpane" id="panelpane"></div></div>
+    <div class="pane ${D.tab==='profile'?'active':''}" data-pane="profile"><div class="scrollpane" id="profpane"></div></div>
+    <div class="pane ${D.tab==='memory'?'active':''}" data-pane="memory"><div class="scrollpane" id="mempane"></div></div>
+    <div class="pane ${D.tab==='endpoints'?'active':''}" data-pane="endpoints"><div class="endpoints">
+      <div class="eplist" id="eplist"><p class="railnote">Loading…</p></div>
+      <div class="epdetail" id="epdetail"><div class="emptystate">Pick an endpoint to see its parameters and run it.</div></div>
+    </div></div>
+    <div class="pane ${D.tab==='info'?'active':''}" data-pane="info"><div class="epdetail" id="infopane"><p class="railnote">Loading…</p></div></div>`;
+  renderConsoleHead();
+  setStreamState(D.stream);
+  renderProfilePane();
+  renderMemoryPane();
+  if (D.tab === 'endpoints') loadHelp();
+  if (D.tab === 'info') loadInfo();
+  if (D.tab === 'panels') loadPanels(true);
+}
+
+function renderConsoleHead(){
+  const head = $('#conhead');
+  if (!head) return;
+  const a = currentApp();
+  // Redrawn only when the app changes, so typing a note isn't interrupted.
+  const key = a ? [a.id, a.appName, a.build, a.device].join('|') : 'gone';
+  if (head.dataset.key === key) return;
+  head.dataset.key = key;
+  const name = a ? (a.appName || a.bundleId) : 'Not running';
+  const meta = a ? [a.bundleId, a.build && `build ${a.build}`, a.device && `on ${a.device}`].filter(Boolean).map(esc).join(', ') : 'This build is no longer advertising. It comes back when the app is open again.';
+  const keepNote = head.querySelector('#tracenote')?.value || '';
+  head.innerHTML = `<h2>${esc(name)}</h2><span class="meta">${meta}</span><span class="spacer"></span>
+    <input type="search" id="tracenote" class="field" placeholder="What are you looking into?" value="${esc(keepNote)}" aria-label="Note for the trace">
+    <button id="capturetrace" ${a ? '' : 'disabled'} title="Capture logs, breadcrumbs and a snapshot from the app, and upload them here">Capture trace</button>`;
+}
+
+function stopStream(){ if (D.es) { D.es.close(); D.es = null; } }
+
+function startStream(){
+  stopStream();
+  const q = new URLSearchParams({ level: D.level });
+  if (D.filter) q.set('contains', D.filter);
+  setStreamState('connecting');
+  const es = new EventSource(`/api/debug/${encodeURIComponent(D.id)}/logs?${q}`);
+  D.es = es;
+  es.addEventListener('backlog', e => { const d = JSON.parse(e.data); $('#loglines').innerHTML = ''; addLines(d.entries, true); });
+  es.addEventListener('lines', e => addLines(JSON.parse(e.data).entries));
+  es.addEventListener('status', e => {
+    const d = JSON.parse(e.data);
+    const states = { live: 'live', unreachable: 'waiting', gone: 'waiting', error: 'waiting', relaunched: 'live' };
+    setStreamState(states[d.state] || 'waiting', d.message);
+    if (d.state === 'relaunched') systemLine('The app relaunched; following the new run.');
+    else if (d.state !== 'live') systemLine(d.state === 'unreachable' ? "The app isn't answering. iOS suspends apps in the background, so bring it to the front." : (d.message || d.state));
+  });
+  es.onerror = () => { if (es.readyState === EventSource.CLOSED) setStreamState('stopped'); else setStreamState('connecting'); };
+}
+
+function setStreamState(state, message){
+  D.stream = state;
+  const el = $('#streamstate');
+  if (!el) return;
+  const text = { live: 'Following', waiting: 'Waiting for the app', connecting: 'Connecting', stopped: 'Stopped', idle: '' }[state] || state;
+  el.className = 'streamstate ' + (state === 'live' ? 'live' : state === 'waiting' || state === 'connecting' ? 'waiting' : '');
+  el.textContent = D.paused && state === 'live' ? `Paused, ${D.pending.length} new` : text;
+  el.title = message || '';
+}
+
+function lineHTML(e){
+  const letter = LEVEL_LETTER[e.level] || '?';
+  const d = new Date(e.time);
+  const t = isNaN(d) ? esc(e.time) : d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  return `<li class="${letter}"><span class="t">${t}</span><span class="lv">${letter}</span><span class="c" title="${esc(e.subsystem)}">${esc(e.category)}</span><span class="msg">${esc(e.message)}</span></li>`;
+}
+
+function systemLine(text){
+  const list = $('#loglines');
+  if (!list) return;
+  list.insertAdjacentHTML('beforeend', `<li class="sys">${esc(text)}</li>`);
+  stickToBottom(list, true);
+}
+
+function addLines(entries, fromBacklog){
+  if (!entries?.length) return;
+  if (D.paused && !fromBacklog) { D.pending.push(...entries); setStreamState(D.stream); return; }
+  const list = $('#loglines');
+  if (!list) return;
+  const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
+  list.insertAdjacentHTML('beforeend', entries.map(lineHTML).join(''));
+  while (list.children.length > MAX_LINES) list.firstElementChild.remove();
+  stickToBottom(list, atBottom || fromBacklog);
+}
+
+function stickToBottom(list, stick){
+  if (stick) { list.scrollTop = list.scrollHeight; $('#jumpnew').style.display = 'none'; }
+  else $('#jumpnew').style.display = 'block';
+}
+
+async function loadHelp(){
+  if (!D.help) {
+    try {
+      const r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/help`);
+      if (r.status === 401) return api('/api/state');
+      const body = await r.json();
+      if (!r.ok) { $('#eplist').innerHTML = `<p class="railnote">${esc(body.error?.message || 'The app did not answer.')}</p>`; return; }
+      D.help = body;
+    } catch (e) { $('#eplist').innerHTML = `<p class="railnote">${esc(e.message)}</p>`; return; }
+  }
+  const eps = D.help.endpoints || [];
+  $('#eplist').innerHTML = eps.map(ep => `<button class="ep" data-ep="${esc(ep.name)}" aria-current="${D.ep===ep.name}">
+    <span class="en">${esc(ep.name)}</span><span class="ek ${ep.kind==='command'?'cmd':''}">${ep.kind==='command'?'command':'query'}</span></button>`).join('')
+    || '<p class="railnote">This app registers no endpoints.</p>';
+  if (D.ep) renderEndpoint();
+}
+
+function paramInput(p){
+  const id = 'p_' + p.name;
+  const def = p.default !== undefined ? p.default : '';
+  if (p.choices) return `<select id="${id}" data-param="${esc(p.name)}" data-type="${esc(p.type)}">
+    ${p.required ? '' : '<option value="">(default)</option>'}${p.choices.map(c => `<option ${String(c)===String(def)?'selected':''}>${esc(c)}</option>`).join('')}</select>`;
+  if (p.type === 'boolean') return `<select id="${id}" data-param="${esc(p.name)}" data-type="boolean">
+    ${p.required ? '' : `<option value="">(default${def!==''?': '+esc(def):''})</option>`}<option>true</option><option>false</option></select>`;
+  if (p.type === 'integer' || p.type === 'number') return `<input type="number" id="${id}" data-param="${esc(p.name)}" data-type="${p.type}"
+    ${p.min!==undefined?`min="${p.min}"`:''} ${p.max!==undefined&&p.max<1e15?`max="${p.max}"`:''} ${p.type==='number'?'step="any"':''} placeholder="${esc(def)}">`;
+  return `<input type="text" id="${id}" data-param="${esc(p.name)}" data-type="${esc(p.type)}" placeholder="${esc(def)}">`;
+}
+
+function renderEndpoint(){
+  const ep = (D.help?.endpoints || []).find(e => e.name === D.ep);
+  if (!ep) return;
+  document.querySelectorAll('.ep').forEach(b => b.setAttribute('aria-current', b.dataset.ep === D.ep));
+  const params = ep.parameters || [];
+  $('#epdetail').innerHTML = `<h2 style="margin:0;font-size:1rem;font-family:var(--mono)">${esc(ep.name)}</h2>
+    <p class="desc">${esc(ep.description)}</p>
+    ${ep.name === '_profile' || ep.name === '_memory' ? `<p class="eplink">This one has its own view: <a href="#" data-contab="${ep.name === '_profile' ? 'profile' : 'memory'}">open ${ep.name === '_profile' ? 'Profile' : 'Memory'}</a>. Here you get the raw JSON.</p>` : ''}
+    ${params.length ? `<div class="params">${params.map(p => `<label for="p_${esc(p.name)}">${esc(p.name)}${p.required?' *':''}</label>${paramInput(p)}<span class="pd">${esc(p.description||'')}</span>`).join('')}</div>` : ''}
+    <div><button class="primary" id="runep">${ep.kind==='command' ? 'Run command' : 'Run query'}</button></div>
+    <div id="epresult"></div>`;
+}
+
+async function runEndpoint(){
+  const ep = (D.help?.endpoints || []).find(e => e.name === D.ep);
+  if (!ep) return;
+  if (ep.destructive && !confirm(`${ep.name} changes the app's state and is marked destructive. Run it?`)) return;
+  const args = {};
+  for (const el of document.querySelectorAll('[data-param]')) {
+    const v = el.value.trim();
+    if (v === '') continue;
+    const type = el.dataset.type;
+    args[el.dataset.param] = type === 'integer' ? parseInt(v, 10) : type === 'number' ? parseFloat(v) : type === 'boolean' ? v === 'true' : v;
+  }
+  await showCall(ep.name, args, $('#epresult'), $('#runep'));
+}
+
+async function showCall(endpoint, args, out, button){
+  if (button) button.disabled = true;
+  const run = { started: Date.now(), expect: 0 };
+  out.innerHTML = runStateHTML(run, 'Running…');
+  const slow = setInterval(() => { if (out.isConnected && !out.dataset.done) updateRunState(out, run, 'Running…'); }, 1000);
+  delete out.dataset.done;
+  try {
+    const r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/call`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint, arguments: args }) });
+    if (r.status === 401) return api('/api/state');
+    const type = r.headers.get('content-type') || '';
+    if (type.startsWith('image/')) {
+      out.innerHTML = `<img class="result" alt="${esc(endpoint)} result" src="${URL.createObjectURL(await r.blob())}">`;
+    } else if (type.includes('json')) {
+      const body = await r.json();
+      const ok = r.ok && body.ok !== false;
+      if (ok) {
+        out.innerHTML = `<pre class="result"></pre>`;
+        out.firstElementChild.textContent = JSON.stringify(body.data !== undefined ? body.data : body, null, 2);
+      } else out.innerHTML = errorHTML(body.error || { message: String(body.error || `HTTP ${r.status}`) });
+    } else {
+      const blob = await r.blob();
+      out.innerHTML = `<a href="${URL.createObjectURL(blob)}" download="${esc(endpoint)}">Download the result (${(blob.size/1024).toFixed(1)} KB)</a>`;
+    }
+  } catch (e) { out.innerHTML = errorHTML({ message: e.message, hint: 'Check that the app store service is still running.' }); }
+  out.dataset.done = '1'; clearInterval(slow);
+  if (button) button.disabled = false;
+}
+
+// ---- profile and memory: first-class views of _profile and _memory ----
+// State is kept per app (by key id), so switching apps and back keeps a
+// profile and the memory snapshots.
+function per(){
+  return D.per[D.id] ||= {
+    identity: null, identityLoading: false,
+    prof: { args: { seconds: 2, intervalMs: 2, threads: 'main', limit: 12 }, run: null, result: null, error: null, views: {}, at: null },
+    mem: { regions: 12, run: null, snaps: [], shown: -1, base: -1, error: null },
+  };
+}
+
+// One call through the proxy. Never throws: a failure is {ok:false, error}.
+async function callApp(endpoint, args){
+  let r;
+  try {
+    r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/call`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint, arguments: args }) });
+  } catch (e) {
+    return { ok: false, error: { message: `The store server did not answer: ${e.message}`, hint: 'Check that the app store service is still running, then try again.' } };
+  }
+  if (r.status === 401) { api('/api/state'); return { ok: false, error: { message: 'Signed out.' } }; }
+  let body = null;
+  try { body = await r.json(); } catch {}
+  if (!body) return { ok: false, error: { message: `HTTP ${r.status} with no JSON reply`, hint: 'Try again; if it keeps happening, read the store log.' } };
+  if (!r.ok || body.ok === false) return { ok: false, status: r.status, error: body.error || { message: String(body.error || `HTTP ${r.status}`) } };
+  return { ok: true, data: body.data, elapsedMs: body.elapsedMs };
+}
+
+// An error from the device, said plainly, with what to do next.
+function errorHTML(err, retry){
+  const m = String(err?.message || 'The call failed.');
+  let title = 'The call failed', pending = false;
+  if (/waiting for someone to allow/.test(m)) { title = 'Nobody allowed this page on the device yet'; pending = true; }
+  else if (/declined on the device/.test(m)) title = 'Access was declined on the device';
+  else if (/refusing new debug clients/.test(m)) title = 'The device is not asking any more';
+  else if (err?.code === 'timeout') { title = 'The app did not answer in time'; pending = true; }
+  else if (err?.code === 'unreachable') title = 'The app is not answering';
+  else if (/no longer running/.test(m)) title = 'The app stopped advertising';
+  return `<div class="callerr ${pending ? 'pending' : ''}" role="alert"><h3>${esc(title)}</h3><p>${esc(m)}</p>
+    ${err?.hint ? `<p class="hint">${esc(err.hint)}</p>` : ''}
+    ${retry ? `<button data-retry="${retry}">Try again</button>` : ''}</div>`;
+}
+
+// While a call is out: a progress bar for the part we can predict (sampling),
+// then, past it, the approval prompt the device may be showing.
+function runStateHTML(run, label){
+  const elapsed = (Date.now() - run.started) / 1000;
+  const waiting = elapsed > run.expect + 2.5;
+  if (!waiting) return `<div class="runstate"><div class="meter"><i style="animation-duration:${Math.max(run.expect, .3)}s"></i></div><span>${esc(label)}</span></div>`;
+  return `<div class="runstate waiting" role="status"><div class="meter waiting"><i></i></div>
+    <span>Still waiting for the app (<span class="secs">${Math.round(elapsed)}</span> s). The first call from this page asks the person at the device:
+    if <b>${esc(currentApp()?.device || 'the device')}</b> shows <q>Allow debug access?</q> for <q>${esc(D.clientName)}</q>, choose Allow.
+    The app gives up after 60 s.</span></div>`;
+}
+// Redraws only on the switch to waiting, so the animations don't restart.
+function updateRunState(box, run, label){
+  if (!box) return;
+  const elapsed = (Date.now() - run.started) / 1000;
+  const waiting = elapsed > run.expect + 2.5;
+  const cur = box.querySelector('.runstate');
+  if (!cur || cur.classList.contains('waiting') !== waiting) box.innerHTML = runStateHTML(run, label);
+  else if (waiting) cur.querySelector('.secs').textContent = Math.round(elapsed);
+}
+function tickRuns(){
+  const p = D.per[D.id];
+  if (!p) return;
+  if (p.prof.run) updateRunState($('#profstatus'), p.prof.run, p.prof.run.label);
+  if (p.mem.run) updateRunState($('#memstatus'), p.mem.run, 'Reading memory…');
+}
+setInterval(tickRuns, 1000);
+
+// The app's own code vs the system's. The image the app's code lives in is
+// its executable; _info names the app, and Swift module prefixes catch
+// packages linked into it.
+const APPLE_MODULES = new Set(['Swift', 'Foundation', 'SwiftUI', 'UIKit', 'AppKit', 'RealityKit', 'RealityFoundation', 'ARKit', 'Combine',
+  '_Concurrency', 'Dispatch', 'CoreFoundation', 'Metal', 'MetalKit', 'MetalFX', 'AVFoundation', 'AVFAudio', 'AVKit', 'os', 'OSLog', 'Observation',
+  'CompositorServices', 'Spatial', 'simd', 'CoreGraphics', 'QuartzCore', 'GameController', 'PHASE', 'Network', 'CryptoKit', 'SwiftData',
+  'CoreData', 'Accelerate', 'CoreML', 'Vision', 'CoreImage', 'WebKit', 'Darwin', 'ObjectiveC', 'Synchronization', 'CoreMedia', 'CoreVideo',
+  'VideoToolbox', 'ImageIO', 'UniformTypeIdentifiers', 'Photos', 'PhotosUI', 'StoreKit', 'MediaPlayer', 'GroupActivities', 'SharePlay', 'Charts',
+  'CoreMotion', 'CoreLocation', 'MapKit', 'HomeKit', 'SceneKit', 'SpriteKit', 'GameKit', 'ReplayKit', 'Security', 'LocalAuthentication', 'XCTest']);
+const normImage = s => String(s || '').toLowerCase().replace(/\.debug\.dylib$|\.dylib$|\.framework$/, '').replace(/[^a-z0-9]/g, '');
+const moduleOf = fn => { const m = /^([A-Za-z_][A-Za-z0-9_]*)\.[A-Za-z_]/.exec(fn); return m && !fn.startsWith('-[') && !fn.startsWith('+[') ? m[1] : null; };
+const foreignModule = m => m && !APPLE_MODULES.has(m) && !m.startsWith('_') && !/^(CA|CG|UI|NS|MTL|AV|CF)$/.test(m);
+
+function codeOwner(result){
+  const p = per(), a = currentApp();
+  const names = new Set([p.identity?.app?.name, a?.appName, String(a?.bundleId || '').split('.').pop()].filter(Boolean).map(normImage));
+  const rows = (result?.threads || []).flatMap(t => [...t.selfTop, ...t.inclusiveTop]);
+  const images = new Set();
+  for (const r of rows) {
+    const img = normImage(r.image);
+    if (names.has(img)) images.add(img);
+    // A Swift module of the app's own (VoxelRender, RAVEInput) in an image
+    // that isn't a system library marks that image as the app's.
+    else if (foreignModule(moduleOf(r.function)) && !/^lib/.test(img) && !APPLE_MODULES.has(r.image)) images.add(img);
+  }
+  const fnImage = new Map(rows.map(r => [r.function, normImage(r.image)]));
+  const modules = new Set(rows.filter(r => images.has(normImage(r.image))).map(r => moduleOf(r.function)).filter(Boolean));
+  const imageNames = [...new Set(rows.filter(r => images.has(normImage(r.image))).map(r => r.image))];
+  return {
+    imageNames: imageNames.length ? imageNames : [a?.appName].filter(Boolean),
+    image: img => images.has(normImage(img)),
+    frame: fn => fnImage.has(fn) ? images.has(fnImage.get(fn)) : (modules.has(moduleOf(fn)) || foreignModule(moduleOf(fn))),
+  };
+}
+
+// Swift and C++ signatures shortened to what a person scans for:
+// "Oneiros.World.emissiveSurfaces(near: Swift.SIMD3<Swift.Float>, ...) -> ..."
+// becomes "Oneiros.World.emissiveSurfaces(near:radius:)". Full text stays in the title.
+function shortName(fn){
+  let s = String(fn ?? '');
+  if (/^[-+]\[/.test(s)) return s;
+  s = s.replace(/\bSwift\./g, '');
+  const closeOf = (str, from, open, close) => {
+    let d = 0;
+    for (let i = from; i < str.length; i++) {
+      const c = str[i];
+      if (c === '(' || c === '<' || c === '[') d++;
+      else if (c === ')' || c === ']' || (c === '>' && str[i - 1] !== '-')) { d--; if (d === 0) return c === close ? i : -1; }
+    }
+    return -1;
+  };
+  let depth = 0, open = -1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '<') depth++;
+    else if (c === '>' && s[i - 1] !== '-') depth--;
+    else if (c === '(' && depth === 0) { open = i; break; }
+  }
+  if (open < 0) return s;
+  const close = closeOf(s, open, '(', ')');
+  if (close < 0) return s;
+  let base = s.slice(0, open).replace(/\s*:\s*$/, '');
+  if (base.endsWith('>')) {   // drop a trailing generic clause: encode<A where A: Encodable>
+    let d = 0;
+    for (let i = base.length - 1; i >= 0; i--) {
+      if (base[i] === '>' && base[i - 1] !== '-') d++;
+      else if (base[i] === '<' && --d === 0) { base = base.slice(0, i); break; }
+    }
+  }
+  if (/\s:\s/.test(s.slice(0, open)) && s.slice(0, open).trim().endsWith(':')) return base;  // "subscript.getter : (A) -> B"
+  const inner = s.slice(open + 1, close).trim();
+  if (!inner) return base + '()';
+  const parts = []; let d = 0, last = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '(' || c === '<' || c === '[') d++;
+    else if (c === ')' || c === ']' || (c === '>' && inner[i - 1] !== '-')) d--;
+    else if (c === ',' && d === 0) { parts.push(inner.slice(last, i)); last = i + 1; }
+  }
+  parts.push(inner.slice(last));
+  const labels = parts.map(p => (/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)/.exec(p) || [])[1]);
+  return labels.every(Boolean) ? `${base}(${labels.map(l => l + ':').join('')})` : `${base}(…)`;
+}
+function fnHTML(fn, own){
+  const short = shortName(fn);
+  const m = /^([A-Za-z_][A-Za-z0-9_]*\.)(.+)$/.exec(short);
+  const inner = m && !short.startsWith('-[') ? `<span class="mod">${esc(m[1])}</span>${esc(m[2])}` : esc(short);
+  return `<code class="fn ${own ? 'own' : ''}" title="${esc(fn)}">${inner}</code>`;
+}
+const pct = n => `${(Math.round(n * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+const int = n => Number(n || 0).toLocaleString();
+
+function renderProfilePane(){
+  const el = $('#profpane');
+  if (!el) return;
+  const p = per().prof, a = p.args;
+  el.innerHTML = `<form class="ctrlbar" id="profform">
+      <label class="ctl">Sample for<span class="in"><input type="number" id="pf_seconds" min="0.2" max="10" step="0.1" value="${a.seconds}" required>s</span></label>
+      <label class="ctl">Every<span class="in"><input type="number" id="pf_intervalMs" min="0.5" max="50" step="0.5" value="${a.intervalMs}" required>ms</span></label>
+      <div class="ctl">Threads<div class="seg" role="group" aria-label="Threads">
+        <button type="button" data-pthreads="main" aria-pressed="${a.threads === 'main'}">Main</button>
+        <button type="button" data-pthreads="all" aria-pressed="${a.threads === 'all'}">All</button></div></div>
+      <label class="ctl">Rows<span class="in"><input type="number" id="pf_limit" min="1" max="50" step="1" value="${a.limit}" required></span></label>
+      <button class="primary" type="submit" id="profrun" ${p.run ? 'disabled' : ''}>${p.run ? 'Sampling…' : 'Run profile'}</button>
+      <span class="spacer"></span>
+      <button type="button" class="ghost" id="profcopy" ${p.result ? '' : 'disabled'} title="Copy the whole profile as plain text, with full function names, to paste to an agent or a note">Copy as text</button>
+    </form>
+    <div class="pbody"><div id="profstatus"></div><div id="profresult" style="display:flex;flex-direction:column;gap:16px"></div></div>`;
+  renderProfileResult();
+}
+
+function renderProfileResult(){
+  const out = $('#profresult'), status = $('#profstatus');
+  if (!out) return;
+  const p = per().prof;
+  status.innerHTML = p.run ? runStateHTML(p.run, p.run.label) : p.error ? errorHTML(p.error, 'profile') : '';
+  const copy = $('#profcopy'); if (copy) copy.disabled = !p.result;
+  const run = $('#profrun'); if (run) { run.disabled = !!p.run; run.textContent = p.run ? 'Sampling…' : 'Run profile'; }
+  if (!p.result) {
+    out.innerHTML = p.run || p.error ? '' : `<p class="lede">Samples every thread's call stack while the app runs and shows where the time goes.
+      Start with <b>the main thread for 2 seconds</b> while you do whatever feels slow on the device; switch to all threads to find render, audio or GPU work.
+      The call blocks for as long as it samples.</p>`;
+    return;
+  }
+  const r = p.result, own = codeOwner(r);
+  const cost = r.seconds ? r.overheadMs / (r.seconds * 1000) * 100 : 0;
+  out.innerHTML = `<div class="profsum">
+      <span><b>${int(r.samples)}</b> samples over <b>${r.seconds} s</b>, every ${r.intervalMs} ms</span>
+      <span title="Time the sampler itself spent walking stacks">sampling cost <b>${r.overheadMs} ms</b> (${pct(cost)})</span>
+      ${r.note ? `<span>${esc(r.note)}</span>` : ''}
+      <span class="muted">taken ${esc(p.at)}</span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="legend"><span class="own">Your code${own.imageNames.length ? ' (' + own.imageNames.map(esc).join(', ') + ')' : ''}</span><span>System libraries</span></span>
+    </div>
+    ${(r.threads || []).map((t, i) => threadHTML(t, i, own)).join('') || '<p class="lede">No threads were sampled.</p>'}`;
+}
+
+function threadHTML(t, i, own){
+  const p = per().prof;
+  const view = p.views[i] || (t.hotStacks?.length ? 'tree' : 'self');
+  const tab = (k, label, n) => `<button type="button" data-tview="${i}:${k}" aria-pressed="${view === k}" ${n ? '' : 'disabled'}>${label}</button>`;
+  let body;
+  if (view === 'tree') body = treeHTML(t, own);
+  else body = tableHTML(view === 'self' ? t.selfTop : t.inclusiveTop, own, view === 'self'
+    ? 'Time spent in the function itself, not in what it calls.'
+    : 'Time spent in the function and everything it calls.');
+  return `<article class="thread">
+    <header class="thhead">
+      <h3 title="${esc(t.name)}">${esc(t.name)}</h3>
+      <div class="busy" title="Share of samples where the thread was running, not waiting"><div class="busybar ${t.busyPercent >= 80 ? 'hot' : ''}"><i style="width:${Math.min(100, t.busyPercent)}%"></i></div>
+        <span class="busyv"><b>${pct(t.busyPercent)}</b> busy</span></div>
+      <span class="thmeta">${int(t.samples)} samples</span>
+    </header>
+    <div class="thtabs"><div class="seg" role="group" aria-label="View of ${esc(t.name)}">
+      ${tab('tree', 'Hot stacks', t.hotStacks?.length)}${tab('self', 'Self time', t.selfTop?.length)}${tab('incl', 'Inclusive time', t.inclusiveTop?.length)}</div></div>
+    <div class="thbody">${body}</div>
+  </article>`;
+}
+
+function tableHTML(rows, own, caption){
+  if (!rows?.length) return '<p class="muted">Nothing here: the thread was idle for the whole sample.</p>';
+  const top = Math.max(...rows.map(r => r.percent), .1);
+  return `<p class="icecap">${esc(caption)}</p><table class="ftable">
+    <thead><tr><th class="c-share">Share</th><th class="num n c-n">Samples</th><th>Function</th><th class="l c-lib">Library</th></tr></thead>
+    <tbody>${rows.map(r => { const o = own.image(r.image); return `<tr class="${o ? 'own' : ''}">
+      <td><span class="sharecell"><span class="share" title="Bars are scaled to the top row"><i style="width:${Math.min(100, r.percent / top * 100)}%"></i></span><span class="num">${pct(r.percent)}</span></span></td>
+      <td class="num n">${int(r.samples)}</td>
+      <td>${fnHTML(r.function, o)}</td>
+      <td class="l"><span class="lib ${o ? 'own' : ''}" title="${esc(r.image)}">${esc(r.image)}</span></td></tr>`; }).join('')}</tbody></table>`;
+}
+
+// Hot stacks merged by common prefix into an icicle (outermost frame on top),
+// widths as a share of every sample on the thread. Only the top stacks come
+// back, so the unshown remainder is left as empty track, not stretched.
+function treeHTML(t, own){
+  const stacks = t.hotStacks || [];
+  if (!stacks.length) return '<p class="muted">No hot stacks: nothing on this thread ran often enough to show.</p>';
+  const root = { kids: new Map() };
+  let covered = 0;
+  for (const s of stacks) {
+    covered += s.samples;
+    let node = root;
+    s.frames.forEach((f, depth) => {
+      if (!node.kids.has(f)) node.kids.set(f, { name: f, samples: 0, self: 0, kids: new Map() });
+      node = node.kids.get(f);
+      node.samples += s.samples;
+      if (depth === s.frames.length - 1) node.self += s.samples;
+    });
+  }
+  // Widths are shares of the stacks shown, so the chart stays readable when
+  // they cover a small part of the thread; titles give the share of the thread.
+  const total = t.samples || covered || 1, shown = covered || 1;
+  const cells = [];
+  let maxDepth = 0;
+  (function walk(node, x, depth){
+    for (const kid of [...node.kids.values()].sort((a, b) => b.samples - a.samples)) {
+      const w = kid.samples / shown * 100;
+      const o = own.frame(kid.name);
+      cells.push(`<span class="cell ${o ? 'own' : 'sys'} ${kid.self ? 'leaf' : ''}" style="left:${x}%;width:calc(${w}% - 1px);top:${depth * 22}px"
+        title="${esc(kid.name)}\n${pct(kid.samples / total * 100)} of samples (${int(kid.samples)})${kid.self ? `, ${int(kid.self)} as the leaf` : ''}">${w > 4 ? esc(shortName(kid.name)) : ''}</span>`);
+      maxDepth = Math.max(maxDepth, depth + 1);
+      walk(kid, x, depth + 1);
+      x += w;
+    }
+  })(root, 0, 0);
+  const list = stacks.map((s, i) => {
+    const leaf = s.frames[s.frames.length - 1];
+    const lo = own.frame(leaf);
+    return `<li><details ${i === 0 && stacks.length <= 2 ? 'open' : ''}><summary class="${lo ? 'own' : ''}">
+        <span class="num">${pct(s.percent)}</span><span class="share"><i style="width:${Math.min(100, s.percent)}%"></i></span>
+        ${fnHTML(leaf, lo)}<span class="depth">${s.frames.length} frames</span></summary>
+      <ol class="frames">${s.frames.map((f, k) => `<li class="${own.frame(f) ? 'own' : ''} ${k === s.frames.length - 1 ? 'leaf' : ''}" title="${esc(f)}">${esc(shortName(f))}</li>`).join('')}</ol>
+    </details></li>`;
+  }).join('');
+  return `<div class="ice" style="height:${maxDepth * 22}px" role="img" aria-label="Icicle chart of the hottest stacks">${cells.join('')}</div>
+    <p class="icecap">Built from the ${stacks.length} hottest stack${stacks.length === 1 ? '' : 's'} only, which cover ${pct(covered / total * 100)} of this thread's samples; widths are shares of those stacks, and the rest of the thread's time is not shown.
+      Outermost call on top; bold boxes are where a stack ended. Hover a box for its full name and share of the thread.</p>
+    <ol class="stacks">${list}</ol>`;
+}
+
+function profileText(){
+  const p = per().prof, r = p.result, a = currentApp();
+  if (!r) return '';
+  const L = [];
+  L.push(`_profile of ${a?.appName || a?.bundleId} build ${a?.build || '?'} on ${a?.device || '?'}, taken ${p.at}`);
+  L.push(`${r.samples} samples over ${r.seconds} s every ${r.intervalMs} ms; sampling cost ${r.overheadMs} ms${r.note ? `; ${r.note}` : ''}`);
+  const rows = (title, list) => {
+    if (!list?.length) return;
+    L.push(`  ${title}:`);
+    for (const x of list) L.push(`    ${pct(x.percent).padStart(6)} ${String(x.samples).padStart(6)}  ${x.image}  ${x.function}`);
+  };
+  for (const t of r.threads || []) {
+    L.push('', `Thread ${t.name}: ${pct(t.busyPercent)} busy, ${t.samples} samples`);
+    rows('Self time', t.selfTop);
+    rows('Inclusive time', t.inclusiveTop);
+    if (t.hotStacks?.length) {
+      L.push('  Hot stacks (outermost first, leaf last):');
+      for (const s of t.hotStacks) {
+        L.push(`    ${pct(s.percent)} (${s.samples} samples)`);
+        for (const f of s.frames) L.push(`      ${f}`);
+      }
+    }
+  }
+  return L.join('\n');
+}
+
+async function runProfile(){
+  const st = per(), p = st.prof, id = D.id;
+  if (p.run) return;
+  const read = (k, min, max, int) => { const v = Number($(`#pf_${k}`)?.value); return Number.isFinite(v) ? Math.min(max, Math.max(min, int ? Math.round(v) : v)) : p.args[k]; };
+  p.args = { ...p.args, seconds: read('seconds', .2, 10), intervalMs: read('intervalMs', .5, 50), limit: read('limit', 1, 50, true) };
+  const a = p.args;
+  p.run = { started: Date.now(), expect: a.seconds, label: `Sampling ${a.threads === 'main' ? 'the main thread' : 'every thread'} for ${a.seconds} s…` };
+  p.error = null;
+  if (D.id === id) { renderProfilePane(); $('#profpane').scrollTop = 0; }
+  loadAppIdentity();
+  const r = await callApp('_profile', a);
+  p.run = null;
+  if (r.ok) { p.result = r.data; p.views = {}; p.at = new Date().toLocaleTimeString(); } else p.error = r.error;
+  if (D.id === id) renderProfileResult();
+}
+
+// _info, once per app, to know which image is the app's own.
+async function loadAppIdentity(){
+  const st = per(), id = D.id;
+  if (st.identity || st.identityLoading || !id) return;
+  st.identityLoading = true;
+  const r = await callApp('_info', {});
+  st.identityLoading = false;
+  if (r.ok) { st.identity = r.data; if (D.id === id && st.prof.result) renderProfileResult(); }
+}
+
+// ---- memory ----
+function bytes(n, signed){
+  if (n == null || !Number.isFinite(n)) return '—';
+  const sign = signed ? (n > 0 ? '+' : n < 0 ? '−' : '±') : n < 0 ? '−' : '';
+  let v = Math.abs(n);
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+  const digits = u === 0 ? 0 : v >= 100 ? 0 : v >= 10 ? 1 : 2;
+  return `${sign}${v.toFixed(digits)} ${units[u]}`;
+}
+function deltaHTML(cur, base, { invert = false, fmt = n => bytes(n, true) } = {}){
+  if (base == null || cur == null) return '';
+  const d = cur - base;
+  if (Math.abs(d) < 1) return '';
+  const up = invert ? d < 0 : d > 0;
+  return `<span class="delta ${up ? 'up' : 'down'}">${fmt(d)}</span>`;
+}
+
+function renderMemoryPane(){
+  const el = $('#mempane');
+  if (!el) return;
+  const m = per().mem;
+  el.innerHTML = `<form class="ctrlbar" id="memform">
+      <label class="ctl">Region kinds<span class="in"><input type="number" id="mm_regions" min="1" max="60" step="1" value="${m.regions}" required></span></label>
+      <button class="primary" type="submit" id="memsnap" ${m.run ? 'disabled' : ''}>Take snapshot</button>
+      <div class="snaps" id="memsnaps"></div>
+      <span class="spacer"></span>
+      <button type="button" class="ghost" id="memcopy" ${m.snaps.length ? '' : 'disabled'}>Copy as text</button>
+      <button type="button" class="ghost" id="memclear" ${m.snaps.length ? '' : 'disabled'}>Clear snapshots</button>
+    </form>
+    <div class="pbody"><div id="memstatus"></div><div id="memresult" style="display:flex;flex-direction:column;gap:16px"></div></div>`;
+  renderMemoryResult();
+}
+
+function renderMemoryResult(){
+  const out = $('#memresult');
+  if (!out) return;
+  const m = per().mem;
+  $('#memstatus').innerHTML = m.run ? runStateHTML(m.run, 'Reading memory…') : m.error ? errorHTML(m.error, 'memory') : '';
+  $('#memsnap').disabled = !!m.run;
+  $('#memcopy').disabled = $('#memclear').disabled = !m.snaps.length;
+  $('#memsnaps').innerHTML = m.snaps.length ? m.snaps.map((s, i) =>
+    `<button type="button" class="snap" data-snap="${i}" aria-pressed="${i === m.shown}" title="Show this snapshot">#${i + 1} ${esc(s.at)}${i === m.base ? '<span class="base">baseline</span>' : ''}</button>`).join('')
+    + (m.snaps.length > 1 ? `<label class="in" style="margin-left:6px">compared with <select id="mmbase">
+        <option value="-1">nothing</option>${m.snaps.map((s, i) => i === m.shown ? '' : `<option value="${i}" ${i === m.base ? 'selected' : ''}>#${i + 1} ${esc(s.at)}</option>`).join('')}</select></label>` : '')
+    : '';
+  const cur = m.snaps[m.shown];
+  if (!cur) {
+    out.innerHTML = m.run || m.error ? '' : `<p class="lede">Take a snapshot, do the thing you suspect on the device, then take another: every number shows what changed since the baseline.
+      The first snapshot is the baseline until you pick another.</p>`;
+    return;
+  }
+  const base = m.base >= 0 && m.base !== m.shown ? m.snaps[m.base] : null;
+  const d = cur.data, b = base?.data;
+  const pr = d.process || {}, bp = b?.process || {};
+  let hero;
+  if (pr.availableBytes != null) {
+    const limit = pr.footprintBytes + pr.availableBytes;
+    const f = pr.footprintBytes / limit * 100;
+    const peak = pr.peakFootprintBytes != null ? Math.min(100, pr.peakFootprintBytes / limit * 100) : null;
+    const was = bp.footprintBytes != null ? Math.min(100, bp.footprintBytes / limit * 100) : null;
+    const left = pr.availableBytes / limit;
+    hero = `<section class="headroom" aria-label="Memory headroom">
+      <div class="hrnum ${left < .1 ? 'critical' : left < .25 ? 'low' : ''}"><b>${bytes(pr.availableBytes)}</b>
+        <span>left before the system ends the app for using too much memory</span>${deltaHTML(pr.availableBytes, bp.availableBytes, { invert: true })}</div>
+      <div class="hrbar" role="img" aria-label="Footprint ${bytes(pr.footprintBytes)} of about ${bytes(limit)}">
+        <i class="used" style="width:${f}%"></i>${was != null ? `<i class="was" style="left:${was}%" title="Footprint at the baseline"></i>` : ''}${peak != null ? `<i class="peak" style="left:calc(${peak}% - 1px)" title="Peak footprint"></i>` : ''}</div>
+      <div class="hrlegend"><span>Footprint <b>${bytes(pr.footprintBytes)}</b>${deltaHTML(pr.footprintBytes, bp.footprintBytes)}</span>
+        ${pr.peakFootprintBytes != null ? `<span class="pk">Peak <b>${bytes(pr.peakFootprintBytes)}</b></span>` : ''}
+        <span>Limit about <b>${bytes(limit)}</b></span>${base ? `<span class="muted">white tick: footprint at #${m.base + 1}</span>` : ''}</div>
+    </section>`;
+  } else {
+    hero = `<section class="headroom"><div class="hrnum"><b>${bytes(pr.footprintBytes)}</b><span>footprint; this platform reports no limit</span>${deltaHTML(pr.footprintBytes, bp.footprintBytes)}</div></section>`;
+  }
+  const stat = (label, val, bval, sub) => `<div><dt>${label}</dt><dd>${bytes(val)}${deltaHTML(val, bval)}${sub ? `<small>${sub}</small>` : ''}</dd></div>`;
+  const ml = d.malloc || {}, bm = b?.malloc || {};
+  const gpu = d.gpu, bg = b?.gpu;
+  const stats = `<dl class="stats">
+    ${stat('Resident', pr.residentBytes, bp.residentBytes, 'in RAM now, shared pages included')}
+    ${stat('Compressed', pr.compressedBytes, bp.compressedBytes, 'squeezed by the system to make room')}
+    ${stat('Malloc in use', ml.sizeInUseBytes, bm.sizeInUseBytes, `${bytes(ml.sizeAllocatedBytes)} reserved, ${int(ml.blocksInUse)} blocks${deltaHTML(ml.blocksInUse, bm.blocksInUse, { fmt: n => (n > 0 ? '+' : '−') + int(Math.abs(n)) })}`)}
+    ${gpu ? stat('GPU allocated', gpu.currentAllocatedBytes, bg?.currentAllocatedBytes,
+      gpu.recommendedMaxWorkingSetBytes ? `of ${bytes(gpu.recommendedMaxWorkingSetBytes)} recommended working set (${pct(gpu.currentAllocatedBytes / gpu.recommendedMaxWorkingSetBytes * 100)})` : 'Metal device allocations') : ''}
+  </dl>`;
+  const bk = new Map((b?.largestRegionKinds || []).map(k => [k.kind, k]));
+  const kinds = d.largestRegionKinds || [];
+  const cell = (k, key, hide) => `<td class="num ${hide ? 'hide-sm' : ''}">${bytes(k[key])}${base ? deltaHTML(k[key], bk.get(k.kind)?.[key] ?? 0) : ''}</td>`;
+  const table = `<div class="tablewrap"><table class="mtable">
+    <thead><tr><th>Region kind</th><th class="num hide-sm">Regions</th><th class="num hide-sm">Virtual</th><th class="num">Resident</th><th class="num">Dirty</th><th class="num hide-sm">Swapped</th></tr></thead>
+    <tbody>${kinds.map(k => `<tr><td class="mono">${esc(k.kind)}</td>
+      <td class="num hide-sm">${int(k.regions)}${base ? deltaHTML(k.regions, bk.get(k.kind)?.regions ?? 0, { fmt: n => (n > 0 ? '+' : '−') + int(Math.abs(n)) }) : ''}</td>
+      ${cell(k, 'virtualBytes', true)}${cell(k, 'residentBytes')}${cell(k, 'dirtyBytes')}${cell(k, 'swappedBytes', true)}</tr>`).join('')}</tbody></table></div>
+    <p class="tablecap">The ${kinds.length} largest of ${int(d.regionKindCount)} region kinds. Dirty memory is what the app wrote and the system cannot simply drop; it is what counts toward the footprint. Read in ${d.sampledInMs} ms.</p>`;
+  out.innerHTML = hero + stats + table;
+}
+
+function memoryText(){
+  const m = per().mem, cur = m.snaps[m.shown], a = currentApp();
+  if (!cur) return '';
+  const base = m.base >= 0 && m.base !== m.shown ? m.snaps[m.base] : null;
+  const d = cur.data, b = base?.data;
+  const v = (val, bval) => `${bytes(val)}${bval != null && val != null && val !== bval ? ` (${bytes(val - bval, true)})` : ''}`;
+  const L = [`_memory of ${a?.appName || a?.bundleId} build ${a?.build || '?'} on ${a?.device || '?'}, snapshot #${m.shown + 1} at ${cur.at}${base ? `, deltas against #${m.base + 1} at ${base.at}` : ''}`];
+  const p = d.process || {}, bp = b?.process || {};
+  L.push(`footprint ${v(p.footprintBytes, bp.footprintBytes)}, peak ${bytes(p.peakFootprintBytes)}, available ${v(p.availableBytes, bp.availableBytes)}, resident ${v(p.residentBytes, bp.residentBytes)}, compressed ${v(p.compressedBytes, bp.compressedBytes)}`);
+  L.push(`malloc in use ${v(d.malloc?.sizeInUseBytes, b?.malloc?.sizeInUseBytes)} of ${bytes(d.malloc?.sizeAllocatedBytes)}, ${d.malloc?.blocksInUse} blocks`);
+  if (d.gpu) L.push(`gpu allocated ${v(d.gpu.currentAllocatedBytes, b?.gpu?.currentAllocatedBytes)} of ${bytes(d.gpu.recommendedMaxWorkingSetBytes)} recommended`);
+  const bk = new Map((b?.largestRegionKinds || []).map(k => [k.kind, k]));
+  L.push('region kinds (kind, regions, virtual, resident, dirty, swapped):');
+  for (const k of d.largestRegionKinds || []) {
+    const o = base ? (bk.get(k.kind) || {}) : {};
+    L.push(`  ${k.kind}: ${k.regions}, ${v(k.virtualBytes, o.virtualBytes)}, ${v(k.residentBytes, o.residentBytes)}, ${v(k.dirtyBytes, o.dirtyBytes)}, ${v(k.swappedBytes, o.swappedBytes)}`);
+  }
+  return L.join('\n');
+}
+
+async function takeSnapshot(){
+  const st = per(), m = st.mem, id = D.id;
+  if (m.run) return;
+  const v = Number($('#mm_regions')?.value);
+  m.regions = Number.isFinite(v) ? Math.min(60, Math.max(1, Math.round(v))) : m.regions;
+  m.run = { started: Date.now(), expect: .5 };
+  m.error = null;
+  if (D.id === id) { renderMemoryResult(); $('#mempane').scrollTop = 0; }
+  const r = await callApp('_memory', { regions: m.regions });
+  m.run = null;
+  if (r.ok) {
+    m.snaps.push({ at: new Date().toLocaleTimeString(), data: r.data });
+    m.shown = m.snaps.length - 1;
+    if (m.base < 0 && m.snaps.length > 1) m.base = 0;
+  } else m.error = r.error;
+  if (D.id === id) renderMemoryResult();
+}
+
+async function copyText(text, what){
+  try { await navigator.clipboard.writeText(text); toast(`Copied the ${what} as text.`); }
+  catch { // http:// pages outside localhost have no clipboard API
+    const ta = document.createElement('textarea'); ta.value = text; document.body.append(ta); ta.select();
+    const ok = document.execCommand('copy'); ta.remove();
+    toast(ok ? `Copied the ${what} as text.` : `Couldn't copy; your browser blocked it.`);
+  }
+}
+
+document.addEventListener('submit', e => {
+  if (e.target.id === 'profform') { e.preventDefault(); runProfile(); }
+  if (e.target.id === 'memform') { e.preventDefault(); takeSnapshot(); }
+});
+document.addEventListener('click', e => {
+  const t = e.target.closest?.('button, [data-contab]');
+  if (!t) return;
+  if (t.dataset.pthreads) {
+    per().prof.args.threads = t.dataset.pthreads;
+    document.querySelectorAll('[data-pthreads]').forEach(b => b.setAttribute('aria-pressed', b.dataset.pthreads === t.dataset.pthreads));
+  } else if (t.dataset.tview) {
+    const [i, v] = t.dataset.tview.split(':');
+    per().prof.views[i] = v;
+    renderProfileResult();
+  } else if (t.dataset.retry === 'profile') runProfile();
+  else if (t.dataset.retry === 'memory') takeSnapshot();
+  else if (t.id === 'profcopy') copyText(profileText(), 'profile');
+  else if (t.id === 'memcopy') copyText(memoryText(), 'memory snapshot');
+  else if (t.id === 'memclear') { const m = per().mem; m.snaps = []; m.shown = m.base = -1; renderMemoryResult(); }
+  else if (t.dataset.snap) {
+    const m = per().mem; m.shown = Number(t.dataset.snap);
+    if (m.base === m.shown) m.base = -1;
+    renderMemoryResult();
+  }
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'mmbase') { per().mem.base = Number(e.target.value); renderMemoryResult(); }
+});
+
+// ---- panels: DebugTunables values, and tuning panels an agent built (debugtrace-mcp `panel`) ----
+// "Tunables" lists every value the app reads through DebugTunables; saved panels pick and
+// order tunables and endpoints. Values go to the app as they move (one call in flight, the
+// latest value wins), so the app follows the slider.
+function pstate(){ return per().panels ||= { sel: 'tunables', tunables: [], list: [], vals: {}, out: {}, error: null, loading: false, sig: '' }; }
+let panelTimer = null;
+async function loadPanels(force){
+  clearTimeout(panelTimer);
+  if (D.tab !== 'panels' || !D.id) return;
+  const id = D.id, ps = pstate();
+  if (ps.loading && !force) return;
+  ps.loading = true;
+  const [t, pl] = await Promise.all([
+    callApp('_tunables', {}),
+    fetch(`/api/debug/${encodeURIComponent(id)}/panels`).then(r => r.json()).catch(() => ({ panels: [] })),
+  ]);
+  ps.loading = false;
+  if (D.id !== id) return;
+  if (t.ok) { ps.tunables = Array.isArray(t.data) ? t.data : []; ps.error = null; }
+  else ps.error = t.error;
+  ps.list = Array.isArray(pl.panels) ? pl.panels : [];
+  if (ps.sel !== 'tunables' && !ps.list.some(p => p.name === ps.sel)) ps.sel = 'tunables';
+  renderPanels();
+  pollReadouts();
+  panelTimer = setTimeout(() => loadPanels(), 3000);
+}
+function tunable(key){ return pstate().tunables.find(t => t.key === key); }
+function panelControls(){
+  const ps = pstate();
+  if (ps.sel === 'tunables') return ps.tunables.map(t => ({ kind: t.kind === 'boolean' ? 'toggle' : t.kind === 'choice' ? 'choice' : 'slider', tunable: t.key }));
+  return (ps.list.find(p => p.name === ps.sel)?.controls || []).filter(c => c && typeof c === 'object');
+}
+const ckey = (c, i) => c.tunable ? 't:' + c.tunable : `e:${i}:${c.endpoint}:${c.argument || ''}`;
+function fmtNum(v, step){
+  if (typeof v !== 'number') return String(v ?? '');
+  const d = step && step < 1 ? Math.min(6, String(step).split('.')[1]?.length || 2) : (Number.isInteger(v) ? 0 : 3);
+  return String(Number(v.toFixed(d)));
+}
+function ctlHTML(c, i){
+  const k = ckey(c, i), ps = pstate();
+  const t = c.tunable ? tunable(c.tunable) : null;
+  const label = esc(c.label || t?.label || c.tunable || c.endpoint);
+  const keyline = `<span class="tk">${esc(c.tunable || c.endpoint + (c.argument ? ' · ' + c.argument : ''))}</span>`;
+  if (c.tunable && !t) return `<div class="tctl missing"><div class="tl">${label}${keyline}</div>
+    <div class="tout">The app hasn't read this tunable yet; it appears once that code runs.</div></div>`;
+  const val = t ? t.value : (k in ps.vals ? ps.vals[k] : c.value);
+  const tuned = t ? t.tuned : false;
+  const reset = t ? `<button class="treset ghost" data-treset="${esc(t.key)}" title="Back to ${esc(String(t.default))}" ${tuned ? '' : 'disabled'}>↺</button>` : '<span></span>';
+  const out = ps.out[k] ? `<div class="tout ${ps.out[k].err ? 'err' : ''}">${esc(ps.out[k].text)}</div>` : '';
+  const data = `data-tc="${esc(k)}" data-ti="${i}"`;
+  if (c.kind === 'slider') {
+    const min = t?.minimum ?? c.min ?? 0, max = t?.maximum ?? c.max ?? 1;
+    const step = t?.step ?? c.step ?? (t?.kind === 'integer' ? 1 : (max - min) / 1000);
+    return `<div class="tctl ${tuned ? 'tuned' : ''}"><div class="tl">${label}${keyline}</div>
+      <input type="range" ${data} min="${min}" max="${max}" step="${step}" value="${val ?? min}" aria-label="${label}">
+      <input type="number" ${data} min="${min}" max="${max}" step="${step}" value="${esc(fmtNum(val, step))}" aria-label="${label} value">
+      ${reset}${out}</div>`;
+  }
+  if (c.kind === 'toggle') return `<div class="tctl ${tuned ? 'tuned' : ''}"><div class="tl">${label}${keyline}</div>
+    <label class="wide"><input type="checkbox" ${data} ${val ? 'checked' : ''}> ${val ? 'On' : 'Off'}</label>${reset}${out}</div>`;
+  if (c.kind === 'choice') {
+    const choices = t?.choices || c.choices || [];
+    return `<div class="tctl ${tuned ? 'tuned' : ''}"><div class="tl">${label}${keyline}</div>
+      <select class="wide" ${data}>${choices.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>${reset}${out}</div>`;
+  }
+  if (c.kind === 'button') return `<div class="tctl"><div class="tl">${label}${keyline}</div>
+    <button class="wide" data-tbtn="${i}">${esc(c.label || c.endpoint)}</button><span></span>${out}</div>`;
+  if (c.kind === 'readout') return `<div class="tctl"><div class="tl">${label}${keyline}</div>
+    <div class="readv" data-readout="${esc(k)}">${esc(ps.out[k]?.text ?? '…')}</div></div>`;
+  return '';
+}
+function renderPanels(){
+  const el = $('#panelpane');
+  if (!el) return;
+  const ps = pstate();
+  const ctls = panelControls();
+  const panel = ps.list.find(p => p.name === ps.sel);
+  // Rebuild only when the structure changes; otherwise refresh values in place, never under the pointer.
+  const sig = JSON.stringify([ps.sel, ps.list.map(p => [p.name, p.title, p.updatedAt]), ctls, ps.tunables.map(t => [t.key, t.minimum, t.maximum, t.step, t.choices, t.tuned]), !!ps.error]);
+  if (sig === ps.sig && el.firstChild) { refreshPanelValues(); return; }
+  ps.sig = sig;
+  const tabs = [['tunables', `Tunables (${ps.tunables.length})`], ...ps.list.map(p => [p.name, p.title || p.name])];
+  let groups = '', last = null;
+  const body = ctls.map((c, i) => {
+    let head = '';
+    if (ps.sel === 'tunables') {
+      const g = tunable(c.tunable)?.group || '';
+      if (g !== last) { head = `<div class="tgroup">${esc(g || 'Ungrouped')}</div>`; last = g; }
+    }
+    return head + ctlHTML(c, i);
+  }).join('');
+  el.innerHTML = `<div class="ctrlbar">
+      <div class="seg" role="group" aria-label="Panel">${tabs.map(([n, l]) => `<button data-psel="${esc(n)}" aria-pressed="${ps.sel === n}">${esc(l)}</button>`).join('')}</div>
+      <span class="spacer"></span>
+      <button class="ghost" id="tresetall" ${ps.tunables.some(t => t.tuned) ? '' : 'disabled'}>Reset all</button>
+      <button class="ghost" id="tcopy">Copy values</button>
+    </div>
+    <div class="pbody"><div class="tpanel">
+      ${ps.error ? errorHTML(ps.error, 'panels') : ''}
+      ${panel?.note ? `<p class="tnote">${esc(panel.note)}</p>` : ''}
+      ${ps.sel === 'tunables' && !ps.tunables.length && !ps.error ? `<p class="lede">No tunables yet. Code reads one with
+        <code>DebugTunables.number("hdr.peakNits", 600, range: 100...2000)</code> where it would use a literal; it shows here once that code runs.
+        Ask an agent to add some, or to build a panel over the app's endpoints with its <code>panel</code> tool.
+        Tuning on a Vision Pro? Use this page on your phone, or the Mac Virtual Display.</p>` : ''}
+      ${body}</div></div>`;
+}
+function refreshPanelValues(){
+  const ps = pstate();
+  panelControls().forEach((c, i) => {
+    const t = c.tunable && tunable(c.tunable);
+    if (!t) return;
+    document.querySelectorAll(`[data-tc="${CSS.escape(ckey(c, i))}"]`).forEach(inp => {
+      if (inp === document.activeElement || inp.dataset.dragging) return;
+      if (inp.type === 'checkbox') inp.checked = !!t.value;
+      else if (inp.type === 'number') inp.value = fmtNum(t.value, t.step);
+      else inp.value = t.value;
+    });
+  });
+}
+// One call in flight per control; the newest value replaces any queued one.
+const sending = {};
+function sendValue(i, value){
+  const c = panelControls()[i];
+  if (!c) return;
+  const k = ckey(c, i), ps = pstate();
+  const slot = sending[k] ||= { busy: false, next: undefined };
+  slot.next = value;
+  if (slot.busy) return;
+  (async () => {
+    while (slot.next !== undefined) {
+      const v = slot.next; slot.next = undefined; slot.busy = true;
+      const r = c.tunable ? await callApp('_tune', { key: c.tunable, value: v })
+        : await callApp(c.endpoint, { ...(c.arguments || {}), [c.argument]: v });
+      if (c.tunable && r.ok && Array.isArray(r.data) && r.data[0]) {
+        const at = ps.tunables.findIndex(t => t.key === c.tunable);
+        if (at >= 0) ps.tunables[at] = r.data[0];
+      }
+      if (!c.tunable) ps.vals[k] = v;
+      ps.out[k] = r.ok ? (c.tunable ? null : { text: shortJSON(r.data) }) : { text: r.error?.message || 'failed', err: true };
+    }
+    slot.busy = false;
+    const box = document.querySelector(`[data-tc="${CSS.escape(k)}"]`)?.closest('.tctl');
+    if (box) { const o = box.querySelector('.tout'); const want = ps.out[k];
+      if (want) { if (o) { o.textContent = want.text; o.classList.toggle('err', !!want.err); } else box.insertAdjacentHTML('beforeend', `<div class="tout ${want.err ? 'err' : ''}">${esc(want.text)}</div>`); }
+      else o?.remove();
+      box.classList.toggle('tuned', !!(c.tunable && tunable(c.tunable)?.tuned));
+      const rb = box.querySelector('[data-treset]'); if (rb) rb.disabled = !tunable(c.tunable)?.tuned; }
+  })();
+}
+function shortJSON(v){ const s = typeof v === 'string' ? v : JSON.stringify(v); return s && s.length > 240 ? s.slice(0, 240) + '…' : (s ?? ''); }
+function pick(data, p){ return String(p || '').split('.').filter(Boolean).reduce((o, k) => (o == null ? o : o[k]), data); }
+const readTimers = {};
+function pollReadouts(){
+  const ps = pstate();
+  panelControls().forEach((c, i) => {
+    if (c.kind !== 'readout' || !c.endpoint) return;
+    const k = ckey(c, i);
+    const every = Math.min(60, Math.max(0.5, Number(c.refreshSeconds) || 2)) * 1000;
+    if (readTimers[k] && Date.now() - readTimers[k] < every) return;
+    readTimers[k] = Date.now();
+    callApp(c.endpoint, c.arguments || {}).then(r => {
+      const v = r.ok ? pick(r.data, c.path) : null;
+      ps.out[k] = r.ok ? { text: typeof v === 'number' ? fmtNum(v) : shortJSON(v) } : { text: r.error?.message || 'failed', err: true };
+      const cell = document.querySelector(`[data-readout="${CSS.escape(k)}"]`);
+      if (cell) cell.textContent = ps.out[k].text;
+    });
+  });
+}
+function panelText(){
+  const ps = pstate();
+  const tuned = ps.tunables.filter(t => t.tuned);
+  const lines = [`${currentApp()?.appName || 'App'} tuned values (${new Date().toLocaleString()}):`];
+  if (!tuned.length) lines.push('  (every tunable is at its default)');
+  for (const t of tuned) lines.push(`  ${t.key} = ${JSON.stringify(t.value)}   (default ${JSON.stringify(t.default)})`);
+  const panel = ps.list.find(p => p.name === ps.sel);
+  if (panel) panel.controls.forEach((c, i) => {
+    const k = ckey(c, i);
+    if (c.endpoint && k in ps.vals) lines.push(`  ${c.endpoint} ${c.argument} = ${JSON.stringify(ps.vals[k])}`);
+  });
+  lines.push('Write these back into the source as the new defaults.');
+  return lines.join('\n');
+}
+document.addEventListener('input', e => {
+  const i = e.target.dataset?.ti;
+  if (i === undefined || !e.target.closest('#panelpane')) return;
+  const inp = e.target, c = panelControls()[Number(i)];
+  if (!c) return;
+  let v;
+  if (inp.type === 'checkbox') { v = inp.checked; const l = inp.parentElement; if (l) l.lastChild.textContent = v ? ' On' : ' Off'; }
+  else if (inp.tagName === 'SELECT') v = inp.value;
+  else { v = parseFloat(inp.value); if (!Number.isFinite(v)) return;
+    const twin = inp.closest('.tctl').querySelector(inp.type === 'range' ? 'input[type=number]' : 'input[type=range]');
+    if (twin) twin.value = inp.type === 'range' ? fmtNum(v, Number(inp.step)) : v; }
+  sendValue(Number(i), v);
+});
+document.addEventListener('pointerdown', e => { if (e.target.type === 'range') e.target.dataset.dragging = '1'; });
+document.addEventListener('pointerup', () => document.querySelectorAll('[data-dragging]').forEach(x => delete x.dataset.dragging));
+document.addEventListener('click', async e => {
+  const t = e.target.closest?.('[data-psel], [data-treset], [data-tbtn], #tresetall, #tcopy, [data-retry="panels"]');
+  if (!t) return;
+  const ps = pstate();
+  if (t.dataset.psel) { ps.sel = t.dataset.psel; ps.sig = ''; renderPanels(); pollReadouts(); }
+  else if (t.dataset.treset || t.id === 'tresetall') {
+    const r = await callApp('_tune', t.dataset.treset ? { reset: true, key: t.dataset.treset } : { reset: true });
+    if (!r.ok) toast(`Reset failed: ${r.error?.message}`);
+    loadPanels(true);
+  } else if (t.dataset.tbtn !== undefined) {
+    const i = Number(t.dataset.tbtn), c = panelControls()[i];
+    t.disabled = true;
+    const r = await callApp(c.endpoint, c.arguments || {});
+    t.disabled = false;
+    ps.out[ckey(c, i)] = r.ok ? { text: shortJSON(r.data) } : { text: r.error?.message || 'failed', err: true };
+    ps.sig = ''; renderPanels();
+  } else if (t.id === 'tcopy') copyText(panelText(), 'tuned values');
+  else if (t.dataset.retry === 'panels') loadPanels(true);
+});
+
+function loadInfo(){ showCall('_info', {}, $('#infopane')); }
+
+function showTab(name){
+  D.tab = name;
+  document.querySelectorAll('[data-contab]').forEach(b => b.setAttribute('aria-selected', b.dataset.contab === D.tab));
+  document.querySelectorAll('[data-pane]').forEach(p => p.classList.toggle('active', p.dataset.pane === D.tab));
+  if (D.tab === 'endpoints') loadHelp();
+  if (D.tab === 'info') loadInfo();
+  if (D.tab === 'profile' || D.tab === 'memory') loadAppIdentity();
+  if (D.tab === 'panels') loadPanels(true);
+}
+
+async function captureTrace(button){
+  const note = $('#tracenote')?.value.trim();
+  button.disabled = true; button.textContent = 'Capturing…';
+  try {
+    const r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/call`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: '_trace', arguments: { upload: true, ...(note ? { note } : {}) } }) });
+    const body = await r.json();
+    const up = body.data?.upload;
+    if (!r.ok || body.ok === false) toast(`Trace failed: ${body.error?.message || r.status}`);
+    else if (up && up.accepted) { toast('Trace captured and uploaded. It is in Traces.'); $('#tracenote').value = ''; pollTraces(); }
+    else toast(`Trace captured, but the upload was refused${up?.response?.error ? ': ' + up.response.error : ''}. The app may not have an upload URL.`);
+  } catch (e) { toast(`Trace failed: ${e.message}`); }
+  button.disabled = false; button.textContent = 'Capture trace';
+}
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  const app = t.closest?.('[data-app]');
+  if (app) { location.hash = '#debug/' + encodeURIComponent(app.dataset.app); return; }
+  if (t.closest?.('.chip .live')) { e.stopPropagation(); return; } // the link navigates; don't toggle the chip
+  const tab = t.closest?.('[data-contab]');
+  if (tab) { e.preventDefault(); showTab(tab.dataset.contab); return; }
+  const ep = t.closest?.('[data-ep]');
+  if (ep) { D.ep = ep.dataset.ep; renderEndpoint(); return; }
+  if (t.id === 'runep') { runEndpoint(); return; }
+  if (t.id === 'capturetrace') { captureTrace(t); return; }
+  if (t.id === 'logclear') { $('#loglines').innerHTML = ''; return; }
+  if (t.id === 'jumpnew') { stickToBottom($('#loglines'), true); return; }
+  if (t.id === 'logpause') {
+    D.paused = !D.paused;
+    t.textContent = D.paused ? 'Resume' : 'Pause';
+    if (!D.paused && D.pending.length) { const p = D.pending; D.pending = []; addLines(p); stickToBottom($('#loglines'), true); }
+    setStreamState(D.stream);
+  }
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'loglevel') { D.level = e.target.value; startStream(); }
+});
+let filterTimer = null;
+document.addEventListener('input', e => {
+  if (e.target.id !== 'logfilter') return;
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { D.filter = e.target.value.trim(); startStream(); }, 400);
+});
+document.addEventListener('scroll', e => {
+  if (e.target.id === 'loglines') {
+    const l = e.target;
+    if (l.scrollTop + l.clientHeight >= l.scrollHeight - 30) $('#jumpnew').style.display = 'none';
+  }
+}, true);
+setInterval(() => { if (location.hash.startsWith('#debug')) refreshDebugApps(); }, 5000);
+route();
+</script>
+</body>
+</html>

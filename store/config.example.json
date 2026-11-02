@@ -1,0 +1,42 @@
+{
+  "port": 8484,
+  "bundlePrefix": [
+    "com.example"
+  ],
+  "branding": {
+    "org": "Example",
+    "icon": "\ud83d\ude80"
+  },
+  "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
+  "ledgerOnlyDevices": [],
+  "quietAppsDevices": [],
+  "deployDefaults": { "mcp": true, "launch": false, "buildDebug": false, "inject": false },
+  "altSource": { "enabled": false, "name": "Example's Apps", "developerName": "Example" },
+  "repos": [
+    {
+      "name": "MyApp",
+      "path": "/Users/you/Projects/MyApp",
+      "branches": [
+        "main"
+      ],
+      "platforms": [
+        {
+          "platform": "iOS",
+          "bundleId": "com.example.myapp",
+          "device": "My iPhone"
+        },
+        {
+          "platform": "visionOS",
+          "bundleId": "com.example.myapp",
+          "device": "Vision Pro"
+        }
+      ],
+      "macApps": [
+        {
+          "name": "MyApp for Mac",
+          "bundleId": "com.example.myapp.mac"
+        }
+      ]
+    }
+  ]
+}
