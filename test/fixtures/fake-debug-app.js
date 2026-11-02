@@ -45,6 +45,11 @@ const ENDPOINTS = [
       { name: 'note', type: 'string', required: false, description: 'What you are looking into.' },
       { name: 'upload', type: 'boolean', required: false, default: false, description: 'Upload to the app store server.' },
     ] },
+  { name: '_tunables', kind: 'query', description: 'Values the app reads through DebugTunables.' },
+  { name: '_tune', kind: 'command', description: 'Set or reset a tunable.',
+    parameters: [{ name: 'key', type: 'string', required: false, description: 'tunable key' },
+      { name: 'value', type: 'string', required: false, description: 'new value' },
+      { name: 'reset', type: 'boolean', required: false, default: false, description: 'back to default' }] },
   { name: 'setWeather', kind: 'command', destructive: true, description: 'Changes the world weather.',
     parameters: [{ name: 'kind', type: 'string', required: true, choices: ['clear', 'rain', 'snow'], description: 'Weather to switch to.' }] },
 ];
@@ -213,6 +218,31 @@ function logs(args) {
   return { delayMs: Math.min((args.waitSeconds ?? 0) * 1000, 1500), data: () => ({ entries: make(2), lastSequence: seq, truncated: false }) };
 }
 
+// ---- DebugTunables, shaped like the real `_tunables` ----
+const TUNABLES = [
+  { key: 'hdr.peakNits', kind: 'number', label: 'Peak nits', group: 'hdr', default: 600, minimum: 100, maximum: 2000, step: 10 },
+  { key: 'hdr.toneMap', kind: 'choice', label: 'Tone map', group: 'hdr', default: 'pq', choices: ['pq', 'hlg', 'reinhard'] },
+  { key: 'hdr.highlightBoost', kind: 'boolean', label: 'Highlight boost', group: 'hdr', default: false },
+  { key: 'render.sharpness', kind: 'number', label: 'Sharpness', group: 'render', default: 0.35, minimum: 0, maximum: 1, step: 0.01 },
+  { key: 'render.taps', kind: 'integer', label: 'Taps', group: 'render', default: 4, minimum: 1, maximum: 16, step: 1 },
+].map(t => ({ ...t, value: t.default }));
+const tunRow = t => ({ ...t, tuned: JSON.stringify(t.value) !== JSON.stringify(t.default) });
+function tune(args) {
+  if (args.reset) {
+    const hit = TUNABLES.filter(t => !args.key || t.key === args.key);
+    hit.forEach(t => { t.value = t.default; });
+    return { data: hit.map(tunRow) };
+  }
+  const t = TUNABLES.find(x => x.key === args.key);
+  if (!t) return err(404, 'not_found', `no tunable '${args.key}'`);
+  let v = args.value;
+  if (t.kind === 'number' || t.kind === 'integer') { v = Math.min(t.maximum, Math.max(t.minimum, Number(v))); if (t.kind === 'integer') v = Math.round(v); }
+  else if (t.kind === 'boolean') v = v === true || v === 'true';
+  else if (!t.choices.includes(String(v))) return err(400, 'invalid_argument', `'${t.key}' must be one of ${t.choices.join(', ')}`);
+  t.value = v;
+  return { data: [tunRow(t)] };
+}
+
 function dispatch(name, args) {
   switch (name) {
     case '_info': return info();
@@ -221,6 +251,8 @@ function dispatch(name, args) {
     case '_logs': return logs(args);
     case '_features': return { data: { events: [{ name: 'portalEntered', at: new Date().toISOString() }] } };
     case 'renderStats': return { data: { fps: 89.7, frameMs: { p50: 10.9, p99: 14.2 }, drawCalls: 1412 } };
+    case '_tunables': return { data: TUNABLES.map(tunRow) };
+    case '_tune': return tune(args);
     case 'setWeather': return { data: { weather: args.kind } };
     case '_trace': return { data: { id: 'T1', upload: { accepted: false, response: { error: 'the fake app has no upload URL' } } } };
     default: return err(404, 'not_found', `no endpoint "${name}"`, 'GET / lists every endpoint');

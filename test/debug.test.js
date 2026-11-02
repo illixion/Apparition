@@ -51,3 +51,22 @@ describe('call timeout', () => {
     for (const k of ['footprintBytes', 'availableBytes', 'residentBytes']) assert.equal(typeof d.process[k], 'number');
   });
 });
+
+describe('tuning panels', () => {
+  test('lists the panels saved for the running app\'s bundle id, newest first, skipping junk', async () => {
+    const dir = path.join(TMP, 'panels', 'b');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'old.json'), JSON.stringify({ title: 'Old', updatedAt: '2026-01-01', controls: [] }));
+    fs.writeFileSync(path.join(dir, 'hdr.json'), JSON.stringify({ title: 'HDR', updatedAt: '2026-11-02', controls: [{ kind: 'slider', tunable: 'hdr.peak' }] }));
+    fs.writeFileSync(path.join(dir, 'bad.json'), '{nope');
+    fs.writeFileSync(path.join(dir, 'Not Allowed.json'), '{}');
+    const r = await debugFor({ panelsDir: path.join(TMP, 'panels') }).panels('k1');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.panels.map(p => p.name), ['hdr', 'old']);
+    assert.equal(r.body.bundleId, 'b');
+  });
+  test('an app that is not running is a 404', async () => {
+    const r = await debugFor().panels('nope');
+    assert.equal(r.status, 404);
+  });
+});

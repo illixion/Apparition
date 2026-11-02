@@ -434,6 +434,31 @@
     .endpoints { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
     .eplist { border-right: 0; border-bottom: 1px solid var(--line); max-height: 30vh; }
   }
+
+  /* ---- panels: tunables and agent-made tuning panels ---- */
+  .tpanel { display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+  .tgroup { font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: var(--dim2); margin: 14px 0 2px; }
+  .tctl { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) 92px 22px; gap: 4px 12px; align-items: center;
+    padding: 8px 10px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); }
+  .tctl.tuned { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .tctl .tl { font-size: .84rem; }
+  .tctl .tk { display: block; font-family: var(--mono); font-size: .68rem; color: var(--dim2); overflow-wrap: anywhere; }
+  .tctl input[type=range] { width: 100%; accent-color: var(--accent); }
+  .tctl input[type=number], .tctl select { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 4px 7px; font: inherit; font-size: .8rem; width: 100%; font-variant-numeric: tabular-nums; }
+  .tctl .wide { grid-column: 2 / 4; }
+  .tctl .tout { grid-column: 2 / 5; font-family: var(--mono); font-size: .78rem; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tctl .tout.err { color: var(--bad); }
+  .tctl button.treset { padding: 0; width: 22px; height: 22px; border-radius: 11px; font-size: .8rem; line-height: 1; color: var(--dim); }
+  .tctl .readv { grid-column: 2 / 5; font-family: var(--mono); font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+  .tctl.missing { opacity: .6; }
+  .tnote { margin: 0 0 6px; color: var(--dim); font-size: .84rem; line-height: 1.5; max-width: 72ch; }
+  .tnote code, .lede code { font-family: var(--mono); font-size: .78rem; color: var(--fg); }
+  @media (max-width: 760px) {
+    .tctl { grid-template-columns: minmax(0, 1fr) 84px 22px; }
+    .tctl .tl { grid-column: 1 / 4; }
+    .tctl .wide, .tctl .tout, .tctl .readv { grid-column: 1 / 4; }
+  }
   @media (prefers-reduced-motion: reduce) {
     .chip .live::before, .chip.building, .meter.waiting i { animation: none; }
     .meter i { animation: none; width: 100%; opacity: .5; }
@@ -1016,6 +1041,7 @@ function renderConsole(){
     <div class="conhead" id="conhead"></div>
     <div class="contabs" role="tablist">
       <button role="tab" data-contab="log" aria-selected="${D.tab==='log'}">Log</button>
+      <button role="tab" data-contab="panels" aria-selected="${D.tab==='panels'}">Panels</button>
       <button role="tab" data-contab="profile" aria-selected="${D.tab==='profile'}">Profile</button>
       <button role="tab" data-contab="memory" aria-selected="${D.tab==='memory'}">Memory</button>
       <button role="tab" data-contab="endpoints" aria-selected="${D.tab==='endpoints'}">Endpoints</button>
@@ -1037,6 +1063,7 @@ function renderConsole(){
         <button class="primary jumpnew" id="jumpnew">New lines below</button>
       </div>
     </div>
+    <div class="pane ${D.tab==='panels'?'active':''}" data-pane="panels"><div class="scrollpane" id="panelpane"></div></div>
     <div class="pane ${D.tab==='profile'?'active':''}" data-pane="profile"><div class="scrollpane" id="profpane"></div></div>
     <div class="pane ${D.tab==='memory'?'active':''}" data-pane="memory"><div class="scrollpane" id="mempane"></div></div>
     <div class="pane ${D.tab==='endpoints'?'active':''}" data-pane="endpoints"><div class="endpoints">
@@ -1050,6 +1077,7 @@ function renderConsole(){
   renderMemoryPane();
   if (D.tab === 'endpoints') loadHelp();
   if (D.tab === 'info') loadInfo();
+  if (D.tab === 'panels') loadPanels(true);
 }
 
 function renderConsoleHead(){
@@ -1730,6 +1758,223 @@ document.addEventListener('change', e => {
   if (e.target.id === 'mmbase') { per().mem.base = Number(e.target.value); renderMemoryResult(); }
 });
 
+// ---- panels: DebugTunables values, and tuning panels an agent built (debugtrace-mcp `panel`) ----
+// "Tunables" lists every value the app reads through DebugTunables; saved panels pick and
+// order tunables and endpoints. Values go to the app as they move (one call in flight, the
+// latest value wins), so the app follows the slider.
+function pstate(){ return per().panels ||= { sel: 'tunables', tunables: [], list: [], vals: {}, out: {}, error: null, loading: false, sig: '' }; }
+let panelTimer = null;
+async function loadPanels(force){
+  clearTimeout(panelTimer);
+  if (D.tab !== 'panels' || !D.id) return;
+  const id = D.id, ps = pstate();
+  if (ps.loading && !force) return;
+  ps.loading = true;
+  const [t, pl] = await Promise.all([
+    callApp('_tunables', {}),
+    fetch(`/api/debug/${encodeURIComponent(id)}/panels`).then(r => r.json()).catch(() => ({ panels: [] })),
+  ]);
+  ps.loading = false;
+  if (D.id !== id) return;
+  if (t.ok) { ps.tunables = Array.isArray(t.data) ? t.data : []; ps.error = null; }
+  else ps.error = t.error;
+  ps.list = Array.isArray(pl.panels) ? pl.panels : [];
+  if (ps.sel !== 'tunables' && !ps.list.some(p => p.name === ps.sel)) ps.sel = 'tunables';
+  renderPanels();
+  pollReadouts();
+  panelTimer = setTimeout(() => loadPanels(), 3000);
+}
+function tunable(key){ return pstate().tunables.find(t => t.key === key); }
+function panelControls(){
+  const ps = pstate();
+  if (ps.sel === 'tunables') return ps.tunables.map(t => ({ kind: t.kind === 'boolean' ? 'toggle' : t.kind === 'choice' ? 'choice' : 'slider', tunable: t.key }));
+  return (ps.list.find(p => p.name === ps.sel)?.controls || []).filter(c => c && typeof c === 'object');
+}
+const ckey = (c, i) => c.tunable ? 't:' + c.tunable : `e:${i}:${c.endpoint}:${c.argument || ''}`;
+function fmtNum(v, step){
+  if (typeof v !== 'number') return String(v ?? '');
+  const d = step && step < 1 ? Math.min(6, String(step).split('.')[1]?.length || 2) : (Number.isInteger(v) ? 0 : 3);
+  return String(Number(v.toFixed(d)));
+}
+function ctlHTML(c, i){
+  const k = ckey(c, i), ps = pstate();
+  const t = c.tunable ? tunable(c.tunable) : null;
+  const label = esc(c.label || t?.label || c.tunable || c.endpoint);
+  const keyline = `<span class="tk">${esc(c.tunable || c.endpoint + (c.argument ? ' · ' + c.argument : ''))}</span>`;
+  if (c.tunable && !t) return `<div class="tctl missing"><div class="tl">${label}${keyline}</div>
+    <div class="tout">The app hasn't read this tunable yet; it appears once that code runs.</div></div>`;
+  const val = t ? t.value : (k in ps.vals ? ps.vals[k] : c.value);
+  const tuned = t ? t.tuned : false;
+  const reset = t ? `<button class="treset ghost" data-treset="${esc(t.key)}" title="Back to ${esc(String(t.default))}" ${tuned ? '' : 'disabled'}>↺</button>` : '<span></span>';
+  const out = ps.out[k] ? `<div class="tout ${ps.out[k].err ? 'err' : ''}">${esc(ps.out[k].text)}</div>` : '';
+  const data = `data-tc="${esc(k)}" data-ti="${i}"`;
+  if (c.kind === 'slider') {
+    const min = t?.minimum ?? c.min ?? 0, max = t?.maximum ?? c.max ?? 1;
+    const step = t?.step ?? c.step ?? (t?.kind === 'integer' ? 1 : (max - min) / 1000);
+    return `<div class="tctl ${tuned ? 'tuned' : ''}"><div class="tl">${label}${keyline}</div>
+      <input type="range" ${data} min="${min}" max="${max}" step="${step}" value="${val ?? min}" aria-label="${label}">
+      <input type="number" ${data} min="${min}" max="${max}" step="${step}" value="${esc(fmtNum(val, step))}" aria-label="${label} value">
+      ${reset}${out}</div>`;
+  }
+  if (c.kind === 'toggle') return `<div class="tctl ${tuned ? 'tuned' : ''}"><div class="tl">${label}${keyline}</div>
+    <label class="wide"><input type="checkbox" ${data} ${val ? 'checked' : ''}> ${val ? 'On' : 'Off'}</label>${reset}${out}</div>`;
+  if (c.kind === 'choice') {
+    const choices = t?.choices || c.choices || [];
+    return `<div class="tctl ${tuned ? 'tuned' : ''}"><div class="tl">${label}${keyline}</div>
+      <select class="wide" ${data}>${choices.map(o => `<option ${o === val ? 'selected' : ''}>${esc(o)}</option>`).join('')}</select>${reset}${out}</div>`;
+  }
+  if (c.kind === 'button') return `<div class="tctl"><div class="tl">${label}${keyline}</div>
+    <button class="wide" data-tbtn="${i}">${esc(c.label || c.endpoint)}</button><span></span>${out}</div>`;
+  if (c.kind === 'readout') return `<div class="tctl"><div class="tl">${label}${keyline}</div>
+    <div class="readv" data-readout="${esc(k)}">${esc(ps.out[k]?.text ?? '…')}</div></div>`;
+  return '';
+}
+function renderPanels(){
+  const el = $('#panelpane');
+  if (!el) return;
+  const ps = pstate();
+  const ctls = panelControls();
+  const panel = ps.list.find(p => p.name === ps.sel);
+  // Rebuild only when the structure changes; otherwise refresh values in place, never under the pointer.
+  const sig = JSON.stringify([ps.sel, ps.list.map(p => [p.name, p.title, p.updatedAt]), ctls, ps.tunables.map(t => [t.key, t.minimum, t.maximum, t.step, t.choices, t.tuned]), !!ps.error]);
+  if (sig === ps.sig && el.firstChild) { refreshPanelValues(); return; }
+  ps.sig = sig;
+  const tabs = [['tunables', `Tunables (${ps.tunables.length})`], ...ps.list.map(p => [p.name, p.title || p.name])];
+  let groups = '', last = null;
+  const body = ctls.map((c, i) => {
+    let head = '';
+    if (ps.sel === 'tunables') {
+      const g = tunable(c.tunable)?.group || '';
+      if (g !== last) { head = `<div class="tgroup">${esc(g || 'Ungrouped')}</div>`; last = g; }
+    }
+    return head + ctlHTML(c, i);
+  }).join('');
+  el.innerHTML = `<div class="ctrlbar">
+      <div class="seg" role="group" aria-label="Panel">${tabs.map(([n, l]) => `<button data-psel="${esc(n)}" aria-pressed="${ps.sel === n}">${esc(l)}</button>`).join('')}</div>
+      <span class="spacer"></span>
+      <button class="ghost" id="tresetall" ${ps.tunables.some(t => t.tuned) ? '' : 'disabled'}>Reset all</button>
+      <button class="ghost" id="tcopy">Copy values</button>
+    </div>
+    <div class="pbody"><div class="tpanel">
+      ${ps.error ? errorHTML(ps.error, 'panels') : ''}
+      ${panel?.note ? `<p class="tnote">${esc(panel.note)}</p>` : ''}
+      ${ps.sel === 'tunables' && !ps.tunables.length && !ps.error ? `<p class="lede">No tunables yet. Code reads one with
+        <code>DebugTunables.number("hdr.peakNits", 600, range: 100...2000)</code> where it would use a literal; it shows here once that code runs.
+        Ask an agent to add some, or to build a panel over the app's endpoints with its <code>panel</code> tool.
+        Tuning on a Vision Pro? Use this page on your phone, or the Mac Virtual Display.</p>` : ''}
+      ${body}</div></div>`;
+}
+function refreshPanelValues(){
+  const ps = pstate();
+  panelControls().forEach((c, i) => {
+    const t = c.tunable && tunable(c.tunable);
+    if (!t) return;
+    document.querySelectorAll(`[data-tc="${CSS.escape(ckey(c, i))}"]`).forEach(inp => {
+      if (inp === document.activeElement || inp.dataset.dragging) return;
+      if (inp.type === 'checkbox') inp.checked = !!t.value;
+      else if (inp.type === 'number') inp.value = fmtNum(t.value, t.step);
+      else inp.value = t.value;
+    });
+  });
+}
+// One call in flight per control; the newest value replaces any queued one.
+const sending = {};
+function sendValue(i, value){
+  const c = panelControls()[i];
+  if (!c) return;
+  const k = ckey(c, i), ps = pstate();
+  const slot = sending[k] ||= { busy: false, next: undefined };
+  slot.next = value;
+  if (slot.busy) return;
+  (async () => {
+    while (slot.next !== undefined) {
+      const v = slot.next; slot.next = undefined; slot.busy = true;
+      const r = c.tunable ? await callApp('_tune', { key: c.tunable, value: v })
+        : await callApp(c.endpoint, { ...(c.arguments || {}), [c.argument]: v });
+      if (c.tunable && r.ok && Array.isArray(r.data) && r.data[0]) {
+        const at = ps.tunables.findIndex(t => t.key === c.tunable);
+        if (at >= 0) ps.tunables[at] = r.data[0];
+      }
+      if (!c.tunable) ps.vals[k] = v;
+      ps.out[k] = r.ok ? (c.tunable ? null : { text: shortJSON(r.data) }) : { text: r.error?.message || 'failed', err: true };
+    }
+    slot.busy = false;
+    const box = document.querySelector(`[data-tc="${CSS.escape(k)}"]`)?.closest('.tctl');
+    if (box) { const o = box.querySelector('.tout'); const want = ps.out[k];
+      if (want) { if (o) { o.textContent = want.text; o.classList.toggle('err', !!want.err); } else box.insertAdjacentHTML('beforeend', `<div class="tout ${want.err ? 'err' : ''}">${esc(want.text)}</div>`); }
+      else o?.remove();
+      box.classList.toggle('tuned', !!(c.tunable && tunable(c.tunable)?.tuned));
+      const rb = box.querySelector('[data-treset]'); if (rb) rb.disabled = !tunable(c.tunable)?.tuned; }
+  })();
+}
+function shortJSON(v){ const s = typeof v === 'string' ? v : JSON.stringify(v); return s && s.length > 240 ? s.slice(0, 240) + '…' : (s ?? ''); }
+function pick(data, p){ return String(p || '').split('.').filter(Boolean).reduce((o, k) => (o == null ? o : o[k]), data); }
+const readTimers = {};
+function pollReadouts(){
+  const ps = pstate();
+  panelControls().forEach((c, i) => {
+    if (c.kind !== 'readout' || !c.endpoint) return;
+    const k = ckey(c, i);
+    const every = Math.min(60, Math.max(0.5, Number(c.refreshSeconds) || 2)) * 1000;
+    if (readTimers[k] && Date.now() - readTimers[k] < every) return;
+    readTimers[k] = Date.now();
+    callApp(c.endpoint, c.arguments || {}).then(r => {
+      const v = r.ok ? pick(r.data, c.path) : null;
+      ps.out[k] = r.ok ? { text: typeof v === 'number' ? fmtNum(v) : shortJSON(v) } : { text: r.error?.message || 'failed', err: true };
+      const cell = document.querySelector(`[data-readout="${CSS.escape(k)}"]`);
+      if (cell) cell.textContent = ps.out[k].text;
+    });
+  });
+}
+function panelText(){
+  const ps = pstate();
+  const tuned = ps.tunables.filter(t => t.tuned);
+  const lines = [`${currentApp()?.appName || 'App'} tuned values (${new Date().toLocaleString()}):`];
+  if (!tuned.length) lines.push('  (every tunable is at its default)');
+  for (const t of tuned) lines.push(`  ${t.key} = ${JSON.stringify(t.value)}   (default ${JSON.stringify(t.default)})`);
+  const panel = ps.list.find(p => p.name === ps.sel);
+  if (panel) panel.controls.forEach((c, i) => {
+    const k = ckey(c, i);
+    if (c.endpoint && k in ps.vals) lines.push(`  ${c.endpoint} ${c.argument} = ${JSON.stringify(ps.vals[k])}`);
+  });
+  lines.push('Write these back into the source as the new defaults.');
+  return lines.join('\n');
+}
+document.addEventListener('input', e => {
+  const i = e.target.dataset?.ti;
+  if (i === undefined || !e.target.closest('#panelpane')) return;
+  const inp = e.target, c = panelControls()[Number(i)];
+  if (!c) return;
+  let v;
+  if (inp.type === 'checkbox') { v = inp.checked; const l = inp.parentElement; if (l) l.lastChild.textContent = v ? ' On' : ' Off'; }
+  else if (inp.tagName === 'SELECT') v = inp.value;
+  else { v = parseFloat(inp.value); if (!Number.isFinite(v)) return;
+    const twin = inp.closest('.tctl').querySelector(inp.type === 'range' ? 'input[type=number]' : 'input[type=range]');
+    if (twin) twin.value = inp.type === 'range' ? fmtNum(v, Number(inp.step)) : v; }
+  sendValue(Number(i), v);
+});
+document.addEventListener('pointerdown', e => { if (e.target.type === 'range') e.target.dataset.dragging = '1'; });
+document.addEventListener('pointerup', () => document.querySelectorAll('[data-dragging]').forEach(x => delete x.dataset.dragging));
+document.addEventListener('click', async e => {
+  const t = e.target.closest?.('[data-psel], [data-treset], [data-tbtn], #tresetall, #tcopy, [data-retry="panels"]');
+  if (!t) return;
+  const ps = pstate();
+  if (t.dataset.psel) { ps.sel = t.dataset.psel; ps.sig = ''; renderPanels(); pollReadouts(); }
+  else if (t.dataset.treset || t.id === 'tresetall') {
+    const r = await callApp('_tune', t.dataset.treset ? { reset: true, key: t.dataset.treset } : { reset: true });
+    if (!r.ok) toast(`Reset failed: ${r.error?.message}`);
+    loadPanels(true);
+  } else if (t.dataset.tbtn !== undefined) {
+    const i = Number(t.dataset.tbtn), c = panelControls()[i];
+    t.disabled = true;
+    const r = await callApp(c.endpoint, c.arguments || {});
+    t.disabled = false;
+    ps.out[ckey(c, i)] = r.ok ? { text: shortJSON(r.data) } : { text: r.error?.message || 'failed', err: true };
+    ps.sig = ''; renderPanels();
+  } else if (t.id === 'tcopy') copyText(panelText(), 'tuned values');
+  else if (t.dataset.retry === 'panels') loadPanels(true);
+});
+
 function loadInfo(){ showCall('_info', {}, $('#infopane')); }
 
 function showTab(name){
@@ -1739,6 +1984,7 @@ function showTab(name){
   if (D.tab === 'endpoints') loadHelp();
   if (D.tab === 'info') loadInfo();
   if (D.tab === 'profile' || D.tab === 'memory') loadAppIdentity();
+  if (D.tab === 'panels') loadPanels(true);
 }
 
 async function captureTrace(button){

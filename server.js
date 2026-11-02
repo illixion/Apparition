@@ -1880,7 +1880,7 @@ const server = http.createServer(async (req, res) => {
       // clientName is what the device's approval prompt calls this page.
       return json(res, 200, { apps: d.apps.map(debug.publicApp), error: d.error, clientName: debug.clientName });
     }
-    let dm = url.pathname.match(/^\/api\/debug\/([A-Za-z0-9._-]{1,64})\/(help|call|logs)$/);
+    let dm = url.pathname.match(/^\/api\/debug\/([A-Za-z0-9._-]{1,64})\/(help|call|logs|panels)$/);
     if (dm) {
       const [, id, action] = dm;
       if (action === 'help' && req.method === 'GET') {
@@ -1898,6 +1898,10 @@ const server = http.createServer(async (req, res) => {
         const type = /^(image\/(png|jpeg|gif|webp|heic)|application\/(zip|octet-stream)|text\/plain)/.test(r.contentType) ? r.contentType : 'application/octet-stream';
         res.writeHead(r.status, { 'Content-Type': type, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'" });
         return res.end(r.raw);
+      }
+      if (action === 'panels' && req.method === 'GET') {
+        const r = await debug.panels(id);
+        return json(res, r.status, r.body);
       }
       if (action === 'logs' && req.method === 'GET') {
         const level = url.searchParams.get('level') || 'debug';

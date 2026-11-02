@@ -119,6 +119,16 @@ Discovery uses DebugTrace's `Tools/debugtrace-mcp discover`, so set `debugtraceT
 The page never sees an app's address or token: it names the app by its build's key id, and the
 server looks up the address from discovery and the token from the key ledger.
 
+**Panels** turns values an app reads through DebugTrace's `DebugTunables`
+(`DebugTunables.number("hdr.peakNits", 600, range: 100...2000)`) into sliders, toggles and menus
+that change the running app as they move. Agents can save their own panels for what is being
+tested with the `apps` MCP server's `panel` tool: tunables, endpoint controls, buttons and live
+readouts. **Copy values** gives the tuned numbers as text to paste back to an agent. On Apple Vision
+Pro, tune from this page on a phone, or on the Mac Virtual Display: turn on **Settings ›
+Developer › Allow Mac Virtual Display** to use it in immersive environments. That setting breaks
+`.progressive` immersion styles, so turn it off to test those. Details are in DebugTrace's
+`Docs/tuning.md`.
+
 ## JIT apps and devices that wake on contact
 
 Both go through [Apparition](https://github.com/illixion/Apparition)'s command line

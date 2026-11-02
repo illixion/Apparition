@@ -26,6 +26,19 @@ const app = createFakeApp({ token: 'sandbox-token', approvalMs, approval });
 app.listen(0, '127.0.0.1', () => {
   const appUrl = `http://127.0.0.1:${app.address().port}`;
   fs.writeFileSync(path.join(keys, 'kExample.json'), JSON.stringify({ keyId: 'kExample', commandToken: 'sandbox-token', bundleId: 'com.example.ExampleApp', build: 'be18d4a' }));
+  // A panel as debugtrace-mcp's `panel` tool writes it, beside the key ledger.
+  fs.mkdirSync(path.join(tmp, 'panels', 'com.example.ExampleApp'), { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'panels', 'com.example.ExampleApp', 'hdr-tuning.json'), JSON.stringify({
+    name: 'hdr-tuning', title: 'HDR tuning', note: 'Watch the window highlights against the sky while moving peak nits.', updatedAt: new Date().toISOString(),
+    controls: [
+      { kind: 'slider', tunable: 'hdr.peakNits' },
+      { kind: 'choice', tunable: 'hdr.toneMap', label: 'Curve' },
+      { kind: 'choice', endpoint: 'setWeather', argument: 'kind', choices: ['clear', 'rain', 'snow'], label: 'Weather' },
+      { kind: 'readout', endpoint: 'renderStats', path: 'fps', label: 'FPS', refreshSeconds: 1 },
+      { kind: 'readout', endpoint: 'renderStats', path: 'frameMs.p99', label: 'Frame p99 (ms)' },
+      { kind: 'slider', tunable: 'hdr.missingOne', label: 'Not read yet' },
+      { kind: 'button', endpoint: 'renderStats', label: 'Sample stats' },
+    ] }));
   const tool = path.join(tmp, 'discover');
   fs.writeFileSync(tool, `#!/bin/sh\ncat <<'JSON'\n${JSON.stringify([
     { appName: 'ExampleApp', bundleId: 'com.example.ExampleApp', build: 'be18d4a', device: 'avp', url: appUrl, keyId: 'kExample', source: 'session', attachable: true },
