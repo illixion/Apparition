@@ -44,6 +44,7 @@ fn main() {
             host::host_stop,
             host::host_web_ui,
             host::host_settings,
+            host::host_open_console,
             service::service_connect,
             service::service_disconnect,
             service::service_request,

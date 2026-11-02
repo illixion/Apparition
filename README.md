@@ -130,6 +130,11 @@ also lets Apparition on another device connect. **Connect to another Mac** takes
 its own (`node server.js` under launchd or systemd, with `node server.js set-password`): enter its
 HTTPS address and password. The service needs the `apparition-service` version 1 API.
 
+**Console** on a running app (Reports › Running apps, this Mac's service) opens the service's
+Debug console in its own window: live log, tuning panels (sliders for `DebugTunables` values and
+panels an agent built), profiler and memory view. A one-time link signs it in, web UI on or off;
+the window has no access to the app.
+
 The tab has four sections: **Projects**, **Activity** (the build queue and logs), **Reports**
 (crash logs, traces and, on the Mac, running debug apps, grouped by app) and **Devices &
 signing** (**Service** on a device). Each project lists its targets, one per device it installs

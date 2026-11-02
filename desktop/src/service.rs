@@ -103,6 +103,11 @@ impl BuildService {
         Ok(json!({"url": base.as_str(), "local": true, "capabilities": reply["capabilities"], "version": 1, "hostPlatform": reply["hostPlatform"]}))
     }
 
+    /// The local service's address, while this app talks to it.
+    pub fn local_base(&self) -> Option<Url> {
+        self.session.lock().unwrap().as_ref().filter(|s| s.local).map(|s| s.base.clone())
+    }
+
     pub fn forget_local(&self) {
         let mut session = self.session.lock().unwrap();
         if session.as_ref().is_some_and(|s| s.local) {

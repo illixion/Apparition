@@ -156,7 +156,7 @@ export class DeveloperView {
     this.panes.activity.append(this.jobs);
 
     this.reports = this.block('Crash logs and traces', 'Pulled from your devices and uploaded by apps that link DebugTrace, grouped by app.');
-    this.debug = this.block('Running apps', 'Dev builds with a debug server that are running now. Inspecting one asks for approval on the device.');
+    this.debug = this.block('Running apps', 'Dev builds with a debug server that are running now. Inspecting one asks for approval on the device. Console opens its live log, tuning panels (sliders for values an app reads through DebugTunables, and panels an agent built), profiler and memory view.');
     this.panes.reports.append(this.reports, this.debug);
 
     this.devices = this.block('Devices', 'Devices this Mac can install to. Simulators are not listed.', true);
@@ -1009,6 +1009,13 @@ export class DeveloperView {
             { title: app.appName || app.bundleId, operation: 'debugCall', args: { id: app.id, endpoint: '_info', arguments: {} } });
           inspect.disabled = !app.attachable;
           actions.append(inspect);
+          // This Mac's service: its Debug console (live log, tuning panels, profile, memory) in a window.
+          if (this.local && app.id) {
+            const consoleButton = button('Console', () => this.invoke('host_open_console', { key: app.id })
+              .catch(error => this.status(String(error?.message || error), true)), 'button quiet small');
+            consoleButton.disabled = !app.attachable;
+            actions.append(consoleButton);
+          }
           main.append(actions);
           row.append(main); this.host(rowId, row);
           rows.push(row);
