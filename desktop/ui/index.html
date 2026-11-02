@@ -504,6 +504,20 @@
   </form>
 </dialog>
 
+<dialog id="companion-pairing-prompt" class="prompt" aria-labelledby="companion-pairing-title">
+  <form method="dialog" autocomplete="off">
+    <h2 id="companion-pairing-title">Pair this device?</h2>
+    <p class="hint" id="companion-pairing-text"></p>
+    <p class="shown-code" id="companion-pairing-code"></p>
+    <p class="hint">Allow only when Apparition on the device shows the same code.</p>
+    <p class="error" id="companion-pairing-error" hidden></p>
+    <div class="row end">
+      <button type="button" class="button quiet" id="companion-pairing-decline">Decline</button>
+      <button type="button" class="button primary" id="companion-pairing-allow">Allow</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- The website's ghost (Website/logo.svg), shared by the welcome and done screens. -->
 <svg width="0" height="0" class="defs" aria-hidden="true" focusable="false">
   <defs>

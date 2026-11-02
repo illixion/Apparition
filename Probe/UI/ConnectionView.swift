@@ -74,6 +74,13 @@ struct ConnectionView: View {
             account.anisetteURL = url
             anisetteAuto = true
         }
+        .panel(isPresented: Binding(get: { pairing.phase != .idle }, set: { shown in
+            guard !shown else { return }
+            if case .failed = pairing.phase { pairing.dismissFailure() }
+            else { pairing.cancel() }
+        })) {
+            CompanionAnisettePairingSheet(pairing: pairing)
+        }
     }
 
     // MARK: Companion
@@ -251,41 +258,8 @@ struct ConnectionView: View {
         }
     }
 
-    /// The code to compare while pairing, or why it failed.
-    @ViewBuilder
-    private var pairingStatus: some View {
-        switch pairing.phase {
-        case .idle:
-            EmptyView()
-        case .waiting(let name):
-            HStack(spacing: 12) {
-                ProgressView()
-                Text("Asking \(name) to pair…").font(.callout)
-                Button("Cancel") { pairing.cancel() }.buttonStyle(.bordered)
-            }
-        case .confirming(let name, let code):
-            VStack(alignment: .leading, spacing: 8) {
-                Text(code)
-                    .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
-                    .accessibilityLabel("Code \(code)")
-                Text("Check that \(name) shows the same code, then choose Allow there.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Button("Cancel") { pairing.cancel() }.buttonStyle(.bordered)
-            }
-            .padding(14)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        case .failed(let reason):
-            HStack(spacing: 12) {
-                Note(text: reason, kind: .warning)
-                Button("OK") { pairing.dismissFailure() }.buttonStyle(.bordered)
-            }
-        }
-    }
-
     @ViewBuilder
     private var companionAnisetteChoices: some View {
-        pairingStatus
         let offered = companions.found.filter { $0.anisetteURL != nil }
         #if os(tvOS)
         // One menu instead of a row per companion: rows made the step long enough that moving
@@ -334,6 +308,55 @@ struct ConnectionView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// Shows the companion's matching code as a focused prompt instead of burying it in Connection's
+/// setup scroll. The desktop companion shows its approval in a matching modal.
+private struct CompanionAnisettePairingSheet: View {
+    let pairing: CompanionPairing
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                switch pairing.phase {
+                case .idle:
+                    EmptyView()
+                case .waiting(let name):
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Asking \(name) to pair…").font(.headline)
+                    }
+                    Text("Approve the request on that computer when its prompt appears.")
+                        .foregroundStyle(.secondary)
+                case .confirming(let name, let code):
+                    Text(code)
+                        .font(.system(size: 48, weight: .semibold, design: .rounded).monospacedDigit())
+                        .accessibilityLabel("Code \(code)")
+                        .frame(maxWidth: .infinity)
+                    Text("Check that Apparition on \(name) shows the same code, then choose Allow there.")
+                        .foregroundStyle(.secondary)
+                case .failed(let reason):
+                    Note(text: reason, kind: .warning)
+                }
+                HStack {
+                    Spacer()
+                    if case .failed = pairing.phase {
+                        Button("Done") { pairing.dismissFailure() }
+                            .buttonStyle(.borderedProminent)
+                    } else {
+                        Button("Cancel", role: .cancel) { pairing.cancel() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+            .frame(maxWidth: 560, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .navigationTitle("Pair Companion")
+        }
+        .sheetFrame(minWidth: 500, minHeight: 300)
     }
 }
 

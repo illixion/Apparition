@@ -171,6 +171,10 @@ struct RootView: View {
                                         set: { if !$0, account.twoFactor != nil { account.answerTwoFactor("abort") } })) {
                 TwoFactorSheet(account: account)
             }
+            .panel(isPresented: Binding(get: { model.pinRequested },
+                                        set: { if !$0, model.pinRequested { model.cancelPin() } })) {
+                DevicePairingPinSheet(model: model)
+            }
             #if !APPARITION_RELEASE
             .onChange(of: DebugScreens.shared.tab) { _, wanted in
                 guard let wanted else { return }

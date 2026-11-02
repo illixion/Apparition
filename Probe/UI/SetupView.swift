@@ -180,11 +180,6 @@ struct PairStep: View {
 
     @AppStorage("pairedUDID") private var pairedUDID: String?
     @AppStorage("pairedName") private var pairedName: String?
-    @State private var pin = ""
-    /// What the field last received, for the submit log line (counts only, never the code).
-    @State private var rawCharacters = 0
-    @State private var rawScalars = 0
-    @State private var submitted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -234,8 +229,6 @@ struct PairStep: View {
                 #if os(visionOS)
                 Button {
                     guard let port = model.selfManualPairingPort else { return }
-                    submitted = false
-                    pin = ""
                     log.info("pairing through the \(model.connectionMode?.rawValue ?? "default", privacy: .public) connection, port \(port, privacy: .public)")
                     Task {
                         await model.pair(host: model.defaultTunnelHost, port: port)
@@ -261,18 +254,11 @@ struct PairStep: View {
             }
             .focusRow()
 
-            if model.pinRequested {
-                pinEntry
-            }
-
             attemptNote("pair", label: "Pairing")
             attemptNote("identify", label: "Identity check")
         }
         .onAppear {
             if model.advertised.isEmpty { model.startBrowsing() }
-        }
-        .onChange(of: model.pinRequested) { _, requested in
-            if requested { submitted = false; pin = "" }
         }
     }
 
@@ -288,37 +274,6 @@ struct PairStep: View {
             }
             .focusRow()
         }
-    }
-
-    private var pinEntry: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Enter the code Settings shows").font(.headline)
-            HStack(alignment: .top, spacing: 16) {
-                DigitCodeField(title: "000000", code: $pin, contentType: nil,
-                               onRawInput: { rawCharacters = $0; rawScalars = $1 },
-                               onComplete: { submit($0) })
-                Button("Pair") { submit(pin) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(pin.count != 6 || submitted)
-                Button("Cancel", role: .cancel) {
-                    model.cancelPin()
-                    pin = ""
-                }
-                .buttonStyle(.bordered)
-            }
-            .focusRow()
-        }
-        .padding(18)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
-    private func submit(_ code: String) {
-        let digits = DigitCodeField.digits(in: code, length: 6)
-        log.info("pin submit: \(digits.count, privacy: .public) digits; field held \(rawCharacters, privacy: .public) characters, \(rawScalars, privacy: .public) scalars")
-        guard digits.count == 6, !submitted else { return }
-        submitted = true
-        model.submitPin(digits)
-        pin = ""
     }
 
     @ViewBuilder

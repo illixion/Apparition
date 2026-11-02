@@ -9,7 +9,6 @@ struct DiagnosticsView: View {
     let library: LibraryModel
     let companions: CompanionFinder
     @State private var sourceURL = "github:utmapp/UTM"
-    @State private var pin = ""
     @State private var email = ""
     @State private var password = ""
     @State private var twoFactorCode = ""
@@ -25,18 +24,6 @@ struct DiagnosticsView: View {
                     Text("3. Then open a tunnel against the paired service (usually port 49152).")
                 }
                 .font(.footnote)
-
-                if model.pinRequested {
-                    Section("Code from Settings") {
-                        TextField("6-digit code", text: $pin)
-                            .keyboardType(.numberPad)
-                        HStack {
-                            Button("Submit") { model.submitPin(DigitCodeField.digits(in: pin, length: 6)); pin = "" }
-                            Button("Cancel", role: .cancel) { model.cancelPin() }
-                        }
-                        .focusRow()
-                    }
-                }
 
                 accountSection
                 librarySection

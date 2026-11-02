@@ -1248,6 +1248,47 @@ const promptError = /** @type {HTMLElement} */ (document.getElementById("prompt-
 const promptSms = /** @type {HTMLElement} */ (document.getElementById("prompt-sms"));
 /** @type {any} */ let promptKind = null;
 let installPlanReply = null;
+const companionPairingDialog = /** @type {HTMLDialogElement} */ (document.getElementById("companion-pairing-prompt"));
+/** @type {number|null} */ let companionPairingId = null;
+
+function openCompanionPairing(/** @type {any} */ payload) {
+  const request = payload?.request;
+  if (!Number.isInteger(payload?.id) || !request) return;
+  companionPairingId = payload.id;
+  document.getElementById("companion-pairing-text").textContent =
+    `${request.deviceName || "A device"} (${request.peer || "unknown address"}) asks to use this computer's anisette.`;
+  document.getElementById("companion-pairing-code").textContent = request.code || "";
+  const error = document.getElementById("companion-pairing-error");
+  error.hidden = true;
+  error.textContent = "";
+  document.getElementById("companion-pairing-allow").disabled = false;
+  document.getElementById("companion-pairing-decline").disabled = false;
+  showView("companion");
+  if (!companionPairingDialog.open) companionPairingDialog.showModal();
+  document.getElementById("companion-pairing-allow").focus();
+}
+
+async function decideCompanionPairing(/** @type {boolean} */ allow) {
+  if (companionPairingId === null) return;
+  const id = companionPairingId;
+  const buttons = [document.getElementById("companion-pairing-allow"), document.getElementById("companion-pairing-decline")];
+  buttons.forEach(button => button.disabled = true);
+  try {
+    const status = await invoke("companion_pairing_decide", { id, allow });
+    companionPairingDialog.close();
+    companionPairingId = null;
+    drawCompanion(status);
+  } catch (failure) {
+    const error = document.getElementById("companion-pairing-error");
+    error.textContent = messageOf(failure);
+    error.hidden = false;
+    buttons.forEach(button => button.disabled = false);
+  }
+}
+
+document.getElementById("companion-pairing-allow")?.addEventListener("click", () => decideCompanionPairing(true));
+document.getElementById("companion-pairing-decline")?.addEventListener("click", () => decideCompanionPairing(false));
+companionPairingDialog.addEventListener("cancel", () => { companionPairingId = null; });
 
 /** Review before provisioning: no IDs are registered while this dialog is open. */
 function installPlanPrompt(prompt) {
@@ -1639,8 +1680,8 @@ function drawCompanion(/** @type {any} */ status) {
 async function start() {
   await listen("prompt", (/** @type {any} */ e) => openPrompt(e.payload));
   await listen("prompt-done", () => dialog.open && dialog.close());
-  // A device asks to pair: show the Companion tab, where the request waits for an answer.
-  await listen("companion-pairing", () => showView("companion"));
+  // A device asks to pair: show the matching code and approval in a focused dialog.
+  await listen("companion-pairing", (/** @type {any} */ e) => openCompanionPairing(e.payload));
   state.info = await invoke("app_info");
   document.body.classList.toggle("mac", state.info.platform === "macos-universal");
   state.settings = await invoke("saved_settings");

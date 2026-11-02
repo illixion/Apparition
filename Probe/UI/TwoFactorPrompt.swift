@@ -1,4 +1,7 @@
+import DebugTrace
 import SwiftUI
+
+private let pairingLog = DebugLogger(subsystem: "Apparition", category: "Pairing")
 
 /// Apple's 2FA step of a sign-in, wherever the sign-in started: the code field, other ways to
 /// get a code, and Cancel.
@@ -74,6 +77,53 @@ struct TwoFactorSheet: View {
             .navigationTitle("Two-Factor Code")
         }
         .sheetFrame(minWidth: 640, minHeight: 420)
+    }
+}
+
+/// Apple's device-pairing PIN prompt is presented over the app so it stays visible while the
+/// person reads the code from Settings in another window.
+struct DevicePairingPinSheet: View {
+    let model: ProbeModel
+
+    @State private var pin = ""
+    @State private var rawCharacters = 0
+    @State private var rawScalars = 0
+    @State private var submitted = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Enter the six-digit code shown in Settings > General > Remote Devices.")
+                    .foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 16) {
+                    DigitCodeField(title: "000000", code: $pin, contentType: nil,
+                                   onRawInput: { rawCharacters = $0; rawScalars = $1 },
+                                   onComplete: submit)
+                    Button("Pair") { submit(pin) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(pin.count != 6 || submitted)
+                    Button("Cancel", role: .cancel) { model.cancelPin() }
+                        .buttonStyle(.bordered)
+                }
+                .focusRow()
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .navigationTitle("Pair This Device")
+            .onAppear { pin = ""; submitted = false }
+        }
+        .sheetFrame(minWidth: 640, minHeight: 260)
+    }
+
+    private func submit(_ code: String) {
+        let digits = DigitCodeField.digits(in: code, length: 6)
+        pairingLog.info("pairing pin submit: \(digits.count, privacy: .public) digits; field held \(rawCharacters, privacy: .public) characters, \(rawScalars, privacy: .public) scalars")
+        guard digits.count == 6, !submitted else { return }
+        submitted = true
+        model.submitPin(digits)
+        pin = ""
     }
 }
 

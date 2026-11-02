@@ -249,7 +249,7 @@ final class AccountModel {
         var message: String {
             unreachable
                 ? "Apparition can't reach the anisette server at \(host), which Apple's sign-in needs. Check its address in Connection settings, and that the server is running."
-                : "The anisette server at \(host) didn't give Apple's sign-in what it needs. Check that it's an anisette v3 server and up to date, or use another."
+                : "The anisette server at \(host) didn't give Apple's sign-in what it needs. If this is a paired-only Apparition companion, open Connection and choose Pair and Use, then approve the matching code on that computer. Otherwise, check that the server is an up-to-date anisette v3 server."
         }
     }
 
