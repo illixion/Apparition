@@ -29,9 +29,16 @@ Two parts, which ship together:
 - macOS with Xcode (`xcodebuild`, `xcrun devicectl`) and Node 18 or newer (also required
   by the terminal build-and-sign command for artifact manifests).
 - Bash 4+ (`brew install bash`); the script's shebang is `/opt/homebrew/bin/bash`.
-- A paid Apple Developer account, a development certificate exported as `.p12`, and a **wildcard
-  development provisioning profile** listing your devices (see below).
+- For Mac-side signed installs: a paid Apple Developer account, a development certificate
+  exported as `.p12`, and a **wildcard development provisioning profile** listing your devices
+  (see below). Device-side installs still use a retained build from this service, then sign it
+  with the identity configured in Apparition on the device.
 - Devices paired with this Mac in Xcode.
+
+Live patching additionally needs DebugTrace's `debugtrace-mcp` and `debugtrace-inject` tools on
+the build Mac. Set `debugtraceTool` and `debugtraceInjectTool` in `config.json` when they are not
+at their documented checkout paths; the service passes these paths to patch builds and inject
+requests.
 
 ## Provisioning profiles
 

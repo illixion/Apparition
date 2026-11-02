@@ -656,7 +656,9 @@ async function executeBuild(job) {
       // would break only here, under the agent, and not when run by hand.
       const child = spawn(buildArgs[0], buildArgs.slice(1), {
         cwd: buildCwd,
-        env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore(), ...quietInstallEnv(CONFIG) },
+        env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore(),
+          ...(CONFIG.debugtraceInjectTool ? { DEBUGTRACE_INJECT_TOOL: CONFIG.debugtraceInjectTool } : {}),
+          ...quietInstallEnv(CONFIG) },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       procs.set(job.id, child);
@@ -1414,7 +1416,9 @@ const service = require('./lib/service').createService({ auth, config: () => CON
     try {
       const args = ['inject', target.bundleId, '--device', target.device, ...files.flatMap(f => ['--file', f])];
       const result = await run(apparitionCli(), args, { cwd: repo.path, timeout: 90000,
-        env: { ...process.env, ...(CONFIG.debugtraceTool ? { DEBUGTRACE_MCP: CONFIG.debugtraceTool } : {}) } });
+        env: { ...process.env,
+          ...(CONFIG.debugtraceTool ? { DEBUGTRACE_MCP: CONFIG.debugtraceTool } : {}),
+          ...(CONFIG.debugtraceInjectTool ? { DEBUGTRACE_INJECT_TOOL: CONFIG.debugtraceInjectTool } : {}) } });
       if (result.code !== 0) throw new Error('Patch failed: ' + (result.stdout || result.stderr).slice(-12000));
       return JSON.parse(result.stdout.trim());
     } finally { patchingTargets.delete(key); }

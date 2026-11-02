@@ -8,6 +8,7 @@
     "icon": "\ud83d\ude80"
   },
   "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
+  "debugtraceInjectTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-inject/debugtrace-inject",
   "ledgerOnlyDevices": [],
   "quietAppsDevices": [],
   "deployDefaults": { "mcp": true, "launch": false, "buildDebug": false, "inject": false },
