@@ -311,6 +311,21 @@ impl Tunnel {
         Ok(())
     }
 
+    /// Copies an app's Documents and Library into `dir`. See `crate::container::pull`.
+    pub async fn pull_container(&mut self, bundle_id: &str, dir: &Path) -> Result<Value, Report> {
+        crate::container::pull(&mut self.adapter, &mut self.handshake, bundle_id, dir).await
+    }
+
+    /// Copies a folder `pull_container` made back into an app's container.
+    pub async fn push_container(&mut self, bundle_id: &str, dir: &Path) -> Result<Value, Report> {
+        crate::container::push(&mut self.adapter, &mut self.handshake, bundle_id, dir).await
+    }
+
+    /// How many folders and files an app's data holds.
+    pub async fn count_container(&mut self, bundle_id: &str) -> Result<Value, Report> {
+        crate::container::count(&mut self.adapter, &mut self.handshake, bundle_id).await
+    }
+
     pub async fn migrate_data(&mut self, from: &str, to: &str) -> Result<Value, Report> {
         crate::migrate::migrate_container(&mut self.adapter, &mut self.handshake, from, to).await
     }

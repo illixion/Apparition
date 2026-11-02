@@ -522,6 +522,8 @@ companion (`apparition relay`, `apparition anisette serve|up|down`):
     apparition pairing hand-off   # give an Apparition already installed there its pairing
     apparition apps --device ATV --json   # what it has installed, with versions; never wakes a sleeping Apple TV
     apparition push App-signed.ipa --device ATV   # install an IPA already signed for the device, as it is
+    apparition container pull com.example.app --device ATV backup/   # its Documents and Library; `push` puts them back, `count` counts
+    apparition uninstall com.example.app --device ATV
     apparition launch com.example.app --device ATV --console   # launch, streaming its stdout/stderr here
     apparition launch com.example.emu --device AVP --jit --console   # launch suspended and serve its JIT requests
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>

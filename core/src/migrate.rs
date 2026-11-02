@@ -22,18 +22,18 @@ use rootcause::prelude::*;
 use serde_json::{Value, json};
 
 /// How much is read from the old copy before it is written to the new one.
-const CHUNK: usize = 1024 * 1024;
+pub(crate) const CHUNK: usize = 1024 * 1024;
 
 /// A copy that fails on this many files is stopped: the connection is gone, or the new copy
 /// refuses writes, and the rest would fail the same way.
 const MAX_FAILURES: usize = 25;
 
 /// The container's folders that hold the app's data; `tmp` and `SystemData` are the system's.
-const ROOTS: [&str; 2] = ["/Documents", "/Library"];
+pub(crate) const ROOTS: [&str; 2] = ["/Documents", "/Library"];
 
 /// Whether `path` (in the old container) is left behind: what the system or the app rebuilds
 /// itself, and would only cost time to copy.
-fn skipped(path: &str) -> bool {
+pub(crate) fn skipped(path: &str) -> bool {
     ["/Library/Caches", "/Library/Saved Application State", "/Library/SplashBoard", "/Library/Caches.noindex"]
         .iter()
         .any(|skip| path == *skip)

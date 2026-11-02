@@ -30,6 +30,7 @@ mod nearby;
 mod identity;
 mod ipa;
 mod migrate;
+mod container;
 pub mod package;
 pub mod install_plan;
 mod jit;

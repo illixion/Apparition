@@ -42,6 +42,13 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
   apparition push <signed.ipa> [--device <name or UDID>] [--json]
       Install an IPA that is already signed for the device (a build tool's output) as it is,
       over the same tunnel as `apps`: no re-signing, and a sleeping Apple TV stays asleep.
+  apparition uninstall <bundle ID> [--device <name or UDID>]
+      Remove an app and its data container, over the same tunnel as `apps`.
+  apparition container pull|push|count <bundle ID> [--device <name or UDID>] [<folder>] [--json]
+      An installed, development-signed app's data, over the same tunnel: `pull` copies its
+      Documents and Library into an empty <folder> (caches and saved state stay behind), `push`
+      copies such a folder back into the app, `count` says how many folders and files it holds.
+      For backing data up across a reinstall without waking a sleeping Apple TV.
   apparition launch <bundle ID> [--device <name or UDID>] [--env KEY=VALUE]... [--console]
           [--jit [--wait <seconds>]] [-- <app arguments>...]
       Launch an app (ending a running copy) over the same tunnel as `apps`, as `devicectl device
@@ -199,6 +206,8 @@ async fn main() -> ExitCode {
         Some("apps") => apps(&args[1..]).await,
         Some("push") => push(&args[1..]).await,
         Some("launch") => launch(&args[1..]).await,
+        Some("uninstall") => uninstall(&args[1..]).await,
+        Some("container") => container(&args[1..]).await,
         Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
@@ -611,6 +620,80 @@ async fn push(args: &[String]) -> Result<(), Error> {
         println!("Sent {bundle_id} to {} in {seconds:.1} s; it finishes installing when the app is closed.", device.name);
     } else {
         println!("Installed {bundle_id} on {} in {seconds:.1} s.", device.name);
+    }
+    Ok(())
+}
+
+/// `uninstall`: removes an app over this pairing's own tunnel, like `push`, so a re-sign that
+/// has to reinstall doesn't wake a sleeping Apple TV. Never asks a PIN.
+async fn uninstall(args: &[String]) -> Result<(), Error> {
+    let usage = || fail("usage: apparition uninstall <bundle ID> [--device <name or UDID>]");
+    let (mut bundle_id, mut wanted) = (None, None);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--device" => wanted = Some(args.next().ok_or_else(usage)?.as_str()),
+            other if !other.starts_with('-') && bundle_id.is_none() => bundle_id = Some(other.to_string()),
+            _ => return Err(usage()),
+        }
+    }
+    let bundle_id = bundle_id.ok_or_else(usage)?;
+    let device = find_device(wanted)?;
+    let mut tunnel = store().connect_verified(&device).await?;
+    if tunnel.installed_app(&bundle_id).await?.is_none() {
+        return Err(fail(format!("{bundle_id} isn't installed on {}", device.name)));
+    }
+    tunnel.uninstall(&bundle_id).await?;
+    println!("Removed {bundle_id} from {}.", device.name);
+    Ok(())
+}
+
+/// `container pull|push|count`: an app's data off the device and back, over this pairing's own
+/// tunnel (house_arrest), for a re-sign that has to reinstall. Exits non-zero when any file
+/// failed, after printing the reply, so a caller never takes a partial copy for a whole one.
+async fn container(args: &[String]) -> Result<(), Error> {
+    let usage = || fail("usage: apparition container pull|push|count <bundle ID> [--device <name or UDID>] [<folder>] [--json]");
+    let mut args = args.iter();
+    let action = args.next().map(String::as_str).filter(|a| ["pull", "push", "count"].contains(a)).ok_or_else(usage)?.to_string();
+    let (mut bundle_id, mut folder, mut wanted, mut json) = (None, None, None, false);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--device" => wanted = Some(args.next().ok_or_else(usage)?.as_str()),
+            "--json" => json = true,
+            other if !other.starts_with('-') && bundle_id.is_none() => bundle_id = Some(other.to_string()),
+            other if !other.starts_with('-') && folder.is_none() => folder = Some(PathBuf::from(other)),
+            _ => return Err(usage()),
+        }
+    }
+    let bundle_id = bundle_id.ok_or_else(usage)?;
+    if (action == "count") != folder.is_none() {
+        return Err(usage());
+    }
+    let device = find_device(wanted)?;
+    let mut tunnel = store().connect_verified(&device).await?;
+    let reply = match (action.as_str(), &folder) {
+        ("pull", Some(dir)) => tunnel.pull_container(&bundle_id, dir).await?,
+        ("push", Some(dir)) => {
+            if !dir.is_dir() {
+                return Err(fail(format!("{} isn't a folder", dir.display())));
+            }
+            tunnel.push_container(&bundle_id, dir).await?
+        }
+        _ => tunnel.count_container(&bundle_id).await?,
+    };
+    let failed = reply["failed"].as_array().map_or(0, Vec::len);
+    if json {
+        println!("{}", serde_json::to_string(&reply)?);
+    } else {
+        let (folders, files) = (reply["folders"].as_u64().unwrap_or(0), reply["files"].as_u64().unwrap_or(0));
+        let verb = match action.as_str() { "pull" => "Copied off", "push" => "Copied back", _ => "Holds" };
+        println!("{verb}: {folders} folders, {files} files, {} bytes ({bundle_id} on {})", reply["bytes"].as_u64().unwrap_or(0), device.name);
+        for line in reply["failed"].as_array().into_iter().flatten() {
+            println!("  failed: {}", line.as_str().unwrap_or(""));
+        }
+    }
+    if failed > 0 {
+        return Err(fail(format!("{failed} item(s) failed")));
     }
     Ok(())
 }
