@@ -1383,6 +1383,13 @@ const service = require('./lib/service').createService({ auth, config: () => CON
       webUiOn: webUiOn(), configPath: CONFIG_PATH, dataDir: DATA_DIR }),
     // {enabled, password?}: a new password replaces the old one (ending every browser and
     // device session); turning the web UI on needs one, given now or set before.
+    // A one-time link (60 s) that signs the hosting app's own window in, web UI on or off.
+    webLink: () => {
+      const code = crypto.randomBytes(32).toString('base64url');
+      for (const [c, exp] of hostCodes) if (exp < Date.now()) hostCodes.delete(c);
+      hostCodes.set(code, Date.now() + 60e3);
+      return { path: `/host-login?code=${code}` };
+    },
     setWebUi: ({ enabled, password }) => {
       if (typeof enabled !== 'boolean' || (password !== undefined && (typeof password !== 'string' || password.length < 8 || password.length > 256))) {
         throw Object.assign(new Error('Send enabled, and a password of 8 to 256 characters if you set one.'), { status: 400 });
@@ -1777,9 +1784,14 @@ const isHttps = req => requestBase(req).startsWith('https://');
 const sessionToken = req => parseCookies(req.headers.cookie)[auth.COOKIE];
 // Run directly with no password, the store is open (a banner says so). Hosted, no password means
 // no browser sessions at all: the app talks to it with its own token.
-const signedIn = req => HOSTED
+// Sessions the hosting app opened for its own windows (the Debug console in Apparition): in
+// memory only, so they end with this process, and they work with the web UI off.
+const hostSessions = new Set();
+const hostCodes = new Map(); // one-time code -> expiry (ms)
+const hostSession = req => hostSessions.has(sessionToken(req));
+const signedIn = req => hostSession(req) || (HOSTED
   ? !!CONFIG.passwordHash && auth.check(sessionToken(req), CONFIG.passwordHash)
-  : !CONFIG.passwordHash || auth.check(sessionToken(req), CONFIG.passwordHash);
+  : !CONFIG.passwordHash || auth.check(sessionToken(req), CONFIG.passwordHash));
 // What stays reachable with the web UI off: what apps and devices fetch with their own signatures.
 const machineRoute = (req, url) => (req.method === 'POST' && url.pathname === '/api/traces')
   || (req.method === 'GET' && /^\/(ota|altsource|mac)\//.test(url.pathname));
@@ -1822,7 +1834,20 @@ const server = http.createServer(async (req, res) => {
     const native = await service(req, res, url);
     if (native.handled) return;
     if (native.path) url.pathname = native.path;
-    if (!native.authorized && !webUiOn() && !machineRoute(req, url)) {
+    // The hosting app's one-time link: a code good for 60 s becomes a session cookie.
+    if (url.pathname === '/host-login' && req.method === 'GET') {
+      const code = String(url.searchParams.get('code') || '');
+      const expiry = hostCodes.get(code);
+      hostCodes.delete(code);
+      if (!expiry || expiry < Date.now()) return sendText(res, 403, 'This link has expired. Open it from Apparition again.');
+      const token = crypto.randomBytes(32).toString('base64url');
+      hostSessions.add(token);
+      const next = url.searchParams.get('next') || '/';
+      res.writeHead(302, { 'Set-Cookie': auth.cookie(token, false).replace(/; Max-Age=\d+/, ''),
+        Location: /^\/(?![\/\\])[^\x00-\x1f\x7f]*$/.test(next) ? next : '/', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    if (!native.authorized && !webUiOn() && !machineRoute(req, url) && !hostSession(req)) {
       return sendText(res, 404, 'The web UI is off. Turn it on in Apparition: Developer › Devices & signing › Web UI and other devices.');
     }
 
@@ -1836,6 +1861,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
     if (url.pathname === '/api/logout' && req.method === 'POST') {
+      hostSessions.delete(sessionToken(req));
       auth.logout(sessionToken(req));
       res.setHeader('Set-Cookie', auth.clearCookie(isHttps(req)));
       return json(res, 200, { ok: true });

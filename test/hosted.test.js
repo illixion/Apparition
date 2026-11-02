@@ -89,3 +89,23 @@ test('hosted: the server ends when the app closes its pipe', async () => {
   const [code] = await once(child, 'exit');
   assert.equal(code, 0);
 });
+
+test('hosted: a one-time link signs the app\'s own window in with the web UI off, once', async t => {
+  const { child, call } = await hosted();
+  t.after(() => child.kill());
+  const { path: link } = await (await call('/api/service/v1/host/web-link', { method: 'POST', body: {} })).json();
+  assert.match(link, /^\/host-login\?code=[A-Za-z0-9_-]{43}$/);
+  const login = await call(`${link}&next=/%23debug`, { bearer: null });
+  assert.equal(login.status, 302);
+  assert.equal(login.headers.get('location'), '/#debug');
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const page = await call('/', { bearer: null });
+  assert.equal(page.status, 404, 'still off without the cookie');
+  const signed = await fetch(page.url, { headers: { Cookie: cookie } });
+  assert.equal(signed.status, 200);
+  assert.equal((await fetch(page.url.replace(/\/$/, '/api/state'), { headers: { Cookie: cookie } })).status, 200);
+  assert.equal((await call(link, { bearer: null })).status, 403, 'a code works once');
+  const other = await fetch(login.url.replace(/host-login.*/, 'api/service/connect'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.notEqual(other.status, 200);
+  assert.equal((await call('/api/service/v1/host/web-link', { method: 'POST', body: {}, bearer: crypto.randomBytes(32).toString('base64url') })).status, 401);
+});
