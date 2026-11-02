@@ -623,6 +623,8 @@ function render() {
             <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''}>Launch app</label>
           <label class="runcheck" title="--mcp: make the launch a debug session (console attached, session registered for agents)${s.launch?'':'. Applies only with Launch app'}">
             <input type="checkbox" data-repo="${esc(r.name)}" data-k="mcp" ${s.mcp?'checked':''} ${s.launch?'':'disabled'}>MCP</label>
+          <label class="runcheck" title="--jit: launch through Apparition, which serves the app's JIT requests (emulators, Wine, JIT VMs) for as long as it runs. The device must be paired with Apparition on this Mac${s.launch?'':'. Applies only with Launch app'}">
+            <input type="checkbox" data-repo="${esc(r.name)}" data-k="jit" ${s.jit?'checked':''} ${s.launch?'':'disabled'}>JIT</label>
           <label class="runcheck" title="--debug: build the Debug configuration instead of Release">
             <input type="checkbox" data-repo="${esc(r.name)}" data-k="buildDebug" ${s.buildDebug?'checked':''}>Debug build</label>
           <label class="runcheck" title="--inject: build so running code can be patched live (development builds only)">
@@ -640,7 +642,7 @@ function render() {
   $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
     <td class="muted">${b.id}</td><td>${esc(b.repo)}</td>
     <td class="mono">${esc(b.builtBranch||b.branch)}${b.commit?'@'+esc(b.commit):''}${b.version?' · v'+esc(b.version):''}</td>
-    <td class="muted">${b.macApp?'⤓ .app.zip':b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':(b.run||b.mcp)?' ▶':''}</td>
+    <td class="muted">${b.macApp?'⤓ .app.zip':b.noDeploy?'⤓ OTA':esc(b.device)}<br><small>${esc(b.platform)}</small>${b.buildDebug?' 🐞':(b.run||b.mcp||b.jit)?' ▶':''}${b.jit?' JIT':''}</td>
     <td><span class="status ${b.status}">${b.status}</span></td>
     <td class="muted">${ago(b.startedAt||b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
     || '<tr><td colspan="7" class="muted">No builds yet</td></tr>';
@@ -798,7 +800,7 @@ document.addEventListener('click', async e=>{
     if (!targets.length) return;
     const res = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({repo: repoName, targets,
-        run: s.launch, mcp: s.mcp, buildDebug: s.buildDebug, inject: s.inject})});
+        run: s.launch, mcp: s.mcp, jit: s.jit, buildDebug: s.buildDebug, inject: s.inject})});
     const jobs = res.jobs || [];
     if (jobs.length > 1) toast(`Deploying ${repoName} to ${jobs.length} devices — they'll build one after another.`);
     await poll();

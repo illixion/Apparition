@@ -36,6 +36,14 @@ set -euo pipefail
 #                                   # (or a repo conf) makes every --run of a
 #                                   # development build a debug session
 #   build-and-sign --run --no-mcp   # A bare launch, even when MCP_DEFAULT=on
+#   build-and-sign --jit            # --run for an app that needs JIT (an emulator, Wine,
+#                                   # a JIT-compiling VM): launched suspended through
+#                                   # `apparition launch --jit`, which attaches and serves
+#                                   # its JIT requests from a background process for as long
+#                                   # as the app runs (pid in build/device-console.pid; kill
+#                                   # it to detach, the app keeps running). Combines with
+#                                   # --log/--mcp/--inject. The device must be paired with
+#                                   # Apparition on this Mac (`apparition pair`/`pair --usb`).
 #   build-and-sign --inject         # Build so running code can be patched live
 #   build-and-sign --inject-backend apparition  # Explicit native boundaries via Apparition
 #                                   # (testability + dynamic replacement) and keep
@@ -185,6 +193,7 @@ LOG_ALL=false
 MCP_SESSION=false
 MCP_REQUEST=""      # "on"/"off" from --mcp/--no-mcp; else MCP_DEFAULT decides
 INJECT=false
+JIT=false
 SIGN_DYLIBS=()
 INPUT_IPA=""
 
@@ -197,6 +206,7 @@ while [[ $# -gt 0 ]]; do
         --run)           RUN_APP=true; shift ;;
         --log)           RUN_APP=true; LOG_APP=true; shift ;;
         --log-all)       RUN_APP=true; LOG_APP=true; LOG_ALL=true; shift ;;
+        --jit)           RUN_APP=true; JIT=true; shift ;;
         --mcp)           MCP_REQUEST=on; shift ;;
         --no-mcp)        MCP_REQUEST=off; shift ;;
         --inject)        INJECT=true; shift ;;
@@ -1326,6 +1336,20 @@ codesign -dvvv "$APP_BUNDLE" >>"$LOG_FILE" 2>&1
 # it was ready. JSON carries the UUID regardless of connection state, and
 # `--device` accepts either identifier anyway.
 DEVICE_ID=""
+# Devices reached through Apparition's own pairing and tunnel instead of devicectl:
+# QUIET_DEVICES (comma-separated device names, from global.conf or the environment; the
+# store passes its quietAppsDevices). CoreDevice never sees that tunnel, so Xcode's DeviceHub
+# doesn't open the device's HID service, whose dropped connection wakes a sleeping Apple TV.
+is_quiet_device() {
+    [[ -n "${QUIET_DEVICES:-}" ]] && printf '%s\n' "$QUIET_DEVICES" | tr ',' '\n' \
+        | sed 's/^ *//;s/ *$//' | /usr/bin/grep -qxF -- "$DEVICE_NAME"
+}
+apparition_cli() {
+    local cli="${APPARITION_CLI:-$HOME/.local/bin/apparition}"
+    [[ -x "$cli" ]] || cli=apparition
+    printf '%s' "$cli"
+}
+
 resolve_device_id() {
     if [[ -n "$DEVICE_ID" ]]; then return 0; fi
     local json
@@ -1415,12 +1439,10 @@ if [[ "$NO_DEPLOY" == false ]]; then
     # QUIET_DEVICES (global.conf or environment; the store passes its quietAppsDevices) lists
     # devices installed through `apparition push`: Apparition's own pairing and tunnel, which
     # CoreDevice never sees, so Xcode's DeviceHub doesn't open the device's HID service and a
-    # sleeping Apple TV stays asleep. Launching (--run) still goes through devicectl.
-    if [[ -n "${QUIET_DEVICES:-}" ]] && printf '%s\n' "$QUIET_DEVICES" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -qxF -- "$DEVICE_NAME"; then
-        APPARITION_CLI="${APPARITION_CLI:-$HOME/.local/bin/apparition}"
-        [[ -x "$APPARITION_CLI" ]] || APPARITION_CLI=apparition
+    # sleeping Apple TV stays asleep. Launching goes the same way (Step 10).
+    if is_quiet_device; then
         echo "    (through Apparition's tunnel: $DEVICE_NAME is a quiet device)"
-        "$APPARITION_CLI" push "$SIGNED_IPA" --device "$DEVICE_NAME" >>"$LOG_FILE" 2>&1
+        "$(apparition_cli)" push "$SIGNED_IPA" --device "$DEVICE_NAME" >>"$LOG_FILE" 2>&1
     else
         resolve_device_id
         # devicectl talks to mobile_installation_proxy directly — it does not
@@ -1451,7 +1473,9 @@ find_debug_server() {
     done
     addresses=$(echo "$DEVICE_NAME" | tr '[:upper:]' '[:lower:]')
     info_json=$(mktemp -t bas-device)
-    if xcrun devicectl device info details --device "$DEVICE_ID" --json-output "$info_json" >/dev/null 2>&1; then
+    # Asking devicectl for the tunnel address opens a CoreDevice tunnel, which is what an
+    # Apparition launch avoids; then the device's name (its tailnet name) has to do.
+    if [[ "$LAUNCH_VIA" != apparition ]] && xcrun devicectl device info details --device "$DEVICE_ID" --json-output "$info_json" >/dev/null 2>&1; then
         addresses="$addresses
 $(python3 -c '
 import json, sys
@@ -1481,7 +1505,8 @@ print("\n".join(seen))
         return
     fi
     # The session record: what debugtrace-mcp routes by. The console streamer's
-    # pid is its liveness (devicectl --console exits when the app does).
+    # pid is its liveness (devicectl --console and `apparition launch --console`
+    # exit when the app does).
     local sessions_dir="${XDG_STATE_HOME:-$HOME/.local/state}/debugtrace/sessions"
     local app_name session_file
     app_name=$(plutil -extract CFBundleDisplayName raw -o - "$APP_BUNDLE/Info.plist" 2>/dev/null \
@@ -1521,6 +1546,28 @@ with open(sys.argv[1], "w") as handle:
 # read/tail it after this script exits — the devicectl process is nohup'd and
 # disowned, and its pid is kept in a pidfile so the next run can stop it.
 LAUNCH_STATUS=""
+# How the app is launched: devicectl, or `apparition launch` (Apparition's own tunnel) for a
+# quiet device and for --jit, which only Apparition serves.
+LAUNCH_VIA=devicectl
+if [[ "$JIT" == true ]] || is_quiet_device; then LAUNCH_VIA=apparition; fi
+if [[ "$JIT" == true && "$MACOS_BUILD" == true ]]; then
+    echo "ERROR: --jit is for a device app; a Mac app gets JIT from its own entitlements" >&2
+    exit 1
+fi
+# `apparition launch` takes the environment as APPARITION_CHILD_<KEY>, as devicectl takes
+# DEVICECTL_CHILD_<KEY>: mirror whatever DEVICECTL_CHILD_* this run set, so values never go
+# through argv either way.
+mirror_launch_env() {
+    local name
+    for name in $(compgen -e | /usr/bin/grep '^APPARITION_CHILD_' || true); do unset "$name"; done
+    for name in $(compgen -e | /usr/bin/grep '^DEVICECTL_CHILD_' || true); do
+        export "APPARITION_CHILD_${name#DEVICECTL_CHILD_}=${!name}"
+    done
+}
+apparition_launch() {
+    mirror_launch_env
+    "$(apparition_cli)" launch "$BUILD_BUNDLE_ID" --device "$DEVICE_NAME" "$@"
+}
 APP_LOG="$BUILD_DIR/device-console.log"
 APP_LOG_PIDFILE="$BUILD_DIR/device-console.pid"
 if [[ "$RUN_APP" == true ]]; then
@@ -1530,7 +1577,7 @@ if [[ "$RUN_APP" == true ]]; then
     # the pid still belongs to devicectl before killing: pids get recycled.
     if [[ -f "$APP_LOG_PIDFILE" ]]; then
         OLD_PID=$(cat "$APP_LOG_PIDFILE" 2>/dev/null || true)
-        if [[ -n "$OLD_PID" ]] && ps -p "$OLD_PID" -o command= 2>/dev/null | grep -q devicectl; then
+        if [[ -n "$OLD_PID" ]] && ps -p "$OLD_PID" -o command= 2>/dev/null | /usr/bin/grep -qE 'devicectl|apparition'; then
             kill "$OLD_PID" 2>/dev/null || true
         fi
         rm -f "$APP_LOG_PIDFILE"
@@ -1584,8 +1631,15 @@ if [[ "$RUN_APP" == true ]]; then
         # so both streams land in the file. Interpolations still honor
         # os_log privacy: values not marked `privacy: .public` read
         # "<private>" — that's the app's annotation, not a capture bug.
-        nohup xcrun devicectl device process launch --console --terminate-existing \
-            --device "$DEVICE_ID" "$BUILD_BUNDLE_ID" >>"$APP_LOG" 2>&1 &
+        if [[ "$LAUNCH_VIA" == apparition ]]; then
+            mirror_launch_env
+            jit_flag=""; [[ "$JIT" == true ]] && jit_flag=--jit
+            nohup "$(apparition_cli)" launch "$BUILD_BUNDLE_ID" --device "$DEVICE_NAME" --console $jit_flag \
+                >>"$APP_LOG" 2>&1 &
+        else
+            nohup xcrun devicectl device process launch --console --terminate-existing \
+                --device "$DEVICE_ID" "$BUILD_BUNDLE_ID" >>"$APP_LOG" 2>&1 &
+        fi
         CONSOLE_PID=$!
         disown "$CONSOLE_PID"
         echo "$CONSOLE_PID" > "$APP_LOG_PIDFILE"
@@ -1613,6 +1667,33 @@ if [[ "$RUN_APP" == true ]]; then
         if [[ "$MCP_SESSION" == true ]]; then
             find_debug_server
         fi
+    elif [[ "$JIT" == true ]]; then
+        # The JIT server has to outlive this script: detached like --log's console, its
+        # output (attach/detach events, no app console) in the console log file.
+        echo "==> Launching $BUILD_BUNDLE_ID with JIT (session → $APP_LOG)..."
+        : > "$APP_LOG"
+        mirror_launch_env
+        nohup "$(apparition_cli)" launch "$BUILD_BUNDLE_ID" --device "$DEVICE_NAME" --jit >>"$APP_LOG" 2>&1 &
+        CONSOLE_PID=$!
+        disown "$CONSOLE_PID"
+        echo "$CONSOLE_PID" > "$APP_LOG_PIDFILE"
+        LAUNCHED=false
+        for _ in $(seq 1 30); do
+            if /usr/bin/grep -qi 'launched application' "$APP_LOG" 2>/dev/null; then LAUNCHED=true; break; fi
+            if ! kill -0 "$CONSOLE_PID" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if [[ "$LAUNCHED" == false ]]; then
+            rm -f "$APP_LOG_PIDFILE"
+            echo "ERROR: Failed to launch $BUILD_BUNDLE_ID on $DEVICE_NAME with JIT" >&2
+            tail -15 "$APP_LOG" >&2
+            exit 1
+        fi
+        LAUNCH_STATUS="jit"
+    elif [[ "$LAUNCH_VIA" == apparition ]]; then
+        echo "==> Launching $BUILD_BUNDLE_ID (through Apparition's tunnel)..."
+        apparition_launch >>"$LOG_FILE" 2>&1
+        LAUNCH_STATUS="run"
     else
         echo "==> Launching $BUILD_BUNDLE_ID..."
         xcrun devicectl device process launch --terminate-existing \
@@ -1644,8 +1725,14 @@ case "$INSTALL_STATUS" in
 esac
 case "$LAUNCH_STATUS" in
     run) printf '  %-12s ✓ running on %s\n' "Launched:" "$DEVICE_NAME" ;;
+    jit)
+        printf '  %-12s ✓ running on %s, JIT served by Apparition\n' "Launched:" "$DEVICE_NAME"
+        printf '  %-12s %s\n' "JIT log:" "$APP_LOG"
+        printf '  %-12s kill $(cat %s)  (detaches; the app keeps running)\n' "Stop JIT:" "$APP_LOG_PIDFILE"
+        ;;
     log)
         printf '  %-12s ✓ running on %s with console attached\n' "Launched:" "$DEVICE_NAME"
+        [[ "$JIT" == true ]] && printf '  %-12s served by Apparition for as long as the console runs\n' "JIT:"
         printf '  %-12s %s\n' "App log:" "$APP_LOG"
         printf '  %-12s kill $(cat %s)\n' "Stop log:" "$APP_LOG_PIDFILE"
         if [[ -n "$DEBUG_SERVER_URL" ]]; then

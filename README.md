@@ -119,6 +119,42 @@ Discovery uses DebugTrace's `Tools/debugtrace-mcp discover`, so set `debugtraceT
 The page never sees an app's address or token: it names the app by its build's key id, and the
 server looks up the address from discovery and the token from the key ledger.
 
+## JIT apps and devices that wake on contact
+
+Both go through [Apparition](https://github.com/illixion/Apparition)'s command line
+(`apparition`, found at `apparitionCli` in `config.json`, else `~/.local/bin/apparition`, else
+PATH), which reaches a device over its own pairing and tunnel instead of Xcode's CoreDevice.
+The device must be paired with Apparition on this Mac once: `apparition pair` for an Apple
+TV or headset (with its Remote Devices / Remote App and Devices screen open), `apparition
+pair --usb` for an iPhone or iPad.
+
+**JIT.** Apps that generate code at run time (emulators, Wine, JIT-compiling VMs) need a
+debugger attached to be allowed to. Tick **JIT** next to *Launch app* in the deploy menu
+(`"jit": true` in a build request, `build-and-sign --jit` in a terminal). build-and-sign then
+launches the app suspended with `apparition launch --jit`, which attaches, resumes it and
+serves its JIT requests from a background process for as long as the app runs. It combines
+with the other options:
+
+| Deploy options | build-and-sign | What runs |
+|---|---|---|
+| Launch + JIT | `--no-mcp --jit` | the app, JIT served; events in `build/device-console.log` |
+| Launch + MCP + JIT | `--run --mcp --jit` | also its console in that file and its debug server registered for agents |
+| + Inject | `--inject` as well | patches go live while JIT is served |
+
+The session's pid is in `build/device-console.pid`: `kill $(cat build/device-console.pid)`
+detaches the debugger (SIGTERM is handled) and leaves the app running; the next launch stops
+the previous session first. Stop any Xcode debugging session of the app before launching it
+with JIT. By hand, `apparition launch <bundle ID> --device <name> --jit [--console]` does the
+same, and `apparition jit <bundle ID> --attach` serves an app that is already running.
+
+**Devices that wake on contact.** While Xcode's DeviceHub runs, any CoreDevice tunnel to an
+Apple TV wakes it (see `CLAUDE.md`). Devices named in `config.json`'s `quietAppsDevices` are
+read (`apparition apps`), installed to (`apparition push`, the IPA as signed) and launched
+(`apparition launch`, console and JIT included) over Apparition's tunnel instead, so a deploy or
+refresh leaves a sleeping one asleep. The store passes the list to build-and-sign as
+`QUIET_DEVICES`; set that in `global.conf` for terminal runs. Re-signing in place and copying
+files still use devicectl.
+
 ## Apparition desktop service
 
 Apparition's Developer view uses the versioned native API alongside the existing web UI.
@@ -140,8 +176,9 @@ check that no build is active before restarting.
 - `POST /api/service/v1/disconnect` revokes that session. The desktop app keeps it only in
   Rust memory and remembers only the service URL between launches.
 
-A native build request is `{repo, device, targetPlatform, branch, run, mcp, inject,
-buildDebug, deploy}`. The last five fields are optional booleans. The project, platform,
+A native build request is `{repo, device, targetPlatform, branch, run, mcp, jit, inject,
+buildDebug, deploy}`. The last six fields are optional booleans; `jit` (launch with JIT
+served by Apparition, see above) applies only with `run`. The project, platform,
 device and branch (`current` or a configured branch) must match the configuration. The
 platform is retained even when a single device has several platform aliases. All builds,
 logs, cancellation, DebugTrace approvals and report verification use the existing backend.

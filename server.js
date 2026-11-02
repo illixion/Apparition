@@ -472,7 +472,9 @@ function resolveBuildSettings(rc, branch, platform) {
 // launch a debug session (build-and-sign --run --mcp) instead of a bare one (the
 // store's own devicectl launch). mcp without launch installs only, like
 // build-and-sign --mcp without --run; buildDebug = --debug
-// (Debug configuration); inject = --inject (patchable build)
+// (Debug configuration); inject = --inject (patchable build); jit = launch it through
+// `apparition launch --jit` (build-and-sign --jit), which serves the app's JIT requests over
+// Apparition's tunnel for as long as it runs. Like mcp, jit applies only with launch.
 //
 // install = how the build reaches the device (lib/install-mode.js): `mac` installs through
 // devicectl (the Xcode tunnel) in the same build-and-sign run, `device` keeps the build for the
@@ -480,7 +482,7 @@ function resolveBuildSettings(rc, branch, platform) {
 // that device's Apparition is open and `mac` otherwise (or whenever the app is to be launched
 // afterwards, which only the tunnel can do). Without `install`, `deploy: false` means `none` and
 // anything else `auto`. Only `mac` needs the Mac to reach the device.
-function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDebug, inject, injectBackend = 'dynamic', deploy, install }) {
+function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, jit, buildDebug, inject, injectBackend = 'dynamic', deploy, install }) {
   if (!['dynamic', 'apparition'].includes(injectBackend)) throw new Error('injectBackend must be dynamic or apparition');
   if (!validInstallMode(install)) throw new Error('install must be auto, mac, device or none');
   const rc = CONFIG.repos.find(r => r.name === repo);
@@ -503,7 +505,10 @@ function enqueueBuild({ repo, targets, device, branch, run: launch, mcp, buildDe
       // ledger are skipped too (nothing landed on the device from here).
       noDeploy: via !== 'mac',
       mcp: !!launch && !!mcp && via === 'mac',
-      run: !!launch && !mcp && via === 'mac',
+      jit: !!launch && !!jit && via === 'mac',
+      // A JIT launch is build-and-sign's (--jit): only Apparition serves JIT, from a process
+      // that outlives the build.
+      run: !!launch && !mcp && !jit && via === 'mac',
       buildDebug: !!buildDebug,
       inject: !!inject, injectBackend,
       status: 'queued', queuedAt: Date.now(),
@@ -618,6 +623,7 @@ async function executeBuild(job) {
     // (MCP_DEFAULT=on), and a store-launched deploy must not become one.
     if (job.mcp) buildArgs.push('--run', '--mcp');
     else if (!job.noDeploy) buildArgs.push('--no-mcp');
+    if (job.jit) buildArgs.push('--jit');
     if (job.buildDebug) buildArgs.push('--debug');
     if (job.inject) buildArgs.push('--inject-backend', job.injectBackend || 'dynamic');
     for (const s of job.buildSettings) buildArgs.push('--set', s);
@@ -755,9 +761,16 @@ async function executeBuild(job) {
     if (job.run) {
       log(`\n==> Store: launching ${job.bundleId} on ${job.device}\n`);
       try {
-        const dev = (state.devices?.list || []).find(d => d.name === job.device);
-        if (!dev) throw new Error(`device '${job.device}' not found in devicectl inventory — try refreshing devices`);
-        await devicectlJson(['device', 'process', 'launch', '--device', dev.udid, '--terminate-existing', job.bundleId], 60000);
+        if (quietAppsDevices(CONFIG).includes(job.device)) {
+          // Over Apparition's tunnel, as build-and-sign installed it: no CoreDevice tunnel for
+          // DeviceHub to wake the device with.
+          const r = await run(apparitionCli(), ['launch', job.bundleId, '--device', job.device], { timeout: 60000 });
+          if (r.code !== 0) throw new Error(((r.stderr || r.stdout || '').trim().split('\n').pop() || 'apparition launch failed').replace(/^error: /, ''));
+        } else {
+          const dev = (state.devices?.list || []).find(d => d.name === job.device);
+          if (!dev) throw new Error(`device '${job.device}' not found in devicectl inventory — try refreshing devices`);
+          await devicectlJson(['device', 'process', 'launch', '--device', dev.udid, '--terminate-existing', job.bundleId], 60000);
+        }
         log(`==> Store: launched ${job.bundleId} on ${job.device}\n`);
       } catch (e) {
         log(`==> Store: WARNING failed to launch app: ${String(e.message || e)}\n`);
@@ -1641,8 +1654,8 @@ function publicBuild(b) {
 // Which deploy-menu checkboxes start ticked. config.json's top-level
 // `deployDefaults` sets them for every repo; a repo's own `deployDefaults`
 // overrides individual keys. Anything not a boolean is ignored.
-const DEPLOY_OPTIONS = ['launch', 'mcp', 'buildDebug', 'inject'];
-const BUILT_IN_DEPLOY_DEFAULTS = { launch: false, mcp: true, buildDebug: false, inject: false };
+const DEPLOY_OPTIONS = ['launch', 'mcp', 'jit', 'buildDebug', 'inject'];
+const BUILT_IN_DEPLOY_DEFAULTS = { launch: false, mcp: true, jit: false, buildDebug: false, inject: false };
 function deployDefaults(repo) {
   const out = { ...BUILT_IN_DEPLOY_DEFAULTS };
   for (const src of [CONFIG.deployDefaults, repo.deployDefaults]) {

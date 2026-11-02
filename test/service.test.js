@@ -287,6 +287,8 @@ test('native build options preserve a known backend and reject guesses', async (
   const req = body => ({ method: 'POST', headers: { authorization: 'Bearer ' + 'a'.repeat(43) }, body });
   const routed = await service(req(valid), {}, new URL('http://test/api/service/v1/build'));
   assert.equal(routed.body.injectBackend, 'apparition');
+  const jit = await service(req({ ...valid, run: true, jit: true }), {}, new URL('http://test/api/service/v1/build'));
+  assert.equal(jit.body.jit, true, 'a JIT launch reaches the queue');
   const res = {};
   await service(req({ ...valid, injectBackend: 'jit' }), res, new URL('http://test/api/service/v1/build'));
   assert.equal(res.status, 400);
