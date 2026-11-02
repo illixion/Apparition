@@ -42,6 +42,14 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
   apparition push <signed.ipa> [--device <name or UDID>] [--json]
       Install an IPA that is already signed for the device (a build tool's output) as it is,
       over the same tunnel as `apps`: no re-signing, and a sleeping Apple TV stays asleep.
+  apparition launch <bundle ID> [--device <name or UDID>] [--env KEY=VALUE]... [--console]
+          [--jit [--wait <seconds>]] [-- <app arguments>...]
+      Launch an app (ending a running copy) over the same tunnel as `apps`, as `devicectl device
+      process launch` would, without waking a sleeping Apple TV. --console streams its stdout
+      and stderr here until it exits. --jit starts it suspended and serves its JIT requests
+      like `jit`, so a JIT app gets its console and environment in the same launch; Ctrl-C or
+      SIGTERM detaches and leaves it running. Every APPARITION_CHILD_<KEY> variable is passed
+      as <KEY>, which keeps values out of the command line.
   apparition pair [<address>[:<port>]]
       Pair with a headset showing Settings > General > Remote Devices. Without an address,
       finds it over mDNS. <port> is its pairing port (mDNS shows it).
@@ -190,6 +198,7 @@ async fn main() -> ExitCode {
         Some("devices") => devices().await,
         Some("apps") => apps(&args[1..]).await,
         Some("push") => push(&args[1..]).await,
+        Some("launch") => launch(&args[1..]).await,
         Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
         Some("pair") => pair(args.get(1).map(String::as_str)).await,
         Some("install") => install(&args[1..]).await,
@@ -602,6 +611,89 @@ async fn push(args: &[String]) -> Result<(), Error> {
         println!("Sent {bundle_id} to {} in {seconds:.1} s; it finishes installing when the app is closed.", device.name);
     } else {
         println!("Installed {bundle_id} on {} in {seconds:.1} s.", device.name);
+    }
+    Ok(())
+}
+
+/// `launch`: starts an app over this pairing's own tunnel, like `devicectl device process
+/// launch --terminate-existing [--console]` but without CoreDevice on this Mac, so a sleeping
+/// Apple TV isn't woken by Xcode's DeviceHub. `--jit` starts it suspended and serves its JIT
+/// requests as `jit` does, so a JIT app can be launched with its console and environment in
+/// one go. Environment comes from `--env K=V` and from every `APPARITION_CHILD_<K>` variable
+/// (as devicectl takes `DEVICECTL_CHILD_<K>`), which keeps secrets out of argv. Prints
+/// `Launched application with pid N` once it runs. Never asks a PIN.
+async fn launch(args: &[String]) -> Result<(), Error> {
+    let usage = || {
+        fail("usage: apparition launch <bundle ID> [--device <name or UDID>] [--env KEY=VALUE]... [--console] [--jit [--wait <seconds>]] [-- <app arguments>...]")
+    };
+    let (mut bundle_id, mut wanted, mut console, mut jit, mut wait) = (None, None, false, false, 0u32);
+    let mut environment: Vec<(String, String)> = std::env::vars()
+        .filter_map(|(k, v)| k.strip_prefix("APPARITION_CHILD_").filter(|k| !k.is_empty()).map(|k| (k.to_string(), v)))
+        .collect();
+    let mut app_args: Vec<String> = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--device" => wanted = Some(args.next().ok_or_else(usage)?.as_str()),
+            "--env" => {
+                let pair = args.next().ok_or_else(usage)?;
+                let (k, v) = pair.split_once('=').ok_or_else(|| fail(format!("--env {pair}: expected KEY=VALUE")))?;
+                environment.retain(|(key, _)| key != k);
+                environment.push((k.to_string(), v.to_string()));
+            }
+            "--console" => console = true,
+            "--jit" => jit = true,
+            "--wait" => wait = args.next().and_then(|a| a.parse().ok()).ok_or_else(usage)?,
+            "--" => app_args.extend(args.by_ref().cloned()),
+            other if !other.starts_with('-') && bundle_id.is_none() => bundle_id = Some(other.to_string()),
+            _ => return Err(usage()),
+        }
+    }
+    let bundle_id = bundle_id.ok_or_else(usage)?;
+    let device = find_device(wanted)?;
+    let mut tunnel = store().connect_verified(&device).await?;
+    let arguments: Vec<&str> = app_args.iter().map(String::as_str).collect();
+    let launched = tunnel.launch(&bundle_id, &arguments, &environment, console, jit).await?;
+    let pid = launched.pid;
+    println!("Launched application with pid {pid} ({bundle_id} on {}{})", device.name, if jit { ", suspended for JIT" } else { "" });
+    let _ = std::io::stdout().flush();
+
+    // The console copies to stdout until the app closes it (it exits) or this process is stopped.
+    let console_task = launched.console.map(|mut stream| {
+        tokio::spawn(async move {
+            let mut out = tokio::io::stdout();
+            let _ = tokio::io::copy(&mut stream, &mut out).await;
+            use tokio::io::AsyncWriteExt;
+            let _ = out.flush().await;
+        })
+    });
+
+    // SIGINT and SIGTERM (how build-and-sign stops a console it started) detach a JIT session
+    // cleanly, leaving the app running, rather than dropping the debugger mid-request.
+    let key = pid.to_string();
+    tokio::spawn(async move {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending::<()>().await } } => {}
+        }
+        if !api::stop_jit(&key) {
+            std::process::exit(0);
+        }
+    });
+
+    if jit {
+        // Attaching to the suspended process resumes it under the debugger, as `jit` does.
+        let reply = tunnel.serve_jit(api::JitTarget::Attach { pid, bring_back: None }, wait, &mut |line| eprintln!("  jit: {line}")).await?;
+        eprintln!(
+            "JIT session done ({}): {} MiB prepared over {} requests.",
+            reply["ended"].as_str().unwrap_or("?"),
+            reply["preparedBytes"].as_u64().unwrap_or(0) >> 20,
+            reply["prepares"].as_u64().unwrap_or(0),
+        );
+    }
+    if let Some(task) = console_task {
+        let _ = task.await;
     }
     Ok(())
 }

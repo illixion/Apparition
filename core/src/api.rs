@@ -24,6 +24,7 @@ use serde_json::Value;
 
 pub use crate::errors::describe;
 pub use crate::jit::{Target as JitTarget, stop as stop_jit};
+pub use crate::launch::Launched;
 pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
@@ -389,6 +390,20 @@ impl Tunnel {
     /// Packs and installs a signed app. See `apparition_install_ipa`.
     pub async fn install(&mut self, app_path: &Path, source_ipa: Option<&Path>, detach_after_ms: u64) -> Result<Value, Report> {
         crate::ipa::install(&mut self.adapter, &mut self.handshake, app_path, source_ipa, detach_after_ms).await
+    }
+
+    /// Launches an app (ending a running instance), optionally with its console and suspended
+    /// for a debugger. See `crate::launch::launch`.
+    pub async fn launch(
+        &mut self,
+        bundle_id: &str,
+        arguments: &[&str],
+        environment: &[(String, String)],
+        console: bool,
+        suspended: bool,
+    ) -> Result<Launched, Report> {
+        let environment = environment.iter().map(|(k, v)| (k.clone(), plist::Value::String(v.clone()))).collect();
+        crate::launch::launch(&mut self.adapter, &mut self.handshake, bundle_id, arguments, environment, console, suspended).await
     }
 
     /// Installs an IPA already signed for this device, as it is. See `crate::ipa::install_signed_ipa`.

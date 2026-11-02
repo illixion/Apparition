@@ -33,6 +33,7 @@ mod migrate;
 pub mod package;
 pub mod install_plan;
 mod jit;
+mod launch;
 mod tunnel;
 pub mod watch;
 pub mod stop;
