@@ -622,7 +622,7 @@ export class DeveloperView {
     const card = element('section', 'dev-card dev-signing'); card.hidden = true;
     card.append(element('h2', 'small', 'Web UI and other devices'));
     card.append(element('p', '', 'Turn on the web pages to use the build service from a browser, such as a phone beside a headset. The password also lets Apparition on another device connect. The service listens on this Mac only (127.0.0.1); reach it from elsewhere through something like tailscale serve.'));
-    const row = element('div', 'dev-signing-row');
+    const row = element('div', 'dev-webui-row');
     const toggle = element('label', 'check'); this.webUiToggle = element('input'); this.webUiToggle.type = 'checkbox';
     toggle.append(this.webUiToggle, document.createTextNode(' Web UI on'));
     const passwordLabel = element('label', '', 'Password');
