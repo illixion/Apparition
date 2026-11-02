@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// What the appstore holds about crashes: the crash logs pulled off the devices and the debug
+// What the Apparition Store holds about crashes: the crash logs pulled off the devices and the debug
 // traces apps upload. Look here before asking the user or rebuilding with extra logging.
 //
 //   crash-reports list [--app TEXT] [--device NAME]   crash logs, then traces, newest first
@@ -10,16 +10,16 @@
 // An id is any unambiguous prefix of what `list` prints. `done` takes a crash log (its .ips, the
 // symbolicated text and the trace it is linked to) or a trace (and the crash logs linked to it).
 // It moves them to the Trash, never deletes: the server forgets a crash log whose files are gone.
-// Reads the server's data folder directly (APPSTORE_DATA, default ../data), so it needs no login.
+// Reads the server's data folder directly (STORE_DATA, default ../data), so it needs no login.
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 // The Apparition desktop app keeps the service it runs in Application Support; a checkout run
-// directly keeps it in ../data. APPSTORE_DATA wins over both.
-const HOSTED_DIR = path.join(require('node:os').homedir(), 'Library/Application Support/Apparition/Service');
-const DATA = process.env.APPSTORE_DATA || (fs.existsSync(path.join(HOSTED_DIR, 'data')) ? path.join(HOSTED_DIR, 'data') : path.join(ROOT, 'data'));
+// directly keeps it in ../data. STORE_DATA wins over both.
+const HOSTED_DIR = path.join(require('node:os').homedir(), 'Library/Application Support/Apparition/Store');
+const DATA = process.env.STORE_DATA || (fs.existsSync(path.join(HOSTED_DIR, 'data')) ? path.join(HOSTED_DIR, 'data') : path.join(ROOT, 'data'));
 const CRASH_DIR = path.join(DATA, 'crashlogs');
 const TRACE_DIR = path.join(DATA, 'traces');
 
@@ -73,13 +73,13 @@ function show(id) {
 }
 
 function symbolicateTool() {
-  const config = readJson(process.env.APPSTORE_CONFIG || (DATA === path.join(HOSTED_DIR, 'data') ? path.join(HOSTED_DIR, 'config.json') : path.join(ROOT, 'config.json'))) || {};
+  const config = readJson(process.env.STORE_CONFIG || (DATA === path.join(HOSTED_DIR, 'data') ? path.join(HOSTED_DIR, 'config.json') : path.join(ROOT, 'config.json'))) || {};
   const tool = config.symbolicateTool || (config.debugtraceTool && path.join(path.dirname(config.debugtraceTool), 'debugtrace-symbolicate'))
     || path.join(process.env.HOME, 'Projects/DebugTrace/Tools/debugtrace-symbolicate');
   return fs.existsSync(tool) ? tool : fail(`debugtrace-symbolicate not found at ${tool}; set symbolicateTool in config.json`);
 }
 function run(cmd, args) {
-  const r = spawnSync('/usr/bin/python3', ['-I', cmd, ...args], { stdio: 'inherit', env: { ...process.env, APPSTORE_DATA: DATA } });
+  const r = spawnSync('/usr/bin/python3', ['-I', cmd, ...args], { stdio: 'inherit', env: { ...process.env, STORE_DATA: DATA } });
   process.exit(r.status ?? 1);
 }
 

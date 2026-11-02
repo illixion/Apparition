@@ -1,11 +1,11 @@
 // The build service is reached only through Rust. No cookies, bearer tokens or
 // remote HTML enter this view; all service-provided strings become text nodes.
 //
-// Layout: before connecting, a getting-started page (what appstore is, where to get it, how
+// Layout: before connecting, a getting-started page (what Apparition Store is, where to get it, how
 // to connect). Once connected, four sections: Projects (a two-column grid of cards, one tile per
 // target with what is installed there and what can be done), Activity (the build queue and
 // logs), Reports (crashes, traces and running debug apps, grouped by app) and Devices &
-// signing (with a note on appstore itself).
+// signing (with a note on Apparition Store itself).
 //
 // Rendering rule: the view polls, so a section repaints only when what it shows has changed, and
 // what the person has opened (a report group, a kept-builds list, a log) is remembered across
@@ -120,14 +120,14 @@ export class DeveloperView {
     this.connect = element('button', 'button primary', 'Connect');
     this.connect.type = 'submit';
     fields.append(addressLabel, passwordLabel, this.connect);
-    this.hint = element('p', 'hint', 'The password is the one set with node server.js set-password in appstore. On this Mac, http://localhost:8484 works; elsewhere use its HTTPS address. Apparition forgets the session when it quits.');
+    this.hint = element('p', 'hint', 'The password is the one set with node server.js set-password in the Apparition Store. On this Mac, http://localhost:8484 works; elsewhere use its HTTPS address. Apparition forgets the session when it quits.');
     this.fields = fields;
     // Once connected the form folds into one line: where, and a way out.
     this.connected_bar = element('div', 'dev-connected'); this.connected_bar.hidden = true;
     this.connected_label = element('span', 'dev-connected-label selectable');
     this.disconnect = button('Disconnect', () => this.signOut());
     this.connected_bar.append(element('span', 'dot on'), this.connected_label,
-      button('appstore on GitHub', () => this.open('appstore'), 'button quiet small'), this.disconnect);
+      button('Apparition Store on GitHub', () => this.open('store'), 'button quiet small'), this.disconnect);
     form.append(fields, this.hint, this.connected_bar);
     form.addEventListener('submit', event => { event.preventDefault(); this.signIn(); });
     this.signing = this.signingSection();
@@ -172,29 +172,29 @@ export class DeveloperView {
     this.hostCheck(true);
   }
 
-  // What this is and how to start, for someone who has never run appstore.
+  // What this is and how to start, for someone who has never run the Apparition Store.
   introCard() {
     const card = element('section', 'dev-card dev-intro');
     card.append(element('h2', 'small', 'Get started'));
-    card.append(element('p', '', 'The Developer tools work with appstore, an open-source build service you run on your own Mac. It builds your projects with its build-and-sign script and your developer certificate, installs them on devices paired with the Mac, keeps every signed build, and collects crash logs and debug traces. Apparition connects to it from this Mac or from a headset, iPhone or Apple TV.'));
+    card.append(element('p', '', 'The Developer tools work with Apparition Store, an open-source build service you run on your own Mac. It builds your projects with its build-and-sign script and your developer certificate, installs them on devices paired with the Mac, keeps every signed build, and collects crash logs and debug traces. Apparition connects to it from this Mac or from a headset, iPhone or Apple TV.'));
     const steps = element('ol', 'dev-steps');
     for (const text of [
-      'Get appstore from GitHub and follow its README. It needs Xcode, Node 18 and a paid developer certificate with a development profile.',
+      'Get Apparition Store from GitHub and follow its README. It needs Xcode, Node 18 and a paid developer certificate with a development profile.',
       'Set a service password: node server.js set-password.',
       'Start it (node server.js, or as a launch agent), then connect below. Register your projects here once connected.',
     ]) steps.append(element('li', '', text));
     const links = element('div', 'service-row');
-    links.append(button('appstore on GitHub', () => this.open('appstore')), button('Developer guide', () => this.open('guide')));
+    links.append(button('Apparition Store on GitHub', () => this.open('store')), button('Developer guide', () => this.open('guide')));
     card.append(steps, links);
     return card;
   }
-  // appstore is a second backend, a separate project, so say so once connected as well as before.
+  // Apparition Store is a second backend, a separate project, so say so once connected as well as before.
   aboutSection() {
     const card = element('section', 'dev-card dev-about');
-    card.append(element('h2', 'small', 'About appstore'));
-    card.append(element('p', '', 'appstore is an open-source build service that runs on your Mac and gives Apparition a second backend for developer work. It builds your Xcode projects with your own certificate, installs them on devices paired with the Mac, keeps every signed build, re-signs apps with another profile, and collects crash logs and debug traces. It is a separate Node.js project (Node 18 and Xcode on the Mac), developed on GitHub.'));
+    card.append(element('h2', 'small', 'About Apparition Store'));
+    card.append(element('p', '', 'Apparition Store is an open-source build service that runs on your Mac and gives Apparition a second backend for developer work. It builds your Xcode projects with your own certificate, installs them on devices paired with the Mac, keeps every signed build, re-signs apps with another profile, and collects crash logs and debug traces. It is a separate Node.js project (Node 18 and Xcode on the Mac), developed on GitHub.'));
     const links = element('div', 'service-row');
-    links.append(button('appstore on GitHub', () => this.open('appstore'), 'button quiet small'), button('Developer guide', () => this.open('guide'), 'button quiet small'));
+    links.append(button('Apparition Store on GitHub', () => this.open('store'), 'button quiet small'), button('Developer guide', () => this.open('guide'), 'button quiet small'));
     card.append(links);
     return card;
   }
@@ -465,7 +465,7 @@ export class DeveloperView {
     const name = input('Project name', 'MyApp');
     const path = input('Checkout path on the Mac', '~/Projects/MyApp');
     const branches = input('Local branches, separated by commas', 'main'); branches.required = false;
-    form.append(element('p', 'hint', 'Choose an existing Git checkout with build-signing.conf already set up (see appstore\'s README). Registration saves its targets; it does not build or install anything.'));
+    form.append(element('p', 'hint', 'Choose an existing Git checkout with build-signing.conf already set up (see Apparition Store\'s README). Registration saves its targets; it does not build or install anything.'));
     const targets = element('div', 'service-project'); form.append(targets);
     const rows = [];
     const addTarget = () => {
@@ -540,7 +540,7 @@ export class DeveloperView {
       this.epoch += 1;
       this.fields.hidden = this.hint.hidden = this.intro.hidden = true;
       this.connected_bar.hidden = false;
-      this.connected_label.textContent = this.local ? 'The build service is running on this Mac' : `Connected to appstore at ${service.url}`;
+      this.connected_label.textContent = this.local ? 'The build service is running on this Mac' : `Connected to Apparition Store at ${service.url}`;
       this.disconnect.textContent = this.local ? 'Stop' : 'Disconnect';
       // The remote form holds this bar, so it stays visible (with only the bar) when local.
       this.remoteForm.hidden = false;
@@ -584,7 +584,7 @@ export class DeveloperView {
   hostSection() {
     const card = element('section', 'dev-card dev-host');
     card.append(element('h2', 'small', 'Build service on this Mac'));
-    this.hostText = element('p', '', 'Apparition runs appstore, the build service, while it is open: it builds your Xcode projects with your certificate, installs them on your devices, keeps every signed build and collects crash logs and traces.');
+    this.hostText = element('p', '', 'Apparition runs Apparition Store, the build service, while it is open: it builds your Xcode projects with your certificate, installs them on your devices, keeps every signed build and collects crash logs and traces.');
     this.hostProblem = element('p', 'status error'); this.hostProblem.hidden = true;
     const row = element('div', 'service-row');
     this.hostStart = button('Start', () => this.startLocal(), 'button primary');
@@ -597,7 +597,7 @@ export class DeveloperView {
   // only another Mac's service is offered.
   async hostCheck(auto) {
     let status;
-    try { status = await this.invoke('host_status'); } catch { status = { available: false }; }
+    try { status = (await this.invoke('host_status')) || { available: false }; } catch { status = { available: false }; }
     const usable = status.available && status.bundled;
     this.hostCard.hidden = !usable || this.connected;
     this.remoteForm.hidden = !!usable || this.connected;
@@ -697,7 +697,7 @@ export class DeveloperView {
     this.cardState = this.cardState || {};
     const rows = repos.map(repo => this.projectCard(repo));
     this.items(this.projects).replaceChildren(...(rows.length ? rows : [element('p', 'hint',
-      this.capabilities.has('project-registration') ? 'No projects yet. Register one below, or add it to appstore\'s config.json.' : 'Add a project to appstore\'s config.json to start building.')]));
+      this.capabilities.has('project-registration') ? 'No projects yet. Register one below, or add it to Apparition Store\'s config.json.' : 'Add a project to Apparition Store\'s config.json to start building.')]));
     this.placeViewer();
   }
   projectCard(repo) {
@@ -748,7 +748,7 @@ export class DeveloperView {
 
     const targets = element('div', 'dev-targets');
     for (const target of repo.platforms || []) targets.append(this.targetRow(repo, target, { branch, flags }));
-    if (!(repo.platforms || []).length) targets.append(element('p', 'hint', 'No targets. Add one to the project in appstore\'s config.json.'));
+    if (!(repo.platforms || []).length) targets.append(element('p', 'hint', 'No targets. Add one to the project in Apparition Store\'s config.json.'));
     card.append(targets, options);
 
     const footer = element('div', 'dev-project-foot');

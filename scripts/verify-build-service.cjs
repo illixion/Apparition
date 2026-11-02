@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Real build-only integration check. Requires Xcode, the normal Apparition build
-// prerequisites, and the appstore tools checkout (APPARITION_SERVICE_DIR overrides).
+// prerequisites, and the Apparition Store tools checkout (APPARITION_STORE_DIR overrides).
 // The isolated service uses a random password and never installs or launches an app.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -9,7 +9,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const root = path.resolve(__dirname, '..');
-const service = process.env.APPARITION_SERVICE_DIR || path.resolve(root, '..', 'appstore');
+const service = process.env.APPARITION_STORE_DIR || path.resolve(root, '..', 'Apparition Store');
 const { hashPassword } = require(service + '/lib/auth');
 fs.mkdirSync(path.join(root, 'build'), { recursive: true });
 const directory = fs.mkdtempSync(path.join(root, 'build', 'service-artifact-e2e-'));
@@ -26,7 +26,7 @@ async function main() {
   fs.writeFileSync(path.join(directory, 'config.json'), JSON.stringify(config), { mode: 0o600 });
   const log = fs.openSync(path.join(directory, 'server.log'), 'w', 0o600);
   const child = spawn(process.execPath, [service + '/server.js'], { cwd: service,
-    env: { ...process.env, APPSTORE_CONFIG: path.join(directory, 'config.json'), APPSTORE_DATA: path.join(directory, 'data') },
+    env: { ...process.env, STORE_CONFIG: path.join(directory, 'config.json'), STORE_DATA: path.join(directory, 'data') },
     stdio: ['ignore', log, log] });
   const base = `http://127.0.0.1:${port}`;
   let token;

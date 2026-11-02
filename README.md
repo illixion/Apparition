@@ -46,7 +46,7 @@ computer at all.
   while using the app when asked. From a computer,
   `apparition jit <bundle ID> [--attach]` does the same, and `apparition launch <bundle ID>
   --jit --console` launches with JIT, the app's console and environment variables in one go,
-  which is how the [appstore](https://github.com/illixion/appstore) build service's **JIT**
+  which is how the [Apparition Store](https://github.com/illixion/Apparition/tree/main/store) build service's **JIT**
   deploy option and `build-and-sign --jit` launch a fresh build. Tested on Vision Pro with UTM (an
   Alpine VM) and ARMSX2, the PS2 emulator, running GTA San Andreas
   ([video](https://youtu.be/mNR0ik2QfEY)).
@@ -113,16 +113,16 @@ certificate you already have from another device.
 ## Developer builds and reports
 
 The **Developer** tab, on the Mac and on devices, builds your own Xcode projects through
-[appstore](https://github.com/illixion/appstore), an open-source build service you run on your
+[Apparition Store](https://github.com/illixion/Apparition/tree/main/store), an open-source build service you run on your
 Mac. **[docs/DEVELOPER.md](docs/DEVELOPER.md)** explains how the pieces fit, how to set them up
 and what each part of the screen does; this section is the reference.
 
-**On a Mac, Apparition runs the service itself.** The app carries appstore
+**On a Mac, Apparition runs the service itself.** The app carries Apparition Store
 (`Contents/Resources/service`, put there by `scripts/bundle-service.sh` from the sibling
 checkout's HEAD) and starts it at launch on the Mac's Node.js 18+, as its child
 (`desktop/src/host.rs`): no install, no password, nothing left running after Quit. Its config
-and data are in `~/Library/Application Support/Apparition/Service/` (`service.log`,
-`service.pid`); `{"checkout": "<path>"}` in `host.json` there runs an appstore checkout instead.
+and data are in `~/Library/Application Support/Apparition/Store/` (`service.log`,
+`service.pid`); `{"checkout": "<path>"}` in `host.json` there runs an Apparition Store checkout instead.
 A watchdog starts it again if it exits, so `kill $(cat …/service.pid)` restarts it after an
 edit. The app talks to it with a token it hands over on stdin. Its web pages are off until you
 turn them on with a password (**Devices & signing › Web UI and other devices**); that password
@@ -152,7 +152,7 @@ for approval on the device; connecting to the service does not grant it.
 profiles and installs it over the copy on a device. The device can't give an installed app back,
 so the Mac signs the build it kept for that install, or, when it kept none, first builds the
 target without installing it (the same build **Build only** makes) and signs that. The Mac
-(`appstore`, `build-and-sign --ipa --profile`) does the work; the view sends a build ID or a
+(`Apparition Store`, `build-and-sign --ipa --profile`) does the work; the view sends a build ID or a
 project and platform, a device name, a profile ID, keep or discard data, and an optional dry run. A profile for the same App ID
 updates in place and keeps the app's data. The device refuses an update to a different App ID, so
 then the Mac copies Documents and Library to `~/.local/state/apparition/resign-backups`, removes the
@@ -169,7 +169,7 @@ from the companion relay and does not share its signing credentials.
 With the native build prerequisites ready, `node scripts/verify-build-service.cjs` runs a
 real build-only integration check through an isolated authenticated service, then verifies
 the manifest and downloaded artifact. It never installs or launches an app. It uses the
-sibling appstore checkout by default (`APPARITION_SERVICE_DIR` overrides it), keeps its
+sibling Apparition Store checkout by default (`APPARITION_STORE_DIR` overrides it), keeps its
 private temporary config/logs under ignored `build/`, and stops its own service afterward.
 
 ## Away from home, over Tailscale
@@ -254,7 +254,7 @@ this through an experimental JIT26 command, `x16 = 0x4150` (copy x2 bytes from x
 ### Developer workflow integration (in progress)
 
 The intended product is Apparition for building, installing, running and diagnosing apps.
-The `appstore` Mac service supplies build jobs, artifacts and report storage; its
+The `Apparition Store` Mac service supplies build jobs, artifacts and report storage; its
 `build-and-sign` remains the build executor. DebugTrace stays an independent SDK. The
 existing AltStore feed remains compatible, while an explicit job API will expose build
 progress, errors and cancellation to Apparition. Keep the Node backend initially.
@@ -308,7 +308,7 @@ Implementation order:
    credentials. Keep unverified imports separately classified. Report upload never
    grants live debug access; preserve device approvals for inspection and code changes.
 6. **Consolidate packaging.** Once the connected workflows pass on real devices, move
-   appstore/build-and-sign into Apparition, manage the service from the desktop app,
+   store/bin/build-and-sign into Apparition, manage the service from the desktop app,
    migrate configs and ledgers, and retain the existing CLI and headless web access.
 
 Structural Swift changes need a separate approach: recreate a component with selected
@@ -599,7 +599,7 @@ on the command line), so it can be left off to save an App ID. Nothing on the Wa
 setting up: no Wi-Fi, and the Watch stays on Bluetooth. Developer Mode was already on for the
 Watch this was tested with, so whether a Watch without it accepts the install is not known.
 
-A bare watchOS IPA, whose main app is the Watch app itself (the `-watchOS.ipa` the appstore
+A bare watchOS IPA, whose main app is the Watch app itself (the `-watchOS.ipa` the Apparition Store
 builds), goes only to the Watch, through the iPhone, and nothing is installed on the phone. With
 your own certificate, the watch app's profile has to list the Watch's UDID as well as the
 iPhone's, or the Watch refuses it. Apparition on the iPhone itself does the same for an app with
@@ -632,7 +632,7 @@ account's two certificates instead of one each. For an Apparition installed some
 `apparition signing hand-off --apple-id <email> [--device <name>]` puts the key in its inbox on
 its own. `apparition signing hand-off --build-signing [<dir>]` does the same for `build-and-sign`'s
 signing: every `.p12` under `~/.config/build-signing/certs` and `.mobileprovision` under `profiles`,
-sent into Documents/Signing over the device's pairing, so the headset can sign what the appstore
+sent into Documents/Signing over the device's pairing, so the headset can sign what the Apparition Store
 builds without a reinstall (`--p12 <file>... --profile <file>...` sends files you name). The
 Developer view's **Signing on devices** does it with a button. Apparition on the device asks for
 each .p12's password once; the passwords are never sent.

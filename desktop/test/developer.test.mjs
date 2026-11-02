@@ -92,7 +92,7 @@ test('debug inspection uses the public app identifier and respects unattachable 
 test('artifact downloads pass only the build identity through the native bridge', async () => {
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
-    if (command === 'service_settings') return {};
+    if (command === 'service_settings' || command === 'host_status') return {};
     calls.push({ command, args }); return { path: '/chosen/app.ipa' };
   });
   const download = view.downloadButton('build-id');
@@ -106,7 +106,7 @@ test('artifact downloads pass only the build identity through the native bridge'
 test('registered builds are visible without queue jobs and do not duplicate queued identities', async () => {
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
-    if (command === 'service_settings') return {};
+    if (command === 'service_settings' || command === 'host_status') return {};
     calls.push({ command, args }); return { path: '/chosen/app.ipa' };
   });
   view.renderArtifacts({ status: 'fulfilled', value: { builds: [
@@ -121,7 +121,7 @@ test('registered builds are visible without queue jobs and do not duplicate queu
 test('project registration sends the Mac checkout and explicit targets without building', async () => {
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
-    if (command === 'service_settings') return {};
+    if (command === 'service_settings' || command === 'host_status') return {};
     calls.push({ command, args }); return { project: { name: 'Example' } };
   });
   const fields = view.registration.all().filter(node => node.tagName === 'input');
@@ -314,7 +314,7 @@ test('queueing a build follows its log in Activity without asking the service tw
   assert.equal(view.viewKey(), 'job:9|log');
 });
 
-test('appstore is introduced once connected, with its GitHub link', async () => {
+test('Apparition Store is introduced once connected, with its GitHub link', async () => {
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
     calls.push([command, args]);
@@ -323,11 +323,11 @@ test('appstore is introduced once connected, with its GitHub link', async () => 
   });
   view.password.value = 'pw';
   await view.signIn(); view.show(false);
-  assert.match(view.about.textContent, /About appstore/);
+  assert.match(view.about.textContent, /About Apparition Store/);
   assert.ok(view.panes.setup.children.includes(view.about));
-  await view.about.all().find(n => n.tagName === 'button' && n.textContent === 'appstore on GitHub').listeners.click();
-  assert.deepEqual(calls.at(-1), ['open_developer_link', { which: 'appstore' }]);
-  assert.match(view.connected_label.textContent, /appstore at http:\/\/localhost:8484\//);
+  await view.about.all().find(n => n.tagName === 'button' && n.textContent === 'Apparition Store on GitHub').listeners.click();
+  assert.deepEqual(calls.at(-1), ['open_developer_link', { which: 'store' }]);
+  assert.match(view.connected_label.textContent, /Apparition Store at http:\/\/localhost:8484\//);
 });
 
 test('a target badge says at a glance whether the device is current', () => {

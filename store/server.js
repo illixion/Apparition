@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Internal app store — builds + installs dev apps onto devices via
+// Apparition Store — builds + installs dev apps onto devices via
 // bin/build-and-sign, tracks what each device has (devicectl inventory +
 // its own install ledger with branch@commit). Zero npm dependencies.
 'use strict';
@@ -17,9 +17,9 @@ const { ledgerEntryFromReport } = require('./lib/installs');
 const presence = createPresence();
 
 const ROOT = __dirname;
-// APPSTORE_CONFIG and APPSTORE_DATA relocate the config and the runtime data
+// STORE_CONFIG and STORE_DATA relocate the config and the runtime data
 // (the tests use them); by default both live next to this file.
-const CONFIG_PATH = process.env.APPSTORE_CONFIG || path.join(ROOT, 'config.json');
+const CONFIG_PATH = process.env.STORE_CONFIG || path.join(ROOT, 'config.json');
 if (!fs.existsSync(CONFIG_PATH)) {
   console.error('config.json not found. Copy config.example.json to config.json and edit it.');
   process.exit(1);
@@ -86,13 +86,13 @@ const watchConfig = () => fs.watch(path.dirname(CONFIG_PATH), (eventType, filena
     }
   }, 500);
 });
-// Hosted by the Apparition desktop app (APPSTORE_HOSTED=1), which is then the GUI: it runs
+// Hosted by the Apparition desktop app (STORE_HOSTED=1), which is then the GUI: it runs
 // this server as its child and talks to it with a token it writes as the first line of stdin
 // (never argv or the environment). The server ends when that pipe closes, so it never outlives
 // the app. The web pages are off unless `webUi` is true and a password is set; apps' signed
 // uploads, OTA, AltSource and Mac downloads keep working either way. Run directly (launchd,
 // systemd, a terminal), nothing here changes.
-const HOSTED = process.env.APPSTORE_HOSTED === '1';
+const HOSTED = process.env.STORE_HOSTED === '1';
 let HOST_TOKEN = null;
 const webUiOn = () => !HOSTED || (CONFIG.webUi === true && !!CONFIG.passwordHash);
 // Writes config.json atomically and applies it now (the watcher reloads it again, harmlessly).
@@ -105,7 +105,7 @@ function updateConfig(change) {
   BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
   return next;
 }
-const DATA_DIR = process.env.APPSTORE_DATA || path.join(ROOT, 'data');
+const DATA_DIR = process.env.STORE_DATA || path.join(ROOT, 'data');
 const LOG_DIR = path.join(DATA_DIR, 'logs');
 const CLONE_DIR = path.join(DATA_DIR, 'build-clones');
 const OTA_DIR = path.join(DATA_DIR, 'ota');
@@ -313,7 +313,7 @@ async function gitInfo(repoPath) {
 
 // ---------- devicectl ----------
 async function devicectlJson(args, timeout) {
-  const tmp = path.join(os.tmpdir(), `appstore-dc-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const tmp = path.join(os.tmpdir(), `store-dc-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
   try {
     const r = await run('xcrun', ['devicectl', ...args, '--json-output', tmp], { timeout });
     if (r.code !== 0) throw new Error((r.stderr || r.stdout || 'devicectl failed').trim().split('\n').pop());
@@ -1319,7 +1319,7 @@ function otaPage(req) {
     });
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>appstore OTA</title>
+<title>Apparition Store OTA</title>
 <style>
   body{font:15px -apple-system,system-ui;background:#111;color:#eee;margin:2em auto;max-width:720px;padding:0 1em}
   table{border-collapse:collapse;width:100%}
@@ -1508,7 +1508,7 @@ function traceKey(keyId) {
   try { return JSON.parse(fs.readFileSync(path.join(TRACE_KEY_DIR, `${keyId}.json`), 'utf8')); } catch { return null; }
 }
 
-// The appstore repo name for a bundle id, when config.json knows it.
+// The Apparition Store repo name for a bundle id, when config.json knows it.
 function repoForBundle(bundleId) {
   for (const r of CONFIG.repos) {
     if ([...(r.platforms || []), ...(r.macApps || [])].some(p => p?.bundleId === bundleId)) return r.name;
@@ -1745,8 +1745,8 @@ function debugAppsCached() {
 const PUBLIC_FILES = new Set(['/login.html', '/favicon.svg', '/favicon.ico', '/apple-touch-icon.png', '/mask-icon.svg', '/branding/icon']);
 
 // ---------- branding (config.json `branding`) ----------
-// { org, title, icon }. `title` is the full name; otherwise "<org>'s App Store";
-// otherwise "App Store". `icon` is an image path (relative to config.json) or
+// { org, title, icon }. `title` is the full name; otherwise "<org>'s Apparition Store";
+// otherwise "Apparition Store". `icon` is an image path (relative to config.json) or
 // any other text, shown as-is (an emoji, a letter); unset keeps the triangle.
 const IMAGE_TYPES = { '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon' };
@@ -1759,11 +1759,11 @@ function brandIconFile() {
 }
 function brand() {
   const b = CONFIG.branding || {};
-  const title = String(b.title || (b.org ? `${b.org}'s App Store` : 'App Store'));
-  // Header text: the org keeps its own case, dim, before the bright uppercase "App Store";
+  const title = String(b.title || (b.org ? `${b.org}'s Apparition Store` : 'Apparition Store'));
+  // Header text: the org keeps its own case, dim, before the bright uppercase "Apparition Store";
   // a full `title` is shown as written.
   const name = b.title ? `<b>${escHtml(b.title)}</b>`
-    : b.org ? `<span class="org">${escHtml(b.org)}&#39;s</span> <b>App Store</b>` : '<b>App Store</b>';
+    : b.org ? `<span class="org">${escHtml(b.org)}&#39;s</span> <b>Apparition Store</b>` : '<b>Apparition Store</b>';
   const file = brandIconFile();
   const icon = typeof b.icon === 'string' ? b.icon.trim() : '';
   let mark = '<span class="tri"></span>', head = '';
@@ -2205,7 +2205,7 @@ function hostHandshake(start) {
 if (require.main === module) (HOSTED ? hostHandshake : f => f())(() => {
   watchConfig();
   server.listen(CONFIG.port, '127.0.0.1', () => {
-    console.log(`appstore listening on http://127.0.0.1:${CONFIG.port}`);
+    console.log(`Apparition Store listening on http://127.0.0.1:${CONFIG.port}`);
     refreshAllDevices(); // warm the inventory on startup
     // Crash logs: first look shortly after start, then on a timer (only while CRASH_LOG_PULL is on).
     if (CRASH_LOG_PULL) {

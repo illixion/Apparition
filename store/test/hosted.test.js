@@ -1,5 +1,5 @@
 'use strict';
-// The server as the Apparition desktop app runs it: APPSTORE_HOSTED=1, a token on stdin, the web
+// The server as the Apparition desktop app runs it: STORE_HOSTED=1, a token on stdin, the web
 // pages off until turned on with a password, and the server ending when the app's pipe closes.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -22,13 +22,13 @@ async function freePort() {
 }
 
 async function hosted() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-hosted-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-hosted-'));
   const port = await freePort();
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ port, bundlePrefix: 'com.example', repos: [] }));
   const token = crypto.randomBytes(32).toString('base64url');
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, APPSTORE_HOSTED: '1', APPSTORE_CONFIG: path.join(dir, 'config.json'),
-      APPSTORE_DATA: path.join(dir, 'data'), DEBUGTRACE_KEY_DIR: path.join(dir, 'keys'), PATH: '/nonexistent' },
+    env: { ...process.env, STORE_HOSTED: '1', STORE_CONFIG: path.join(dir, 'config.json'),
+      STORE_DATA: path.join(dir, 'data'), DEBUGTRACE_KEY_DIR: path.join(dir, 'keys'), PATH: '/nonexistent' },
     stdio: ['pipe', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', d => { output += d; });

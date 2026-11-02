@@ -22,7 +22,7 @@ function data() {
     files: [{ path: 'crashes/r.json' }], build: { installedTo: 'AVP' } }));
   return dir;
 }
-const cli = (dir, ...args) => spawnSync(CLI, args, { encoding: 'utf8', env: { ...process.env, APPSTORE_DATA: dir } });
+const cli = (dir, ...args) => spawnSync(CLI, args, { encoding: 'utf8', env: { ...process.env, STORE_DATA: dir } });
 
 test('list shows the crash log and the trace it links to', () => {
   const r = cli(data(), 'list');

@@ -208,7 +208,7 @@ printf '  %-12s %s\\n' "App path:" "$PWD/$app"
     ],
   }));
   server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'config.json'), APPSTORE_DATA: path.join(TMP, 'data'),
+    env: { ...process.env, STORE_CONFIG: path.join(TMP, 'config.json'), STORE_DATA: path.join(TMP, 'data'),
       DEBUGTRACE_KEY_DIR: path.join(TMP, 'keys'), PATH: '/usr/bin:/bin' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

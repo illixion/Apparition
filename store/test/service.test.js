@@ -23,7 +23,7 @@ before(async () => {
   fs.writeFileSync(config, JSON.stringify({ port, bundlePrefix: 'com.example', repos: [],
     passwordHash: hashPassword(password), crashLogs: { enabled: false }, buildManifestDir: 'artifacts' }));
   child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, APPSTORE_CONFIG: config, APPSTORE_DATA: path.join(dir, 'data'),
+    env: { ...process.env, STORE_CONFIG: config, STORE_DATA: path.join(dir, 'data'),
       DEBUGTRACE_KEY_DIR: path.join(dir, 'keys'), BUILD_SIGNING_DIR: path.join(dir, 'signing') }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   await new Promise((resolve, reject) => {

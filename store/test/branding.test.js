@@ -8,7 +8,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { hashPassword } = require('../lib/auth');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-brand-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'store-brand-'));
 const PASSWORD = 'correct horse';
 let server, base, cookie;
 
@@ -23,7 +23,7 @@ async function start(branding, { locked = true } = {}) {
     port, bundlePrefix: 'x', repos: [], branding, ...(locked ? { passwordHash: hashPassword(PASSWORD) } : {}),
   }));
   server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'config.json'), APPSTORE_DATA: path.join(TMP, 'data'),
+    env: { ...process.env, STORE_CONFIG: path.join(TMP, 'config.json'), STORE_DATA: path.join(TMP, 'data'),
       DEBUGTRACE_KEY_DIR: path.join(TMP, 'keys'), PATH: '/usr/bin:/bin' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -50,7 +50,7 @@ describe('branding', () => {
   test('defaults keep the triangle and plain title', async () => {
     await start(undefined);
     const h = await page('/');
-    assert.match(h, /<title>App Store<\/title>/);
+    assert.match(h, /<title>Apparition Store<\/title>/);
     assert.match(h, /class="tri"/);
     assert.match(h, /href="\/favicon\.svg"/);
     stop();
@@ -58,8 +58,8 @@ describe('branding', () => {
   test('org and emoji icon', async () => {
     await start({ org: 'Acme <Co>', icon: '🚀' });
     const h = await page('/');
-    assert.match(h, /<title>Acme &lt;Co&gt;'s App Store<\/title>|<title>Acme &lt;Co&gt;&#39;s App Store<\/title>/);
-    assert.match(h, /<span class="org">Acme &lt;Co&gt;&#39;s<\/span> <b>App Store<\/b>/);
+    assert.match(h, /<title>Acme &lt;Co&gt;'s Apparition Store<\/title>|<title>Acme &lt;Co&gt;&#39;s Apparition Store<\/title>/);
+    assert.match(h, /<span class="org">Acme &lt;Co&gt;&#39;s<\/span> <b>Apparition Store<\/b>/);
     assert.match(h, /<span class="brandicon">🚀<\/span>/);
     assert.match(h, /data:image\/svg\+xml/);
     assert.doesNotMatch(await page('/login'), /\{\{BRAND/);

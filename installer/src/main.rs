@@ -126,7 +126,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Put signing in Apparition's Files inbox (Documents/Signing) on a paired device, as
       installing Apparition does, for an Apparition installed another way. --apple-id gives this
       computer's key; --build-signing gives every .p12 and .mobileprovision of build-and-sign
-      (~/.config/build-signing, or <dir>), so the headset signs what the appstore builds;
+      (~/.config/build-signing, or <dir>), so the headset signs what the Apparition Store builds;
       --p12 and --profile give the files you name. Apparition there asks for each .p12's
       password once. Nothing is reinstalled.
   apparition signing share --apple-id <email>

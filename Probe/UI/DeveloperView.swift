@@ -9,7 +9,7 @@ enum DeveloperSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// Where your own projects live: a Mac running appstore builds them, installs them on your
+/// Where your own projects live: a Mac running Apparition Store builds them, installs them on your
 /// devices and collects their crash logs and traces. Before connecting this explains what that
 /// is and how to set it up; once connected it shows the projects (each opens its own page),
 /// the build queue, reports grouped by app, and the connection itself.
@@ -99,7 +99,7 @@ struct DeveloperView: View {
                     NavigationLink(value: DeveloperRoute(project: project.name)) { ProjectRow(service: service, project: project) }
                 }
                 if service.state?.repos.isEmpty == true {
-                    Text("No projects yet. Register one from Apparition on the Mac, or add it to appstore's config.json.")
+                    Text("No projects yet. Register one from Apparition on the Mac, or add it to Apparition Store's config.json.")
                         .foregroundStyle(.secondary)
                 }
             } header: {
@@ -255,7 +255,7 @@ struct DeveloperReportsList: View {
         }
         if service.reportDetailOwnerBundleId == bundleId, !service.reportDetail.isEmpty {
             if service.reportDetail.contains("? +0x") {
-                Note(text: "Some frames are address-only because this report doesn't identify them as symbols from the app binary. The appstore has symbols for kept builds, but they can't resolve frames the crash log attributes to other binaries.", kind: .info)
+                Note(text: "Some frames are address-only because this report doesn't identify them as symbols from the app binary. The Apparition Store has symbols for kept builds, but they can't resolve frames the crash log attributes to other binaries.", kind: .info)
             }
             Text(service.reportDetail)
                 .font(.system(.caption, design: .monospaced))
@@ -267,7 +267,7 @@ struct DeveloperReportsList: View {
     }
 }
 
-/// The connection, the devices the Mac can install to, and what appstore is.
+/// The connection, the devices the Mac can install to, and what Apparition Store is.
 private struct DeveloperServiceView: View {
     @Bindable var service: BuildService
 
@@ -290,19 +290,19 @@ private struct DeveloperServiceView: View {
             } footer: {
                 Text("Simulators are not listed.")
             }
-            AppstoreAbout()
+            StoreAbout()
         }
     }
 }
 
-/// Before connecting: what appstore is, how to set it up, and the connection form.
+/// Before connecting: what Apparition Store is, how to set it up, and the connection form.
 private struct DeveloperConnectView: View {
     @Bindable var service: BuildService
     @State private var password = ""
 
     var body: some View {
         Form {
-            AppstoreAbout(steps: true)
+            StoreAbout(steps: true)
             Section("Connect") {
                 TextField("https://your-mac.example.com", text: $service.address)
                     .textContentType(.URL)
@@ -326,26 +326,26 @@ private struct DeveloperConnectView: View {
     }
 }
 
-/// appstore in a few sentences, with where to get it.
-private struct AppstoreAbout: View {
+/// Apparition Store in a few sentences, with where to get it.
+private struct StoreAbout: View {
     var steps = false
-    static let repository = URL(string: "https://github.com/illixion/appstore")!
+    static let repository = URL(string: "https://github.com/illixion/Apparition/tree/main/store")!
 
     var body: some View {
         Section {
-            Text("The Developer tools work with appstore, an open-source build service you run on your own Mac. It builds your Xcode projects with your developer certificate, installs them on devices paired with the Mac, keeps every signed build, and collects crash logs and debug traces. From here you can start builds, install kept builds on this \(ThisDevice.noun), re-sign apps with another profile and read their reports.")
+            Text("The Developer tools work with Apparition Store, an open-source build service you run on your own Mac. It builds your Xcode projects with your developer certificate, installs them on devices paired with the Mac, keeps every signed build, and collects crash logs and debug traces. From here you can start builds, install kept builds on this \(ThisDevice.noun), re-sign apps with another profile and read their reports.")
             if steps {
-                Text("1. Get appstore from GitHub and follow its README. It needs Xcode, Node 18 and a paid developer certificate with a development profile.")
+                Text("1. Get Apparition Store from GitHub and follow its README. It needs Xcode, Node 18 and a paid developer certificate with a development profile.")
                 Text("2. Set a service password on the Mac: node server.js set-password.")
                 Text("3. Start it, make it reachable over HTTPS (Tailscale Serve works), and connect below.")
             }
             #if os(tvOS)
-            Text("appstore: github.com/illixion/appstore").foregroundStyle(.secondary)
+            Text("Apparition Store: github.com/illixion/Apparition/tree/main/store").foregroundStyle(.secondary)
             #else
-            Link(destination: Self.repository) { Label("appstore on GitHub", systemImage: "arrow.up.right.square") }
+            Link(destination: Self.repository) { Label("Apparition Store on GitHub", systemImage: "arrow.up.right.square") }
             #endif
         } header: {
-            Text(steps ? "Get started" : "About appstore")
+            Text(steps ? "Get started" : "About Apparition Store")
         }
     }
 }

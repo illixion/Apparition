@@ -27,7 +27,7 @@ use tauri_plugin_opener::OpenerExt;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DOWNLOADS: &str = "https://apparition.illixion.com/#download";
 const QUESTIONS: &str = "https://apparition.illixion.com/#faq";
-const APPSTORE: &str = "https://github.com/illixion/appstore";
+const STORE: &str = "https://github.com/illixion/Apparition/tree/main/store";
 const DEVELOPER_GUIDE: &str = "https://github.com/illixion/Apparition/blob/main/docs/DEVELOPER.md";
 /// How long a PIN or 2FA prompt waits for an answer.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
@@ -230,7 +230,7 @@ pub fn open_help(app: AppHandle) -> Result<(), Failure> {
 #[tauri::command]
 pub fn open_developer_link(app: AppHandle, which: String) -> Result<(), Failure> {
     let url = match which.as_str() {
-        "appstore" => APPSTORE,
+        "store" => STORE,
         "guide" => DEVELOPER_GUIDE,
         _ => return Err(Failure::new("Unknown link.")),
     };

@@ -1,4 +1,4 @@
-# appstore
+# Apparition Store
 
 A personal, LAN/tailnet-only "app store" for your own Apple devices. It builds apps from local git
 checkouts, signs and installs them with `xcrun devicectl`, and shows what each device is running
@@ -16,11 +16,11 @@ Two parts, which ship together:
 - **Inside the Apparition desktop app (a Mac you work at).** Apparition carries this service and
   runs it on your Mac's Node.js while it is open, as its GUI: Developer in Apparition has the
   projects, builds, reports and settings. Config and data live in
-  `~/Library/Application Support/Apparition/Service/`. The web pages are off until you turn them
+  `~/Library/Application Support/Apparition/Store/`. The web pages are off until you turn them
   on with a password (Developer › Devices & signing › Web UI and other devices); the same password
   lets Apparition on another device connect. Apps' trace uploads, OTA links, the AltStore feed and
   Mac downloads work whenever the app is open. To run a checkout instead of the bundled copy, put
-  `{"checkout": "/path/to/appstore"}` in that folder's `host.json`.
+  `{"checkout": "/path/to/Apparition/store"}` in that folder's `host.json`.
 - **On its own (a server).** `node server.js` under launchd, systemd or a terminal, as below. The
   web UI is the GUI then, and Apparition connects to it like any other Mac's service.
 
@@ -114,7 +114,7 @@ the project to `config.json`, preserves other settings, and makes it available i
 
 Optional `branding` in `config.json` (applied on reload, no restart needed):
 
-- `org`: shows as "&lt;org&gt;'s App Store" in the header, login page and tab title.
+- `org`: shows as "&lt;org&gt;'s Apparition Store" in the header, login page and tab title.
 - `title`: the full name instead, e.g. `"Acme Apps"`. Wins over `org`.
 - `icon`: an emoji or any short text, or a path to an image (`.svg .png .jpg .gif .webp .ico`, relative to `config.json`, `~/` allowed). It is shown at 2rem and also becomes the favicon. Unset keeps the triangle.
 

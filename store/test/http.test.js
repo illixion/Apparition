@@ -11,7 +11,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { hashPassword, COOKIE } = require('../lib/auth');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-http-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'store-http-'));
 const KEYS = path.join(TMP, 'keys');
 const PASSWORD = 'correct horse';
 let server, base, fakeApp, fakeAppUrl, calls = [];
@@ -79,7 +79,7 @@ before(async () => {
     port, bundlePrefix: 'pro.example', repos: [], passwordHash: hashPassword(PASSWORD), debugtraceTool: tool,
   }));
   server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'config.json'), APPSTORE_DATA: path.join(TMP, 'data'),
+    env: { ...process.env, STORE_CONFIG: path.join(TMP, 'config.json'), STORE_DATA: path.join(TMP, 'data'),
       DEBUGTRACE_KEY_DIR: KEYS, PATH: '/usr/bin:/bin' }, // no xcrun: device refreshes fail fast
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -180,7 +180,7 @@ describe('live debugging', () => {
     assert.equal(fake.id, 'k1');
     assert.equal(fake.attachable, true);
     assert.equal(noToken.attachable, false);
-    assert.match(r.json.clientName, /^App Store page on /); // what the device's approval prompt shows
+    assert.match(r.json.clientName, /^Apparition Store page on /); // what the device's approval prompt shows
     assert.doesNotMatch(r.text, /app-token|127\.0\.0\.1/);
   });
   test('a call reaches the app with the ledger token', async () => {

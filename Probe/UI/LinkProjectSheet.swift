@@ -45,7 +45,7 @@ struct LinkProjectSheet: View {
                         }
                     }
                     if choices.isEmpty {
-                        Text("The build service has no projects yet. Register one from Apparition on the Mac, or add it to appstore's config.json.")
+                        Text("The build service has no projects yet. Register one from Apparition on the Mac, or add it to Apparition Store's config.json.")
                             .foregroundStyle(.secondary)
                     }
                 }

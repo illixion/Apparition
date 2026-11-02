@@ -9,7 +9,7 @@ const path = require('node:path');
 require('./helpers');
 
 // The server reads its config once at require time: extend the harness config before loading it.
-const cfgPath = process.env.APPSTORE_CONFIG;
+const cfgPath = process.env.STORE_CONFIG;
 const tmp = path.dirname(cfgPath);
 const fakeCli = path.join(tmp, 'fake-apparition');
 fs.writeFileSync(fakeCli, `#!/bin/sh

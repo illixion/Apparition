@@ -17,7 +17,7 @@ const DISCOVERY_TTL_MS = 5000;
 // gives up after 60 s), and `_profile` then samples for up to 10 s, so the
 // proxy has to outlast both, with room for a slow tailnet hop.
 const CALL_TIMEOUT_MS = 90000;
-const CLIENT_NAME = `App Store page on ${require('node:os').hostname().split('.')[0]}`;
+const CLIENT_NAME = `Apparition Store page on ${require('node:os').hostname().split('.')[0]}`;
 
 // `tool` is a path or a function returning one (it follows config reloads).
 function createDebug({ tool, keyDir, panelsDir, log = () => {}, callTimeoutMs = CALL_TIMEOUT_MS }) {

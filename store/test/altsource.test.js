@@ -12,7 +12,7 @@ const { spawn, execFileSync } = require('node:child_process');
 const { hashPassword } = require('../lib/auth');
 const { createAltSource, sourceApps, sourcePlatforms, allSourceApps, sourceBranch, buildSource, sameCommit } = require('../lib/altsource');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-altsource-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'store-altsource-'));
 
 describe('listing', () => {
   const config = {
@@ -258,7 +258,7 @@ echo "PLATFORM=$PLATFORM"
         { platform: 'visionOS', bundleId: 'com.example.fake', device: 'AVP' }] }],
   }));
   server = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'config.json'), APPSTORE_DATA: path.join(TMP, 'data'),
+    env: { ...process.env, STORE_CONFIG: path.join(TMP, 'config.json'), STORE_DATA: path.join(TMP, 'data'),
       DEBUGTRACE_KEY_DIR: path.join(TMP, 'keys'), PATH: '/usr/bin:/bin' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

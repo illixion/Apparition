@@ -576,7 +576,7 @@ pub enum Handoff<'a> {
 
 /// The signing material `build-and-sign` keeps on a Mac: `certs/*.p12` and
 /// `profiles/*.mobileprovision` under `~/.config/build-signing` (`BUILD_SIGNING_DIR` overrides
-/// it). It's what the appstore build service signs with, so handing it to Apparition lets the
+/// it). It's what the Apparition Store build service signs with, so handing it to Apparition lets the
 /// device refresh those apps on its own. Only the files are collected; the .p12 passwords stay
 /// in `global.conf`, and the device asks for each one itself.
 #[derive(Debug, Clone, Default)]

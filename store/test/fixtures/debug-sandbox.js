@@ -19,7 +19,7 @@ const port = Number(arg('--port', 8499));
 const approvalMs = Number(arg('--approval-ms', 0));
 const approval = arg('--approval', 'allow');
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-sandbox-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'store-sandbox-'));
 const keys = path.join(tmp, 'keys');
 fs.mkdirSync(keys);
 const app = createFakeApp({ token: 'sandbox-token', approvalMs, approval });
@@ -46,7 +46,7 @@ app.listen(0, '127.0.0.1', () => {
   ])}\nJSON\n`, { mode: 0o755 });
   fs.writeFileSync(path.join(tmp, 'config.json'), JSON.stringify({ port, bundlePrefix: 'com.example', repos: [], debugtraceTool: tool }));
   const server = spawn(process.execPath, [path.join(__dirname, '..', '..', 'server.js')], {
-    env: { ...process.env, APPSTORE_CONFIG: path.join(tmp, 'config.json'), APPSTORE_DATA: path.join(tmp, 'data'), DEBUGTRACE_KEY_DIR: keys, PATH: '/usr/bin:/bin' },
+    env: { ...process.env, STORE_CONFIG: path.join(tmp, 'config.json'), STORE_DATA: path.join(tmp, 'data'), DEBUGTRACE_KEY_DIR: keys, PATH: '/usr/bin:/bin' },
     stdio: 'inherit',
   });
   console.log(`fake app on ${appUrl}; store on http://127.0.0.1:${port}/#debug (temp dir ${tmp})`);

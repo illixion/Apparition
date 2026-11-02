@@ -470,7 +470,7 @@ final class BuildService {
         } catch { pollFailed(error) }
     }
 
-    /// Downloads one immutable appstore artifact with the service bearer. The caller hands this
+    /// Downloads one immutable Apparition Store artifact with the service bearer. The caller hands this
     /// IPA to LibraryModel, which keeps it and runs the usual signing and install review.
     func download(_ artifact: Artifact) async throws -> URL {
         guard let base, let token, connected else { throw Failure.expired }
@@ -487,7 +487,7 @@ final class BuildService {
         guard response.statusCode == 200 else { throw Failure.rejected(response.statusCode) }
         let values = try temporary.resourceValues(forKeys: [.fileSizeKey])
         guard let size = values.fileSize, size > 0, size <= 2_000_000_000 else { throw Failure.response }
-        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("appstore-\(id).ipa")
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("store-\(id).ipa")
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: temporary, to: destination)
         return destination
@@ -713,7 +713,7 @@ final class BuildService {
     /// Asks the Mac to re-sign an app on a device. The Mac signs the IPA (the one it kept, or one
     /// it builds first) with the chosen profile and installs it over the app; if the device refuses
     /// an update to another App ID it backs the data up, reinstalls and restores it (lib/resign.js
-    /// in appstore). `dryRun` only checks the data can be reached. Returns the re-sign job, which
+    /// in Apparition Store). `dryRun` only checks the data can be reached. Returns the re-sign job, which
     /// is the last one when a build is queued before it.
     func resign(_ source: ResignSource, device: String, profile: ResignProfile, keepData: Bool, dryRun: Bool) async -> Job? {
         guard !busy else { return nil }

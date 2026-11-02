@@ -67,7 +67,7 @@ async function inspectApp(appPath) {
 // signature intact. ditto keeps the framework symlinks and extended attributes
 // that a plain zip would break the signature over.
 async function zipApp(appPath, dest) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-mac-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'store-mac-'));
   try {
     const named = path.join(tmp, path.basename(appPath).replace(/-macOS(?=\.app$)/, ''));
     const copy = await run('cp', ['-cR', appPath, named]);

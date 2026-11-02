@@ -44,7 +44,7 @@ struct ResignTarget: Identifiable {
 
 /// Signs an app with another of the Mac's profiles and installs it over the copy on a device. A
 /// device can't give an installed app back, so the IPA is the one the Mac kept, or one it builds
-/// for the purpose; the Mac (appstore, `lib/resign.js`) does the signing, and for a different App
+/// for the purpose; the Mac (Apparition Store, `lib/resign.js`) does the signing, and for a different App
 /// ID the backup, reinstall and restore of the app's data, which installd needs because it
 /// refuses that update.
 struct ResignSheet: View {

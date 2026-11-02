@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createAuth, hashPassword, verifyPassword, parseCookies } = require('../lib/auth');
 
-const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-auth-'));
+const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'store-auth-'));
 const HASH = hashPassword('correct horse');
 
 describe('passwords', () => {
@@ -79,7 +79,7 @@ describe('sessions', () => {
     assert.match(auth.cookie('x', true), /; Secure$/);
   });
   test('cookies parse', () => {
-    assert.deepEqual(parseCookies('a=1; appstore_session=tok%3D; b'), { a: '1', appstore_session: 'tok=' });
+    assert.deepEqual(parseCookies('a=1; store_session=tok%3D; b'), { a: '1', store_session: 'tok=' });
   });
 });
 

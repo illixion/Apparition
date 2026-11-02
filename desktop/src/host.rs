@@ -1,18 +1,18 @@
-//! Runs the appstore build service on this Mac as a child of the app, which is then its GUI.
+//! Runs the Apparition Store build service on this Mac as a child of the app, which is then its GUI.
 //!
 //! The service ships inside the app (`Contents/Resources/service`, put there by
 //! `scripts/bundle-service.sh`) and runs on the Mac's own Node.js. The app writes a fresh
 //! token as the first line of the child's stdin and talks to it with that token, needing no
-//! password (appstore's hosted mode, `APPSTORE_HOSTED=1`). When the app quits, the pipe closes
+//! password (Apparition Store's hosted mode, `STORE_HOSTED=1`). When the app quits, the pipe closes
 //! and the service ends with it. Its web pages stay off until the person turns them on with a
 //! password (`host_web_ui`), which also lets other devices' Apparition connect.
 //!
-//! Running appstore directly (`node server.js` under launchd or systemd) stays the option for
+//! Running Apparition Store directly (`node server.js` under launchd or systemd) stays the option for
 //! a server; this is the option for a Mac someone works at.
 //!
-//! The service's config and data live in `~/Library/Application Support/Apparition/Service`.
-//! `APPARITION_SERVICE_DIR` points at an appstore checkout instead of the bundled copy (for
-//! working on appstore), `APPARITION_NODE` at a Node.js binary.
+//! The service's config and data live in `~/Library/Application Support/Apparition/Store`.
+//! `APPARITION_STORE_DIR` points at an Apparition Store checkout instead of the bundled copy (for
+//! working on Apparition Store), `APPARITION_NODE` at a Node.js binary.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -50,19 +50,19 @@ fn home() -> PathBuf {
 }
 
 fn support_dir() -> PathBuf {
-    home().join("Library/Application Support/Apparition/Service")
+    home().join("Library/Application Support/Apparition/Store")
 }
 
 fn log_path() -> PathBuf {
     support_dir().join("service.log")
 }
 
-/// The service's code: an appstore checkout named by `APPARITION_SERVICE_DIR` or by `checkout`
-/// in the service folder's `host.json` (for someone working on appstore: an app opened from
+/// The service's code: an Apparition Store checkout named by `APPARITION_STORE_DIR` or by `checkout`
+/// in the service folder's `host.json` (for someone working on Apparition Store: an app opened from
 /// Finder has no environment to set, and a restart of the service then runs their edits), else
 /// the copy in this app's Resources.
 fn service_dir() -> Option<PathBuf> {
-    let checkout = std::env::var_os("APPARITION_SERVICE_DIR").map(PathBuf::from).or_else(|| {
+    let checkout = std::env::var_os("APPARITION_STORE_DIR").map(PathBuf::from).or_else(|| {
         let host: Value = serde_json::from_slice(&std::fs::read(support_dir().join("host.json")).ok()?).ok()?;
         Some(PathBuf::from(host["checkout"].as_str()?))
     });
@@ -100,7 +100,7 @@ fn child_path() -> String {
     std::env::join_paths(dirs).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// 32 random bytes as 43 characters of unpadded base64url, the token shape appstore accepts.
+/// 32 random bytes as 43 characters of unpadded base64url, the token shape Apparition Store accepts.
 fn token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     std::fs::File::open("/dev/urandom")
@@ -186,7 +186,7 @@ impl ServiceHost {
         let (config, port) = ensure_config()?;
         if std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), Duration::from_millis(300)).is_ok() {
             return Err(format!(
-                "Something else already uses port {port}, perhaps appstore run on its own. Stop it, or change \"port\" in {}.",
+                "Something else already uses port {port}, perhaps Apparition Store run on its own. Stop it, or change \"port\" in {}.",
                 config.display()
             ));
         }
@@ -199,9 +199,9 @@ impl ServiceHost {
         command
             .arg(service.join("server.js"))
             .current_dir(&service)
-            .env("APPSTORE_HOSTED", "1")
-            .env("APPSTORE_CONFIG", &config)
-            .env("APPSTORE_DATA", support_dir().join("data"))
+            .env("STORE_HOSTED", "1")
+            .env("STORE_CONFIG", &config)
+            .env("STORE_DATA", support_dir().join("data"))
             .env("PATH", child_path())
             .stdin(Stdio::piped())
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
@@ -364,28 +364,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_have_the_shape_appstore_accepts() {
+    fn tokens_have_the_shape_store_accepts() {
         let a = token().unwrap();
         assert_eq!(a.len(), 43);
         assert!(a.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
         assert_ne!(a, token().unwrap());
     }
 
-    /// The real thing: the appstore checkout beside this repo, as a child, under a throwaway HOME.
+    /// The real thing: the Apparition Store checkout beside this repo, as a child, under a throwaway HOME.
     /// Skipped without Node.js or the checkout. Changes HOME for the process, so it is the only
     /// test here that reads it.
     #[test]
-    fn starts_the_sibling_appstore_and_reaches_it_by_token() {
-        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../appstore");
+    fn starts_the_sibling_store_and_reaches_it_by_token() {
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../store");
         if node().is_none() || !checkout.join("server.js").is_file() || !cfg!(target_os = "macos") {
-            eprintln!("skipped: no Node.js or no appstore checkout");
+            eprintln!("skipped: no Node.js or no Apparition Store checkout");
             return;
         }
         let home = tempfile::tempdir().unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         unsafe {
             std::env::set_var("HOME", home.path());
-            std::env::set_var("APPARITION_SERVICE_DIR", &checkout);
+            std::env::set_var("APPARITION_STORE_DIR", &checkout);
         }
         std::fs::create_dir_all(support_dir()).unwrap();
         std::fs::write(support_dir().join("config.json"), json!({"port": port, "bundlePrefix": [], "repos": []}).to_string()).unwrap();

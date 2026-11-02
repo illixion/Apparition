@@ -158,7 +158,7 @@ async function inspectPayload(root) {
 }
 
 async function inspectIpa(ipaPath) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-altsource-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'store-altsource-'));
   try {
     const x = await run('ditto', ['-x', '-k', ipaPath, tmp]);
     if (x.code !== 0) throw new Error(`could not unpack ${path.basename(ipaPath)}: ${x.stderr.trim()}`);
@@ -209,7 +209,7 @@ function buildSource({ cfg = {}, title, apps, url, platform = null }) {
   return {
     // AltStore keys sources by identifier, so each platform's needs its own.
     name: platform ? `${cfg.name || title} (${platform})` : (cfg.name || title),
-    identifier: (cfg.identifier || 'local.appstore.source') + (platform ? `.${slugOf(platform).toLowerCase()}` : ''),
+    identifier: (cfg.identifier || 'local.apparition.store') + (platform ? `.${slugOf(platform).toLowerCase()}` : ''),
     subtitle: cfg.subtitle || 'Dev builds, built when you ask for them',
     iconURL: cfg.iconURL || url('/altsource/icon.png'),
     website: cfg.website || undefined,

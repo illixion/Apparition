@@ -43,9 +43,9 @@ final class LibraryModel {
         var discardDestinationData: Bool?
         var needsInstallReview: Bool?
         var reviewedBundleId: String?
-        /// The appstore build this was installed from (a project's build the Mac kept), so a later
+        /// The Apparition Store build this was installed from (a project's build the Mac kept), so a later
         /// build is recognised as an update. nil for apps from a source or a file.
-        var appstoreBuildId: String?
+        var storeBuildId: String?
         /// The watch app Apparition installed on the Watches in `watchUDIDs`, so removing the app
         /// can remove it there too (a watch app installed this way isn't tied to its iPhone app).
         var watchAppId: String?
@@ -637,7 +637,7 @@ final class LibraryModel {
                                                   ipaFile: app.ipaFile, stripExtensions: true)
             record.version = app.version
             record.ipaFile = app.ipaFile
-            if let buildId { record.appstoreBuildId = buildId }
+            if let buildId { record.storeBuildId = buildId }
             if let signer { record.signWith = signer }
             if let takeOver { record.takeOver = takeOver }
             let planned = existing?.reviewedBundleId != nil && existing?.needsInstallReview != true
@@ -654,10 +654,10 @@ final class LibraryModel {
         }
     }
 
-    // MARK: Builds from an appstore project
+    // MARK: Builds from an Apparition Store project
 
     /// What the library lists as the source of an app a project's kept build made.
-    nonisolated static func projectSource(_ project: String) -> String { "appstore: \(project)" }
+    nonisolated static func projectSource(_ project: String) -> String { "Apparition Store: \(project)" }
 
     enum ProjectInstall: Equatable {
         case installed(String)

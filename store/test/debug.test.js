@@ -9,7 +9,7 @@ const path = require('node:path');
 const { createDebug, CALL_TIMEOUT_MS, CLIENT_NAME } = require('../lib/debug');
 const { createFakeApp } = require('./fixtures/fake-debug-app');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-debug-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'store-debug-'));
 let app;
 
 function debugFor(opts = {}) {

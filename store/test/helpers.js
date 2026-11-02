@@ -6,14 +6,14 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'appstore-test-'));
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'store-test-'));
 const KEY_DIR = path.join(TMP, 'keys');
 fs.mkdirSync(KEY_DIR);
 fs.writeFileSync(path.join(TMP, 'config.json'), JSON.stringify({
   port: 0, bundlePrefix: 'com.example', repos: [],
 }));
-process.env.APPSTORE_CONFIG = path.join(TMP, 'config.json');
-process.env.APPSTORE_DATA = path.join(TMP, 'data');
+process.env.STORE_CONFIG = path.join(TMP, 'config.json');
+process.env.STORE_DATA = path.join(TMP, 'data');
 process.env.DEBUGTRACE_KEY_DIR = KEY_DIR;
 
 const crcTable = Array.from({ length: 256 }, (_, n) => {

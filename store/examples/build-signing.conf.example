@@ -4,7 +4,7 @@
 PROJECT_PATH="MyApp.xcodeproj"      # or a .xcworkspace
 SCHEME_NAME="MyApp"
 TARGET_NAME="MyApp"
-# Respect the caller's PLATFORM (the appstore sets it), default otherwise.
+# Respect the caller's PLATFORM (the Apparition Store sets it), default otherwise.
 PLATFORM="${PLATFORM:-iOS}"
 
 # The bundle id the signed app gets. With a wildcard profile this can be

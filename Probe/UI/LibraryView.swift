@@ -41,7 +41,7 @@ struct LibraryView: View {
     /// Apps that belong to a configured project: linked to it by the person, or matched on the bundle
     /// identifier (exactly, or modulo a team or debug suffix). A linked app shows even when it isn't
     /// debuggable, because the person said so.
-    private var appstoreApps: [(app: ProbeModel.DeviceApp, project: BuildService.Project, target: BuildService.Target, link: ProjectLink?)] {
+    private var storeApps: [(app: ProbeModel.DeviceApp, project: BuildService.Project, target: BuildService.Target, link: ProjectLink?)] {
         model.deviceApps.compactMap { app in
             guard app.bundleId != Bundle.main.bundleIdentifier else { return nil }
             guard let match = developer.project(for: app), app.debuggable || match.link?.chosen == true else { return nil }
@@ -49,19 +49,19 @@ struct LibraryView: View {
         }
     }
 
-    /// Debuggable apps not managed by Apparition or a configured appstore project.
+    /// Debuggable apps not managed by Apparition or a configured Apparition Store project.
     private var otherApps: [ProbeModel.DeviceApp] {
-        let known = Set(library.installed.compactMap(\.installedBundleId) + appstoreApps.map { $0.app.bundleId })
+        let known = Set(library.installed.compactMap(\.installedBundleId) + storeApps.map { $0.app.bundleId })
         return model.deviceApps.filter {
             $0.debuggable && $0.bundleId != Bundle.main.bundleIdentifier && !known.contains($0.bundleId)
         }
     }
 
     private var apps: [LibraryModel.InstalledApp] {
-        let appstoreManaged = Set(appstoreApps.compactMap { app in
+        let storeManaged = Set(storeApps.compactMap { app in
             library.installed.first { $0.installedBundleId == app.app.bundleId }?.id
         })
-        return library.installed.filter { !appstoreManaged.contains($0.id) }
+        return library.installed.filter { !storeManaged.contains($0.id) }
             .sorted { (LibraryModel.expiryDate($0) ?? .distantPast) < (LibraryModel.expiryDate($1) ?? .distantPast) }
     }
 
@@ -164,7 +164,7 @@ struct LibraryView: View {
                 emptyState
             } else {
                 managedGroup
-                appstoreGroup
+                storeGroup
                 otherGroup
                     .padding(.top, 16)
             }
@@ -208,21 +208,21 @@ struct LibraryView: View {
     }
 
     @ViewBuilder
-    private var appstoreGroup: some View {
+    private var storeGroup: some View {
         VStack(alignment: .leading, spacing: 16) {
-            groupHeader("Your Projects", subtitle: "Apps on this \(ThisDevice.noun) that belong to a project on your Mac's appstore. Install builds and updates here, from the project's page, or link an app that isn't recognised.")
+            groupHeader("Your Projects", subtitle: "Apps on this \(ThisDevice.noun) that belong to a project on your Mac's Apparition Store. Install builds and updates here, from the project's page, or link an app that isn't recognised.")
             if service.connected {
                 LazyVGrid(columns: Self.columns, spacing: 20) {
-                    ForEach(appstoreApps, id: \.app.bundleId) { match in
-                        appstoreCard(match.app, project: match.project, target: match.target, link: match.link)
+                    ForEach(storeApps, id: \.app.bundleId) { match in
+                        storeCard(match.app, project: match.project, target: match.target, link: match.link)
                     }
                 }
-                if appstoreApps.isEmpty {
+                if storeApps.isEmpty {
                     Text(model.deviceAppsFetchedAt == nil ? "Check this device's apps to find configured project builds." : "No installed apps match a configured project. Link one from Other Apps below.")
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Text("Building your own apps on a Mac? Connect to its appstore to see them here with their updates and reports.")
+                Text("Building your own apps on a Mac? Connect to its Apparition Store to see them here with their updates and reports.")
                     .foregroundStyle(.secondary)
                 Button("Set Up in Developer", action: onDeveloper)
                     .buttonStyle(.bordered)
@@ -234,7 +234,7 @@ struct LibraryView: View {
     @ViewBuilder
     private var otherGroup: some View {
         HStack(alignment: .firstTextBaseline) {
-            groupHeader("Other Apps", subtitle: "Apps outside Apparition and appstore projects. Apparition can launch debuggable apps with JIT.")
+            groupHeader("Other Apps", subtitle: "Apps outside Apparition and Apparition Store projects. Apparition can launch debuggable apps with JIT.")
             Spacer()
             if model.busy && model.latestAttempt("apps")?.outcome == nil && model.attempts.first?.action == "apps" {
                 ProgressView()
@@ -312,7 +312,7 @@ struct LibraryView: View {
         }
     }
 
-    private func appstoreCard(_ app: ProbeModel.DeviceApp, project: BuildService.Project, target: BuildService.Target,
+    private func storeCard(_ app: ProbeModel.DeviceApp, project: BuildService.Project, target: BuildService.Target,
                               link: ProjectLink?) -> some View {
         let jitId = "device:\(app.bundleId)"
         let projectBundleId = target.bundleId ?? library.installed.first { $0.installedBundleId == app.bundleId }?.id ?? app.bundleId
@@ -358,7 +358,7 @@ struct LibraryView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                appstoreUpdateControls(app: app, project: project, target: target, bundleId: projectBundleId)
+                storeUpdateControls(app: app, project: project, target: target, bundleId: projectBundleId)
                 HStack(spacing: 12) {
                     Button {
                         jitAppId = jitId
@@ -386,7 +386,7 @@ struct LibraryView: View {
             }
         }
         .onChange(of: service.artifacts.map(\.id)) { _, _ in
-            guard UserDefaults.standard.bool(forKey: "appstoreAutoUpdate-\(projectBundleId)"),
+            guard UserDefaults.standard.bool(forKey: "storeAutoUpdate-\(projectBundleId)"),
                   let latest = service.latestArtifact(project: project, target: target, bundleId: projectBundleId),
                   app.build == nil || (latest.app.build ?? latest.buildId) != app.build else { return }
             guard developer.installOptions(target).canInstallHere else { return }
@@ -397,16 +397,16 @@ struct LibraryView: View {
     /// Updating this device's copy from a build the Mac kept: Apparition downloads it and signs it
     /// like any other install. Building and re-signing are on the project's page.
     @ViewBuilder
-    private func appstoreUpdateControls(app: ProbeModel.DeviceApp, project: BuildService.Project,
+    private func storeUpdateControls(app: ProbeModel.DeviceApp, project: BuildService.Project,
                                         target: BuildService.Target, bundleId: String) -> some View {
         let latest = service.latestArtifact(project: project, target: target, bundleId: bundleId)
         let hasUpdate = latest.map { app.build == nil || ($0.app.build ?? $0.buildId) != app.build } ?? false
         let phase = developer.phase(project, target)
         let canInstallHere = developer.installOptions(target).canInstallHere
         let preparesUpdates = Binding(get: {
-            UserDefaults.standard.bool(forKey: "appstoreAutoUpdate-\(bundleId)")
+            UserDefaults.standard.bool(forKey: "storeAutoUpdate-\(bundleId)")
         }, set: { enabled in
-            UserDefaults.standard.set(enabled, forKey: "appstoreAutoUpdate-\(bundleId)")
+            UserDefaults.standard.set(enabled, forKey: "storeAutoUpdate-\(bundleId)")
             if enabled, canInstallHere, let latest, hasUpdate { prepareUpdate(latest, project: project, target: target) }
         })
         VStack(alignment: .leading, spacing: 12) {
@@ -453,7 +453,7 @@ struct LibraryView: View {
     private var summary: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
-                // Library apps that belong to an appstore project are listed under Your Projects, not here.
+                // Library apps that belong to an Apparition Store project are listed under Your Projects, not here.
                 Text(apps.count == library.installed.count ? "^[\(apps.count) app](inflect: true)"
                      : apps.isEmpty ? "^[\(library.installed.count) app](inflect: true), under Your Projects"
                      : "^[\(library.installed.count) app](inflect: true), \(library.installed.count - apps.count) under Your Projects")

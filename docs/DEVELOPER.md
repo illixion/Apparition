@@ -7,14 +7,14 @@ screen does.
 
 ## The pieces
 
-- **[appstore](https://github.com/illixion/appstore)** is an open-source build service that runs
+- **[Apparition Store](https://github.com/illixion/Apparition/tree/main/store)** is an open-source build service that runs
   on your Mac. It builds your projects from their Git checkouts with its `build-and-sign` script,
   signs them with your developer certificate, and installs them on devices paired with the Mac
   (`xcrun devicectl`). It keeps every signed build with a manifest of exactly what went into it,
   pulls crash logs off your devices and symbolicates them, and receives debug traces from apps
   that link [DebugTrace](https://github.com/illixion/DebugTrace). It has its own web page too, but
   Apparition talks to its versioned service API.
-- **Apparition on the Mac** (the desktop app) has a **Developer** tab that connects to appstore on
+- **Apparition on the Mac** (the desktop app) has a **Developer** tab that connects to the Apparition Store on
   the same Mac or another one. It can also register projects and send your signing certificates to
   a device.
 - **Apparition on a device** (Apple Vision Pro, iPhone, iPad, Apple TV) has the same **Developer**
@@ -35,39 +35,33 @@ access or code changes.
 
 ## Setting up
 
-1. **Install appstore.** Clone it and follow its README:
+1. **Set up signing for the Apparition Store.** It comes with the desktop app and runs while
+   Apparition is open (Developer shows it running). It needs Xcode and Node.js 18 on the Mac, and
+   your signing material:
 
    ```sh
-   git clone https://github.com/illixion/appstore
-   cd appstore
    mkdir -p ~/.config/build-signing/{certs,profiles}
-   cp examples/global.conf.example ~/.config/build-signing/global.conf   # then edit
-   cp config.example.json config.json                                    # then edit
+   cp /path/to/Apparition/store/examples/global.conf.example ~/.config/build-signing/global.conf   # then edit
    ```
+
+   To run it on its own instead (a server, under launchd or systemd), use `store/` in this repo:
+   `cp config.example.json config.json`, then `node server.js`; see `store/README.md`.
 
    Put your `.p12` in `~/.config/build-signing/certs` and your profiles in `profiles`. Each app's
    repository gets a gitignored `build-signing.conf` (from `examples/build-signing.conf.example`)
    naming its scheme and bundle ID.
 
-2. **Set a service password.** Apparition needs one even if the web page runs without a login:
+2. **Let other devices in.** On the Mac, Developer › Devices & signing › **Web UI and other
+   devices**: set a password. Apparition on a headset, iPhone or Apple TV connects with it (and so
+   does a browser, once the web UI is on). The service listens on 127.0.0.1 only, so a device
+   reaches it through an HTTPS address such as `tailscale serve`, for example
+   `https://your-mac.your-tailnet.ts.net`; Apparition refuses plain HTTP to another host. The
+   device can remember the password in its Keychain.
 
-   ```sh
-   node server.js set-password
-   ```
-
-3. **Start it.** `node server.js` serves `http://127.0.0.1:8484`. To keep it running, wrap it in a
-   launch agent with `KeepAlive`.
-
-4. **Connect.** In Apparition's Developer tab, enter the address and the password. On the Mac
-   itself, `http://localhost:8484` works. A device needs the HTTPS address, for example
-   `https://your-mac.your-tailnet.ts.net`. Apparition refuses plain HTTP to another host. The
-   device can remember the password in its Keychain; the desktop app forgets the session when it
-   quits.
-
-5. **Add your projects.** On the Mac, Developer > **Register a project** takes the checkout's path,
+3. **Add your projects.** On the Mac, Developer > **Register a project** takes the checkout's path,
    its branches, and one target per device it installs on: a platform alias (`visionOS`, `iOS`,
    `iPad`, `tvOS`), the device's name as Xcode shows it, and the bundle ID. You can also add them to
-   appstore's `config.json` by hand.
+   the Apparition Store's `config.json` by hand (`~/Library/Application Support/Apparition/Store/`).
 
 ## The Developer screen
 
@@ -178,7 +172,7 @@ copy on this device, change the app's signer in the Library instead.
 - **A build fails.** Read its log in Activity. The same build from a terminal is
   `build-and-sign` in the project's checkout, which prints the same output.
 - **An app crashed.** Its crash log usually reaches Reports within a few minutes; the Mac pulls them
-  from each device while it is reachable. If nothing arrives, appstore's own Traces page says why a
+  from each device while it is reachable. If nothing arrives, Apparition Store's own Traces page says why a
   device was skipped.
 
 ## Security

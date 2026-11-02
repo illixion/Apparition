@@ -12,7 +12,7 @@ develop it from their own Mac. The DebugTrace parts are generic, so later public
 - The GitHub Actions IPAs link `DebugTrace`, `DebugTraceServer` and `DebugTraceUI`. The server starts
   only with a build-and-sign credential or `DEBUGTRACE_SERVER=1`, so in a shipped IPA it never
   listens. `APPARITION_RELEASE` drops only the experiment endpoints and the release-site override.
-- Upload goes to the appstore, which accepts only keys in this Mac's ledger. Public copies have
+- Upload goes to the Apparition Store, which accepts only keys in this Mac's ledger. Public copies have
   no upload URL, so `canUpload` is false and MetricKit reports are never sent.
 - A copy that Apparition signs on the device embeds a development profile, so
   `DebugPrivacyMode.detected` is `development`. Today, shipped copies log without redaction.
@@ -62,7 +62,7 @@ develop it from their own Mac. The DebugTrace parts are generic, so later public
 - Audit every snapshot provider (`accountState`, `libraryState`, the Signing and Nearby ones) for
   Apple ID, team, device name, UDID and anisette URL. Add RegentChat's seeded-value leak test.
 - **The maintainer's side:** `debugtrace-decrypt <file>`, or dropping the `.trace` file onto the
-  appstore page. It unpacks the trace into `data/traces/` like any other, so `crash-reports` and
+  Apparition Store page. It unpacks the trace into `data/traces/` like any other, so `crash-reports` and
   symbolication work.
 - One recipient for now, since no other maintainers are planned. A second key can be added
   later.

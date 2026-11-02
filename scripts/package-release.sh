@@ -323,7 +323,7 @@ if has macos; then
   # executable is `Apparition`, which a case-insensitive volume would merge with it.
   cp "$WORK/macos/$bin" "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
   codesign -f -s - "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
-  # The appstore build service the app runs on a Mac (Developer › This Mac).
+  # The Apparition Store build service the app runs on a Mac (Developer › This Mac).
   "$ROOT/scripts/bundle-service.sh" "$WORK/macos/$app_name.app"
   codesign -f -s - "$WORK/macos/$app_name.app"
   readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it until you clear the download quarantine. Move $app_name.app to Applications, then run in Terminal: xattr -dr com.apple.quarantine /Applications/$app_name.app (and for the command line, in this folder: xattr -d com.apple.quarantine $bin $helper). The app holds the command line too: run /Applications/$app_name.app/Contents/MacOS/$bin-cli link once to put $bin on your PATH. Or open it once and click Open Anyway in System Settings > Privacy & Security. Don't re-sign it with codesign: that strips the anisette helper's entitlements."

@@ -987,7 +987,7 @@ window.addEventListener('hashchange', route);
 // D.id is the build's key id: the server maps it to the app's address and
 // token, so neither ever reaches this page.
 const D = { apps: [], error: null, id: null, tab: 'log', es: null, level: 'debug', filter: '', paused: false,
-            pending: [], help: null, ep: null, stream: 'idle', clientName: 'App Store page', per: {} };
+            pending: [], help: null, ep: null, stream: 'idle', clientName: 'Apparition Store page', per: {} };
 const MAX_LINES = 5000;
 const LEVEL_LETTER = { debug: 'D', info: 'I', notice: 'N', default: 'N', error: 'E', fault: 'F' };
 
@@ -1237,7 +1237,7 @@ async function showCall(endpoint, args, out, button){
       const blob = await r.blob();
       out.innerHTML = `<a href="${URL.createObjectURL(blob)}" download="${esc(endpoint)}">Download the result (${(blob.size/1024).toFixed(1)} KB)</a>`;
     }
-  } catch (e) { out.innerHTML = errorHTML({ message: e.message, hint: 'Check that the app store service is still running.' }); }
+  } catch (e) { out.innerHTML = errorHTML({ message: e.message, hint: 'Check that the Apparition Store is still running.' }); }
   out.dataset.done = '1'; clearInterval(slow);
   if (button) button.disabled = false;
 }
@@ -1260,7 +1260,7 @@ async function callApp(endpoint, args){
     r = await fetch(`/api/debug/${encodeURIComponent(D.id)}/call`, { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint, arguments: args }) });
   } catch (e) {
-    return { ok: false, error: { message: `The store server did not answer: ${e.message}`, hint: 'Check that the app store service is still running, then try again.' } };
+    return { ok: false, error: { message: `The store server did not answer: ${e.message}`, hint: 'Check that the Apparition Store is still running, then try again.' } };
   }
   if (r.status === 401) { api('/api/state'); return { ok: false, error: { message: 'Signed out.' } }; }
   let body = null;

@@ -46,7 +46,7 @@ describe('normalizePrefixes', () => {
 describe('starting the server', () => {
   test('a missing config.json exits with a clear message', () => {
     const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-      env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'does-not-exist.json'), APPSTORE_DATA: path.join(TMP, 'data2') },
+      env: { ...process.env, STORE_CONFIG: path.join(TMP, 'does-not-exist.json'), STORE_DATA: path.join(TMP, 'data2') },
       encoding: 'utf8', timeout: 10000,
     });
     assert.equal(r.status, 1);
@@ -58,7 +58,7 @@ describe('starting the server', () => {
     // plus the process must be able to exit on its own.
     const r = spawnSync(process.execPath, ['-e', "require('./server'); console.log('loaded')"], {
       cwd: path.join(__dirname, '..'),
-      env: { ...process.env, APPSTORE_CONFIG: path.join(TMP, 'config.json'), APPSTORE_DATA: path.join(TMP, 'data3') },
+      env: { ...process.env, STORE_CONFIG: path.join(TMP, 'config.json'), STORE_DATA: path.join(TMP, 'data3') },
       encoding: 'utf8', timeout: 10000,
     });
     assert.equal(r.status, 0, r.stderr);

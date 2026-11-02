@@ -76,7 +76,7 @@ PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 # Some repos (a harness around a prebuilt app) do not have an Xcode
 # project at all: they ship a prebuilt .ipa or .app bundle and rely on the
-# shared appstore flow to sign + install that artifact. Detect those repos and
+# shared Apparition Store flow to sign + install that artifact. Detect those repos and
 # convert the build into a sign-only deploy automatically.
 find_static_ipa() {
     local candidate=""
@@ -407,7 +407,7 @@ ORIGINAL_KEYCHAINS=""
 # for signing to find it, then cleanup() restores exactly what it captured
 # as "original". If two build-and-sign processes are both inside that
 # setup..cleanup window at once (e.g. two different repos' builds running
-# concurrently under the appstore server), the second one's "original" list
+# concurrently under the Apparition Store server), the second one's "original" list
 # already includes the first one's temp keychain, and whichever finishes
 # first restores a list that's stale for the other — silently breaking
 # codesign identity lookup or leaking a temp keychain into the permanent
@@ -922,7 +922,7 @@ print(bs.get("PROJECT_DIR", ""))
     rm -f "$APP_PATH/Frameworks/DebugTraceInject.dylib"
     if [[ "$MACOS_BUILD" == true ]]; then
         # Named after the product, not TARGET_NAME: a target's product name can
-        # differ (OneirosDesktop builds Oneiros.app), and the appstore zips this
+        # differ (OneirosDesktop builds Oneiros.app), and the Apparition Store zips this
         # copy under its name minus "-macOS".
         MACOS_APP_PATH="$BUILD_DIR/$(basename "$APP_PATH" .app)-macOS.app"
         rm -rf "$MACOS_APP_PATH"
@@ -1141,7 +1141,7 @@ fi
 # whatever the flags, so the trace sheet's Upload works on a launch from the
 # home screen too. A fresh Ed25519 pair per build: the private half goes into
 # DebugTraceCredential.plist inside the bundle (sealed by the code signature
-# in Step 6), the public half into the key ledger the appstore verifies
+# in Step 6), the public half into the key ledger the Apparition Store verifies
 # uploads against (DEBUGTRACE_KEY_DIR, one JSON file per key). The private
 # key ships in the IPA, so a signature proves "a build this Mac made, and
 # which one", not "a genuine device". Not for --distribution: an App Store
@@ -1245,7 +1245,7 @@ if [[ "$HAS_DEBUGTRACE" == true && "$USE_DIST" == false ]]; then
     [[ -n "$TRACE_KEY_ID" ]] && echo "==> Trace key $TRACE_KEY_ID${DEBUGTRACE_UPLOAD_URL:+ (uploads to $DEBUGTRACE_UPLOAD_URL)}"
     if [[ -n "$COMMAND_TOKEN" ]]; then
         add_debug_server_plist_keys
-        echo "==> Debug server on every launch (attach with the apps MCP tools or the appstore page)"
+        echo "==> Debug server on every launch (attach with the apps MCP tools or the Apparition Store page)"
     fi
 fi
 
@@ -1303,7 +1303,7 @@ sign_app "$APP_BUNDLE" "$SIGN_IDENTITY" "$ENTITLEMENTS_PLIST" "$KEYCHAIN_PATH" "
 # Always into $BUILD_DIR under a name derived from TARGET_NAME (never next
 # to whatever IPA_PATH happened to be) — one stable, overwritten-in-place
 # location per repo, regardless of where the source IPA came from. This is
-# what the appstore harness (server.js) already expects when it reads back
+# what the Apparition Store harness (server.js) already expects when it reads back
 # version/build info: it scans "$buildCwd/build/*-signed.ipa". Writing
 # anywhere else (e.g. next to a --ipa input) orphans that read and, worse,
 # leaves a signed artifact sitting where a later find_static_ipa() scan
@@ -1533,7 +1533,7 @@ record = {"bundleId": e["BAS_BUNDLE"], "appName": e["BAS_NAME"], "device": e["BA
           "deviceId": e["BAS_DEVICE_ID"], "url": e["BAS_URL"], "pid": int(e["BAS_PID"]),
           "consoleLog": e["BAS_LOG"], "projectRoot": e["BAS_ROOT"], "token": e["BAS_TOKEN"],
           "startedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
-# The key id lets other tools (the appstore page) find the token of this build in
+# The key id lets other tools (the Apparition Store page) find the token of this build in
 # the ledger; only set when the launch token is that ledger token.
 if e["BAS_KEY_ID"]:
     record["keyId"] = e["BAS_KEY_ID"]
