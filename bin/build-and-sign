@@ -1412,11 +1412,22 @@ else
 fi
 if [[ "$NO_DEPLOY" == false ]]; then
     echo "==> Installing to $DEVICE_NAME..."
-    resolve_device_id
-    # devicectl talks to mobile_installation_proxy directly — it does not
-    # trigger the notification_proxy device preflight that xcodebuild does,
-    # so its own output is clean already; still logged in case of failure.
-    xcrun devicectl device install app --device "$DEVICE_ID" "$SIGNED_IPA" >>"$LOG_FILE" 2>&1
+    # QUIET_DEVICES (global.conf or environment; the store passes its quietAppsDevices) lists
+    # devices installed through `apparition push`: Apparition's own pairing and tunnel, which
+    # CoreDevice never sees, so Xcode's DeviceHub doesn't open the device's HID service and a
+    # sleeping Apple TV stays asleep. Launching (--run) still goes through devicectl.
+    if [[ -n "${QUIET_DEVICES:-}" ]] && printf '%s\n' "$QUIET_DEVICES" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -qxF -- "$DEVICE_NAME"; then
+        APPARITION_CLI="${APPARITION_CLI:-$HOME/.local/bin/apparition}"
+        [[ -x "$APPARITION_CLI" ]] || APPARITION_CLI=apparition
+        echo "    (through Apparition's tunnel: $DEVICE_NAME is a quiet device)"
+        "$APPARITION_CLI" push "$SIGNED_IPA" --device "$DEVICE_NAME" >>"$LOG_FILE" 2>&1
+    else
+        resolve_device_id
+        # devicectl talks to mobile_installation_proxy directly — it does not
+        # trigger the notification_proxy device preflight that xcodebuild does,
+        # so its own output is clean already; still logged in case of failure.
+        xcrun devicectl device install app --device "$DEVICE_ID" "$SIGNED_IPA" >>"$LOG_FILE" 2>&1
+    fi
     INSTALL_STATUS="installed"
 fi
 

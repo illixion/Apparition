@@ -58,6 +58,12 @@ function apparitionCli() {
   const local = path.join(os.homedir(), '.local/bin/apparition');
   return fs.existsSync(local) ? local : 'apparition';
 }
+// build-and-sign installs to `QUIET_DEVICES` through `apparition push` (Apparition's own tunnel)
+// instead of devicectl, so an install doesn't wake a sleeping Apple TV either.
+function quietInstallEnv(cfg) {
+  const names = quietAppsDevices(cfg);
+  return names.length ? { QUIET_DEVICES: names.join(','), APPARITION_CLI: apparitionCli() } : {};
+}
 let BUNDLE_PREFIXES = normalizePrefixes(CONFIG.bundlePrefix);
 
 // Watch config.json for changes and reload it
@@ -623,7 +629,7 @@ async function executeBuild(job) {
       // would break only here, under the agent, and not when run by hand.
       const child = spawn(buildArgs[0], buildArgs.slice(1), {
         cwd: buildCwd,
-        env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore() },
+        env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore(), ...quietInstallEnv(CONFIG) },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       procs.set(job.id, child);
@@ -900,7 +906,7 @@ async function executeResign(job) {
     const result = await resignTool.performResign({
       ipa: kept?.file, bundleId: job.bundleId, device: job.device, profileFile: profile.file,
       buildAndSign: CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN, cwd: rc.path,
-      env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore() },
+      env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore(), ...quietInstallEnv(CONFIG) },
       dataMode: job.resign.dataMode, dryRun: job.resign.dryRun, exec, log,
     });
     job.resign.result = result.mode;
@@ -2108,4 +2114,4 @@ if (require.main === module) {
 // For test/: the pure helpers, with the server left unstarted.
 module.exports = {
   deployDefaults, staleClones, normalizeExcludes, cloneTree, siblingPackages, verifyTrace, zipEntries, safeTracePath, resolveBuildSettings, TraceError, normalizePrefixes, ledgerOnlyDevices,
-  quietAppsDevices, skippedDevices, refreshDeviceApps, _state: () => state };
+  quietAppsDevices, skippedDevices, quietInstallEnv, refreshDeviceApps, _state: () => state };

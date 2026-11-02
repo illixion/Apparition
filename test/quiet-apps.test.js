@@ -59,3 +59,9 @@ test('a ledger-only device without a quiet route is still skipped', async () => 
   await refreshDeviceApps('Bedroom TV');
   assert.equal(_state().deviceApps['Bedroom TV'], undefined);
 });
+
+test('build-and-sign is told which devices to install through apparition push', () => {
+  const { quietInstallEnv } = require('../server');
+  assert.deepEqual(quietInstallEnv(cfg), { QUIET_DEVICES: 'ATV,Den TV', APPARITION_CLI: fakeCli });
+  assert.deepEqual(quietInstallEnv({}), {});
+});
