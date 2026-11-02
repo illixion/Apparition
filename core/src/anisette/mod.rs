@@ -18,7 +18,7 @@ mod server;
 mod shim;
 
 pub use apk::{ChecksumMismatch, Imported, LibraryDownload};
-pub use server::{Server, start};
+pub use server::{Access, Server, start};
 
 /// Takes the anisette libraries from files the person got themselves (see `apk::import`).
 pub async fn import_libraries(data_dir: &std::path::Path, paths: &[std::path::PathBuf], accept_unverified: bool) -> Result<Imported, rootcause::Report> {

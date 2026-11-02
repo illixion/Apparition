@@ -17,6 +17,8 @@ final class CompanionFinder {
         let relay: String
         /// http://ip:port of the anisette server it runs, if one answers.
         let anisetteURL: String?
+        /// The port to pair on first, when its anisette server serves paired devices only.
+        var anisettePairingPort: UInt16? = nil
     }
 
     nonisolated static let serviceType = "_apparition._tcp"
@@ -206,7 +208,8 @@ final class CompanionFinder {
             throw IDevice.ProbeError("not an Apparition companion (or an old one): \(line.prefix(40))")
         }
         let anisette = (json["anisette"] as? Int).map { "http://\(address):\($0)" }
-        return Companion(name: name, relay: "\(address):\(port)", anisetteURL: anisette)
+        let pairing = (json["anisettePairing"] as? Int).flatMap(UInt16.init(exactly:))
+        return Companion(name: name, relay: "\(address):\(port)", anisetteURL: anisette, anisettePairingPort: pairing)
     }
 }
 

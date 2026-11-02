@@ -42,6 +42,8 @@ pub mod anisette;
 pub mod companion;
 #[cfg(feature = "desktop")]
 pub mod relay;
+#[cfg(feature = "desktop")]
+pub mod pairing;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -398,7 +400,7 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
         static SERVER: tokio::sync::OnceCell<anisette::Server> = tokio::sync::OnceCell::const_new();
         let server = SERVER
             .get_or_try_init(|| async {
-                anisette::start(&anisette_dir(data_dir), std::net::SocketAddr::from(([127, 0, 0, 1], 0))).await
+                anisette::start(&anisette_dir(data_dir), std::net::SocketAddr::from(([127, 0, 0, 1], 0)), None).await
             })
             .await
             .context("Couldn't start the built-in anisette provider")?;

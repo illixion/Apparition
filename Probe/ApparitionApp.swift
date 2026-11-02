@@ -34,11 +34,14 @@ struct ApparitionApp: App {
         let finder = _companions.wrappedValue
         model.locateCompanion = { [weak finder] name in await finder?.locate(name: name) }
         // An anisette server on the companion moved with it.
+        // Only the host changes: a paired device's token stays in the path.
         model.onCompanionMoved = { [weak account] old, found in
-            guard let account, let anisette = found.anisetteURL,
+            guard let account, let newHost = found.anisetteURL.flatMap(URL.init(string:))?.host,
                   let oldHost = old.split(separator: ":").first,
-                  URL(string: account.anisetteURL)?.host == String(oldHost) else { return }
-            account.anisetteURL = anisette
+                  var components = URLComponents(string: account.anisetteURL),
+                  components.host == String(oldHost) else { return }
+            components.host = newHost
+            if let moved = components.string { account.anisetteURL = moved }
         }
         DeveloperSlotsEndpoints.register()
         #if !APPARITION_RELEASE

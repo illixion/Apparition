@@ -181,8 +181,8 @@ Sharing or a game streaming PC from anywhere, for example with
 
 Only encrypted traffic crosses the companion, and it only connects back to the device that
 asked. If a Windows or Linux companion doesn't answer over Tailscale while it does at home, its
-firewall is blocking the Tailscale network: allow TCP 49160 and 6969 there too (see How it
-works).
+firewall is blocking the Tailscale network: allow TCP 49160, 49161 and 6969 there too (see How
+it works).
 
 ## How it works
 
@@ -204,15 +204,22 @@ only ever connects back to the address that asked, and it carries only ciphertex
 longer occupies, a companion at home keeps signing and JIT working from anywhere. Tested
 2026-10-11 with LocalDevVPN off: tunnel, refresh (109 s over the LAN, 150 s over Tailscale)
 and JIT launch. On the LAN, Apparition finds the companion over mDNS ("Find companion"); over
-Tailscale, type its address. The companion is the desktop app, which keeps it running from
+Tailscale, type its address. The companion announces itself only at IPv4 addresses a device
+can use (no loopback, IPv6 or self-assigned 169.254 ones), under a host name of its own
+(`apparition-<name>.local`). A device saves the companion's name with its address: when the
+saved address stops answering (a new DHCP lease, another network), it finds the companion again
+by name. The desktop app's "Let devices on this network find this computer" turns the
+announcement off for networks you don't trust; devices then need the address typed, and ones
+that already have it keep connecting. `apparition relay --no-mdns` is the same. The companion is
+the desktop app, which keeps it running from
 the menu bar or tray, or `apparition relay` on the command line (see below); both run
 `core/src/companion.rs`.
 
 Windows asks to allow the companion through its firewall the first time it starts from a
-desktop session; elsewhere allow inbound TCP 49160 (and 6969 to offer anisette), e.g. from an
-elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction Inbound
--Protocol TCP -LocalPort 49160,6969 -Action Allow -Profile Private`. On Linux, open the same
-ports if a firewall runs (`sudo ufw allow 49160,6969/tcp`, or firewalld's `--add-port`), and
+desktop session; elsewhere allow inbound TCP 49160 (and 49161 and 6969 to offer anisette), e.g.
+from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction Inbound
+-Protocol TCP -LocalPort 49160,49161,6969 -Action Allow -Profile Private`. On Linux, open the
+same ports if a firewall runs (`sudo ufw allow 49160,49161,6969/tcp`, or firewalld's `--add-port`), and
 UDP 5353 for mDNS. On macOS, Local Network
 privacy blocks an unbundled binary's multicast, so `apparition relay` there can't advertise
 itself: use the desktop app, or type the address in Apparition. `apparition browse` lists the
@@ -866,6 +873,19 @@ served to the network on port 6969), or the same compose file run with your Dock
 Desktop, OrbStack or Colima), from the desktop app's Companion tab or `apparition relay
 --anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
 anisette server" next to the companion; nothing switches on its own.
+
+The built-in server serves only devices paired with the computer. Choosing it on a device
+("Pair and Use") pairs once over TCP 49161, with RAVESDK's `RAVECompanion` exchange
+(`core/src/pairing.rs` is the computer's half, held to the SDK's test vectors): both screens show
+a six-digit code, and you allow the device in the Companion tab (or answer `apparition relay` in
+its terminal) if they match. The device gets a token of its own, sealed under the key the
+exchange agreed, and uses `http://<computer>:6969/t/<token>` as its server, which any v3 client
+takes as a base URL. Anything else on port 6969 gets 401. Unpair a device in the Companion tab or
+with `apparition relay devices forget <id>`. "Anyone on this network" (`--anisette-open`) serves
+anyone who reaches the port, for v3 clients that can't pair (SideStore, AltServer); `apparition
+anisette serve` always does. The Docker server is Dadoum's and has no access control. The token
+travels in plain HTTP, like the anisette data itself: pairing keeps out whoever merely reaches
+the port, not someone who can read your Wi-Fi traffic.
 
 Apple's servers sometimes refuse a request that another one would take: sign-in then fails "403
 Forbidden". Apparition retries on another server (`core/vendor/isideload/src/auth/edge.rs`): it

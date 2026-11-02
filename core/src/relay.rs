@@ -53,7 +53,9 @@ struct Inner {
     port: u16,
     connections: Mutex<VecDeque<Connection>>,
     anisette: Mutex<Option<u16>>,
-    mdns: Option<Mdns>,
+    /// The port devices pair on, while anisette is offered only to paired devices.
+    pairing: Mutex<Option<u16>>,
+    mdns: Mutex<Option<Mdns>>,
     log: Log,
     next: std::sync::atomic::AtomicU64,
 }
@@ -84,11 +86,12 @@ impl Relay {
             port,
             connections: Mutex::new(VecDeque::new()),
             anisette: Mutex::new(None),
-            mdns,
+            pairing: Mutex::new(None),
+            mdns: Mutex::new(mdns),
             log,
             next: Default::default(),
         });
-        if let Some(mdns) = &inner.mdns {
+        if let Some(mdns) = &*inner.mdns.lock().unwrap() {
             mdns.publish(None, &inner.log);
         }
         let accepting = Arc::downgrade(&inner);
@@ -118,9 +121,40 @@ impl Relay {
             return;
         }
         *current = port;
-        if let Some(mdns) = &self.inner.mdns {
+        if let Some(mdns) = &*self.inner.mdns.lock().unwrap() {
             mdns.publish(port, &self.inner.log);
         }
+    }
+
+    /// Whether the companion announces itself over mDNS. Off, devices that know its address
+    /// keep connecting as before; only Find Companion stops listing it.
+    pub fn set_advertise(&self, on: bool) {
+        let mut mdns = self.inner.mdns.lock().unwrap();
+        match (on, mdns.is_some()) {
+            (true, false) => {
+                *mdns = Mdns::start(self.inner.port, &self.inner.log);
+                if let Some(started) = &*mdns {
+                    started.publish(*self.inner.anisette.lock().unwrap(), &self.inner.log);
+                }
+            }
+            (false, true) => {
+                if let Some(stopped) = mdns.take() {
+                    stopped.stop();
+                }
+                (self.inner.log)("stopped advertising over mDNS");
+            }
+            _ => {}
+        }
+    }
+
+    pub fn advertising(&self) -> bool {
+        self.inner.mdns.lock().unwrap().is_some()
+    }
+
+    /// The port a device pairs on before it may use the anisette server, or `None` when the
+    /// anisette server (if any) serves anyone.
+    pub fn set_pairing(&self, port: Option<u16>) {
+        *self.inner.pairing.lock().unwrap() = port;
     }
 
     pub fn anisette(&self) -> Option<u16> {
@@ -138,8 +172,8 @@ impl Inner {
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        if let Some(mdns) = &self.mdns {
-            let _ = mdns.daemon.shutdown();
+        if let Some(mdns) = self.mdns.lock().unwrap().take() {
+            mdns.stop();
         }
     }
 }
@@ -158,6 +192,11 @@ async fn serve(inner: Arc<Inner>, mut client: TcpStream, peer: SocketAddr) {
         let mut info = serde_json::json!({ "version": 1 });
         if let Some(port) = *inner.anisette.lock().unwrap() {
             info["anisette"] = port.into();
+            // Paired devices only: the device pairs on this port, then puts its token in the
+            // anisette URL's path.
+            if let Some(pairing) = *inner.pairing.lock().unwrap() {
+                info["anisettePairing"] = pairing.into();
+            }
         }
         let _ = client.write_all(format!("INFO {info}\n").as_bytes()).await;
         return;
@@ -283,6 +322,14 @@ impl Mdns {
         }
     }
 
+    /// Withdraws the announcement (a goodbye, so browsers drop it at once) and stops.
+    fn stop(self) {
+        if let Ok(goodbye) = self.daemon.unregister(&format!("{}.{SERVICE_TYPE}", self.name)) {
+            let _ = goodbye.recv_timeout(Duration::from_secs(1));
+        }
+        let _ = self.daemon.shutdown();
+    }
+
     /// Registers (or re-registers, which updates the TXT record) the service.
     fn publish(&self, anisette: Option<u16>, log: &Log) {
         let mut txt = vec![("v".to_string(), "1".to_string())];
@@ -314,6 +361,14 @@ fn mdns_host(name: &str) -> String {
     let label = label.trim_matches('-');
     let label = if label.is_empty() { "companion" } else { label };
     format!("apparition-{}.local.", &label[..label.len().min(40)])
+}
+
+/// The address this computer reaches the network from (the default route's interface), for
+/// telling the person what to type on a device.
+pub fn primary_address() -> Option<IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("192.0.2.1:9").ok()?;
+    socket.local_addr().ok().map(|address| address.ip()).filter(|ip| !ip.is_unspecified())
 }
 
 /// This computer's name, as the companion is advertised.

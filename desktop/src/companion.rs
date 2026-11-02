@@ -53,13 +53,19 @@ struct Settings {
     relay: bool,
     anisette: AnisetteMode,
     auto_updates: bool,
+    /// Announce this computer over mDNS, so Find Companion lists it. Off, devices type its
+    /// address; ones that already have it keep connecting as before.
+    advertise: bool,
+    /// Serve the built-in anisette to anyone on the network (the compatibility mode) instead
+    /// of only to devices paired with this computer.
+    anisette_open: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         // The relay is what Apparition on a device needs to do anything, so it's on unless
         // turned off; serving anisette to the network is a choice the user makes.
-        Self { relay: true, anisette: AnisetteMode::Off, auto_updates: false }
+        Self { relay: true, anisette: AnisetteMode::Off, auto_updates: false, advertise: true, anisette_open: false }
     }
 }
 
@@ -72,6 +78,8 @@ pub struct CompanionState {
     relay_error: Mutex<Option<String>>,
     anisette_error: Mutex<Option<String>>,
     tray: Mutex<Option<TrayItems>>,
+    /// For bringing the window up when a device asks to pair.
+    app: Mutex<Option<AppHandle>>,
 }
 
 struct TrayItems {
@@ -115,6 +123,7 @@ impl CompanionState {
             relay_error: Default::default(),
             anisette_error: Default::default(),
             tray: Default::default(),
+            app: Default::default(),
         }
     }
 
@@ -142,8 +151,14 @@ impl CompanionState {
         if running.is_none() {
             let log: relay::Log = Arc::new(|line: &str| eprintln!("{line}"));
             let (relay_port, anisette_port) = ports();
-            match Companion::start(relay_port, anisette_port, true, &self.data_dir, log).await {
+            match Companion::start(relay_port, anisette_port, settings.advertise, &self.data_dir, log).await {
                 Ok(companion) => {
+                    if let Some(app) = self.app.lock().unwrap().clone() {
+                        companion.devices.on_pairing(Arc::new(move |id, request| {
+                            show_window(&app);
+                            let _ = app.emit("companion-pairing", json!({ "id": id, "request": request }));
+                        }));
+                    }
                     *running = Some(Arc::new(companion));
                     *self.relay_error.lock().unwrap() = None;
                 }
@@ -155,6 +170,10 @@ impl CompanionState {
         }
         let companion = running.as_ref().expect("running").clone();
         drop(running);
+        companion.relay.set_advertise(settings.advertise);
+        if let Err(error) = companion.set_anisette_open(settings.anisette_open).await {
+            *self.anisette_error.lock().unwrap() = Some(error.to_string());
+        }
         let result = match settings.anisette {
             AnisetteMode::Builtin => companion.share_builtin_anisette().await.map_err(|error| error.to_string()),
             AnisetteMode::Local | AnisetteMode::Off => {
@@ -189,6 +208,21 @@ impl CompanionState {
                 "error": *self.anisette_error.lock().unwrap(),
             },
             "connections": running.as_ref().map(|c| c.relay.connections()).unwrap_or_default(),
+            "advertise": {
+                "on": settings.advertise,
+                "running": running.as_ref().is_some_and(|c| c.relay.advertising()),
+                // What to type on a device when this computer isn't announced.
+                "address": relay::primary_address().map(|ip| ip.to_string()),
+            },
+            "pairing": {
+                // Built-in anisette for paired devices only.
+                "required": settings.anisette == AnisetteMode::Builtin && !settings.anisette_open,
+                "open": settings.anisette_open,
+                "port": running.as_ref().map(|c| c.pairing_port()),
+                "devices": running.as_ref().map(|c| c.devices.list()).unwrap_or_default(),
+                "waiting": running.as_ref().map(|c| c.devices.waiting().into_iter()
+                    .map(|(id, request)| json!({ "id": id, "request": request })).collect::<Vec<_>>()).unwrap_or_default(),
+            },
             // What Apparition's Find companion lists (the mDNS name).
             "computerName": relay::machine_name(),
         })
@@ -234,6 +268,7 @@ fn relay_failure(error: &str) -> String {
 /// Starts what the settings say, the tray icon, and a loop that keeps a Docker server's offer
 /// and the tray current.
 pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
+    *state.app.lock().unwrap() = Some(app.clone());
     let relay = MenuItem::with_id(app, "relay", "Relay", false, None::<&str>)?;
     let anisette = MenuItem::with_id(app, "anisette", "Anisette", false, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Apparition", true, None::<&str>)?;
@@ -415,6 +450,41 @@ pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode) -> Re
     Ok(state.status().await)
 }
 
+#[tauri::command]
+pub async fn companion_set_advertise(state: Shared<'_>, on: bool) -> Result<Value, Failure> {
+    state.settings.lock().unwrap().advertise = on;
+    state.save();
+    state.apply().await;
+    Ok(state.status().await)
+}
+
+/// The built-in anisette for anyone on the network (`open`), or paired devices only.
+#[tauri::command]
+pub async fn companion_set_anisette_open(state: Shared<'_>, open: bool) -> Result<Value, Failure> {
+    state.settings.lock().unwrap().anisette_open = open;
+    state.save();
+    state.apply().await;
+    Ok(state.status().await)
+}
+
+/// The person's answer to a device asking to pair.
+#[tauri::command]
+pub async fn companion_pairing_decide(state: Shared<'_>, id: u64, allow: bool) -> Result<Value, Failure> {
+    if let Some(companion) = state.running.lock().await.clone() {
+        companion.devices.decide(id, allow);
+    }
+    Ok(state.status().await)
+}
+
+/// Unpairs a device: its anisette access stops at once.
+#[tauri::command]
+pub async fn companion_forget_device(state: Shared<'_>, id: String) -> Result<Value, Failure> {
+    if let Some(companion) = state.running.lock().await.clone() {
+        companion.devices.forget(&id);
+    }
+    Ok(state.status().await)
+}
+
 /// Starts or stops the self-hosted anisette server with the user's Docker.
 #[tauri::command]
 pub async fn companion_docker(state: Shared<'_>, up: bool) -> Result<Value, Failure> {
@@ -452,6 +522,9 @@ mod tests {
         assert!(!Settings::default().auto_updates);
         let old: Settings = serde_json::from_str(r#"{"relay":false,"anisette":"local"}"#).unwrap();
         assert!(!old.auto_updates);
+        // Settings from before these existed: announced, and anisette for paired devices only.
+        assert!(old.advertise);
+        assert!(!old.anisette_open);
         assert!(!old.relay);
         assert_eq!(old.anisette, AnisetteMode::Local);
     }

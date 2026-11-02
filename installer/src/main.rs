@@ -115,11 +115,17 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       .apparitionsigning file, for that Apple ID's signing here.
   apparition forget <name or UDID>
       Forget a paired device (remove the computer from its Remote Devices list too).
-  apparition relay [--port <port>] [--no-mdns] [--anisette builtin|local|none]
+  apparition relay [--port <port>] [--no-mdns] [--anisette builtin|local|none] [--anisette-open]
       Be the companion for Apparition on your devices: relay its connection back to the
       device (port 49160) and offer it an anisette server. builtin (the default where this
       build has it) serves this computer's own on port 6969; local offers a server already
       answering on port 6969 here (the Docker one); none offers nothing. Runs until Ctrl-C.
+      The built-in one serves only devices paired with this computer: a device asks to pair
+      (port 49161), both show a six-digit code, and you answer here. --anisette-open serves
+      anyone on the network instead, for other v3 clients. --no-mdns doesn't announce this
+      computer: devices then need its address typed in.
+  apparition relay devices [forget <id>]
+      List the devices paired to use this computer's anisette, or unpair one.
   apparition anisette serve [--port <port>]
       Serve the built-in anisette (v3) to this computer's network (port 6969 by default).
   apparition anisette import [--accept-unverified] <Apple Music APK or .so file>...
@@ -1345,7 +1351,10 @@ fn anisette_dir() -> PathBuf {
 }
 
 async fn relay(args: &[String]) -> Result<(), Error> {
-    let (mut port, mut advertise) = (relay::RELAY_PORT, true);
+    if args.first().map(String::as_str) == Some("devices") {
+        return relay_devices(&args[1..]);
+    }
+    let (mut port, mut advertise, mut open) = (relay::RELAY_PORT, true, false);
     let mut anisette = if api::builtin_anisette_available() { "builtin" } else { "local" }.to_string();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -1353,6 +1362,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         match arg.as_str() {
             "--port" => port = value()?.parse().map_err(|_| fail("--port needs a number"))?,
             "--no-mdns" => advertise = false,
+            "--anisette-open" => open = true,
             "--anisette" => anisette = value()?,
             other => return Err(fail(format!("unexpected {other}"))),
         }
@@ -1360,13 +1370,44 @@ async fn relay(args: &[String]) -> Result<(), Error> {
     let log: relay::Log = std::sync::Arc::new(|line: &str| println!("{line}"));
     let companion = Companion::start(port, relay::ANISETTE_PORT, advertise, &anisette_dir(), log).await?;
     println!("Apparition companion relay listening on port {}.", companion.relay.port());
-    println!("In Apparition, use \"Find companion\" on this network, or set the relay to this computer's address, port {}.", companion.relay.port());
+    let address = relay::primary_address().map(|ip| ip.to_string()).unwrap_or_else(|| "this computer's address".into());
+    if advertise {
+        println!("In Apparition, use \"Find companion\" on this network, or enter {address}:{}.", companion.relay.port());
+    } else {
+        println!("Not announced on the network: in Apparition, enter {address}:{} as the companion.", companion.relay.port());
+    }
+    companion.set_anisette_open(open).await?;
+    // A device asking to pair: show its code and take the answer from the terminal.
+    let (asked, mut questions) = tokio::sync::mpsc::unbounded_channel::<u64>();
+    companion.devices.on_pairing(std::sync::Arc::new(move |id, request| {
+        println!(
+            "\n{} ({}) asks to use this computer's anisette. Its code: {}\nAllow it if the same code shows on the device. Allow? [y/N]",
+            request.device_name, request.peer, request.code
+        );
+        let _ = asked.send(id);
+    }));
+    let devices = companion.devices.clone();
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        while let Some(id) = questions.recv().await {
+            let allow = matches!(lines.next_line().await, Ok(Some(line)) if line.trim().eq_ignore_ascii_case("y"));
+            if devices.decide(id, allow) {
+                println!("{}", if allow { "Paired." } else { "Declined." });
+            }
+        }
+    });
     match anisette.as_str() {
         "builtin" => {
             warn_if_unsupported();
             println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
             companion.share_builtin_anisette().await?;
             println!("Offering {} on port {}.", anisette_kind(), relay::ANISETTE_PORT);
+            if open {
+                println!("Anyone on this network can use it (--anisette-open).");
+            } else {
+                println!("Only to devices paired with this computer; Apparition on a device asks to pair the first time.");
+            }
         }
         "local" => println!("Offering an anisette server on port {} whenever one answers here.", relay::ANISETTE_PORT),
         "none" => {}
@@ -1382,6 +1423,32 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// `relay devices [forget <id>]`.
+fn relay_devices(args: &[String]) -> Result<(), Error> {
+    let devices = companion::PairedDevices::open(&anisette_dir());
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        [] => {
+            let list = devices.list();
+            if list.is_empty() {
+                println!("No devices are paired with this computer's anisette.");
+            }
+            for device in list {
+                println!("{}  {}", device.id, device.name);
+            }
+            Ok(())
+        }
+        ["forget", id] => {
+            if devices.forget(id) {
+                println!("Unpaired {id}; its anisette access stops now (restart a running relay for it to notice).");
+                Ok(())
+            } else {
+                Err(fail(format!("no paired device {id}")))
+            }
+        }
+        _ => Err(fail("usage: apparition relay devices [forget <id>]")),
+    }
 }
 
 /// `anisette import`: the libraries from files the person got themselves (see
@@ -1433,7 +1500,7 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             {
                 warn_if_unsupported();
                 println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
-                let server = apparition_core::anisette::start(&anisette_dir(), SocketAddr::from(([0, 0, 0, 0], port))).await?;
+                let server = apparition_core::anisette::start(&anisette_dir(), SocketAddr::from(([0, 0, 0, 0], port)), None).await?;
                 println!("Serving {} (v3) on port {}. Ctrl-C stops it.", anisette_kind(), server.address.port());
                 let _ = tokio::signal::ctrl_c().await;
             }

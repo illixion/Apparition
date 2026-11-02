@@ -66,6 +66,9 @@
       </div>
       <label class="check"><input type="checkbox" data-role="relay-on"><span>Relay Apparition's connections back to its device</span></label>
       <p class="hint">Apparition can't reach its own device's pairing service directly, so it connects through this computer (port <span data-role="relay-port">49160</span>), on the same Wi&#8209;Fi or over Tailscale. In Apparition, Find companion shows <strong data-role="computer">this computer</strong>. What passes through is encrypted end to end: this computer holds no keys and no Apple ID.</p>
+      <label class="check"><input type="checkbox" data-role="advertise-on"><span>Let devices on this network find this computer</span></label>
+      <p class="hint" data-role="advertise-hint">Announces <strong data-role="computer-2">this computer</strong> over Bonjour (mDNS), so Find companion lists it. Anyone on the network can see that it runs Apparition; turn this off on networks you don't trust.</p>
+      <p class="hint" data-role="advertise-off" hidden>Not announced: Find companion won't list this computer. In Apparition on the device, enter <strong data-role="relay-address">this computer's address</strong> as the companion instead. Devices already using this computer keep connecting as before.</p>
       <p class="hint" data-role="windows-firewall" hidden>If Find companion doesn't list this PC, or connections never show up here, Windows Defender Firewall may be blocking Apparition: it adds a block rule when its question goes unanswered (at login, say). Allow Apparition for private networks in Windows Security &gt; Firewall &amp; network protection &gt; Allow an app through firewall.</p>
       <p class="status error" data-role="relay-error" hidden></p>
       <table class="connections" data-role="connections" hidden>
@@ -80,13 +83,30 @@
       <p class="hint">To sign in to Apple, Apparition on a device needs an anisette server. This computer can offer one, and Apparition then offers to use it.</p>
       <div class="modes compact" data-role="anisette-modes">
         <label class="mode"><input type="radio" name="anisette-mode" value="off"><span class="mode-title">Don't offer one</span><span class="mode-text">Apparition uses whichever v3 server you give it.</span></label>
-        <label class="mode" data-role="mode-builtin"><input type="radio" name="anisette-mode" value="builtin"><span class="mode-title">This computer's own</span><span class="mode-text">Made with Apple's libraries (fetched from Apple the first time) and served to your network on port <span data-role="anisette-port">6969</span>. Anyone on the network can ask it for anisette data; it never sees an Apple ID or password.</span></label>
+        <label class="mode" data-role="mode-builtin"><input type="radio" name="anisette-mode" value="builtin"><span class="mode-title">This computer's own</span><span class="mode-text">Made with Apple's libraries (fetched from Apple the first time) and served to your network on port <span data-role="anisette-port">6969</span>. It never sees an Apple ID or password.</span></label>
         <label class="mode"><input type="radio" name="anisette-mode" value="local"><span class="mode-title">The Docker server</span><span class="mode-text">Dadoum's anisette-v3-server in your Docker (Docker Desktop, OrbStack or Colima), on port <span data-role="anisette-port">6969</span>, offered while it answers.</span></label>
       </div>
       <div class="row" data-role="docker-row" hidden>
         <button type="button" class="button quiet small" data-role="docker-up">Start the Docker server</button>
         <button type="button" class="button quiet small" data-role="docker-down">Stop it</button>
       </div>
+      <div class="modes compact" data-role="access-modes" hidden>
+        <label class="mode"><input type="radio" name="anisette-access" value="paired"><span class="mode-title">Paired devices only</span><span class="mode-text">Recommended. The first time, Apparition on a device asks to pair: both screens show a six-digit code, and you allow it here. Others on the network get nothing.</span></label>
+        <label class="mode"><input type="radio" name="anisette-access" value="open"><span class="mode-title">Anyone on this network</span><span class="mode-text">For other v3 clients (SideStore, AltServer and the like), which can't pair. Anyone who reaches port <span data-role="anisette-port">6969</span> can get anisette data made with this computer's identity.</span></label>
+      </div>
+      <div class="pairing-request" data-role="pairing-request" hidden>
+        <p><strong data-role="pairing-device">A device</strong> (<span data-role="pairing-peer"></span>) asks to use this computer's anisette.</p>
+        <p class="pairing-code" data-role="pairing-code">000 000</p>
+        <p class="hint">Allow it only if the device shows the same code.</p>
+        <div class="row">
+          <button type="button" class="button small" data-role="pairing-allow">Allow</button>
+          <button type="button" class="button quiet small" data-role="pairing-deny">Decline</button>
+        </div>
+      </div>
+      <table class="connections" data-role="paired-devices" hidden>
+        <thead><tr><th>Paired device</th><th>Since</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
       <p class="status" data-role="anisette-status" hidden></p>
     </div>
 

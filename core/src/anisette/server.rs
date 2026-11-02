@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Path as UrlPath, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
@@ -21,7 +23,14 @@ const RINFO: &str = "17106176";
 /// How long the server waits for the client's next message while provisioning.
 const STEP: Duration = Duration::from_secs(60);
 
+/// Who may use a server: `None` serves anyone who reaches it, the way every v3 server does.
+/// `Some` serves only `/t/<token>/v3/...`, for the tokens it accepts (the devices paired with
+/// this companion, see pairing.rs). A token in the path needs nothing from the client but its
+/// base URL, which every v3 client already takes.
+pub type Access = Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>;
+
 struct Shared {
+    access: Access,
     adi: Arc<Adi>,
     work: PathBuf,
     /// Whether the headers come from this Mac rather than the libraries (see `native`).
@@ -66,17 +75,26 @@ impl Drop for Server {
 /// Fetches the libraries if they aren't in `data_dir` yet, loads them (once per process), and
 /// serves on `bind` (use port 0 to take any free one). Several servers can run at once, say one
 /// on loopback for this computer's own sign-in and one on the LAN for a headset.
-pub async fn start(data_dir: &Path, bind: SocketAddr) -> Result<Server, Report> {
+pub async fn start(data_dir: &Path, bind: SocketAddr, access: Access) -> Result<Server, Report> {
     let adi = shared_adi(data_dir).await?;
     let work = data_dir.join("work");
     std::fs::create_dir_all(&work)?;
     let native = native_available().await;
-    let shared = Arc::new(Shared { adi, work, native });
-    let app = Router::new()
-        .route("/v3/client_info", get(client_info))
-        .route("/v3/get_headers", post(get_headers))
-        .route("/v3/provisioning_session", get(provisioning_session))
-        .with_state(shared);
+    let open = access.is_none();
+    let shared = Arc::new(Shared { access, adi, work, native });
+    let app = if open {
+        Router::new()
+            .route("/v3/client_info", get(client_info))
+            .route("/v3/get_headers", post(get_headers))
+            .route("/v3/provisioning_session", get(provisioning_session))
+    } else {
+        Router::new()
+            .route("/t/{token}/v3/client_info", get(token_client_info))
+            .route("/t/{token}/v3/get_headers", post(token_get_headers))
+            .route("/t/{token}/v3/provisioning_session", get(token_provisioning_session))
+            .fallback(unpaired)
+    };
+    let app = app.with_state(shared);
     let listener = tokio::net::TcpListener::bind(bind).await.context(format!("can't listen on {bind}"))?;
     let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
@@ -126,6 +144,38 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+impl Shared {
+    fn allows(&self, token: &str) -> bool {
+        self.access.as_ref().is_none_or(|accepts| accepts(token))
+    }
+}
+
+/// Anything but a paired device's path, on a server that wants one.
+async fn unpaired() -> (StatusCode, &'static str) {
+    (StatusCode::UNAUTHORIZED, "This anisette server serves only devices paired with it. Pair this device in Apparition first.\n")
+}
+
+async fn token_client_info(State(shared): State<Arc<Shared>>, UrlPath(token): UrlPath<String>) -> Response {
+    if !shared.allows(&token) {
+        return unpaired().await.into_response();
+    }
+    client_info(State(shared)).await.into_response()
+}
+
+async fn token_get_headers(State(shared): State<Arc<Shared>>, UrlPath(token): UrlPath<String>, body: Json<HeadersRequest>) -> Response {
+    if !shared.allows(&token) {
+        return unpaired().await.into_response();
+    }
+    get_headers(State(shared), body).await.into_response()
+}
+
+async fn token_provisioning_session(State(shared): State<Arc<Shared>>, UrlPath(token): UrlPath<String>, upgrade: WebSocketUpgrade) -> Response {
+    if !shared.allows(&token) {
+        return unpaired().await.into_response();
+    }
+    provisioning_session(State(shared), upgrade).await
 }
 
 async fn client_info(State(shared): State<Arc<Shared>>) -> Json<Value> {
@@ -310,7 +360,7 @@ mod tests {
         }
         let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = std::env::temp_dir().join(format!("apparition-anisette-{}", std::process::id()));
-        let server = start(&dir, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let server = start(&dir, "127.0.0.1:0".parse().unwrap(), None).await.unwrap();
 
         let provider = RemoteV3AnisetteProvider::new(&server.url(), Box::new(InMemoryStorage::new()), "0".to_string()).unwrap();
         let mut generator = AnisetteDataGenerator::new(Arc::new(tokio::sync::RwLock::new(provider)));

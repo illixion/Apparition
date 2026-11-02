@@ -1458,6 +1458,19 @@ function buildCompanion() {
   $(companionPanel, "windows-firewall").hidden = !state.info.platform.startsWith("windows");
   const relayOn = /** @type {HTMLInputElement} */ ($(companionPanel, "relay-on"));
   relayOn.addEventListener("change", () => companionCall("companion_set_relay", { on: relayOn.checked }));
+  const advertiseOn = /** @type {HTMLInputElement} */ ($(companionPanel, "advertise-on"));
+  advertiseOn.addEventListener("change", () => companionCall("companion_set_advertise", { on: advertiseOn.checked }));
+  companionPanel.querySelectorAll('input[name="anisette-access"]').forEach((input) =>
+    input.addEventListener("change", () =>
+      companionCall("companion_set_anisette_open", { open: /** @type {HTMLInputElement} */ (input).value === "open" }),
+    ),
+  );
+  for (const [role, allow] of [["pairing-allow", true], ["pairing-deny", false]]) {
+    $(companionPanel, role).addEventListener("click", () => {
+      const id = Number($(companionPanel, "pairing-request").dataset.id);
+      if (id) companionCall("companion_pairing_decide", { id, allow });
+    });
+  }
   companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((input) =>
     input.addEventListener("change", () => {
       const mode = /** @type {HTMLInputElement} */ (input).value;
@@ -1521,6 +1534,15 @@ function drawCompanion(/** @type {any} */ status) {
   relayOn.checked = status.relay.on;
   $(companionPanel, "relay-port").textContent = String(status.relay.port);
   $(companionPanel, "computer").textContent = status.computerName || "this computer";
+  $(companionPanel, "computer-2").textContent = status.computerName || "this computer";
+  const advertiseOn = /** @type {HTMLInputElement} */ ($(companionPanel, "advertise-on"));
+  advertiseOn.checked = status.advertise.on;
+  advertiseOn.disabled = !status.relay.on;
+  $(companionPanel, "advertise-hint").hidden = !status.advertise.on;
+  $(companionPanel, "advertise-off").hidden = status.advertise.on || !status.relay.on;
+  $(companionPanel, "relay-address").textContent = status.advertise.address
+    ? `${status.advertise.address}:${status.relay.port}`
+    : `this computer's address, port ${status.relay.port}`;
   const badge = $(companionPanel, "relay-badge");
   badge.textContent = status.relay.running ? "On" : status.relay.error ? "Failed" : "Off";
   badge.className = `badge ${status.relay.running ? "online" : ""}`.trim();
@@ -1553,6 +1575,43 @@ function drawCompanion(/** @type {any} */ status) {
     input.disabled = !status.relay.on;
   });
   $(companionPanel, "docker-row").hidden = anisette.mode !== "local";
+
+  const pairing = status.pairing;
+  $(companionPanel, "access-modes").hidden = anisette.mode !== "builtin";
+  companionPanel.querySelectorAll('input[name="anisette-access"]').forEach((el) => {
+    const input = /** @type {HTMLInputElement} */ (el);
+    input.checked = input.value === (pairing.open ? "open" : "paired");
+    input.disabled = !status.relay.on;
+  });
+  const request = $(companionPanel, "pairing-request");
+  const waiting = pairing.waiting[0];
+  request.hidden = !waiting;
+  if (waiting) {
+    request.dataset.id = String(waiting.id);
+    $(companionPanel, "pairing-device").textContent = waiting.request.deviceName || "A device";
+    $(companionPanel, "pairing-peer").textContent = waiting.request.peer;
+    $(companionPanel, "pairing-code").textContent = waiting.request.code;
+  }
+  const paired = $(companionPanel, "paired-devices");
+  const pairedRows = pairing.devices.map((/** @type {any} */ device) => {
+    const tr = document.createElement("tr");
+    for (const text of [device.name, new Date(device.paired * 1000).toLocaleDateString()]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.append(td);
+    }
+    const td = document.createElement("td");
+    const forget = document.createElement("button");
+    forget.type = "button";
+    forget.className = "link";
+    forget.textContent = "Unpair";
+    forget.addEventListener("click", () => companionCall("companion_forget_device", { id: device.id }));
+    td.append(forget);
+    tr.append(td);
+    return tr;
+  });
+  paired.querySelector("tbody").replaceChildren(...pairedRows);
+  paired.hidden = anisette.mode !== "builtin" || pairing.open || pairedRows.length === 0;
   const text = companionNote?.text
     ?? anisette.error
     ?? (!status.relay.on
@@ -1575,6 +1634,8 @@ function drawCompanion(/** @type {any} */ status) {
 async function start() {
   await listen("prompt", (/** @type {any} */ e) => openPrompt(e.payload));
   await listen("prompt-done", () => dialog.open && dialog.close());
+  // A device asks to pair: show the Companion tab, where the request waits for an answer.
+  await listen("companion-pairing", () => showView("companion"));
   state.info = await invoke("app_info");
   document.body.classList.toggle("mac", state.info.platform === "macos-universal");
   state.settings = await invoke("saved_settings");

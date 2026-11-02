@@ -42,6 +42,8 @@ struct ConnectionView: View {
     @State private var checking = false
     /// The anisette server in use is a found companion's, shown by name rather than address.
     @AppStorage("anisetteAuto") private var anisetteAuto = false
+    /// Pairing with a companion whose anisette serves paired devices only.
+    @State private var pairing = CompanionPairing()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -64,8 +66,11 @@ struct ConnectionView: View {
         // A companion that runs an anisette server is the likely choice for one: take it when
         // none is set yet.
         .onChange(of: companions.found.map(\.relay)) { _, _ in
+            // One that wants pairing first waits for the person to choose it: pairing asks
+            // something of them on the computer.
             guard model.connectionMode == .companion, account.anisetteURL.isEmpty,
-                  let url = companions.found.first(where: { $0.relay == model.relay })?.anisetteURL else { return }
+                  let companion = companions.found.first(where: { $0.relay == model.relay }),
+                  companion.anisettePairingPort == nil, let url = companion.anisetteURL else { return }
             account.anisetteURL = url
             anisetteAuto = true
         }
@@ -226,8 +231,61 @@ struct ConnectionView: View {
             .frame(maxWidth: 480)
     }
 
+    /// Whether `companion`'s anisette server is the one in use (with this device's token, for
+    /// one that serves paired devices only).
+    private func inUse(_ companion: CompanionFinder.Companion) -> Bool {
+        companion.anisettePairingPort == nil
+            ? account.anisetteURL == companion.anisetteURL
+            : CompanionPairing.isPaired(account.anisetteURL, to: companion)
+    }
+
+    private func isFailure(_ phase: CompanionPairing.Phase) -> Bool {
+        if case .failed = phase { true } else { false }
+    }
+
+    private func useAnisette(of companion: CompanionFinder.Companion) {
+        Task {
+            guard let url = await pairing.anisetteURL(for: companion) else { return }
+            account.anisetteURL = url
+            anisetteAuto = true
+        }
+    }
+
+    /// The code to compare while pairing, or why it failed.
+    @ViewBuilder
+    private var pairingStatus: some View {
+        switch pairing.phase {
+        case .idle:
+            EmptyView()
+        case .waiting(let name):
+            HStack(spacing: 12) {
+                ProgressView()
+                Text("Asking \(name) to pair…").font(.callout)
+                Button("Cancel") { pairing.cancel() }.buttonStyle(.bordered)
+            }
+        case .confirming(let name, let code):
+            VStack(alignment: .leading, spacing: 8) {
+                Text(code)
+                    .font(.system(size: 40, weight: .semibold, design: .rounded).monospacedDigit())
+                    .accessibilityLabel("Code \(code)")
+                Text("Check that \(name) shows the same code, then choose Allow there.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Cancel") { pairing.cancel() }.buttonStyle(.bordered)
+            }
+            .padding(14)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        case .failed(let reason):
+            HStack(spacing: 12) {
+                Note(text: reason, kind: .warning)
+                Button("OK") { pairing.dismissFailure() }.buttonStyle(.bordered)
+            }
+        }
+    }
+
     @ViewBuilder
     private var companionAnisetteChoices: some View {
+        pairingStatus
         let offered = companions.found.filter { $0.anisetteURL != nil }
         #if os(tvOS)
         // One menu instead of a row per companion: rows made the step long enough that moving
@@ -235,13 +293,10 @@ struct ConnectionView: View {
         if !offered.isEmpty {
             Menu {
                 ForEach(offered) { companion in
-                    Button(companion.name) {
-                        account.anisetteURL = companion.anisetteURL ?? ""
-                        anisetteAuto = true
-                    }
+                    Button(companion.name) { useAnisette(of: companion) }
                 }
             } label: {
-                let current = offered.first { $0.anisetteURL == account.anisetteURL }
+                let current = offered.first { inUse($0) }
                 Label(current.map { "Using \($0.name)'s server" } ?? "Use a Companion's Server", systemImage: "desktopcomputer")
             }
             .focusRow()
@@ -254,14 +309,12 @@ struct ConnectionView: View {
                     Text("\(companion.name) runs one")
                         .font(.callout)
                     Spacer(minLength: 0)
-                    if account.anisetteURL == url {
+                    if inUse(companion) {
                         StatusPill(text: "In use", systemImage: "checkmark", tint: .green)
                     } else {
-                        Button("Use") {
-                            account.anisetteURL = url
-                            anisetteAuto = true
-                        }
-                        .buttonStyle(.bordered)
+                        Button(companion.anisettePairingPort == nil ? "Use" : "Pair and Use") { useAnisette(of: companion) }
+                            .buttonStyle(.bordered)
+                            .disabled(pairing.phase != .idle && !isFailure(pairing.phase))
                     }
                 }
                 .focusRow()

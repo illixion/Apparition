@@ -281,6 +281,17 @@ code { font: .875em/1.4 var(--mono); }
 .connections td { padding: .35rem .6rem .35rem 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-variant-numeric: tabular-nums; }
 .connections td.open { color: var(--glow); }
 
+.pairing-request {
+  margin-top: 1rem;
+  max-width: 38rem;
+  padding: .9rem 1rem;
+  border: 1px solid var(--glow);
+  border-radius: 10px;
+}
+.pairing-request p { margin: 0 0 .4rem; }
+.pairing-code { font-size: 1.8rem; font-weight: 600; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
+.companion [data-role="paired-devices"] { margin-top: 1rem; }
+
 .update {
   flex: none;
   display: flex;
