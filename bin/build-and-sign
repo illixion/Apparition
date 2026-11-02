@@ -1442,7 +1442,17 @@ if [[ "$NO_DEPLOY" == false ]]; then
     # sleeping Apple TV stays asleep. Launching goes the same way (Step 10).
     if is_quiet_device; then
         echo "    (through Apparition's tunnel: $DEVICE_NAME is a quiet device)"
-        "$(apparition_cli)" push "$SIGNED_IPA" --device "$DEVICE_NAME" >>"$LOG_FILE" 2>&1
+        # Apparition's error spans several lines (installd's reason, e.g.
+        # MismatchedApplicationIdentifierEntitlement, comes after the "error:" line), and the ERR
+        # trap's excerpt keeps only "error:" lines, so a failed push prints all of its own output.
+        push_from=$(wc -l <"$LOG_FILE")
+        if ! "$(apparition_cli)" push "$SIGNED_IPA" --device "$DEVICE_NAME" >>"$LOG_FILE" 2>&1; then
+            echo "" >&2
+            echo "✗ Install through Apparition failed:" >&2
+            tail -n +"$((push_from + 1))" "$LOG_FILE" | sed 's/^/    /' >&2
+            echo "Full log: $LOG_FILE" >&2
+            exit 1
+        fi
     else
         resolve_device_id
         # devicectl talks to mobile_installation_proxy directly — it does not

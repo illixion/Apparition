@@ -921,6 +921,7 @@ async function executeResign(job) {
       buildAndSign: CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN, cwd: rc.path,
       env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore(), ...quietInstallEnv(CONFIG) },
       dataMode: job.resign.dataMode, dryRun: job.resign.dryRun, exec, log,
+      apparition: quietAppsDevices(CONFIG).includes(job.device) ? apparitionCli() : null,
     });
     job.resign.result = result.mode;
     if (result.backup) job.resign.backup = result.backup;

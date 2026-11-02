@@ -162,8 +162,9 @@ Apple TV wakes it (see `CLAUDE.md`). Devices named in `config.json`'s `quietApps
 read (`apparition apps`), installed to (`apparition push`, the IPA as signed) and launched
 (`apparition launch`, console and JIT included) over Apparition's tunnel instead, so a deploy or
 refresh leaves a sleeping one asleep. The store passes the list to build-and-sign as
-`QUIET_DEVICES`; set that in `global.conf` for terminal runs. Re-signing in place and copying
-files still use devicectl.
+`QUIET_DEVICES`; set that in `global.conf` for terminal runs. Re-signing in place does too,
+moving the app's data with `apparition container pull|push` and removing it with
+`apparition uninstall`.
 
 ## Apparition desktop service
 
@@ -208,10 +209,10 @@ installs it over the old copy (capabilities `resign` and `resign-build`). It tak
 
 Either way, a profile for the same App ID updates the app in place. A different App ID is
 refused by installd as an update, so the service backs up the app's Documents and Library
-with `devicectl` (kept under `~/.local/state/apparition/resign-backups/`), removes the app,
+with `devicectl`, or through Apparition's tunnel for a quiet device (kept under `~/.local/state/apparition/resign-backups/`), removes the app,
 installs the new signature and restores the data. If the new signature won't install, it puts
 the previous one back with its data. `dataMode: "discard"` skips the backup. Keychain items
-and app-group containers do not move. This needs the device reachable by `devicectl`; an OTA
+and app-group containers do not move. This needs the device reachable from the Mac (by `devicectl`, or by Apparition for a quiet device); an OTA
 install can't change an installed app's App ID.
 
 The device list leaves out simulators: Xcode 27's `devicectl list devices` reports every

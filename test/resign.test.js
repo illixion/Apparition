@@ -150,3 +150,50 @@ test('the short form build-and-sign prints still counts as the App ID refusal', 
   assert.doesNotMatch('error: No signing certificate matching', resign.MISMATCH);
   assert.doesNotMatch('0xe8008012 could not install: profile does not include device', resign.MISMATCH);
 });
+
+// A device in quietAppsDevices: the data, the uninstall and the count go through Apparition's
+// tunnel, never devicectl (whose CoreDevice tunnel wakes a sleeping Apple TV).
+function apparitionHarness({ signs = [1, 0], pullCode = 0, pushCode = 0, counted = { folders: 1, files: 2 } } = {}) {
+  const calls = []; const logs = []; const results = [...signs];
+  const options = {
+    ipa: '/kept/a.ipa', bundleId: 'com.example.app', device: 'ATV', profileFile: '/p/other-dev.mobileprovision',
+    buildAndSign: '/bin/build-and-sign', cwd: '/repo', env: {}, apparition: '/bin/apparition',
+    backups: '/backups', now: () => new Date('2026-11-02T00:00:00Z'), log: l => logs.push(l), countLocal: () => 3,
+    exec: async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === '/bin/build-and-sign') { const code = results.shift() ?? 0; return { code, output: code ? 'error: MismatchedApplicationIdentifierEntitlement' : '' }; }
+      if (args[1] === 'pull') return { code: pullCode, output: '' };
+      if (args[1] === 'push') return { code: pushCode, output: '' };
+      if (args[1] === 'count') return { code: 0, output: `progress\n${JSON.stringify({ ...counted, bytes: 1, failed: [] })}\n` };
+      return { code: 0, output: '' };
+    },
+  };
+  return { calls, logs, options };
+}
+
+test('a quiet device is re-signed through Apparition, with no devicectl at all', async () => {
+  const { calls, options } = apparitionHarness();
+  const result = await resign.performResign(options);
+  assert.equal(result.mode, 'reinstall');
+  assert.ok(!calls.some(c => c[0] === 'xcrun'), 'devicectl is never run');
+  const device = calls.filter(c => c[0] === '/bin/apparition').map(c => c.slice(1, 3).join(' '));
+  assert.deepEqual(device, ['container pull', 'uninstall com.example.app', 'container push', 'container count']);
+  const pull = calls.find(c => c[2] === 'pull');
+  assert.deepEqual(pull.slice(-3), ['--json', '--device', 'ATV']);
+  assert.ok(pull[4].startsWith('/backups/'));
+});
+
+test('through Apparition, a failed backup removes nothing and a short restore names the backup', async () => {
+  let h = apparitionHarness({ pullCode: 1 });
+  await assert.rejects(resign.performResign(h.options), /couldn't back up.*nothing was removed/);
+  assert.ok(!h.calls.some(c => c[1] === 'uninstall'));
+  h = apparitionHarness({ counted: { folders: 1, files: 1 } });
+  await assert.rejects(resign.performResign(h.options), /only 2 of 3 files came back; the backup is at \/backups\//);
+});
+
+test('a dry run on a quiet device asks Apparition whether the data is readable', async () => {
+  const { calls, options } = apparitionHarness();
+  const result = await resign.performResign({ ...options, dryRun: true });
+  assert.equal(result.dataReadable, true);
+  assert.deepEqual(calls.map(c => c.slice(1, 3).join(' ')), ['container count']);
+});
