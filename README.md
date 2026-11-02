@@ -44,7 +44,10 @@ computer at all.
   read and change everything in the app. On iPhone and iPad it keeps running in the
   background by keeping coarse location updates on, which it drops unread: allow location
   while using the app when asked. From a computer,
-  `apparition jit <bundle ID> [--attach]` does the same. Tested on Vision Pro with UTM (an
+  `apparition jit <bundle ID> [--attach]` does the same, and `apparition launch <bundle ID>
+  --jit --console` launches with JIT, the app's console and environment variables in one go,
+  which is how the [appstore](https://github.com/illixion/appstore) build service's **JIT**
+  deploy option and `build-and-sign --jit` launch a fresh build. Tested on Vision Pro with UTM (an
   Alpine VM) and ARMSX2, the PS2 emulator, running GTA San Andreas
   ([video](https://youtu.be/mNR0ik2QfEY)).
 
@@ -518,6 +521,9 @@ companion (`apparition relay`, `apparition anisette serve|up|down`):
     apparition pair --usb # an iPhone or iPad: a cable until it trusts this computer, then Wi-Fi works too
     apparition pairing hand-off   # give an Apparition already installed there its pairing
     apparition apps --device ATV --json   # what it has installed, with versions; never wakes a sleeping Apple TV
+    apparition push App-signed.ipa --device ATV   # install an IPA already signed for the device, as it is
+    apparition launch com.example.app --device ATV --console   # launch, streaming its stdout/stderr here
+    apparition launch com.example.emu --device AVP --jit --console   # launch suspended and serve its JIT requests
     apparition install --apple-id you@example.com   # on Windows add --anisette <url>
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
     apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969

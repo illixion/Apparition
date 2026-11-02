@@ -670,13 +670,17 @@ async fn launch(args: &[String]) -> Result<(), Error> {
 
     // SIGINT and SIGTERM (how build-and-sign stops a console it started) detach a JIT session
     // cleanly, leaving the app running, rather than dropping the debugger mid-request.
+    // Once the JIT session has detached, the console stops too: the signal ends this run.
     let key = pid.to_string();
+    let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_flag = stopping.clone();
     tokio::spawn(async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending::<()>().await } } => {}
         }
+        stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         if !api::stop_jit(&key) {
             std::process::exit(0);
         }
@@ -691,6 +695,9 @@ async fn launch(args: &[String]) -> Result<(), Error> {
             reply["preparedBytes"].as_u64().unwrap_or(0) >> 20,
             reply["prepares"].as_u64().unwrap_or(0),
         );
+    }
+    if stopping.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
     }
     if let Some(task) = console_task {
         let _ = task.await;
