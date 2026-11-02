@@ -259,7 +259,23 @@ struct Mdns {
 impl Mdns {
     fn start(port: u16, log: &Log) -> Option<Self> {
         match mdns_sd::ServiceDaemon::new() {
-            Ok(daemon) => Some(Self { daemon, name: machine_name(), port }),
+            Ok(daemon) => {
+                // Only addresses a device on the network can use: no loopback, no IPv6 (the
+                // phone connects over IPv4), no self-assigned 169.254 ones (an interface with
+                // no DHCP lease, which the phone would save and never reach again).
+                let skipped = [
+                    mdns_sd::IfKind::LoopbackV4,
+                    mdns_sd::IfKind::IPv6,
+                    mdns_sd::IfKind::Predicate(mdns_sd::IfPredicate::new(|intf| match intf.ip() {
+                        IpAddr::V4(ip) => ip.is_link_local(),
+                        IpAddr::V6(_) => false,
+                    })),
+                ];
+                if let Err(error) = daemon.disable_interface(skipped.to_vec()) {
+                    log(&format!("mDNS: couldn't leave out loopback and link-local interfaces: {error}"));
+                }
+                Some(Self { daemon, name: machine_name(), port })
+            }
             Err(error) => {
                 log(&format!("mDNS unavailable, Apparition won't find this companion on its own: {error}"));
                 None
@@ -273,7 +289,7 @@ impl Mdns {
         if let Some(port) = anisette {
             txt.push(("anisette".to_string(), port.to_string()));
         }
-        let host = format!("{}.local.", self.name.replace(' ', "-"));
+        let host = mdns_host(&self.name);
         let info = mdns_sd::ServiceInfo::new(SERVICE_TYPE, &self.name, &host, "", self.port, &txt[..])
             .map(|info| info.enable_addr_auto());
         match info.and_then(|info| self.daemon.register(info)) {
@@ -285,6 +301,19 @@ impl Mdns {
             Err(error) => log(&format!("mDNS register failed: {error}")),
         }
     }
+}
+
+/// The host name the service's addresses are published under. Not the computer's own name:
+/// the OS already answers for `<name>.local` (Bonjour, Windows, Avahi) with every address it
+/// has, and a phone resolving it would mix those in.
+fn mdns_host(name: &str) -> String {
+    let label: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let label = label.trim_matches('-');
+    let label = if label.is_empty() { "companion" } else { label };
+    format!("apparition-{}.local.", &label[..label.len().min(40)])
 }
 
 /// This computer's name, as the companion is advertised.
@@ -322,6 +351,13 @@ pub fn browse(seconds: u64, mut found: impl FnMut(String)) -> Result<(), Report>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mdns_host_is_apart_from_the_os_name() {
+        assert_eq!(super::mdns_host("Pegasus"), "apparition-pegasus.local.");
+        assert_eq!(super::mdns_host("Ixion's MacBook Pro"), "apparition-ixion-s-macbook-pro.local.");
+        assert_eq!(super::mdns_host("Пегас"), "apparition-companion.local.");
+    }
+
     use super::*;
 
     #[tokio::test]
