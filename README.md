@@ -544,7 +544,7 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `pair [<address>[:<port>]]` | Pairs with a headset or Apple TV showing its pairing screen; finds it over mDNS without an address. |
 | `pair --usb [<UDID>]` | Pairs an iPhone or iPad. Despite the name, the cable is only needed until it trusts this computer; after that this works over Wi-Fi. Also makes the pairing for Apparition on the device. |
 | `pairing hand-off` | Gives Apparition, already installed on an iPhone, iPad or Apple TV, its pairing with that device, without reinstalling it. |
-| `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (and `--anisette <url>` where there's no built-in one) or `--p12 <file> --profile <file>`. |
+| `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (and `--anisette <url>` where there's no built-in one) or `--p12 <file> --profile <file>`. `--no-watch` leaves the app's watch app out. |
 | `sign <app.ipa or .deb>` | Signs for a paired device and installs nothing; says which capabilities the app got. |
 | `watches [--device <name>] [--install <signed watch .app>]` | Lists the Apple Watches paired with an iPhone, and can put an already signed watch app on them through the phone. |
 | `jit <bundle ID>` | Is the app's debugger from this computer so it can use JIT: launches it, or with `--attach` takes the running process, and serves its JIT requests. |
@@ -563,9 +563,23 @@ the Watch on the team, signs the watch app with its own App ID and profile, inst
 app, and then puts the watch app on the Watch directly through the phone. iOS itself only copies a
 watch app over for App Store and paid-team profiles, so a free account's watch app would never
 arrive without this step. The Watch asks to trust the computer the first time (tap Trust on the
-Watch); the record is kept. The watch app is one of the items in Install Options, so it can be
-left off to save an App ID. Nothing on the Watch itself needs setting up: no Developer Mode, no
-Wi-Fi, and the Watch stays on Bluetooth.
+Watch); the record is kept. The watch app is one of the items in Install Options (`--no-watch`
+on the command line), so it can be left off to save an App ID. Nothing on the Watch itself needs
+setting up: no Wi-Fi, and the Watch stays on Bluetooth. Developer Mode was already on for the
+Watch this was tested with, so whether a Watch without it accepts the install is not known.
+
+A bare watchOS IPA, whose main app is the Watch app itself (the `-watchOS.ipa` the appstore
+builds), goes only to the Watch, through the iPhone, and nothing is installed on the phone. With
+your own certificate, the watch app's profile has to list the Watch's UDID as well as the
+iPhone's, or the Watch refuses it. Apparition on the iPhone itself does the same for an app with
+a watch app; it keeps which Watch got it.
+
+Removing an app from the native Library (Remove App) deletes it and its data from the device and
+its watch app from the Watch it was put on, then drops the library entry whatever those steps
+did: a device that can't be reached never leaves an app stuck in the list, and what could not be
+removed is listed. Apps installed before this release have no record of their Watch copy, so
+that one is left for you to delete. Data takeover between App IDs moves the iPhone's container
+only; a watch app's data is not moved.
 
 Anything that signs in asks for the Apple ID's password, and for the 2FA code when Apple sends
 one, in the terminal; neither is kept unless you turn on Remember password on the device.
@@ -725,8 +739,8 @@ and extension choices are saved per team, device and source app in
 made before an install fails. The native apps store the same choices in `library.json`,
 with the team and source identifier; Apple TV mirrors that state to its Keychain vault.
 An occupied identifier replaces the app already using it, and the previous library entry
-stops refreshing over its replacement. Forgetting a native Library entry keeps its ID
-reservations while that copy is installed; a fresh device listing releases reservations
+stops refreshing over its replacement. Removing a native Library entry deletes the copy and releases its ID reservations; forgetting
+one whose device deletion failed keeps them while that copy is installed; a fresh device listing releases reservations
 once a forgotten copy is gone. Failed replacements retain old extension reservations until
 installation succeeds. These databases are local to each installation;
 assignments are not synchronized between computers and devices.
