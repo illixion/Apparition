@@ -12,6 +12,7 @@
 
 mod companion;
 mod flow;
+mod host;
 mod service;
 mod updater;
 
@@ -34,9 +35,15 @@ fn main() {
         .manage(state)
         .manage(companion_state.clone())
         .manage(service::BuildService::default())
+        .manage(host::ServiceHost::default())
         .manage(updater::Updates::default())
         .invoke_handler(tauri::generate_handler![
             service::service_settings,
+            host::host_status,
+            host::host_connect,
+            host::host_stop,
+            host::host_web_ui,
+            host::host_settings,
             service::service_connect,
             service::service_disconnect,
             service::service_request,
@@ -101,6 +108,7 @@ fn main() {
             }
             companion::setup(app.handle(), companion_state)?;
             updater::setup(app.handle());
+            host::setup(app.handle());
             // Started at login: straight to the tray.
             if std::env::args().any(|arg| arg == companion::HIDDEN) {
                 companion::hide_window(app.handle());
@@ -117,7 +125,10 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("couldn't start Apparition")
         .run(move |app, event| match event {
-            tauri::RunEvent::Exit => cleanup.clean_up(),
+            tauri::RunEvent::Exit => {
+                cleanup.clean_up();
+                host::shutdown(&app.state::<host::ServiceHost>());
+            }
             // macOS: clicking the Dock icon (or opening the app again) brings the window back.
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => companion::show_window(app),

@@ -102,7 +102,9 @@ export class DeveloperView {
     root.append(element('h1', '', 'Developer'));
     root.append(element('p', 'lede', 'Build your own Xcode projects on this Mac, install them on your devices, and bring their crash logs and traces back to the project.'));
     this.intro = this.introCard();
+    this.hostCard = this.hostSection();
     const form = element('form', 'dev-card dev-connect');
+    this.remoteForm = form;
     const fields = element('div', 'dev-connect-fields');
     const addressLabel = element('label', '', 'Build service');
     this.address = element('input');
@@ -163,9 +165,11 @@ export class DeveloperView {
 
     this.buildViewer();
     this.content.append(this.nav, ...SECTIONS.map(([key]) => this.panes[key]));
-    root.append(this.intro, form, this.note, this.content, this.signing);
+    this.webUi = this.webUiSection();
+    root.append(this.hostCard, this.intro, form, this.note, this.content, this.signing);
     this.select('projects');
     invoke('service_settings').then(settings => { if (settings.url) this.address.value = settings.url; }).catch(() => {});
+    this.hostCheck(true);
   }
 
   // What this is and how to start, for someone who has never run appstore.
@@ -520,21 +524,37 @@ export class DeveloperView {
     this.password.value = '';
     try {
       const service = await this.invoke('service_connect', { url: this.address.value, password });
+      this.onConnected(service);
+    } catch (error) { this.status(String(error?.message || error), true); }
+    finally { this.connect.disabled = false; }
+  }
+  // The Developer tab now talks to `service`: this Mac's own (local) or another Mac's.
+  onConnected(service) {
+    {
       this.connected = true;
+      this.local = !!service.local;
+      this.hostCard.hidden = this.local;
+      this.remoteForm.hidden = this.local;
       this.capabilities = new Set(service.capabilities || []);
       this.registration.hidden = !this.capabilities.has('project-registration');
       this.epoch += 1;
       this.fields.hidden = this.hint.hidden = this.intro.hidden = true;
-      this.connected_bar.hidden = false; this.connected_label.textContent = `Connected to appstore at ${service.url}`;
+      this.connected_bar.hidden = false;
+      this.connected_label.textContent = this.local ? 'The build service is running on this Mac' : `Connected to appstore at ${service.url}`;
+      this.disconnect.textContent = this.local ? 'Stop' : 'Disconnect';
+      // The remote form holds this bar, so it stays visible (with only the bar) when local.
+      this.remoteForm.hidden = false;
+      this.fields.hidden = this.hint.hidden = true;
+      this.webUi.hidden = !this.local;
+      if (this.local) this.loadWebUi();
       this.content.hidden = false;
       // Signing hand-off moves into its section once there is one to put it in.
-      this.panes.setup.append(this.signing, this.about);
+      this.panes.setup.append(this.webUi, this.signing, this.about);
       this.projectSignature = '';
       this.signatures = {};
       this.status('');
       this.show(true);
-    } catch (error) { this.status(String(error?.message || error), true); }
-    finally { this.connect.disabled = false; }
+    }
   }
   async signOut() {
     clearInterval(this.timer);
@@ -547,8 +567,86 @@ export class DeveloperView {
     this.viewing = null; this.selectedLog = null; this.last = null; this.signatures = {}; this.hosts.clear();
     this.viewer.remove?.(); this.viewer.hidden = true;
     this.resign.hidden = true; this.resignTarget = null;
+    this.webUi.hidden = true; this.remoteForm.hidden = true; this.hostCard.hidden = false;
+    if (this.local) {
+      this.local = false;
+      await this.invoke('host_stop').catch(() => {});
+      this.status('The build service on this Mac is stopped.');
+      return this.hostCheck(false);
+    }
     try { await this.invoke('service_disconnect'); this.status('Disconnected.'); }
     catch (error) { this.status(`Disconnected locally. ${error?.message || error}`, true); }
+    this.hostCheck(false);
+  }
+
+  // This Mac's own build service (desktop/src/host.rs): the app runs it, so there is nothing to
+  // install, start or sign in to. Another Mac's service is the alternative.
+  hostSection() {
+    const card = element('section', 'dev-card dev-host');
+    card.append(element('h2', 'small', 'Build service on this Mac'));
+    this.hostText = element('p', '', 'Apparition runs appstore, the build service, while it is open: it builds your Xcode projects with your certificate, installs them on your devices, keeps every signed build and collects crash logs and traces.');
+    this.hostProblem = element('p', 'status error'); this.hostProblem.hidden = true;
+    const row = element('div', 'service-row');
+    this.hostStart = button('Start', () => this.startLocal(), 'button primary');
+    this.hostRemote = button('Connect to another Mac', () => { this.remoteForm.hidden = false; this.intro.hidden = false; card.hidden = true; }, 'button quiet');
+    row.append(this.hostStart, this.hostRemote);
+    card.append(this.hostText, this.hostProblem, row);
+    return card;
+  }
+  // On a Mac that carries the service, start it as soon as the tab exists (`auto`); elsewhere
+  // only another Mac's service is offered.
+  async hostCheck(auto) {
+    let status;
+    try { status = await this.invoke('host_status'); } catch { status = { available: false }; }
+    const usable = status.available && status.bundled;
+    this.hostCard.hidden = !usable || this.connected;
+    this.remoteForm.hidden = !!usable || this.connected;
+    this.intro.hidden = !!usable || this.connected;
+    if (!usable) return;
+    this.hostProblem.hidden = !status.error && !!status.node;
+    this.hostProblem.textContent = !status.node ? 'The build service needs Node.js 18 or later on this Mac: brew install node, or nodejs.org.' : status.error || '';
+    if (auto && !this.connected && status.node) this.startLocal();
+  }
+  async startLocal() {
+    this.hostStart.disabled = true;
+    this.status('Starting the build service…');
+    try { this.onConnected(await this.invoke('host_connect')); }
+    catch (error) {
+      this.hostProblem.hidden = false; this.hostProblem.textContent = String(error?.message || error);
+      this.status('');
+    } finally { this.hostStart.disabled = false; }
+  }
+  // Off by default: the web pages, for a browser on another device (a phone tuning an app, say).
+  // The same password lets another device's Apparition connect.
+  webUiSection() {
+    const card = element('section', 'dev-card dev-signing'); card.hidden = true;
+    card.append(element('h2', 'small', 'Web UI and other devices'));
+    card.append(element('p', '', 'Turn on the web pages to use the build service from a browser, such as a phone beside a headset. The password also lets Apparition on another device connect. The service listens on this Mac only (127.0.0.1); reach it from elsewhere through something like tailscale serve.'));
+    const row = element('div', 'dev-signing-row');
+    const toggle = element('label', 'check'); this.webUiToggle = element('input'); this.webUiToggle.type = 'checkbox';
+    toggle.append(this.webUiToggle, document.createTextNode(' Web UI on'));
+    const passwordLabel = element('label', '', 'Password');
+    this.webUiPassword = element('input'); this.webUiPassword.type = 'password'; this.webUiPassword.autocomplete = 'new-password';
+    this.webUiPassword.placeholder = 'unchanged';
+    passwordLabel.append(this.webUiPassword);
+    const save = button('Save', () => this.saveWebUi(), 'button primary');
+    row.append(toggle, passwordLabel, save);
+    this.webUiNote = element('p', 'hint');
+    card.append(row, this.webUiNote);
+    return card;
+  }
+  showWebUi(settings) {
+    this.webUiToggle.checked = !!settings.webUi;
+    this.webUiPassword.placeholder = settings.passwordSet ? 'unchanged' : 'at least 8 characters';
+    this.webUiNote.textContent = settings.webUiOn ? `On at http://127.0.0.1:${settings.port}` : settings.passwordSet ? 'Off. A password is set.' : 'Off. No password is set.';
+  }
+  async loadWebUi() {
+    try { this.showWebUi(await this.invoke('host_settings')); } catch (error) { this.webUiNote.textContent = String(error?.message || error); }
+  }
+  async saveWebUi() {
+    const password = this.webUiPassword.value; this.webUiPassword.value = '';
+    try { this.showWebUi(await this.invoke('host_web_ui', { enabled: this.webUiToggle.checked, password: password || null })); this.status('Saved.'); }
+    catch (error) { this.status(String(error?.message || error), true); }
   }
   async action(operation, args) {
     try { const result = await this.request(operation, args); await this.refresh(); return result; }

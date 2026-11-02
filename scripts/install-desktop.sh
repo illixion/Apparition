@@ -108,6 +108,7 @@ ditto "$BUNDLED" "$STAGE/$APP_NAME.app"
 MACOS_DIR="$STAGE/$APP_NAME.app/Contents/MacOS"
 cp "target/release/$HELPER" "$MACOS_DIR/$HELPER"
 cp "target/release/$CLI" "$MACOS_DIR/$CLI-cli"
+scripts/bundle-service.sh "$STAGE/$APP_NAME.app"
 
 echo "▶ Signing (app and command line: $SIGN_IDENTITY; helper: ad-hoc with its entitlements)…"
 codesign -f -s - --entitlements installer/anisette-helper.entitlements "$MACOS_DIR/$HELPER"

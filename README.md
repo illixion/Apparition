@@ -115,10 +115,20 @@ certificate you already have from another device.
 The **Developer** tab, on the Mac and on devices, builds your own Xcode projects through
 [appstore](https://github.com/illixion/appstore), an open-source build service you run on your
 Mac. **[docs/DEVELOPER.md](docs/DEVELOPER.md)** explains how the pieces fit, how to set them up
-and what each part of the screen does; this section is the reference. Set a password on the
-service with `node server.js set-password`, then enter its address and password in Apparition. Use `http://localhost:8484` on the Mac that
-runs it, or its HTTPS address from another computer. The service needs the new
-`apparition-service` version 1 API; older servers need updating first.
+and what each part of the screen does; this section is the reference.
+
+**On a Mac, Apparition runs the service itself.** The app carries appstore
+(`Contents/Resources/service`, put there by `scripts/bundle-service.sh` from the sibling
+checkout's HEAD) and starts it at launch on the Mac's Node.js 18+, as its child
+(`desktop/src/host.rs`): no install, no password, nothing left running after Quit. Its config
+and data are in `~/Library/Application Support/Apparition/Service/` (`service.log`,
+`service.pid`); `{"checkout": "<path>"}` in `host.json` there runs an appstore checkout instead.
+A watchdog starts it again if it exits, so `kill $(cat …/service.pid)` restarts it after an
+edit. The app talks to it with a token it hands over on stdin. Its web pages are off until you
+turn them on with a password (**Devices & signing › Web UI and other devices**); that password
+also lets Apparition on another device connect. **Connect to another Mac** takes a service run on
+its own (`node server.js` under launchd or systemd, with `node server.js set-password`): enter its
+HTTPS address and password. The service needs the `apparition-service` version 1 API.
 
 The tab has four sections: **Projects**, **Activity** (the build queue and logs), **Reports**
 (crash logs, traces and, on the Mac, running debug apps, grouped by app) and **Devices &

@@ -13,6 +13,8 @@ struct Session {
     base: Url,
     token: String,
     client: Client,
+    /// The service this app runs itself (host.rs): its token is the host's, never revoked.
+    local: bool,
 }
 
 #[derive(Default)]
@@ -88,6 +90,38 @@ async fn response(request: reqwest::RequestBuilder) -> Result<Value, String> {
     Ok(value)
 }
 
+impl BuildService {
+    /// Talks to the service this app runs on this Mac (host.rs), with the host's token.
+    pub async fn adopt_local(&self, port: u16, token: String) -> Result<Value, String> {
+        let base = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
+        let client = client()?;
+        let reply = response(client.get(base.join("api/service").unwrap())).await?;
+        let old = self.session.lock().unwrap().replace(Session { base: base.clone(), token, client, local: true });
+        if let Some(old) = old.filter(|s| !s.local) {
+            let _ = old.client.post(old.base.join("api/service/v1/disconnect").unwrap()).bearer_auth(&old.token).send().await;
+        }
+        Ok(json!({"url": base.as_str(), "local": true, "capabilities": reply["capabilities"], "version": 1, "hostPlatform": reply["hostPlatform"]}))
+    }
+
+    pub fn forget_local(&self) {
+        let mut session = self.session.lock().unwrap();
+        if session.as_ref().is_some_and(|s| s.local) {
+            *session = None;
+        }
+    }
+
+    /// A host-only route of the local service (`host`, `host/web-ui`).
+    pub async fn host_call(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let session = self.session.lock().unwrap().clone().filter(|s| s.local).ok_or("Start the build service on this Mac first.")?;
+        let url = session.base.join(&format!("api/service/v1/{path}")).unwrap();
+        let request = match body {
+            Some(body) => session.client.post(url).json(&body),
+            None => session.client.get(url),
+        };
+        response(request.bearer_auth(&session.token)).await
+    }
+}
+
 fn settings() -> std::path::PathBuf {
     DeviceStore::default().dir.join("build-service.json")
 }
@@ -130,6 +164,7 @@ pub async fn service_connect(
         base: base.clone(),
         token,
         client,
+        local: false,
     });
     if let Some(old) = old {
         let _ = old
@@ -477,6 +512,7 @@ mod tests {
                 base,
                 token: "fixture-token".into(),
                 client: client().unwrap(),
+                local: false,
             };
             let result = runtime.block_on(download_to(&session, "build", &artifact, &destination));
             server.join().unwrap();
