@@ -5,6 +5,7 @@ import SwiftUI
 struct InstallReviewView: View {
     let library: LibraryModel
     let review: LibraryModel.InstallReview
+    var embedded = false
     @State private var target = ""
     @State private var selected: Set<String> = []
     @State private var dataChoice = ""
@@ -32,82 +33,96 @@ struct InstallReviewView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                RAVEScreenHeading("Review \(review.inventory.name)")
-                if review.appleID {
-                    Section {
-                        Picker("Install under App ID", selection: $target) {
-                            Text(review.target).tag(review.target)
-                            ForEach(review.candidates.filter { $0.identifier != review.target && !review.reserved.contains($0.identifier) }) { candidate in
-                                Text("\(candidate.name) — \(candidate.identifier)").tag(candidate.identifier)
-                            }
-                        }
-                        if let owner = review.owners[target] {
-                            Note(text: "This ID is assigned to \(owner). Installing replaces that assignment and stops refreshing the previous app.", kind: .warning)
-                        }
-                        Text("\(cost) new App ID\(cost == 1 ? "" : "s")\(review.available.map { "; \($0) available" } ?? "")")
-                    } header: {
-                        Text("App Identity")
-                    } footer: {
-                        Text("Reuse an ID already registered with your Apple account, or use this app's ID. The chosen identity stays assigned for updates and refreshes. Assignments are stored on this device.")
-                    }
-                }
-                if !review.appleID {
-                    Section { LabeledContent("Install under App ID", value: review.target) }
-                }
+        if embedded {
+            reviewForm
+        } else {
+            NavigationStack {
+                reviewForm.raveScreenTitle("Review Install")
+            }
+            .sheetFrame(minWidth: 600, minHeight: 520)
+        }
+    }
+
+    private var reviewForm: some View {
+        Form {
+            RAVEScreenHeading("Review \(review.inventory.name)")
+            if review.appleID {
                 Section {
-                    if review.inventory.extensions.isEmpty { Text("This app has no extensions.").foregroundStyle(.secondary) }
-                    ForEach(review.inventory.extensions) { item in
-                        Toggle(isOn: Binding(get: { selected.contains(item.id) }, set: { enabled in
-                            if enabled { selected.insert(item.id) } else { selected.remove(item.id) }
-                        })) {
-                            VStack(alignment: .leading) {
-                                Text(item.name)
-                                Text(item.id).font(.caption).foregroundStyle(.secondary)
-                                if item.watch == true {
-                                    Text("Apple Watch app: installed on the Watch paired with this iPhone, through it. Needs an App ID of its own.").font(.caption)
-                                }
-                                if review.unsupported.contains(item.id) {
-                                    Text(review.appleID ? "ExtensionKit signing requires imported provisioning profiles." : "No imported profile covers this extension on this device.").font(.caption)
-                                }
-                            }
+                    Picker("Install under App ID", selection: $target) {
+                        Text(review.target).tag(review.target)
+                        ForEach(review.candidates.filter { $0.identifier != review.target && !review.reserved.contains($0.identifier) }) { candidate in
+                            Text("\(candidate.name) — \(candidate.identifier)").tag(candidate.identifier)
                         }
-                        .disabled(review.unsupported.contains(item.id))
                     }
+                    if let owner = review.owners[target] {
+                        Note(text: "This ID is assigned to \(owner). Installing replaces that assignment and stops refreshing the previous app.", kind: .warning)
+                    }
+                    Text("\(cost) new App ID\(cost == 1 ? "" : "s")\(review.available.map { "; \($0) available" } ?? "")")
                 } header: {
-                    Text("App Extensions")
+                    Text("App Identity")
                 } footer: {
-                    Text("Each selected extension can use another App ID. Leave optional widgets, sharing helpers, and Top Shelf extensions off to save slots. Features supplied by excluded extensions will be unavailable. New extensions stay off during automatic refreshes.")
-                }
-                if destination != nil || review.dataSource != nil {
-                    Section {
-                        Picker("App data", selection: $dataChoice) {
-                            Text("Choose how to handle app data").tag("")
-                            Text("Keep app data").tag("keep")
-                            Text("Start with empty data").tag("discard")
-                        }
-                        if let destination {
-                            Note(text: "This installs over \(destination.name) (\(target)). Keeping data lets the replacement app access that copy's files. Starting empty deletes that copy and its data before installing.", kind: .warning)
-                        }
-                    } header: {
-                        Text("App Data")
-                    } footer: {
-                        Text("When changing IDs, Keep copies Documents and Library to the new copy, then removes the old copy only after every file arrives. Keychain items and app group data cannot be copied or cleared here and may remain after deletion. Starting empty leaves a copy under a different ID in place.")
-                    }
-                }
-                Section {
-                    if let problem { Note(text: problem, kind: .warning) }
-                    Button(discard && destination != nil ? "Delete Existing Data and Install" : "Install \(review.inventory.name)", role: discard && destination != nil ? .destructive : nil) {
-                        library.finishInstallReview(.init(target: target, extensions: selected.sorted(), discard: discard))
-                    }
-                    .disabled(target.isEmpty || problem != nil || ((destination != nil || review.dataSource != nil) && dataChoice.isEmpty))
-                    Button("Cancel", role: .cancel) { library.finishInstallReview(nil) }
+                    Text("Reuse an ID already registered with your Apple account, or use this app's ID. The chosen identity stays assigned for updates and refreshes. Assignments are stored on this device.")
                 }
             }
-            .raveScreenTitle("Review Install")
+            if !review.appleID {
+                Section {
+                    LabeledContent("Bundle ID", value: review.target)
+                    if review.target == review.inventory.id {
+                        Text("Keeps the app's original bundle ID while signing with the imported profile. This can install an older build over the existing app as a downgrade, subject to Apple's install checks. Some Apple services may still depend on the profile's App ID.")
+                    }
+                } header: {
+                    Text("App Identity")
+                }
+            }
+            Section {
+                if review.inventory.extensions.isEmpty { Text("This app has no extensions.").foregroundStyle(.secondary) }
+                ForEach(review.inventory.extensions) { item in
+                    Toggle(isOn: Binding(get: { selected.contains(item.id) }, set: { enabled in
+                        if enabled { selected.insert(item.id) } else { selected.remove(item.id) }
+                    })) {
+                        VStack(alignment: .leading) {
+                            Text(item.name)
+                            Text(item.id).font(.caption).foregroundStyle(.secondary)
+                            if item.watch == true {
+                                Text("Apple Watch app: installed on the Watch paired with this iPhone, through it. Needs an App ID of its own.").font(.caption)
+                            }
+                            if review.unsupported.contains(item.id) {
+                                Text(review.appleID ? "ExtensionKit signing requires imported provisioning profiles." : "No imported profile covers this extension on this device.").font(.caption)
+                            }
+                        }
+                    }
+                    .disabled(review.unsupported.contains(item.id))
+                }
+            } header: {
+                Text("App Extensions")
+            } footer: {
+                Text("Each selected extension can use another App ID. Leave optional widgets, sharing helpers, and Top Shelf extensions off to save slots. Features supplied by excluded extensions will be unavailable. New extensions stay off during automatic refreshes.")
+            }
+            if destination != nil || review.dataSource != nil {
+                Section {
+                    Picker("App data", selection: $dataChoice) {
+                        Text("Choose how to handle app data").tag("")
+                        Text("Keep app data").tag("keep")
+                        Text("Start with empty data").tag("discard")
+                    }
+                    if let destination {
+                        Note(text: "This installs over \(destination.name) (\(target)). Keeping data lets the replacement app access that copy's files. Starting empty deletes that copy and its data before installing.", kind: .warning)
+                    }
+                } header: {
+                    Text("App Data")
+                } footer: {
+                    Text("When changing IDs, Keep copies Documents and Library to the new copy, then removes the old copy only after every file arrives. Keychain items and app group data cannot be copied or cleared here and may remain after deletion. Starting empty leaves a copy under a different ID in place.")
+                }
+            }
+            Section {
+                if let problem { Note(text: problem, kind: .warning) }
+                Button(discard && destination != nil ? "Delete Existing Data and Install" : "Install \(review.inventory.name)", role: discard && destination != nil ? .destructive : nil) {
+                    library.finishInstallReview(.init(target: target, extensions: selected.sorted(), discard: discard))
+                }
+                .disabled(target.isEmpty || problem != nil || ((destination != nil || review.dataSource != nil) && dataChoice.isEmpty))
+                Button("Cancel", role: .cancel) { library.finishInstallReview(nil) }
+            }
         }
-        .sheetFrame(minWidth: 600, minHeight: 520)
         .onChange(of: target) { _, _ in dataChoice = "" }
         .onAppear {
             target = review.target

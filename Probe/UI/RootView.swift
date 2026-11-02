@@ -149,7 +149,13 @@ struct RootView: View {
                 Text(LibraryModel.JITRequest.message(request, managed: library.isManaged(request.bundleId)))
             }
             #endif
-            .panel(isPresented: Binding(get: { library.incoming != nil }, set: { if !$0 { library.discardIncoming() } })) {
+            .panel(isPresented: Binding(get: { library.incoming != nil }, set: {
+                if !$0 {
+                    guard !library.busy else { return }
+                    if library.installReview != nil { library.finishInstallReview(nil) }
+                    library.discardIncoming()
+                }
+            })) {
                 IncomingAppSheet(library: library) { tab = .library }
             }
             .panel(isPresented: Binding(get: { library.signerChoice != nil }, set: { if !$0 { library.cancelSignerChoice() } })) {
@@ -157,7 +163,7 @@ struct RootView: View {
                     InstallSignerSheet(library: library, choice: choice)
                 }
             }
-            .panel(isPresented: Binding(get: { library.installReview != nil }, set: { if !$0 { library.finishInstallReview(nil) } })) {
+            .panel(isPresented: Binding(get: { library.incoming == nil && library.installReview != nil }, set: { if !$0 { library.finishInstallReview(nil) } })) {
                 if let review = library.installReview {
                     InstallReviewView(library: library, review: review)
                 }

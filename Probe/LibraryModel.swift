@@ -608,8 +608,11 @@ final class LibraryModel {
     /// Signs and installs the app `receiveAppFile` read, and keeps it refreshed like any other.
     func installIncoming(signer: String? = nil, takeOver: String? = nil) async {
         guard case .ready(let app) = incoming else { return }
-        incoming = nil
         await installKept(app, source: Self.fileSource, buildId: nil, signer: signer, takeOver: takeOver, reviewing: .always)
+        // Keep the file panel presented while the install review is active. Once the operation
+        // finishes, discardIncoming preserves the IPA if it became a library entry, or removes it
+        // if the person cancelled before installation.
+        discardIncoming()
     }
 
     /// Whether an install shows the review of which App IDs it takes.

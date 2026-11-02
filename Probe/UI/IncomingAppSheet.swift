@@ -14,19 +14,48 @@ struct IncomingAppSheet: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                RAVEScreenHeading(title)
-                switch library.incoming {
-                case .reading(let file):
+            if let review = library.installReview {
+                InstallReviewView(library: library, review: review, embedded: true)
+                    .raveScreenTitle("Review Install")
+            } else {
+                incomingForm
+                    .raveScreenTitle(title)
+            }
+        }
+        .sheetFrame(minWidth: 600, minHeight: 520)
+        .task {
+            // An app already in the library starts from its own signer, a new one from the best default.
+            if case .ready(let app) = library.incoming, let record = library.installed.first(where: { $0.id == app.bundleId }) {
+                signer = library.signing.signer(for: record)
+            } else {
+                signer = library.signing.preferredSigner(in: library.signerOptions)
+            }
+            await library.refreshDeviceApps()
+        }
+    }
+
+    private var incomingForm: some View {
+        Form {
+            RAVEScreenHeading(title)
+            switch library.incoming {
+            case .reading(let file):
+                Section {
+                    HStack(spacing: 12) {
+                        ProgressView()
+                        Text("Reading \(file)").foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("A large app or a .deb package takes a moment: Apparition keeps a copy and unpacks the app from a package.")
+                }
+            case .ready(let app):
+                if library.busy {
                     Section {
                         HStack(spacing: 12) {
                             ProgressView()
-                            Text("Reading \(file)").foregroundStyle(.secondary)
+                            Text("Installing \(app.name)…").foregroundStyle(.secondary)
                         }
-                    } footer: {
-                        Text("A large app or a .deb package takes a moment: Apparition keeps a copy and unpacks the app from a package.")
                     }
-                case .ready(let app):
+                } else {
                     Section {
                         LabeledContent("App", value: app.name)
                         if !app.version.isEmpty { LabeledContent("Version", value: app.version) }
@@ -47,33 +76,22 @@ struct IncomingAppSheet: View {
                             let signer = choosing ? signer : nil, takeOver = takeOver
                             Task { await library.installIncoming(signer: signer, takeOver: takeOver) }
                         }
-                        .disabled(choosing && signer.isEmpty)
+                        .disabled(library.busy || (choosing && signer.isEmpty))
                         Button("Cancel", role: .cancel) { library.discardIncoming() }
                     }
-                case .failed(let file, let message):
-                    Section {
-                        Note(text: message, kind: .error)
-                    } header: {
-                        Text(file)
-                    }
-                    Section {
-                        Button("Close", role: .cancel) { library.discardIncoming() }
-                    }
-                case nil:
-                    EmptyView()
                 }
+            case .failed(let file, let message):
+                Section {
+                    Note(text: message, kind: .error)
+                } header: {
+                    Text(file)
+                }
+                Section {
+                    Button("Close", role: .cancel) { library.discardIncoming() }
+                }
+            case nil:
+                EmptyView()
             }
-            .raveScreenTitle(title)
-        }
-        .sheetFrame(minWidth: 560, minHeight: 360)
-        .task {
-            // An app already in the library starts from its own signer, a new one from the best default.
-            if case .ready(let app) = library.incoming, let record = library.installed.first(where: { $0.id == app.bundleId }) {
-                signer = library.signing.signer(for: record)
-            } else {
-                signer = library.signing.preferredSigner(in: library.signerOptions)
-            }
-            await library.refreshDeviceApps()
         }
     }
 
