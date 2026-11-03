@@ -17,6 +17,7 @@ pub enum Served {
     Mac,
     /// Made by Apple Music's Android libraries.
     Android,
+    Windows,
 }
 
 impl Served {
@@ -24,6 +25,7 @@ impl Served {
         match self {
             Served::Mac => "mac",
             Served::Android => "android",
+            Served::Windows => "windows",
         }
     }
 
@@ -31,6 +33,7 @@ impl Served {
         match self {
             Served::Mac => MAC_CLIENT_INFO,
             Served::Android => ANDROID_CLIENT_INFO,
+            Served::Windows => "<PC> <Windows;10 (19045);19045> <com.apple.AuthKitWin/7.3 (com.apple.iCloud/15.10)>",
         }
     }
 
@@ -67,6 +70,13 @@ impl Claim {
                     _ => Claim::of(Served::Mac),
                 };
             }
+            Some("windows") => {
+                return match (text("client_info"), text("user_agent")) {
+                    (Some(client_info), Some(user_agent)) if client_info.contains("<Windows;") =>
+                        Claim { served: Served::Windows, client_info: client_info.to_string(), user_agent: user_agent.to_string() },
+                    _ => Claim::of(Served::Windows),
+                };
+            }
             Some(_) => return Claim::of(Served::Android),
             None => {}
         }
@@ -75,7 +85,7 @@ impl Claim {
         }
         match (text("client_info"), text("user_agent")) {
             (Some(client_info), Some(user_agent)) => Claim {
-                served: if client_info.contains("<Android") { Served::Android } else { Served::Mac },
+                served: if client_info.contains("<Android") { Served::Android } else if client_info.contains("<Windows;") { Served::Windows } else { Served::Mac },
                 client_info: client_info.to_string(),
                 user_agent: user_agent.to_string(),
             },
@@ -136,6 +146,17 @@ mod tests {
 
     const DADOUM: &str = "<MacBookPro13,2> <macOS;13.1;22C65> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
     const NATIVE_C: &str = "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+
+    #[test]
+    fn windows_provider_preserves_its_claim_and_does_not_switch_to_mac() {
+        let info = "<PC> <Windows;10 (19045);19045> <com.apple.AuthKitWin/7.3 (com.apple.iCloud/15.10)>";
+        let claim = Claim::from_reply(&json!({"apparition_anisette": "windows", "client_info": info, "user_agent": "iCloudHome.exe CFNetwork/520.59"}), None);
+        assert_eq!(claim.served, Served::Windows);
+        assert_eq!(claim.client_info, info);
+        assert!(claim.after_sign_in().is_none());
+        let inferred = Claim::from_reply(&json!({"client_info": info, "user_agent": "iCloudHome.exe CFNetwork/520.59"}), None);
+        assert_eq!(inferred.served, Served::Windows);
+    }
 
     #[test]
     fn our_server_says_what_it_serves() {

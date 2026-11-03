@@ -507,7 +507,10 @@ async fn sign_in_with_proxy(
     let served = claim.served;
     let after_sign_in = claim.after_sign_in();
     let anisette = claimed_platform::ClaimedPlatform::new(
-        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(storage_path.clone())), "0".to_string())?,
+        RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(
+            if served == claimed_platform::Served::Windows { data_dir.join("anisette-windows.json") }
+            else { storage_path.clone() }
+        )), "0".to_string())?,
         claim,
     );
     let two_factor = &two_factor;
@@ -977,6 +980,35 @@ pub unsafe extern "C" fn apparition_check_apple_relay(adapter: *const c_char) ->
             };
             let _ = isideload::auth::grandslam::GrandSlam::new(info, false, proxy).await?;
             Ok(json!({"anisette": true, "appleTLS": true, "urlBag": true}))
+        }))
+    })())
+}
+
+/// Verify provider acceptance with a unique reserved .invalid identity, never a real account.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_check_apple_sign_in(adapter: *const c_char) -> *mut c_char {
+    reply((|| {
+        let adapter = unsafe { text(adapter) }?;
+        let proxy = loopback_apple_proxy(&adapter)?;
+        if proxy.is_none() { bail!("Apple relay adapter is missing"); }
+        runtime().block_on(crate::stop::stoppable(async move {
+            let claim = claimed_platform::claim_for(&adapter).await?;
+            let served = claim.served;
+            let provider = claimed_platform::ClaimedPlatform::new(
+                RemoteV3AnisetteProvider::new(&adapter, Box::new(isideload::util::storage::InMemoryStorage::new()), "0".into())?,
+                claim,
+            );
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+            let email = format!("apparition-check-{stamp}@example.invalid");
+            let mut account = AppleAccount::builder(&email).anisette_provider(provider)
+                .proxy_url(proxy).err_429_retries(None).build().await?;
+            let result = account.login("reserved-invalid-account-probe", |_| async { Ok(TwoFactorCallbackResponse::Abort) }).await;
+            match result {
+                Err(error) if auth_code(&error) == Some(-20970) =>
+                    Ok(json!({"anisette": true, "appleTLS": true, "urlBag": true, "signInInit": true, "provider": served.name()})),
+                Err(error) => Err(error.context(format!("Apple rejected the {} anisette provider during the account-free sign-in check", served.name())).into_dynamic()),
+                Ok(_) => bail!("Unexpected authentication result for reserved .invalid identity"),
+            }
         }))
     })())
 }

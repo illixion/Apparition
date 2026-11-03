@@ -19,6 +19,8 @@ char *apparition_login(const char *email, const char *password, const char *anis
                    const char *apple_proxy, const char *data_dir, apparition_two_factor_fn two_factor, void *context);
 // Account-free check through the device-local encrypted companion adapter.
 char *apparition_check_apple_relay(const char *adapter);
+// Uses only a generated .invalid identity to check Apple acceptance of the provider.
+char *apparition_check_apple_sign_in(const char *adapter);
 char *apparition_session(void);
 // Forgets the signed-in session in this process. Returns {ok}.
 char *apparition_logout(void);

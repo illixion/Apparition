@@ -375,23 +375,27 @@ final class AccountModel {
         let anisette: Bool
         let appleTLS: Bool
         let urlBag: Bool
+        let signInInit: Bool?
+        let provider: String?
         let error: String?
     }
 
     /// Exercises the same anisette and Apple TLS path as login, without account credentials.
-    func checkAppleRelay() async -> AppleRelayCheck {
+    func checkAppleRelay(signIn: Bool = false) async -> AppleRelayCheck {
         let adapter = CompanionAnisetteProxy()
         defer { adapter.stop() }
         do {
             let url = try await adapter.start(for: anisetteURL)
-            let reply = await Task.detached { Self.call(apparition_check_apple_relay(url)) }.value
+            let reply = await Task.detached { Self.call(signIn ? apparition_check_apple_sign_in(url) : apparition_check_apple_relay(url)) }.value
             return AppleRelayCheck(ok: reply["ok"] as? Bool == true,
                                    anisette: reply["anisette"] as? Bool == true,
                                    appleTLS: reply["appleTLS"] as? Bool == true,
                                    urlBag: reply["urlBag"] as? Bool == true,
+                                   signInInit: reply["signInInit"] as? Bool,
+                                   provider: reply["provider"] as? String,
                                    error: reply["error"] as? String)
         } catch {
-            return AppleRelayCheck(ok: false, anisette: false, appleTLS: false, urlBag: false, error: error.localizedDescription)
+            return AppleRelayCheck(ok: false, anisette: false, appleTLS: false, urlBag: false, signInInit: nil, provider: nil, error: error.localizedDescription)
         }
     }
 

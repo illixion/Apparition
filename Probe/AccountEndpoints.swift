@@ -39,6 +39,9 @@ enum AccountEndpoints {
             .query("accountState", "Sign-in state, team, anisette server, downloaded IPAs and signing results") { _ in
                 state(model)
             },
+            .command("checkAppleSignIn", "Check provider acceptance using a generated reserved .invalid identity; never uses the saved Apple account", timeout: .seconds(120)) { _ in
+                await model.checkAppleRelay(signIn: true)
+            },
             .command("checkAppleRelay", "Check paired anisette and Apple's TLS URL bag through the companion, without signing in") { _ in
                 await model.checkAppleRelay()
             },
