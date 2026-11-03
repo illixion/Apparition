@@ -56,6 +56,9 @@ struct Inner {
     channel: Mutex<Option<u16>>,
     /// The port devices pair on, while anisette is offered only to paired devices.
     pairing: Mutex<Option<u16>>,
+    /// A stable id for this companion (its paired-devices host id), so a device that finds an
+    /// address of it on another network can tell it's the same computer.
+    id: Mutex<Option<String>>,
     mdns: Mutex<Option<Mdns>>,
     log: Log,
     next: std::sync::atomic::AtomicU64,
@@ -87,6 +90,7 @@ impl Relay {
             port,
             connections: Mutex::new(VecDeque::new()),
             anisette: Mutex::new(None),
+            id: Mutex::new(None),
             channel: Mutex::new(None),
             pairing: Mutex::new(None),
             mdns: Mutex::new(mdns),
@@ -126,6 +130,11 @@ impl Relay {
         if let Some(mdns) = &*self.inner.mdns.lock().unwrap() {
             mdns.publish(port, *self.inner.pairing.lock().unwrap(), *self.inner.channel.lock().unwrap(), &self.inner.log);
         }
+    }
+
+    /// The id INFO reports (see `Inner::id`).
+    pub fn set_id(&self, id: &str) {
+        *self.inner.id.lock().unwrap() = Some(id.to_string());
     }
 
     pub fn set_channel(&self, port: Option<u16>) {
@@ -209,9 +218,18 @@ async fn serve(inner: Arc<Inner>, mut client: TcpStream, peer: SocketAddr) {
         let mut info = serde_json::json!({ "version": 1 });
         // Where to knock to wake this computer, for a device that saved another address of it
         // (a Tailscale one): a sleeping Mac wakes on a TCP SYN at its LAN address only.
+        // Every way to reach it, so a device picks the one that works where it is: a LAN address
+        // at home (where a knock wakes a sleeping Mac), its Tailscale address away.
         let addresses = lan_addresses();
         if !addresses.is_empty() {
             info["addresses"] = serde_json::json!(addresses.iter().map(|ip| ip.to_string()).collect::<Vec<_>>());
+        }
+        let tailscale = tailscale_addresses();
+        if !tailscale.is_empty() {
+            info["tailscale"] = serde_json::json!(tailscale.iter().map(|ip| ip.to_string()).collect::<Vec<_>>());
+        }
+        if let Some(id) = &*inner.id.lock().unwrap() {
+            info["id"] = id.clone().into();
         }
         if let Some(port) = *inner.anisette.lock().unwrap() {
             info["anisette"] = port.into();
@@ -391,6 +409,22 @@ pub fn lan_addresses() -> Vec<std::net::Ipv4Addr> {
         .filter(|interface| !interface.is_loopback())
         .filter_map(|interface| match interface.ip() {
             IpAddr::V4(v4) if v4.is_private() => Some(v4),
+            _ => None,
+        })
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    addresses
+}
+
+/// This computer's Tailscale IPv4 addresses (100.64.0.0/10, the CGNAT range Tailscale assigns
+/// from), for a device away from home.
+pub fn tailscale_addresses() -> Vec<std::net::Ipv4Addr> {
+    let mut addresses: Vec<std::net::Ipv4Addr> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|interface| match interface.ip() {
+            IpAddr::V4(v4) if v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]) => Some(v4),
             _ => None,
         })
         .collect();

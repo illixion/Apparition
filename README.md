@@ -207,10 +207,13 @@ Sharing or a game streaming PC from anywhere, for example with
 1. Install Tailscale on the computer that runs the desktop app, and on the device (the
    Tailscale app from the App Store), signed in to the same tailnet. Leave the desktop app
    running on that computer.
-2. In Apparition on the device, open Setup > Companion and, under "Or type its address", enter
-   the computer's Tailscale address with port 49160 (`100.x.y.z:49160`, shown in Tailscale's
-   menu on the computer), then Use and Check. Bonjour doesn't cross Tailscale, so Find
-   companion only finds it at home.
+2. Set the companion up once at home with Find Companion (or by typing either of its addresses,
+   e.g. its Tailscale one, `100.x.y.z:49160`, shown in Tailscale's menu on the computer). The
+   companion tells the device all its addresses, LAN and Tailscale, and a stable id. Before each
+   action Apparition then picks where to reach it: a LAN address when the device is on that
+   network (where it can also wake a sleeping Mac, below), the Tailscale address anywhere else.
+   Nothing to switch when you leave home or come back, and before it uses another address it
+   checks that the same computer answers there.
 3. Under Anisette, choose Use Companion's Anisette: Apparition reaches it at the same Tailscale
    address, so signing in works away from home too. Anisette comes only from a Mac (see
    [Anisette](#anisette)): use your Mac, or a macOS VM on it, as this companion, or pair the
@@ -226,7 +229,8 @@ the companion doesn't answer, Apparition on the device knocks: it connects to th
 port at the Mac's LAN address, again and again for up to 20 seconds, until the Mac is up
 (`Probe/CompanionWake.swift`; a MacBook Pro asleep answered in 8.6 seconds). It knows the Mac's
 LAN addresses from the companion's own reply, so a companion saved by its Tailscale address is
-knocked at home too. It works only on the same network: Tailscale's UDP never wakes a Mac, so away
+knocked at home too (`CompanionRoutes` in the same file picks the address, for the relay and the
+paired anisette Mac alike; Apps MCP's `followCompanion` runs that choice and says the result). It works only on the same network: Tailscale's UDP never wakes a Mac, so away
 from home leave it awake. Woken this way macOS sleeps again within a minute, so the companion
 holds it awake while devices use it and for three minutes after (`core/src/stay_awake.rs`, the
 assertion `caffeinate -i` takes; `pmset -g assertions` shows "Apparition companion serving a

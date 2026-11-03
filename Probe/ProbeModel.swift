@@ -152,8 +152,8 @@ final class ProbeModel {
 
     /// Finds a companion again by its Bonjour name; set by the app to `CompanionFinder.locate`.
     var locateCompanion: (@MainActor (String) async -> CompanionFinder.Companion?)?
-    /// Called when a found companion answered at a new address: (old relay, new companion).
-    var onCompanionMoved: (@MainActor (String, CompanionFinder.Companion) -> Void)?
+    /// Called when the companion is reached at a new address: (old host, new host).
+    var onCompanionMoved: (@MainActor (String, String) -> Void)?
     /// The saved companion address answered since the app last came to the front.
     private var companionChecked = false
 
@@ -161,30 +161,30 @@ final class ProbeModel {
     /// may have changed while Apparition was in the background).
     func companionMayHaveMoved() { companionChecked = false }
 
-    /// Before an action through the companion: when the saved address doesn't answer and the
-    /// companion was found by name, finds it again and switches to where it is now. An
-    /// address typed by hand (Tailscale) has no Bonjour name and is kept as it is.
+    /// Before an action through the companion: picks where to reach it now (CompanionRoutes): a
+    /// LAN address at home, where a knock wakes a sleeping Mac, its Tailscale address away, and
+    /// switches to it. A companion with no record yet that was found by name is looked for
+    /// again on this network; an address typed by hand is kept as it is.
     func prepareRoute(host: String) async {
-        guard host == Self.relayHost, connectionMode == .companion, !companionChecked,
-              let name = companionName, let old = relay else { return }
-        if await CompanionFinder.answers(relay: old) {
+        guard host == Self.relayHost, connectionMode == .companion, !companionChecked, let old = relay,
+              let colon = old.lastIndex(of: ":"), let port = UInt16(old[old.index(after: colon)...]) else { return }
+        let oldHost = String(old[..<colon]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if let best = await CompanionRoutes.best(host: oldHost, port: port) {
             companionChecked = true
+            guard best != oldHost else { return }
+            log.info("companion reached at another of its addresses, now using it")
+            useCompanion("\(best):\(port)", name: companionName)
+            unreachableMode = nil
+            onCompanionMoved?(oldHost, best)
             return
         }
-        // Asleep, perhaps: a knock at its LAN address wakes a Mac (CompanionWake).
-        if let colon = old.lastIndex(of: ":"), let port = UInt16(old[old.index(after: colon)...]),
-           await CompanionWake.wakeIfAsleep(host: String(old[..<colon]).trimmingCharacters(in: CharacterSet(charactersIn: "[]")), port: port),
-           await CompanionFinder.answers(relay: old) {
-            companionChecked = true
-            return
-        }
-        guard let found = await locateCompanion?(name) else { return }
+        guard let name = companionName, let found = await locateCompanion?(name) else { return }
         companionChecked = true
         guard found.relay != old else { return }
         log.info("companion moved, now using its new address")
         useCompanion(found.relay, name: found.name)
         unreachableMode = nil
-        onCompanionMoved?(old, found)
+        if let newHost = found.relay.split(separator: ":").first.map(String.init) { onCompanionMoved?(oldHost, newHost) }
     }
 
     func tunnelTarget(host: String, port: Int) -> IDevice.Target {

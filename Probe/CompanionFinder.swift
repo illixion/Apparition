@@ -21,6 +21,8 @@ final class CompanionFinder {
         var anisettePairingPort: UInt16? = nil
         /// TLS-PSK channel for anisette, advertised after pairing is enabled.
         var anisetteChannelPort: UInt16? = nil
+        /// The companion's stable id, the same at each of its addresses (CompanionRoutes).
+        var companionID: String? = nil
     }
 
     nonisolated static let serviceType = "_apparition._tcp"
@@ -85,9 +87,14 @@ final class CompanionFinder {
 
     /// Whether the companion at `relay` ("ip:port") answers within `seconds`.
     nonisolated static func answers(relay: String, seconds: Double = 2) async -> Bool {
-        guard let colon = relay.lastIndex(of: ":"), let port = NWEndpoint.Port(String(relay[relay.index(after: colon)...])) else { return false }
+        await probe(relay: relay, seconds: seconds) != nil
+    }
+
+    /// What the companion at `relay` ("ip:port") says, if it answers within `seconds`.
+    nonisolated static func probe(relay: String, seconds: Double = 2) async -> Companion? {
+        guard let colon = relay.lastIndex(of: ":"), let port = NWEndpoint.Port(String(relay[relay.index(after: colon)...])) else { return nil }
         let host = String(relay[..<colon]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        return (try? await info(.hostPort(host: NWEndpoint.Host(host), port: port), name: host, seconds: seconds)) != nil
+        return try? await info(.hostPort(host: NWEndpoint.Host(host), port: port), name: host, seconds: seconds)
     }
 
     /// Reaches a found service at the best of its addresses. Bonjour can return several (a
@@ -209,12 +216,16 @@ final class CompanionFinder {
               let json = try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as? [String: Any] else {
             throw IDevice.ProbeError("not an Apparition companion (or an old one): \(line.prefix(40))")
         }
-        if let lan = json["addresses"] as? [String] { CompanionWake.remember(lan, for: address) }
+        // Every way to reach it, for picking the one that works wherever this device is.
+        let companionID = json["id"] as? String
+        CompanionRoutes.remember(.init(id: companionID, relayPort: port.rawValue,
+                                       lan: json["addresses"] as? [String] ?? [],
+                                       tailscale: json["tailscale"] as? [String] ?? []), for: address)
         let anisette = (json["anisette"] as? Int).map { "http://\(address):\($0)" }
         let pairing = (json["anisettePairing"] as? Int).flatMap(UInt16.init(exactly:))
         let channel = (json["anisetteChannel"] as? Int).flatMap(UInt16.init(exactly:))
         return Companion(name: name, relay: "\(address):\(port)", anisetteURL: anisette,
-                         anisettePairingPort: pairing, anisetteChannelPort: channel)
+                         anisettePairingPort: pairing, anisetteChannelPort: channel, companionID: companionID)
     }
 }
 
@@ -352,6 +363,13 @@ enum CompanionEndpoints {
                     throw IDevice.ProbeError(finder.lastError ?? "no answer")
                 }
                 return companion
+            },
+            .command("followCompanion", "Pick where to reach the companion now, as an action does (its LAN address here, knocking to wake it, else its Tailscale one), and switch to it. Returns the relay before and after",
+                     timeout: .seconds(60)) { _ in
+                let before = probe.relay
+                probe.companionMayHaveMoved()
+                await probe.prepareRoute(host: ProbeModel.relayHost)
+                return ["before": before, "after": probe.relay]
             },
         ])
     }

@@ -51,6 +51,7 @@ impl Companion {
     pub async fn start(port: u16, anisette_port: u16, advertise: bool, data_dir: &Path, log: Log) -> Result<Companion, Report> {
         let relay = Relay::start(port, advertise, log.clone()).await?;
         let devices = Arc::new(PairedDevices::load(data_dir));
+        relay.set_id(&devices.host_id());
         // Pairing and the encrypted capability channel use relay +1 and +2. A single firewall
         // rule covering the companion executable can admit all three listeners.
         let pairing_port = if port == 0 { 0 } else { relay.port().wrapping_add(1) };

@@ -183,7 +183,7 @@ final class AccountModel {
         let appleProxy: String
         if configuredAnisette.hasPrefix("apparition-anisette://") {
             do {
-                anisette = try await companionAnisetteProxy.start(for: configuredAnisette)
+                anisette = try await companionAnisetteProxy.start(for: await followAnisetteCompanion())
                 appleProxy = anisette
             } catch {
                 companionAnisetteProxy.stop()
@@ -428,12 +428,35 @@ final class AccountModel {
         let error: String?
     }
 
+    /// The paired anisette address, moved first to where its Mac is best reached now
+    /// (CompanionRoutes): a LAN address at home, knocking to wake it, or its Tailscale address.
+    func followAnisetteCompanion() async -> String {
+        guard let components = URLComponents(string: anisetteURL), components.scheme == "apparition-anisette",
+              let host = components.host, let port = components.port.flatMap(UInt16.init(exactly:)),
+              let best = await CompanionRoutes.best(host: host, port: port), best != host else { return anisetteURL }
+        anisetteCompanionMoved(from: host, to: best)
+        return anisetteURL
+    }
+
+    /// The anisette companion is reached at `newHost` now: its address follows, and its
+    /// credential moves in Keychain (it never enters the saved URL).
+    func anisetteCompanionMoved(from oldHost: String, to newHost: String) {
+        guard var components = URLComponents(string: anisetteURL), components.host == oldHost else { return }
+        if components.scheme == "apparition-anisette", let port = components.port,
+           let channelPort = UInt16(exactly: port),
+           let deviceID = components.path.split(separator: "/").first.map(String.init) {
+            CompanionCredentialStore.move(host: oldHost, to: newHost, port: channelPort, deviceID: deviceID)
+        }
+        components.host = newHost
+        if let moved = components.string { anisetteURL = moved }
+    }
+
     /// Exercises the same anisette and Apple TLS path as login, without account credentials.
     func checkAppleRelay(signIn: Bool = false) async -> AppleRelayCheck {
         let adapter = CompanionAnisetteProxy()
         defer { adapter.stop() }
         do {
-            let url = try await adapter.start(for: anisetteURL)
+            let url = try await adapter.start(for: await followAnisetteCompanion())
             let reply = await Task.detached { Self.call(signIn ? apparition_check_apple_sign_in(url) : apparition_check_apple_relay(url)) }.value
             return AppleRelayCheck(ok: reply["ok"] as? Bool == true,
                                    anisette: reply["anisette"] as? Bool == true,

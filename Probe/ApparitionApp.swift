@@ -35,17 +35,8 @@ struct ApparitionApp: App {
         model.locateCompanion = { [weak finder] name in await finder?.locate(name: name) }
         // A paired anisette channel follows the companion's address; its credential moves in
         // Keychain and never enters the saved URL.
-        model.onCompanionMoved = { [weak account] old, found in
-            guard let account, let newHost = found.anisetteURL.flatMap(URL.init(string:))?.host,
-                  let oldHost = URLComponents(string: "tcp://\(old)")?.host,
-                  var components = URLComponents(string: account.anisetteURL), components.host == oldHost else { return }
-            if components.scheme == "apparition-anisette", let port = components.port,
-               let channelPort = UInt16(exactly: port),
-               let deviceID = components.path.split(separator: "/").first.map(String.init) {
-                CompanionCredentialStore.move(host: oldHost, to: newHost, port: channelPort, deviceID: deviceID)
-            }
-            components.host = newHost
-            if let moved = components.string { account.anisetteURL = moved }
+        model.onCompanionMoved = { [weak account] oldHost, newHost in
+            account?.anisetteCompanionMoved(from: oldHost, to: newHost)
         }
         DeveloperSlotsEndpoints.register()
         #if !APPARITION_RELEASE
