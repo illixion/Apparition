@@ -6,3 +6,6 @@ xcuserdata/
 core/target/
 installer/target/
 /target/
+
+# Generated from store/public by desktop/build.rs
+/desktop/ui/shared/

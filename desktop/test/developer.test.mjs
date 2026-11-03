@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DeveloperView, jobKind, targetState, targetBadge } from '../ui/developer.js';
+import { createRequire } from 'node:module';
+const {ProjectList, targetKey} = createRequire(import.meta.url)('../../store/public/shared/projects.js');
+import { DeveloperView, jobKind } from '../ui/developer.js';
 
 // A DOM event fixture for the controller's credential and deployment boundaries.
 // Rendering and platform appearance are deliberately outside these unit tests.
@@ -20,6 +22,21 @@ class Node {
 }
 globalThis.document = { createElement: tag => new Node(tag), createTextNode: text => {
   const node = new Node('#text'); node.textContent = text; return node;
+} };
+
+// Controller tests use the real shared selection/submission state machine with a
+// small paint adapter. Browser checks cover the shared HTML/CSS separately.
+globalThis.ApparitionProjects = { ProjectList: function(root, options) {
+  const list = Object.assign(Object.create(ProjectList.prototype), {
+    root, options, selections:{}, pending:new Set(), messages:new Map(), query:'', sort:'name',
+    render() {
+      if (!this.state) return;
+      root.replaceChildren(...this.state.repos.map(repo => {
+        const card = new Node('article'); options.extend?.(card, repo); return card;
+      }));
+    },
+  });
+  return list;
 } };
 
 test('the password field clears before connect and only the non-secret address is restored', async () => {
@@ -57,18 +74,14 @@ test('deployment preserves device and platform when one device has multiple targ
   view.renderProjects([{ name: 'Sample', branches: ['main'], deployDefaults: { mcp: true }, platforms: [
     { platform: 'iPad', device: 'AVP' }, { platform: 'visionOS', device: 'AVP' },
   ] }]);
-  const controls = view.projects.all();
-  const selects = controls.filter(n => n.tagName === 'select');
-  assert.equal(selects.length, 2, 'one branch and one backend choice per project');
-  selects[1].value = 'apparition';
-  selects[0].value = 'main';
-  const installs = controls.filter(n => n.tagName === 'button' && n.textContent === 'Install on AVP');
-  assert.equal(installs.length, 2);
-  await installs[1].listeners.click();
+  const repo = view.repos[0], list = view.projectList, selection = list.selection(repo);
+  selection.branch = 'main'; selection.injectBackend = 'apparition';
+  selection.chosen.add(targetKey(repo.platforms[1]));
+  await list.submit(repo, true);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].operation, 'build');
   assert.deepEqual(calls[0].arguments, { repo: 'Sample', device: 'AVP', targetPlatform: 'visionOS', branch: 'main',
-    run: false, mcp: true, inject: false, injectBackend: 'apparition', buildDebug: false });
+    run: false, mcp: true, inject: false, injectBackend: 'apparition', jit: false, buildDebug: false });
   assert.equal(view.selectedLog, 7);
 });
 
@@ -198,9 +211,10 @@ test('Build only keeps the IPA without installing or launching', async () => {
     return {};
   });
   view.renderProjects([{ name: 'Sample', deployDefaults: { launch: true, mcp: true }, platforms: [{ platform: 'iOS', device: 'Phone' }] }]);
-  await view.projects.all().find(n => n.tagName === 'button' && n.textContent === 'Build only').listeners.click();
+  view.projectList.selection(view.repos[0]).chosen.add(targetKey(view.repos[0].platforms[0]));
+  await view.projectList.submit(view.repos[0], false);
   assert.deepEqual(calls[0].arguments, { repo: 'Sample', device: 'Phone', targetPlatform: 'iOS', branch: 'current',
-    run: false, mcp: true, inject: false, buildDebug: false, deploy: false });
+    run: false, mcp: true, jit: false, inject: false, injectBackend: 'dynamic', buildDebug: false, deploy: false });
 });
 
 const targetButtons = (view, text) => view.projects.all().filter(n => n.className === 'dev-target')
@@ -241,15 +255,9 @@ test('a target re-signs its installed kept build, or builds first when the Mac k
   assert.match(view.note.textContent, /Queued build #20, then re-sign #21/);
 });
 
-test('targets say what is installed, and jobs say what they are', () => {
-  const repo = { git: { branch: 'main', commit: 'def5678' } };
-  const target = { device: 'AVP', bundleId: 'com.example.app' };
-  assert.match(targetState(repo, target, {}).text, /Not installed from this Mac/);
-  assert.match(targetState(repo, target, { AVP: { 'com.example.app': { commit: 'def5678', branch: 'main' } } }).text, /Installed def5678 · up to date/);
-  assert.match(targetState(repo, target, { AVP: { 'com.example.app': { commit: 'abc1234', branch: 'main' } } }).text, /checkout is at def5678/);
-  assert.match(targetState(repo, target, { AVP: { 'com.example.app': { commit: 'abc1234', confirmed: false } } }).text, /not confirmed/);
-  assert.equal(jobKind({ noDeploy: false }), 'Build & install');
+test('jobs say what they do', () => {
   assert.equal(jobKind({ noDeploy: true }), 'Build only');
+  assert.equal(jobKind({}), 'Build & install');
   assert.equal(jobKind({ noDeploy: true, forResign: true }), 'Build for re-sign');
   assert.equal(jobKind({ resign: { dryRun: true } }), 'Re-sign check');
 });
@@ -330,14 +338,6 @@ test('Apparition Store is introduced once connected, with its GitHub link', asyn
   assert.match(view.connected_label.textContent, /Apparition Store at http:\/\/localhost:8484\//);
 });
 
-test('a target badge says at a glance whether the device is current', () => {
-  const repo = { git: { branch: 'main', commit: 'def5678' } };
-  const target = { device: 'AVP', bundleId: 'x' };
-  assert.deepEqual(targetBadge(repo, target, {}), { tone: '', text: 'Not installed' });
-  assert.equal(targetBadge(repo, target, { AVP: { x: { commit: 'def5678', branch: 'main' } } }).text, 'Up to date');
-  assert.equal(targetBadge(repo, target, { AVP: { x: { commit: 'old', branch: 'main' } } }).text, 'Behind checkout');
-  assert.equal(targetBadge(repo, target, { AVP: { x: { buildId: 'b' } } }).text, 'Installed');
-});
 
 test('patching uses only the configured target and does not enqueue a build', async () => {
   const calls = [];

@@ -133,26 +133,12 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 .dev-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
 .dev-grid > .hint { grid-column: 1 / -1; }
 @media (max-width: 54rem) { .dev-grid { grid-template-columns: minmax(0, 1fr); } }
-.dev-project { display: flex; flex-direction: column; gap: .7rem; padding: .875rem 1rem; border: 1px solid var(--line);
-  border-radius: var(--radius-l); background: color-mix(in srgb, var(--surface) 55%, transparent); min-width: 0; }
-.dev-project-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; }
-.dev-project-title { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; min-width: 0; }
-.dev-project-title h3 { margin: 0 .2rem 0 0; font: 600 1.35rem/1.2 var(--display); overflow-wrap: anywhere; }
-.dev-targets { display: flex; flex-direction: column; gap: .6rem; }
 .dev-target { display: flex; flex-direction: column; gap: .5rem; padding: .85rem .95rem; border: 1px solid color-mix(in srgb, var(--line) 75%, transparent);
   border-radius: var(--radius-s); background: color-mix(in srgb, var(--bg-deep) 38%, transparent); }
-.dev-target-where { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
-.dev-target-where strong { margin-right: .15rem; }
-.dev-target-state { margin: 0; line-height: 1.4; }
-.dev-target-progress { margin: 0; padding: .45rem .65rem; border-left: 3px solid var(--lilac); border-radius: var(--radius-s);
-  color: var(--ink); background: color-mix(in srgb, var(--lilac) 13%, transparent); font-size: .9rem; }
-.dev-target-progress[hidden] { display: none; }
-.dev-target[aria-busy="true"] { border-color: var(--lilac); }
 .dev-target .service-row { margin: .1rem 0 0; gap: .5rem; }
 .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--line); flex: none; display: inline-block; }
 .dot.on { background: var(--glow-soft); box-shadow: 0 0 5px var(--glow-soft); }
-.dev-options summary, .dev-kept summary { color: var(--muted); font-size: .9rem; font-weight: 500; }
-.dev-options .service-row { margin-top: .6rem; }
+.dev-kept summary { color: var(--muted); font-size: .9rem; font-weight: 500; }
 .dev-inline { display: inline-flex !important; align-items: center; gap: .45rem; font-size: .875rem; color: var(--muted); }
 .dev-project-foot { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: .8rem; }
 .dev-kept { flex-basis: 100%; }
@@ -183,7 +169,7 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 .dev-viewer { flex-basis: 100%; margin-top: .75rem; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); overflow: hidden; }
 .dev-viewer-head { display: flex; align-items: center; gap: .45rem; padding: .45rem .55rem .45rem .95rem; border-bottom: 1px solid var(--line); }
 .dev-viewer-head strong { flex: 1; min-width: 0; font-size: .875rem; overflow-wrap: anywhere; }
-.dev-job > .dev-viewer, .dev-report > .dev-viewer, .dev-item > .dev-viewer, .dev-project > .dev-viewer { margin-top: .75rem; }
+.dev-job > .dev-viewer, .dev-report > .dev-viewer, .dev-item > .dev-viewer, .apparition-projects .card > .dev-viewer { margin-top: .75rem; }
 .service-items { display: flex; flex-direction: column; }
 .service-items.dev-grid { display: grid; }
 .service-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-block: .4rem; }
@@ -928,3 +914,13 @@ details[open] > summary { margin-bottom: .85rem; }
 .setup-badge[hidden] { display: none; }
 .setup-badge.attention { border-color: var(--lilac); color: var(--ink); }
 .setup-badge.unsupported { border: 2px solid var(--danger); color: var(--danger); font-weight: 600; }
+
+/* Shared Store projects, using the desktop shell's palette. */
+#developer-panel .apparition-projects {
+  --fg:var(--ink); --dim:var(--muted); --dim2:var(--muted);
+  --surface2:var(--bg); --accent:var(--lilac); --accent-fg:var(--button-ink);
+  --ok:var(--glow); --bad:var(--danger); --info:var(--lilac);
+  --mono:ui-monospace, "SF Mono", Menlo, monospace;
+}
+#developer-panel .project-extra { margin-top:10px; }
+#developer-panel > .status:empty { display:none; }

@@ -50,60 +50,6 @@
   main { padding: 22px 24px 320px; max-width: 1180px; margin: 0 auto; }
   .fleet { display: flex; flex-direction: column; gap: 10px; }
 
-  /* ---- fleet card ---- */
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-  .cardhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 11px; flex-wrap: wrap; }
-  .reponame { font-family: var(--mono); font-weight: 700; font-size: .86rem; letter-spacing: .03em;
-    text-transform: uppercase; color: var(--fg); }
-  .refline { font-family: var(--mono); font-size: .76rem; color: var(--dim); }
-  .refline code { color: var(--dim); }
-  .refline .dirty { color: var(--warn); }
-  .subject { font-size: .76rem; color: var(--dim2); overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; flex: 1 1 auto; min-width: 0; }
-  .batchflag { margin-left: auto; font-family: var(--mono); font-size: .72rem; color: var(--accent); }
-
-  /* signature element: the chip strip — click a chip to include/exclude it
-     from the next batch deploy for this repo */
-  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
-  .chip { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 9px 6px 8px;
-    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px;
-    cursor: pointer; user-select: none; transition: border-color 120ms, background 120ms; }
-  .chip:hover { border-color: var(--dim2); }
-  .chip.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); }
-  .chip input { position: absolute; opacity: 0; pointer-events: none; }
-  .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
-  .chip .dot.ok { background: var(--ok); }
-  .chip .dot.warn { background: var(--warn); }
-  .chip .dot.bad { background: var(--bad); }
-  .chip .dot.info { background: var(--info); }
-  .chip .devname { font-size: .82rem; font-weight: 600; }
-  .chip .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
-  .chip .branchtag { font-size: .68rem; color: var(--accent); font-family: var(--mono); }
-  .chip .otaicon { color: var(--dim); font-size: .76rem; padding: 1px 3px; border-radius: 4px; margin-left: 1px; }
-  .chip .otaicon:hover { color: var(--fg); background: var(--line); }
-  .chip.building { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
-
-  .cardfoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 11px;
-    border-top: 1px solid var(--line); }
-  .runcheck { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
-    color: var(--dim); cursor: pointer; user-select: none; }
-  .runcheck input { cursor: pointer; accent-color: var(--accent); }
-  .runcheck:has(input:disabled) { opacity: .45; cursor: default; }
-  .opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; }
-  .cardfoot .spacer { flex: 1 1 auto; }
-  .macapps { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-  .macapp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 9px 6px 8px;
-    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; }
-  .macapp.building { border-color: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
-  .macapp .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
-  .macapp .dot.ok { background: var(--ok); }
-  .macapp .dot.warn { background: var(--warn); }
-  .macapp .macname { font-size: .82rem; font-weight: 600; }
-  .macapp .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
-  .macapp .macbuilt { font-size: .72rem; color: var(--dim2); font-family: var(--mono); flex: 1 1 auto; }
-  .macapp button { padding: 4px 9px; font-size: .76rem; }
-
   /* ---- build pane ---- */
   #buildpane { position: fixed; left: 0; right: 0; bottom: 0; background: #07090c;
     border-top: 1px solid var(--line); height: 300px; display: none; flex-direction: column;
@@ -535,7 +481,9 @@
   <div class="tabs" id="tabs"></div>
   <pre id="buildlog"></pre>
 </div>
+<link rel="stylesheet" href="shared/projects.css">
 <script src="freshness.js"></script>
+<script src="shared/projects.js"></script>
 <script>
 'use strict';
 const $ = s => document.querySelector(s);
@@ -543,7 +491,7 @@ let S = null;               // last /api/state
 let paneBuild = null;       // build id shown in the log pane
 const logOffsets = {};      // build id -> log offset
 const logTexts = {};        // build id -> text fetched so far
-const sel = {};             // repo -> {branch, run, chosen:Set<device>}
+const sel = {};             // repo -> shared project choices (targets include device + platform)
 let pendingOta = null;      // {id, key, name} — auto-launch the itms install when this build succeeds
 let pendingMac = null;      // {id, slug, branch, name} — download the .app.zip when this build succeeds
 
@@ -553,9 +501,15 @@ function ago(t){ if(!t) return '—'; const s=(Date.now()-t)/1000;
 function took(b){ return b.startedAt&&b.finishedAt ? Math.round((b.finishedAt-b.startedAt)/1000)+'s' : '—'; }
 function esc(s){ return String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-// Dev builds keep a static version string ("1.0"), so freshness is judged from
-// the git short SHA stamped into CFBundleVersion; see freshness.js.
-function platformStatus(p, g) { return Freshness.platformStatus(p, g, S); }
+const projectList = new ApparitionProjects.ProjectList($('#apps'), {
+  selections: sel, ota: location.protocol === 'https:',
+  build: async (repo, targets, flags) => {
+    const reply = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({repo:repo.name, targets, ...flags})});
+    if (reply.error) throw new Error(reply.error);
+    await poll(); return reply;
+  },
+  queued: reply => { if (reply?.jobs?.length) openPane(reply.jobs[0].id); },
+});
 
 function render() {
   const repos = [...(S.repos || [])].sort((a, b) =>
@@ -568,100 +522,7 @@ function render() {
   $('#openbanner').hidden = !!S.authRequired;
   $('#signout').hidden = !S.authRequired;
 
-  $('#apps').innerHTML = repos.map(r=>{
-    const g = r.git||{};
-    const s = sel[r.name] = sel[r.name] || { branch: 'current', chosen: new Set(), ...r.deployDefaults };
-    const branches = ['current', ...r.branches.filter(b=>b!=='current')];
-    const runningBuild = S.builds.find(b => (S.running||[]).includes(b.id) && b.repo===r.name && !b.macApp);
-    const queuedIds = new Set((S.builds||[]).filter(b=>(S.queued||[]).includes(b.id) && b.repo===r.name && !b.macApp).map(b=>b.device));
-    const busy = !!runningBuild || queuedIds.size > 0;
-
-    const chips = r.platforms.map(p=>{
-      const st = platformStatus(p, g);
-      const branchOverride = r.deviceBranches?.[p.device];
-      const isSelected = s.chosen.has(p.device);
-      const isRunningHere = runningBuild && runningBuild.device === p.device;
-      const isQueuedHere = queuedIds.has(p.device);
-      const https = location.protocol === 'https:';
-      let otaIcon = '';
-      if (https) {
-        const title = st.ota
-          ? `Rebuild ${p.platform} without touching the device, then offer the OTA install link`
-          : `Build ${p.platform} for OTA install (no OTA copy published yet)`;
-        otaIcon = `<span class="otaicon" data-otabuild="${esc(r.name)}" data-device="${esc(p.device)}" title="${esc(title)}">⤓</span>`;
-      }
-      const running = live.find(a => a.bundleId === p.bundleId && String(a.device).toLowerCase() === String(p.device).toLowerCase());
-      const liveMark = running ? `<a class="live" href="#debug/${encodeURIComponent(running.id)}" title="Running now with its debug server: open the live log">live</a>` : '';
-      const title = `${esc(p.device)} · ${esc(p.platform)}\n${esc(st.detail)}`;
-      return `<label class="chip ${isSelected?'sel':''} ${isRunningHere||isQueuedHere?'building':''}" title="${title}">
-        <input type="checkbox" data-chip="${esc(r.name)}" data-device="${esc(p.device)}" ${isSelected?'checked':''}>
-        <span class="dot ${st.dot}"></span>
-        <span class="devname">${esc(p.device)}</span>
-        <span class="platname">${esc(p.platform)}</span>
-        ${branchOverride ? `<span class="branchtag">${esc(branchOverride)}</span>` : ''}
-        ${liveMark}
-        ${otaIcon}
-      </label>`;
-    }).join('');
-
-    // Mac apps download as a signed .app.zip of the selected branch's committed
-    // head, built on demand. Only the checked-out branch's head is known here,
-    // so only that branch can say whether the last build is current.
-    const macBranch = s.branch === 'current' ? g.branch : s.branch;
-    const macs = (r.macApps || []).map(m => {
-      const last = m.built.find(e => e.branch === macBranch) || m.built[0];
-      const knownHead = macBranch === g.branch && g.commit;
-      const fresh = last && knownHead && last.branch === macBranch && (last.commit.startsWith(g.commit) || g.commit.startsWith(last.commit));
-      const dot = fresh ? 'ok' : last && knownHead ? 'warn' : '';
-      const building = m.building.length > 0;
-      const info = last
-        ? `${last.branch}@${last.commit} · ${(last.size/1048576).toFixed(1)} MB · ${ago(last.at)}${fresh ? '' : knownHead ? ` · head ${g.commit} builds on download` : ''}`
-        : 'not built yet: the first download builds it';
-      const title = `${m.bundleId} · PLATFORM=${m.platform}\nBuilds the committed head of the selected branch (never uncommitted changes), signed with the development certificate.\n`
-        + `Opened from a browser download, macOS blocks it once: System Settings › Privacy & Security › Open Anyway (or xattr -dr com.apple.quarantine on the .app).`;
-      return `<div class="macapp ${building?'building':''}" title="${esc(title)}">
-        <span class="dot ${dot}"></span>
-        <span class="macname">${esc(m.name)}</span>
-        <span class="platname">${esc(m.platform)}</span>
-        <span class="macbuilt">${esc(info)}</span>
-        <button class="ghost" data-maclink="${esc(m.slug)}" data-repo="${esc(r.name)}" title="Copy a curl command that downloads the head of ${esc(macBranch)} on another Mac (signed link, no sign-in, no quarantine prompt; good for a week)">curl</button>
-        <button data-macdl="${esc(m.slug)}" data-repo="${esc(r.name)}" ${building?'disabled':''}>${building ? 'Building…' : '⤓ .app.zip'}</button>
-      </div>`;
-    }).join('');
-
-    const chosenCount = s.chosen.size;
-    const hasDevices = r.platforms.length > 0;
-    return `<div class="card">
-      <div class="cardhead">
-        <span class="reponame">${esc(r.name)}</span>
-        <span class="refline">${esc(g.branch)}@<code>${esc(g.commit)}</code>${g.dirty?' <span class="dirty">●dirty</span>':''}</span>
-        <span class="subject">${esc(g.subject||'')}</span>
-      </div>
-      ${hasDevices ? `<div class="chips">${chips}</div>` : ''}
-      ${macs ? `<div class="macapps">${macs}</div>` : ''}
-      <div class="cardfoot">
-        <select class="branchsel" data-repo="${esc(r.name)}" data-k="branch">
-          ${branches.map(b=>`<option ${s.branch===b?'selected':''}>${esc(b)}</option>`).join('')}
-        </select>
-        ${hasDevices ? `<div class="opts" role="group" aria-label="Deploy options">
-          <label class="runcheck" title="--run: launch the app on the device once it is installed. Unticked, it is installed and updates in the background">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="launch" ${s.launch?'checked':''}>Launch app</label>
-          <label class="runcheck" title="--mcp: make the launch a debug session (console attached, session registered for agents)${s.launch?'':'. Applies only with Launch app'}">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="mcp" ${s.mcp?'checked':''} ${s.launch?'':'disabled'}>MCP</label>
-          <label class="runcheck" title="--jit: launch through Apparition, which serves the app's JIT requests (emulators, Wine, JIT VMs) for as long as it runs. The device must be paired with Apparition on this Mac${s.launch?'':'. Applies only with Launch app'}">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="jit" ${s.jit?'checked':''} ${s.launch?'':'disabled'}>JIT</label>
-          <label class="runcheck" title="--debug: build the Debug configuration instead of Release">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="buildDebug" ${s.buildDebug?'checked':''}>Debug build</label>
-          <label class="runcheck" title="--inject: build so running code can be patched live (development builds only)">
-            <input type="checkbox" data-repo="${esc(r.name)}" data-k="inject" ${s.inject?'checked':''}>Inject</label>
-        </div>
-        <span class="spacer"></span>
-        <button class="primary" data-deploy="${esc(r.name)}" ${busy||chosenCount===0?'disabled':''}>
-          ${busy ? 'Deploying…' : chosenCount>1 ? `Deploy → ${chosenCount} devices` : 'Deploy'}
-        </button>` : ''}
-      </div>
-    </div>`;
-  }).join('');
+  projectList.update(S);
 
   // history
   $('#history').innerHTML = S.builds.map(b=>`<tr class="clickable" data-open="${b.id}">
@@ -815,23 +676,6 @@ document.addEventListener('click', async e=>{
     return;
   }
 
-  if (t.dataset.deploy) {
-    const repoName = t.dataset.deploy;
-    const repo = S.repos.find(r=>r.name===repoName);
-    const s = sel[repoName];
-    const targets = [...s.chosen].map(device => ({
-      device, branch: repo.deviceBranches?.[device] || s.branch,
-    }));
-    if (!targets.length) return;
-    const res = await api('/api/build', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({repo: repoName, targets,
-        run: s.launch, mcp: s.mcp, jit: s.jit, buildDebug: s.buildDebug, inject: s.inject})});
-    const jobs = res.jobs || [];
-    if (jobs.length > 1) toast(`Deploying ${repoName} to ${jobs.length} devices — they'll build one after another.`);
-    await poll();
-    if (jobs.length) openPane(jobs[0].id);
-    return;
-  }
 
   if (t.id === 'signout') {
     await fetch('/api/logout', { method: 'POST' });
@@ -846,18 +690,7 @@ document.addEventListener('click', async e=>{
     setTimeout(()=>{t.textContent='↻ devices'; poll();}, 4000); return; }
 });
 
-document.addEventListener('change', e=>{
-  const t = e.target;
-  if (t.dataset.chip) {
-    const s = sel[t.dataset.chip];
-    if (t.checked) s.chosen.add(t.dataset.device); else s.chosen.delete(t.dataset.device);
-    render();
-  }
-  if (t.dataset.repo) {
-    sel[t.dataset.repo][t.dataset.k] = t.type==='checkbox' ? t.checked : t.value;
-    render();
-  }
-});
+
 
 poll();
 setInterval(poll, 4000);

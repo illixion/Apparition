@@ -1,9 +1,9 @@
 // The build service is reached only through Rust. No cookies, bearer tokens or
-// remote HTML enter this view; all service-provided strings become text nodes.
+// remote HTML enter this view; shared markup escapes service-provided strings.
 //
 // Layout: before connecting, a getting-started page (what Apparition Store is, where to get it, how
-// to connect). Once connected, four sections: Projects (a two-column grid of cards, one tile per
-// target with what is installed there and what can be done), Activity (the build queue and
+// to connect). Once connected, four sections: Projects (the shared Store project list, with compact device targets, branch
+// selection and inline build feedback), Activity (the build queue and
 // logs), Reports (crashes, traces and running debug apps, grouped by app) and Devices &
 // signing (with a note on Apparition Store itself).
 //
@@ -49,30 +49,6 @@ export function jobKind(job) {
   return job.noDeploy ? 'Build only' : 'Build & install';
 }
 
-// Where a project target stands on its device, from the service's install ledger and git state.
-export function targetState(repo, target, installs = {}) {
-  const install = installs?.[target.device]?.[target.bundleId];
-  if (!install) return { install: null, text: 'Not installed from this Mac yet' };
-  const head = repo.git?.commit;
-  const parts = [`Installed ${install.commit || install.buildNo || install.buildId || 'a build'}`];
-  if (install.resigned) parts.push(`re-signed with ${install.resigned}`);
-  else if (install.confirmed === false) parts.push('offered as a download, not confirmed');
-  if (head && install.commit && install.branch === repo.git?.branch) parts.push(install.commit === head ? 'up to date' : `checkout is at ${head}`);
-  if (install.at) parts.push(ago(install.at));
-  return { install, text: parts.join(' · ') };
-}
-
-// The same, as a badge for the target's tile: scannable where the line above is detailed.
-export function targetBadge(repo, target, installs = {}) {
-  const install = installs?.[target.device]?.[target.bundleId];
-  if (!install) return { tone: '', text: 'Not installed' };
-  const head = repo.git?.commit;
-  if (head && install.commit && install.branch === repo.git?.branch) {
-    return install.commit === head ? { tone: 'good', text: 'Up to date' } : { tone: 'warn', text: 'Behind checkout' };
-  }
-  return { tone: 'info', text: 'Installed' };
-}
-
 export class DeveloperView {
   constructor(root, invoke) {
     this.root = root;
@@ -82,7 +58,6 @@ export class DeveloperView {
     this.polling = false;
     // The job whose log is being followed (set when a build is queued from here).
     this.selectedLog = null;
-    this.projectSignature = '';
     // Per-section signatures of what was last painted, the rows that can host the inline viewer,
     // and what stays open across repaints.
     this.signatures = {};
@@ -100,7 +75,7 @@ export class DeveloperView {
     this.section = 'projects';
     this.showAllJobs = false;
     root.append(element('h1', '', 'Developer'));
-    root.append(element('p', 'lede', 'Build and iterate on your Apple-device apps, install them through Apparition, and keep development builds refreshed beyond the free account window. Launch with JIT, apply live Swift patches, and inspect reports from the project.'));
+    root.append(element('p', 'lede', 'Build, install and debug projects from this Mac or a connected Apparition Store.'));
     this.intro = this.introCard();
     this.hostCard = this.hostSection();
     const form = element('form', 'dev-card dev-connect');
@@ -146,7 +121,24 @@ export class DeveloperView {
     for (const [key] of SECTIONS) { this.panes[key] = element('div', 'dev-pane'); this.panes[key].setAttribute('role', 'tabpanel'); }
 
     this.resign = this.resignSection();
-    this.projects = this.block('Projects', 'Each tile is a device the project installs on. Install builds and installs it there; Build only keeps a signed IPA to download or re-sign. Device-side installs retain an unsigned IPA for Apparition to sign on the device.');
+    this.projects = this.block('Projects', 'Select device targets, choose a branch, then install or build only. Install builds and installs it there; Build only keeps a signed IPA to download or re-sign. Device-side installs retain an unsigned IPA for Apparition to sign on the device.');
+    this.projectList = new ApparitionProjects.ProjectList(this.items(this.projects), {
+      macDownloads: false, liveLinks: false,
+      build: async (repo, targets, flags) => {
+        const jobs = [], epoch = this.epoch;
+        for (const target of targets) {
+          if (epoch !== this.epoch) throw new Error('The build service connection changed.');
+          const reply = await this.request('build', { repo:repo.name, device:target.device,
+            targetPlatform:target.platform, branch:target.branch, ...flags });
+          jobs.push(...(reply.jobs || []));
+        }
+        if (epoch !== this.epoch) throw new Error('The build service connection changed.');
+        await this.refresh();
+        return { jobs };
+      },
+      queued: reply => { if (reply?.jobs?.[0]) this.followJob(reply.jobs[0].id); },
+      extend: (card, repo) => this.extendProject(card, repo),
+    });
     this.registration = this.registrationForm(); this.registration.hidden = true;
     this.artifacts = this.block('Other kept builds', 'Builds the Mac kept that no project here installs, such as Xcode products registered by hand.');
     this.artifacts.hidden = true;
@@ -285,7 +277,7 @@ export class DeveloperView {
   }
   // Repaint every section from the last data, e.g. after the inline viewer moved.
   redraw() {
-    this.signatures = {}; this.projectSignature = '';
+    this.signatures = {};
     this.renderAll();
     this.placeViewer();
   }
@@ -494,7 +486,7 @@ export class DeveloperView {
         const reply = await this.request('registerProject', args);
         this.status(`Registered ${reply.project.name}.`);
         name.value = path.value = branches.value = ''; rows.length = 0; targets.replaceChildren(); addTarget();
-        container.open = false; this.projectSignature = ''; await this.refresh();
+        container.open = false; await this.refresh();
       } catch (error) { this.status(String(error?.message || error), true); }
       finally { submit.disabled = false; }
     });
@@ -531,6 +523,7 @@ export class DeveloperView {
   // The Developer tab now talks to `service`: this Mac's own (local) or another Mac's.
   onConnected(service) {
     {
+      this.projectList.reset();
       this.connected = true;
       this.local = !!service.local;
       this.hostCard.hidden = this.local;
@@ -550,7 +543,6 @@ export class DeveloperView {
       this.content.hidden = false;
       // Signing hand-off moves into its section once there is one to put it in.
       this.panes.setup.append(this.webUi, this.signing, this.about);
-      this.projectSignature = '';
       this.signatures = {};
       this.status('');
       this.show(true);
@@ -559,6 +551,7 @@ export class DeveloperView {
   async signOut() {
     clearInterval(this.timer);
     this.connected = false;
+    this.projectList.reset();
     this.epoch += 1;
     this.content.hidden = true;
     this.fields.hidden = this.hint.hidden = this.intro.hidden = false;
@@ -659,6 +652,7 @@ export class DeveloperView {
     try {
       const state = await this.request('state');
       if (!this.connected || !this.visible || epoch !== this.epoch) return;
+      this.projectState = state;
       this.installs = state.installs || {};
       this.deviceList = state.devices?.list || [];
       this.jobsList = state.builds || [];
@@ -683,74 +677,28 @@ export class DeveloperView {
     return counts;
   }
 
-  // One compact list card per project. A card's controls are rebuilt only when what it
-  // shows changes, and what the person set on it (branch, options, kept builds opened) is
-  // remembered, so a choice in progress survives the 4-second refresh.
   renderProjects(repos) {
     this.repos = repos;
-    const signature = JSON.stringify([repos.map(r => [r.name, r.branches, r.platforms, r.deployDefaults, r.git]),
-      this.installs, this.artifactList.map(a => a.buildId), this.jobsList.map(j => [j.id, j.status]), this.reportCounts,
-      this.deviceList?.map(d => [d.name, d.state]), [...this.capabilities], this.viewKey(),
-      repos.flatMap(r => (r.platforms || []).map(t => targetState(r, t, this.installs).text))]);
-    if (signature === this.projectSignature) return;
-    this.projectSignature = signature;
-    this.cardState = this.cardState || {};
-    const rows = repos.map(repo => this.projectCard(repo));
-    this.items(this.projects).replaceChildren(...(rows.length ? rows : [element('p', 'hint',
-      this.capabilities.has('project-registration') ? 'No projects yet. Register one below, or add it to Apparition Store\'s config.json.' : 'Add a project to Apparition Store\'s config.json to start building.')]));
+    this.cardState ||= {};
+    this.projectList.options.entryPatching = this.capabilities.has('entry-patching');
+    // Native extras (kept builds, reports) are part of the component's paint signature.
+    this.projectList.update({ ...this.projectState, repos, installs:this.installs, builds:this.jobsList,
+      running:this.jobsList.filter(j => j.status === 'running').map(j => j.id),
+      queued:this.jobsList.filter(j => j.status === 'queued').map(j => j.id),
+      nativeExtras:[this.artifactList, this.reportCounts, [...this.capabilities], this.viewKey()] });
     this.placeViewer();
   }
-  projectCard(repo) {
-    const remembered = this.cardState[repo.name] = this.cardState[repo.name] || {};
-    const card = element('article', 'dev-project');
-    const head = element('div', 'dev-project-head');
-    const title = element('div', 'dev-project-title');
-    title.append(element('h3', '', repo.name));
-    if (repo.git?.commit) title.append(pill(`${repo.git.branch}@${repo.git.commit}`, 'mono', 'The branch and commit checked out on the Mac'));
-    if (repo.git?.dirty) title.append(pill('Uncommitted changes', 'warn', 'The checkout has changes that are not committed; a build includes them.'));
-    head.append(title);
-    card.append(head);
-
-    // Build options apply to every action on this card.
-    const options = element('details', 'dev-options');
-    options.open = !!remembered.open;
-    options.addEventListener('toggle', () => { remembered.open = options.open; });
-    options.append(element('summary', '', 'Build options'));
-    const branch = element('select'); branch.setAttribute('aria-label', `${repo.name} branch`);
-    for (const name of ['current', ...(repo.branches || []).filter(b => b !== 'current')]) {
-      const option = element('option', '', name === 'current' ? 'Current checkout' : name); option.value = name; branch.append(option);
+  extendProject(card, repo) {
+    const remembered = this.cardState[repo.name] ||= {};
+    const extra = element('details', 'project-extra');
+    extra.open = !!remembered.extraOpen;
+    extra.addEventListener('toggle', () => { remembered.extraOpen = extra.open; });
+    extra.append(element('summary', '', 'More actions'));
+    for (const target of repo.platforms || []) {
+      const row = this.targetActions(repo, target);
+      if (row.children.length) extra.append(row);
     }
-    if (remembered.branch) branch.value = remembered.branch;
-    branch.addEventListener('change', () => { remembered.branch = branch.value; });
-    const optionRow = element('div', 'service-row');
-    const branchLabel = element('label', 'dev-inline', 'Branch'); branchLabel.append(branch); optionRow.append(branchLabel);
-    const flags = {};
-    for (const [key, title] of [['run', 'Launch after installing'], ['mcp', 'Debug access'], ['inject', 'Live patching'], ['buildDebug', 'Debug configuration']]) {
-      const label = element('label', 'check'); const input = element('input'); input.type = 'checkbox';
-      input.checked = remembered[key] ?? !!repo.deployDefaults?.[key === 'run' ? 'launch' : key]; flags[key] = input;
-      input.addEventListener('change', () => { remembered[key] = input.checked; });
-      label.append(input, document.createTextNode(title)); optionRow.append(label);
-    }
-    if (this.capabilities.has('entry-patching')) {
-    const backendLabel = element('label', 'dev-inline', 'Patch backend');
-    const backend = element('select'); backend.setAttribute('aria-label', `${repo.name} patch backend`);
-    for (const [value, title] of [['dynamic', 'Swift dynamic replacement'], ['apparition', 'Apparition entry boundaries (experimental)']]) {
-      const option = element('option', '', title); option.value = value; backend.append(option);
-    }
-    backend.value = remembered.injectBackend || 'dynamic';
-    backend.addEventListener('change', () => { remembered.injectBackend = backend.value; });
-    flags.injectBackend = backend;
-    backendLabel.append(backend); optionRow.append(backendLabel);
-    }
-    options.append(optionRow);
-    this.projectControls = this.projectControls || {};
-    this.projectControls[repo.name] = { branch, flags };
-
-    const targets = element('div', 'dev-targets');
-    for (const target of repo.platforms || []) targets.append(this.targetRow(repo, target, { branch, flags }));
-    if (!(repo.platforms || []).length) targets.append(element('p', 'hint', 'No targets. Add one to the project in Apparition Store\'s config.json.'));
-    card.append(targets, options);
-
+    if (extra.children.length > 1) card.append(extra);
     const footer = element('div', 'dev-project-foot');
     const rowId = `project:${repo.name}`;
     const latest = this.jobsList.find(job => job.repo === repo.name);
@@ -775,44 +723,12 @@ export class DeveloperView {
     }
     if (footer.children.length) card.append(footer);
     this.host(rowId, card);
-    return card;
+
   }
-  // A target: where it installs, what is there now, and the three things to do about it.
-  targetRow(repo, target, { branch, flags }) {
+  targetActions(repo, target) {
     const row = element('div', 'dev-target');
-    const where = element('div', 'dev-target-where');
-    const device = (this.deviceList || []).find(d => d.name === target.device);
-    const reachable = device?.state === 'connected';
-    where.append(element('span', `dot ${reachable ? 'on' : ''}`));
-    where.append(element('strong', '', `${target.device}`));
-    where.append(pill(target.platform || '', 'mono'));
-    where.append(device ? pill(reachable ? 'Reachable' : 'Not reachable now', reachable ? 'good' : '')
-      : pill('Not paired with this Mac', 'warn', 'Pair it in Xcode (Window > Devices and Simulators) to install from this Mac.'));
-    const badge = targetBadge(repo, target, this.installs);
-    where.append(pill(badge.text, badge.tone));
-    const { install, text } = targetState(repo, target, this.installs);
-    const state = element('p', 'hint dev-target-state', text);
-    const activeJob = this.jobsList.find(job => job.repo === repo.name && job.device === target.device && job.platform === target.platform && ACTIVE.includes(job.status));
-    const progress = element('p', 'dev-target-progress', activeJob
-      ? `${activeJob.status === 'queued' ? 'Queued' : 'Working'} · ${jobKind(activeJob)} #${activeJob.id}` : '');
-    progress.hidden = !activeJob;
+    const install = this.installs?.[target.device]?.[target.bundleId];
     const actions = element('div', 'service-row');
-    const submit = async (deploy, control) => {
-      control.disabled = true;
-      progress.textContent = 'Starting build…';
-      progress.hidden = false;
-      row.setAttribute('aria-busy', 'true');
-      try {
-        const reply = await this.action('build', { repo: repo.name, device: target.device, targetPlatform: target.platform, branch: branch.value,
-          ...Object.fromEntries(Object.entries(flags).map(([key, input]) => [key, key === 'injectBackend' ? input.value : (deploy ? input.checked : (key === 'run' ? false : input.checked))])),
-          ...(deploy ? {} : { deploy: false }) });
-        if (reply?.jobs?.[0]) { this.followJob(reply.jobs[0].id); this.status(`Queued ${deploy ? 'build' : 'build-only'} #${this.selectedLog}. Follow it in Activity.`); }
-        else { progress.textContent = 'Build request accepted'; row.removeAttribute('aria-busy'); }
-      } catch (error) {
-        progress.textContent = `Could not start: ${error.message || error}`;
-        row.removeAttribute('aria-busy');
-      } finally { control.disabled = false; }
-    };
     if (this.capabilities.has('entry-patching')) {
       const patchButton = button('Patch running app', async () => {
         patchButton.disabled = true;
@@ -823,10 +739,6 @@ export class DeveloperView {
       }, 'button quiet small');
       actions.append(patchButton);
     }
-    const installButton = button(`Install on ${target.device}`, () => submit(true, installButton), 'button primary small');
-    const buildOnly = button('Build only', () => submit(false, buildOnly), 'button quiet small');
-    buildOnly.title = 'Builds and keeps the IPA without installing. Download it to open in Apparition, or use it for a re-sign.';
-    actions.append(installButton, buildOnly);
     if (this.capabilities.has('resign') && !/^macos$/i.test(target.platform)) {
       // The exact build on the device if the Mac kept it; otherwise build it first, if the Mac can.
       const keptInstalled = install?.buildId && this.artifactList.find(a => a.buildId === install.buildId);
@@ -836,7 +748,7 @@ export class DeveloperView {
       if (source) actions.append(button('Re-sign…', () => this.openResign({ ...source, repo: repo.name, device: target.device,
         bundleId: target.bundleId, platform: target.platform, name: repo.name }), 'button quiet small'));
     }
-    row.append(where, state, progress, actions);
+    if (actions.children.length) row.append(element('strong', '', `${target.device} · ${target.platform}`), actions);
     return row;
   }
 

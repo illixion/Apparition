@@ -1,0 +1,72 @@
+  /* ---- fleet card ---- */
+.apparition-projects .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+.apparition-projects .cardhead { display: flex; align-items: baseline; gap: 10px; margin-bottom: 11px; flex-wrap: wrap; }
+.apparition-projects .reponame { font-family: var(--mono); font-weight: 700; font-size: .86rem; letter-spacing: .03em;
+    text-transform: uppercase; color: var(--fg); }
+.apparition-projects .refline { font-family: var(--mono); font-size: .76rem; color: var(--dim); }
+.apparition-projects .refline code { color: var(--dim); }
+.apparition-projects .refline .dirty { color: var(--warn); }
+.apparition-projects .subject { font-size: .76rem; color: var(--dim2); overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+.apparition-projects .batchflag { margin-left: auto; font-family: var(--mono); font-size: .72rem; color: var(--accent); }
+
+  /* signature element: the chip strip — click a chip to include/exclude it
+     from the next batch deploy for this repo */
+.apparition-projects .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+.apparition-projects .chip { position: relative; display: flex; align-items: center; gap: 6px; padding: 6px 9px 6px 8px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px;
+    cursor: pointer; user-select: none; transition: border-color 120ms, background 120ms; }
+.apparition-projects .chip:hover { border-color: var(--dim2); }
+.apparition-projects .chip.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--surface2)); }
+.apparition-projects .chip input { position: absolute; opacity: 0; pointer-events: none; }
+.apparition-projects .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
+.apparition-projects .chip .dot.ok { background: var(--ok); }
+.apparition-projects .chip .dot.warn { background: var(--warn); }
+.apparition-projects .chip .dot.bad { background: var(--bad); }
+.apparition-projects .chip .dot.info { background: var(--info); }
+.apparition-projects .chip .devname { font-size: .82rem; font-weight: 600; }
+.apparition-projects .chip .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
+.apparition-projects .chip .branchtag { font-size: .68rem; color: var(--accent); font-family: var(--mono); }
+.apparition-projects .chip .otaicon { color: var(--dim); font-size: .76rem; padding: 1px 3px; border-radius: 4px; margin-left: 1px; }
+.apparition-projects .chip .otaicon:hover { color: var(--fg); background: var(--line); }
+.apparition-projects .chip.building { border-color: var(--accent); animation: apparition-project-pulse 1.4s ease-in-out infinite; }
+  @keyframes apparition-project-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+.apparition-projects .cardfoot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 11px;
+    border-top: 1px solid var(--line); }
+.apparition-projects .runcheck { display: inline-flex; align-items: center; gap: 6px; font-size: .78rem;
+    color: var(--dim); cursor: pointer; user-select: none; }
+.apparition-projects .runcheck input { cursor: pointer; accent-color: var(--accent); }
+.apparition-projects .runcheck:has(input:disabled) { opacity: .45; cursor: default; }
+.apparition-projects .opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 14px; }
+.apparition-projects .cardfoot .spacer { flex: 1 1 auto; }
+.apparition-projects .macapps { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.apparition-projects .macapp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 9px 6px 8px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; }
+.apparition-projects .macapp.building { border-color: var(--accent); animation: apparition-project-pulse 1.4s ease-in-out infinite; }
+.apparition-projects .macapp .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--dim2); }
+.apparition-projects .macapp .dot.ok { background: var(--ok); }
+.apparition-projects .macapp .dot.warn { background: var(--warn); }
+.apparition-projects .macapp .macname { font-size: .82rem; font-weight: 600; }
+.apparition-projects .macapp .platname { font-size: .7rem; color: var(--dim); font-family: var(--mono); }
+.apparition-projects .macapp .macbuilt { font-size: .72rem; color: var(--dim2); font-family: var(--mono); flex: 1 1 auto; }
+.apparition-projects .macapp button { padding: 4px 9px; font-size: .76rem; }
+
+
+.apparition-projects .project-tools { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px; }
+.apparition-projects .project-tools input { flex:1 1 240px; min-width:180px; width:auto; }
+.apparition-projects .project-list { display:flex; flex-direction:column; gap:10px; }
+.apparition-projects input[type=search], .apparition-projects button, .apparition-projects select { font:inherit; font-size:.82rem; border:1px solid var(--line); border-radius:7px; padding:7px 10px; color:var(--fg); background:var(--surface2); }
+.apparition-projects button { cursor:pointer; }
+.apparition-projects button.primary { background:var(--accent); color:var(--accent-fg); }
+.apparition-projects button:disabled { opacity:.45; cursor:default; }
+.apparition-projects .project-progress { margin:10px 0 0; padding:8px; border-left:3px solid var(--accent); font-size:.82rem; }
+.apparition-projects .chip:focus-within { outline:2px solid var(--accent); outline-offset:2px; }
+.apparition-projects [hidden] { display:none !important; }
+.apparition-projects .project-extra:empty { display:none; }
+.apparition-projects .project-count { color:var(--dim); font-size:.8rem; }
+
+.apparition-projects select { appearance:auto; -webkit-appearance:auto; }
+.apparition-projects .target-status { font-size:.72rem; color:var(--dim); }
+
+.apparition-projects .project-tools select, .apparition-projects .cardfoot > select { width:auto; max-width:100%; }
