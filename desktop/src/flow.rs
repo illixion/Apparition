@@ -445,6 +445,59 @@ pub fn forget_paired_mac(state: Shared<'_>) -> bool {
     api::paired_mac::forget(&api::anisette_dir(&state.store.apple_id_dir()))
 }
 
+/// What the VM setup server is waiting on: where to reach it from the VM.
+#[derive(serde::Serialize)]
+pub struct VmSetup {
+    port: u16,
+    addresses: Vec<String>,
+}
+
+#[cfg(target_os = "macos")]
+static VM_SETUP: std::sync::Mutex<Option<api::vm_setup::Session>> = std::sync::Mutex::new(None);
+
+/// Starts serving this app's own build to a macOS VM in recoveryOS (see vm_setup.rs). Progress
+/// comes as `vm-setup-progress` events with the fields of `Progress`.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn vm_setup_start(app: AppHandle) -> Result<VmSetup, Failure> {
+    let exe = std::env::current_exe().map_err(|e| Failure::new(e.to_string()))?;
+    let dir = exe.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    // The bundle holds the command line next to the app's own program, with the helper.
+    let cli = dir.join("apparition-cli");
+    let program = if cli.is_file() { cli } else { exe };
+    let session = api::vm_setup::serve(program, dir.join("apparition-anisette-helper")).await?;
+    let started = VmSetup { port: session.port, addresses: session.addresses.iter().map(|a| a.to_string()).collect() };
+    let mut progress = session.progress.clone();
+    *VM_SETUP.lock().unwrap() = Some(session);
+    tauri::async_runtime::spawn(async move {
+        while progress.changed().await.is_ok() {
+            let now = *progress.borrow();
+            let _ = app.emit("vm-setup-progress", serde_json::json!({
+                "script": now.script, "program": now.program, "helper": now.helper,
+                "done": now.done, "timedOut": now.timed_out,
+            }));
+            if now.done || now.timed_out {
+                VM_SETUP.lock().unwrap().take();
+                break;
+            }
+        }
+    });
+    Ok(started)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn vm_setup_start(_app: AppHandle) -> Result<VmSetup, Failure> {
+    Err(Failure::new("macOS VMs run only on a Mac"))
+}
+
+/// Stops the VM setup server.
+#[tauri::command]
+pub fn vm_setup_stop() {
+    #[cfg(target_os = "macos")]
+    VM_SETUP.lock().unwrap().take();
+}
+
 #[tauri::command]
 pub fn saved_settings(state: Shared<'_>) -> Settings {
     read_settings(&state)

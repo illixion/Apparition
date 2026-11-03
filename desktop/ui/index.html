@@ -137,6 +137,18 @@
       <p class="status" data-role="anisette-status" hidden></p>
     </div>
 
+    <div class="group" data-role="vm-setup" hidden>
+      <h2 class="small">Set up a macOS VM</h2>
+      <p class="hint">For a VM that gives your anisette on macOS 27 (<a href="https://github.com/illixion/Apparition/blob/main/selfhost/macos-vm/README.md" target="_blank" rel="noreferrer">the walkthrough</a>). Boot the VM into recoveryOS, open Utilities &gt; Terminal, and type the line below with the address the VM can reach this Mac at. It installs this very build, with no internet needed.</p>
+      <div class="row"><button type="button" class="button small" data-role="vm-setup-start">Show the line to type</button></div>
+      <div data-role="vm-setup-lines" hidden>
+        <p class="hint">Which address? The one on the VM's network: UTM's shared network, this Mac's LAN address if the VM is bridged. (Docker and others add addresses too.)</p>
+        <ul class="plain" data-role="vm-setup-list"></ul>
+        <div class="row"><button type="button" class="button quiet small" data-role="vm-setup-stop">Stop</button></div>
+      </div>
+      <p class="status" data-role="vm-setup-status" hidden></p>
+    </div>
+
     <div class="group">
       <h2 class="small">At login</h2>
       <label class="check"><input type="checkbox" data-role="login"><span>Open Apparition when you log in, straight to the <span data-role="where">menu bar</span></span></label>

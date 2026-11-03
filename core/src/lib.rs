@@ -48,6 +48,8 @@ mod companion_channel;
 pub mod companion_client;
 #[cfg(feature = "desktop")]
 pub mod stay_awake;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+pub mod vm_setup;
 #[cfg(feature = "desktop")]
 pub mod relay;
 #[cfg(feature = "desktop")]

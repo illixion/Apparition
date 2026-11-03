@@ -164,6 +164,10 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       this Mac.
   apparition browse
       List the companions mDNS finds from here, for 10 seconds: a check that multicast works.
+  apparition vm-setup                           (macOS)
+      Set up a macOS VM on this Mac as an anisette companion, with no internet: serves this
+      copy and its helper to the VM's recoveryOS and prints the line to type there. Stops by
+      itself once the VM has them (selfhost/macos-vm/README.md).
   apparition link [--dir <dir>] [--remove]      (macOS and Linux)
       Make `apparition` available in any terminal: a symlink to this copy in <dir> (default
       ~/.local/bin, made if missing), and what to add to PATH if <dir> isn't on it already. From
@@ -226,6 +230,7 @@ async fn main() -> ExitCode {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
         }
         Some("link") => link(&args[1..]),
+        Some("vm-setup") => vm_setup().await,
         Some("--version" | "-V" | "version") => {
             println!("apparition {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
@@ -324,6 +329,47 @@ fn path_hint(dir: &Path) -> Result<(), Error> {
 #[cfg(not(unix))]
 fn link(_args: &[String]) -> Result<(), Error> {
     Err(fail("link is for macOS and Linux; on Windows, put the folder holding apparition-cli.exe on PATH"))
+}
+
+// MARK: Setting up a macOS VM
+
+#[cfg(target_os = "macos")]
+async fn vm_setup() -> Result<(), Error> {
+    use apparition_core::api::vm_setup;
+    let exe = std::env::current_exe().map_err(|e| fail(format!("{e}")))?;
+    let helper = exe.parent().map(|d| d.join("apparition-anisette-helper")).filter(|h| h.is_file());
+    let helper = helper.ok_or_else(|| fail("apparition-anisette-helper isn't next to this program"))?;
+    let mut session = vm_setup::serve(exe, helper).await.map_err(|e| fail(format!("{e:?}")))?;
+    println!("In the VM's recoveryOS (Utilities > Terminal), type the line with the address the VM can reach this Mac at:\n");
+    for ip in &session.addresses {
+        println!("  curl -s {ip}:{}|bash", session.port);
+    }
+    println!("\nWhich address? The one on the VM's network: UTM's shared network, or this Mac's LAN address if the VM is bridged.");
+    println!("Waiting (Ctrl-C to stop; it stops by itself after 15 minutes)...");
+    let mut shown = vm_setup::Progress::default();
+    loop {
+        if session.progress.changed().await.is_err() {
+            break;
+        }
+        let now = *session.progress.borrow();
+        if now.script && !shown.script { println!("The VM fetched the script."); }
+        if now.program && !shown.program { println!("The VM fetched apparition."); }
+        if now.helper && !shown.helper { println!("The VM fetched the helper."); }
+        shown = now;
+        if now.done {
+            println!("Done: the VM has everything. Let it restart, then pair (selfhost/macos-vm/README.md, step 6).");
+            return Ok(());
+        }
+        if now.timed_out {
+            return Err(fail("nobody finished in 15 minutes; run it again"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn vm_setup() -> Result<(), Error> {
+    Err(fail("vm-setup is for a Mac: macOS VMs run only on Apple hardware"))
 }
 
 // MARK: Sharing the Apple ID's certificate key

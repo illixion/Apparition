@@ -1550,6 +1550,50 @@ function buildCompanion() {
       companionCall("companion_set_anisette", { mode }, note);
     }),
   );
+  // A macOS VM in recoveryOS can't paste: show the short line to type, and what it has fetched.
+  const vmStatus = $(companionPanel, "vm-setup-status");
+  const vmLines = $(companionPanel, "vm-setup-lines");
+  const vmStart = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-setup-start"));
+  const vmStop = async () => {
+    await invoke("vm_setup_stop");
+    vmLines.hidden = true;
+    vmStart.hidden = false;
+  };
+  vmStart.addEventListener("click", async () => {
+    try {
+      const { port, addresses } = await invoke("vm_setup_start");
+      $(companionPanel, "vm-setup-list").replaceChildren(
+        ...addresses.map((/** @type {string} */ ip) => {
+          const li = document.createElement("li");
+          const code = document.createElement("code");
+          code.textContent = `curl -s ${ip}:${port}|bash`;
+          li.append(code);
+          return li;
+        }),
+      );
+      vmLines.hidden = false;
+      vmStart.hidden = true;
+      setStatus(vmStatus, "Waiting for the VM. It stops by itself after 15 minutes.");
+    } catch (error) {
+      setStatus(vmStatus, String(error?.message ?? error), "error");
+    }
+  });
+  $(companionPanel, "vm-setup-stop").addEventListener("click", async () => {
+    await vmStop();
+    setStatus(vmStatus, "");
+  });
+  listen("vm-setup-progress", async (/** @type {any} */ e) => {
+    const p = e.payload;
+    if (p.done) {
+      await vmStop();
+      setStatus(vmStatus, "The VM has everything. Let it restart, then pair with it (the walkthrough, step 6).", "good");
+    } else if (p.timedOut) {
+      await vmStop();
+      setStatus(vmStatus, "Nobody finished in 15 minutes. Show the line again to retry.", "error");
+    } else {
+      setStatus(vmStatus, p.program || p.helper ? "The VM is downloading…" : "The VM fetched the script.");
+    }
+  });
   // Also the only way to quit where there's no tray to show the menu (niri, plain GNOME).
   $(companionPanel, "quit").addEventListener("click", () => invoke("quit_app"));
   const login = /** @type {HTMLInputElement} */ ($(companionPanel, "login"));
@@ -1640,6 +1684,7 @@ function drawCompanion(/** @type {any} */ status) {
   table.hidden = rows.length === 0;
   $(companionPanel, "no-connections").hidden = rows.length > 0 || !status.relay.running;
 
+  $(companionPanel, "vm-setup").hidden = !status.anisette.builtinAvailable;
   const anisette = status.anisette;
   $(companionPanel, "mode-builtin").hidden = !anisette.native;
   $(companionPanel, "anisette-not-mac").hidden = anisette.native;

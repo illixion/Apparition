@@ -37,6 +37,9 @@ pub use crate::{
 /// Pairing this computer with a Mac for its anisette (companion_client.rs).
 #[cfg(feature = "desktop")]
 pub use crate::companion_client as paired_mac;
+/// Serving the VM setup to a macOS VM in recoveryOS (vm_setup.rs).
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+pub use crate::vm_setup;
 /// Handing the certificate key to a nearby Apparition, checked by a six-digit code (nearby.rs).
 #[cfg(feature = "desktop")]
 pub use crate::nearby::net as nearby;

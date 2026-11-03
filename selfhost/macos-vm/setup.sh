@@ -16,6 +16,11 @@
 # something to do to the Mac you use. (A real Mac on macOS 26 or earlier needs no SIP change;
 # run this there from Terminal with sudo and it stays on.)
 #
+# From the Mac that hosts the VM, there is a shorter way that needs no internet: the Apparition
+# app (Companion > Set up a VM) or `apparition vm-setup` on that Mac serves this script and its own
+# build, and shows a line to type here, `curl -s <that Mac's address>:4949|bash`. The copy it serves
+# has BASE filled in, and installs from there instead of from GitHub.
+#
 # Uses only what recoveryOS ships (bash 3.2, curl, ditto, csrutil, nvram). Settings:
 # APPARITION_ZIP (a release zip URL or local path), APPARITION_PORT, APPARITION_FORCE=1 (skip the
 # SIP/NVRAM check in a normal boot, to install the rest).
@@ -24,6 +29,9 @@ set -u
 REPO=https://github.com/illixion/Apparition
 PORT=${APPARITION_PORT:-49160}
 LABEL=com.illixion.apparition.anisette
+# Filled in by the host Mac that serves this script (core/src/vm_setup.rs); empty otherwise.
+BASE='@@BASE@@'
+case "$BASE" in @@*) BASE="" ;; esac
 BOOT_ARG=amfi_get_out_of_my_way=1
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -95,30 +103,41 @@ fi
 
 # ------------------------------------------------------------------ Apparition
 say "Installing apparition and its anisette helper"
-if [ -z "${APPARITION_ZIP:-}" ]; then
-  # The latest release: GitHub redirects /releases/latest to .../tag/vX.Y.Z.
-  tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$REPO/releases/latest" | sed 's|.*/||')
-  [ -n "$tag" ] || die "couldn't find the latest Apparition release"
-  ZIP=$REPO/releases/download/$tag/Apparition-Installer-${tag#v}-macos-universal.zip
-else
-  ZIP=$APPARITION_ZIP
-fi
 dest="$DATA/usr/local/apparition"
 mkdir -p "$dest"
 work=$(mktemp -d /tmp/apparition.XXXXXX)
-case "$ZIP" in
-  http*) curl -fL --progress-bar -o "$work/apparition.zip" "$ZIP" || die "couldn't download $ZIP" ;;
-  *) cp "$ZIP" "$work/apparition.zip" || die "no file $ZIP" ;;
-esac
-ditto -x -k "$work/apparition.zip" "$work/x" || die "couldn't unpack $ZIP"
-for name in apparition apparition-anisette-helper; do
-  file=$(find "$work/x" -maxdepth 2 -type f -name "$name" | head -1)
-  [ -n "$file" ] || die "$name isn't in $ZIP"
-  # ditto keeps the helper's signature, entitlements included; never re-sign it.
-  ditto "$file" "$dest/$name"
-  chown 0:0 "$dest/$name"
-  chmod 755 "$dest/$name"
-done
+if [ -n "$BASE" ]; then
+  # The host Mac's own build, one file each. The helper is kept as sent: its signature carries
+  # the entitlements, so never re-sign it.
+  for name in apparition apparition-anisette-helper; do
+    curl -fL --progress-bar -o "$work/$name" "$BASE/$name" || die "couldn't download $BASE/$name"
+    ditto "$work/$name" "$dest/$name"
+    chown 0:0 "$dest/$name"
+    chmod 755 "$dest/$name"
+  done
+else
+  if [ -z "${APPARITION_ZIP:-}" ]; then
+    # The latest release: GitHub redirects /releases/latest to .../tag/vX.Y.Z.
+    tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$REPO/releases/latest" | sed 's|.*/||')
+    [ -n "$tag" ] || die "couldn't find the latest Apparition release"
+    ZIP=$REPO/releases/download/$tag/Apparition-Installer-${tag#v}-macos-universal.zip
+  else
+    ZIP=$APPARITION_ZIP
+  fi
+  case "$ZIP" in
+    http*) curl -fL --progress-bar -o "$work/apparition.zip" "$ZIP" || die "couldn't download $ZIP" ;;
+    *) cp "$ZIP" "$work/apparition.zip" || die "no file $ZIP" ;;
+  esac
+  ditto -x -k "$work/apparition.zip" "$work/x" || die "couldn't unpack $ZIP"
+  for name in apparition apparition-anisette-helper; do
+    file=$(find "$work/x" -maxdepth 2 -type f -name "$name" | head -1)
+    [ -n "$file" ] || die "$name isn't in $ZIP"
+    # ditto keeps the helper's signature, entitlements included; never re-sign it.
+    ditto "$file" "$dest/$name"
+    chown 0:0 "$dest/$name"
+    chmod 755 "$dest/$name"
+  done
+fi
 rm -rf "$work"
 
 # A LaunchAgent, not a daemon: LimitLoadToSessionType Aqua runs it in the GUI login session, the

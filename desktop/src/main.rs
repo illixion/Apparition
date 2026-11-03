@@ -73,6 +73,8 @@ fn main() {
             flow::paired_mac,
             flow::pair_mac,
             flow::forget_paired_mac,
+            flow::vm_setup_start,
+            flow::vm_setup_stop,
             flow::pick_file,
             flow::import_certificate,
             flow::signing_key_from,
