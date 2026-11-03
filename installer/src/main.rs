@@ -758,11 +758,16 @@ async fn launch(args: &[String]) -> Result<(), Error> {
     let stopping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop_flag = stopping.clone();
     tokio::spawn(async move {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending::<()>().await } } => {}
+        #[cfg(unix)]
+        {
+            let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending::<()>().await } } => {}
+            }
         }
+        #[cfg(not(unix))]
+        let _ = tokio::signal::ctrl_c().await;
         stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         if !api::stop_jit(&key) {
             std::process::exit(0);
