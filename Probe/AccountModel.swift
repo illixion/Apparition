@@ -207,6 +207,12 @@ final class AccountModel {
             twoFactorBox.onRequestJSON = { [weak self] json in
                 asked.set()
                 let request = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
+                let challenge: String
+                if request?["unknown"] as? Bool == true { challenge = "unknown" }
+                else if request?["sms"] as? Bool == true { challenge = "SMS" }
+                else { challenge = "trusted-device" }
+                let hasPreviousError = (request?["lastError"] as? String)?.isEmpty == false
+                log.info("2FA prompt: \(challenge, privacy: .public); previous error present: \(hasPreviousError, privacy: .public)")
                 Task { @MainActor in
                     let numbers = (request?["numbers"] as? [[String: Any]] ?? []).compactMap { entry in
                         (entry["id"] as? Int).map { TwoFactorRequest.PhoneNumber(id: $0, number: entry["number"] as? String ?? "") }
