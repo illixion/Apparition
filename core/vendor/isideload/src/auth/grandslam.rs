@@ -240,10 +240,8 @@ impl GrandSlam {
             "User-Agent",
             HeaderValue::from_str(&client_info.user_agent)?,
         );
-        if !client_info.client_info.contains("<Windows;") {
-            headers.insert("X-Xcode-Version", HeaderValue::from_static("27.0 (27A5218g)"));
-            headers.insert("X-Apple-App-Info", HeaderValue::from_static("com.apple.gs.xcode.auth"));
-        }
+        headers.insert("X-Xcode-Version", HeaderValue::from_static("27.0 (27A5218g)"));
+        headers.insert("X-Apple-App-Info", HeaderValue::from_static("com.apple.gs.xcode.auth"));
         headers.insert(
             reqwest::header::CONNECTION,
             HeaderValue::from_static("close"),
@@ -316,11 +314,11 @@ fn windows_client_provided_data(cpd: &mut Dictionary) {
 mod windows_cpd_tests {
     use super::*;
     #[test]
-    fn windows_authkit_and_mac_xcode_use_their_own_header_profiles() {
+    fn windows_and_mac_requests_both_carry_the_xcode_headers() {
         let info = |platform: &str| AnisetteClientInfo { client_info: platform.into(), user_agent: "test".into() };
         let windows = GrandSlam::base_headers(&info("<PC> <Windows;10>"), false).unwrap();
-        assert!(!windows.contains_key("X-Xcode-Version"));
-        assert!(!windows.contains_key("X-Apple-App-Info"));
+        assert!(windows.contains_key("X-Xcode-Version"));
+        assert!(windows.contains_key("X-Apple-App-Info"));
         let mac = GrandSlam::base_headers(&info("<Mac15,7> <macOS;27>"), false).unwrap();
         assert!(mac.contains_key("X-Xcode-Version"));
         assert!(mac.contains_key("X-Apple-App-Info"));

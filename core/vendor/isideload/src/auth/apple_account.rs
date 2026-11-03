@@ -214,7 +214,7 @@ impl AppleAccount {
         debug!("Initial login successful");
 
         let mut attempts = 0;
-        // Set once Apple takes a trusted-device code, so being asked again ends the sign-in.
+        // Set once Apple takes a code (trusted-device or SMS), so being asked again ends the sign-in.
         let mut code_taken = false;
 
         loop {
@@ -308,6 +308,10 @@ impl AppleAccount {
                                 .verify_sms_2fa(code, id)
                                 .await
                                 .context("Failed to verify trusted device 2FA")?;
+                            if matches!(self.login_state, LoginState::NeedsLogin) {
+                                self.code_checked = true;
+                                code_taken = true;
+                            }
                         }
                         TwoFactorCallbackResponse::SendSms(selected_number_id) => {
                             self.login_state = self.select_number(selected_number_id)?;
@@ -791,7 +795,7 @@ impl AppleAccount {
         let gs_service_url = self.grandslam_client.get_url("gsService")?;
         debug!("GrandSlam service URL: {}", gs_service_url);
 
-        let cpd = self.grandslam_client.client_provided_data(&anisette_data);
+        let cpd = anisette_data.get_client_provided_data();
 
         let srp_client = srp::Client::<G2048, Sha256>::new_with_options(false);
         let a: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
@@ -808,7 +812,7 @@ impl AppleAccount {
                 .resync(&sim)
                 .await
                 .context("Anisette resync failed")?;
-            let fresh_cpd = self.grandslam_client.client_provided_data(&fresh_anisette);
+            let fresh_cpd = fresh_anisette.get_client_provided_data();
             raw_response = self
                 .send_init_request(&gs_service_url, &fresh_cpd, &a_pub)
                 .await
