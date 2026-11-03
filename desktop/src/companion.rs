@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use apparition_core::api;
-use apparition_core::companion::{self, AnisetteSource, Companion};
+use apparition_core::companion::{AnisetteSource, Companion};
 use apparition_core::relay::{self, ANISETTE_PORT, RELAY_PORT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -41,10 +41,12 @@ pub enum AnisetteMode {
     /// None.
     #[default]
     Off,
-    /// This computer's own, served on the LAN.
+    /// This Mac's own, to paired devices and computers over the encrypted channel.
     Builtin,
-    /// One already running here on port 6969 (the Docker one), whenever it answers.
-    Local,
+    /// The Docker server this app used to offer: read as `Off`, since only a Mac's own anisette
+    /// is offered now.
+    #[serde(other)]
+    Retired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,11 +172,8 @@ impl CompanionState {
         companion.relay.set_advertise(settings.advertise);
         let result = match settings.anisette {
             AnisetteMode::Builtin => companion.share_builtin_anisette().await.map_err(|error| error.to_string()),
-            AnisetteMode::Local | AnisetteMode::Off => {
+            AnisetteMode::Off | AnisetteMode::Retired => {
                 companion.stop_builtin_anisette().await;
-                if settings.anisette == AnisetteMode::Local {
-                    companion.refresh().await;
-                }
                 Ok(())
             }
         };
@@ -193,11 +192,11 @@ impl CompanionState {
                 "error": *self.relay_error.lock().unwrap(),
             },
             "anisette": {
-                "mode": settings.anisette,
-                "offered": offered.map(|source| match source { AnisetteSource::Builtin => "builtin", AnisetteSource::Local => "local" }),
+                "mode": if settings.anisette == AnisetteMode::Builtin { AnisetteMode::Builtin } else { AnisetteMode::Off },
+                "offered": offered.map(|source| match source { AnisetteSource::Builtin => "builtin" }),
                 "port": ports().1,
                 "builtinAvailable": api::builtin_anisette_available(),
-                // This Mac's own headers, which Apple accepts, rather than the Android libraries'.
+                // This Mac gives its own anisette (macOS 26 or earlier, or a VM set up for it).
                 "native": tokio::task::spawn_blocking(api::native_anisette).await.unwrap_or(false),
                 "error": *self.anisette_error.lock().unwrap(),
             },
@@ -210,7 +209,7 @@ impl CompanionState {
             },
             "pairing": {
                 // Built-in anisette for paired devices only.
-                "required": settings.anisette != AnisetteMode::Off,
+                "required": settings.anisette == AnisetteMode::Builtin,
                 "port": running.as_ref().map(|c| c.pairing_port()),
                 "channelPort": running.as_ref().map(|c| c.channel_port()),
                 "devices": running.as_ref().map(|c| c.devices.list()).unwrap_or_default(),
@@ -238,8 +237,7 @@ impl CompanionState {
             (None, None) => "Relay off".to_string(),
         };
         let anisette = match running.as_ref().and_then(|c| c.anisette()) {
-            Some(AnisetteSource::Builtin) => "Anisette: offered from this computer".to_string(),
-            Some(AnisetteSource::Local) => format!("Anisette: offering the server on port {}", ports().1),
+            Some(AnisetteSource::Builtin) => "Anisette: offered from this Mac".to_string(),
             None => "Anisette: not offered".to_string(),
         };
         if let Some(tray) = &*self.tray.lock().unwrap() {
@@ -259,8 +257,8 @@ fn relay_failure(error: &str) -> String {
     }
 }
 
-/// Starts what the settings say, the tray icon, and a loop that keeps a Docker server's offer
-/// and the tray current.
+/// Starts what the settings say, the tray icon, and a loop that keeps the relay and the tray
+/// current.
 pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
     *state.app.lock().unwrap() = Some(app.clone());
     let relay = MenuItem::with_id(app, "relay", "Relay", false, None::<&str>)?;
@@ -326,7 +324,6 @@ pub fn setup(app: &AppHandle, state: Arc<CompanionState>) -> tauri::Result<()> {
             match running {
                 // Say the port was taken: try again until it's free.
                 None if settings.relay => state.apply().await,
-                Some(companion) if settings.anisette == AnisetteMode::Local => companion.refresh().await,
                 _ => {}
             }
         }
@@ -434,8 +431,8 @@ pub async fn companion_set_relay(state: Shared<'_>, on: bool) -> Result<Value, F
 
 #[tauri::command]
 pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode) -> Result<Value, Failure> {
-    if mode == AnisetteMode::Builtin && !api::builtin_anisette_available() {
-        return Err("This computer can't make its own anisette data; use the Docker server instead.".into());
+    if mode == AnisetteMode::Builtin && !tokio::task::spawn_blocking(api::native_anisette).await.unwrap_or(false) {
+        return Err("Only a Mac on macOS 26 or earlier, or a macOS VM set up for it, offers its own anisette. Pair your devices with that Mac's Apparition instead.".into());
     }
     state.settings.lock().unwrap().anisette = mode;
     state.save();
@@ -470,16 +467,6 @@ pub async fn companion_forget_device(state: Shared<'_>, id: String) -> Result<Va
     Ok(state.status().await)
 }
 
-/// Starts or stops the self-hosted anisette server with the user's Docker.
-#[tauri::command]
-pub async fn companion_docker(state: Shared<'_>, up: bool) -> Result<Value, Failure> {
-    companion::docker_anisette(up).await?;
-    if let Some(companion) = state.running.lock().await.clone() {
-        companion.refresh().await;
-    }
-    Ok(state.status().await)
-}
-
 #[tauri::command]
 pub fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -510,7 +497,8 @@ mod tests {
         // Settings from before these existed: announced, and anisette for paired devices only.
         assert!(old.advertise);
         assert!(!old.relay);
-        assert_eq!(old.anisette, AnisetteMode::Local);
+        // The Docker server it offered is retired: nothing is offered in its place.
+        assert_eq!(old.anisette, AnisetteMode::Retired);
     }
 
     #[test]

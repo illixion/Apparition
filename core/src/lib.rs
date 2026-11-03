@@ -38,12 +38,14 @@ mod launch;
 mod tunnel;
 pub mod watch;
 pub mod stop;
-#[cfg(all(feature = "anisette", unix))]
+#[cfg(all(feature = "anisette", target_os = "macos"))]
 pub mod anisette;
 #[cfg(feature = "desktop")]
 pub mod companion;
 #[cfg(feature = "desktop")]
 mod companion_channel;
+#[cfg(feature = "desktop")]
+pub mod companion_client;
 #[cfg(feature = "desktop")]
 pub mod relay;
 #[cfg(feature = "desktop")]
@@ -271,19 +273,23 @@ pub unsafe extern "C" fn apparition_sign_with_existing_profile(
     })())
 }
 
-/// What to pass as the anisette address to use the built-in provider (Apple's own libraries,
-/// loaded in this process) instead of a v3 server. See [`builtin_anisette_available`].
+/// What to pass as the anisette address to use this Mac's own anisette, served in this
+/// process. See [`builtin_anisette_available`].
 pub const BUILTIN_ANISETTE: &str = "builtin";
 
-/// Whether this build and platform has the built-in anisette provider.
+/// What to pass as the anisette address to use the Mac this computer is paired with, over the
+/// companion's encrypted channel (see [`companion_client`]).
+pub const PAIRED_MAC_ANISETTE: &str = "paired";
+
+/// Whether this build and platform has the built-in anisette: a Mac's own, so only on macOS.
+/// Whether this Mac gives its anisette is [`native_anisette`].
 pub fn builtin_anisette_available() -> bool {
-    cfg!(all(feature = "anisette", unix))
+    cfg!(all(feature = "anisette", target_os = "macos"))
 }
 
-/// Whether the built-in anisette uses this Mac's own headers (macOS 26 and earlier, or macOS 27
-/// with SIP and AMFI off and the helper beside this program) rather than Apple's Android
-/// libraries. Both sign in; a Mac's own goes through the usual 2FA (see claimed_platform).
-/// Found once; it can take a moment.
+/// Whether this Mac gives its own anisette: macOS 26 and earlier, or a macOS VM prepared with
+/// selfhost/macos-vm/setup.sh (SIP and AMFI off, the helper beside this program). Found once;
+/// it can take a moment.
 pub fn native_anisette() -> bool {
     #[cfg(all(feature = "anisette", target_os = "macos"))]
     {
@@ -295,89 +301,45 @@ pub fn native_anisette() -> bool {
     }
 }
 
-/// What Apple's `-80045` ("This action cannot be completed at this time") means here.
-pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition claims what the anisette server says it makes (Android for Dadoum's anisette-v3-server), and this server's anisette doesn't match that. Use the built-in anisette, Apparition's companion, or another anisette-v3 server.";
-pub const REFUSED_ANDROID_ANISETTE: &str = "Apple took the password but refused the Xcode sign-in (-80046) for anisette made by Apple's Android libraries, which the built-in anisette uses off a Mac and Dadoum's anisette-v3-server runs, even asked for as a Mac. Use a Mac's own anisette (Apparition on a Mac with macOS 26 or earlier, or its companion) or an anisette-v3 server that doesn't use those libraries.";
+/// The anisette to use when the person names none, for the Apple ID folder `data_dir`: this
+/// Mac's own when it gives it, else the Mac this computer is paired with, else `None` (pair
+/// with a Mac, or give an anisette server's address).
+pub fn default_anisette(data_dir: &std::path::Path) -> Option<&'static str> {
+    if native_anisette() {
+        return Some(BUILTIN_ANISETTE);
+    }
+    #[cfg(feature = "desktop")]
+    if companion_client::status(&anisette_dir(data_dir)).is_some() {
+        return Some(PAIRED_MAC_ANISETTE);
+    }
+    let _ = data_dir;
+    None
+}
 
-/// Where the built-in anisette keeps its libraries and working files, for the Apple ID folder
-/// `data_dir`: next to it, so the libraries are fetched once, not per Apple ID.
+/// What to say when [`default_anisette`] has none.
+pub const NO_ANISETTE: &str = "Apparition gets its anisette from a Mac you own: this Mac on macOS 26 or earlier, or a Mac (or macOS VM on your Mac) running Apparition that this computer is paired with. Pair with it, or give the address of an anisette server you run.";
+
+/// What Apple's `-80045` ("This action cannot be completed at this time") means here.
+pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition claims what the anisette server says it makes, and this server's anisette doesn't match that. Use a Mac's own anisette: this Mac's, or a Mac this computer is paired with.";
+/// Apple took the password but refused the Xcode sign-in for anisette that isn't a Mac's.
+pub const REFUSED_ANDROID_ANISETTE: &str = "Apple took the password but refused the Xcode sign-in (-80046): Apple gives the Xcode token only to a Mac's anisette, and this anisette server makes Android's. Use a Mac's own anisette: this Mac's on macOS 26 or earlier, or a Mac (or macOS VM) this computer is paired with.";
+
+/// Where the built-in anisette and the pairing with a Mac keep their files, for the Apple ID
+/// folder `data_dir`: next to it, shared by every Apple ID.
 pub fn anisette_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.parent().unwrap_or(data_dir).join("anisette")
 }
 
-/// Which of the built-in anisette's two libraries are in place (see [`import_anisette_libraries`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct AnisetteLibraries {
-    pub services: bool,
-    pub core: bool,
-    /// A file didn't match the checksum and was used because the person said to.
-    pub unverified: bool,
-}
-
-/// Takes the built-in anisette's libraries from files the person got themselves, when Apple's CDN
-/// can't be reached: the Apple Music APK, or `libstoreservicescore.so` and `libCoreADI.so` from it.
-/// Each is checked against the SHA-256 of the version this build was tested with, and that is the
-/// only check made, as they are run in this process; one that doesn't match fails with a
-/// `"checksum"` [`failure_kind`] unless `accept_unverified` says to go on (Apple may update them and
-/// take the old address down). For the Apple ID folder `data_dir`, as [`sign_in`] takes it.
-pub async fn import_anisette_libraries(data_dir: &std::path::Path, paths: &[std::path::PathBuf], accept_unverified: bool) -> Result<AnisetteLibraries, Report> {
-    #[cfg(all(feature = "anisette", unix))]
-    {
-        let imported = anisette::import_libraries(&anisette_dir(data_dir), paths, accept_unverified).await?;
-        Ok(AnisetteLibraries { services: imported.services, core: imported.core, unverified: imported.unverified })
-    }
-    #[cfg(not(all(feature = "anisette", unix)))]
-    {
-        let _ = (data_dir, paths, accept_unverified);
-        bail!("This build has no built-in anisette provider")
-    }
-}
-
-/// Whether the built-in anisette's libraries include one supplied by the person that didn't match
-/// the checksum of the tested version (see [`import_anisette_libraries`]): an unsupported setup,
-/// which the apps keep warning about. For the Apple ID folder `data_dir`.
-pub fn anisette_libraries_unverified(data_dir: &std::path::Path) -> bool {
-    #[cfg(all(feature = "anisette", unix))]
-    {
-        anisette::libraries_unverified(&anisette_dir(data_dir))
-    }
-    #[cfg(not(all(feature = "anisette", unix)))]
-    {
-        let _ = data_dir;
-        false
-    }
-}
-
-/// Forgets the built-in anisette's cached libraries, supplied or fetched, so the next start fetches
-/// Apple's own. A process that already loaded them keeps them until it restarts.
-pub fn reset_anisette_libraries(data_dir: &std::path::Path) -> Result<(), Report> {
-    #[cfg(all(feature = "anisette", unix))]
-    {
-        anisette::reset_libraries(&anisette_dir(data_dir))
-    }
-    #[cfg(not(all(feature = "anisette", unix)))]
-    {
-        let _ = data_dir;
-        Ok(())
-    }
-}
-
 /// What kind of failure `error` is, for an app to offer the way out that fits, or `None`:
-/// - `"libraries"`: Apple's CDN couldn't be reached for the built-in anisette's libraries
-///   ([`import_anisette_libraries`] is the other way);
-/// - `"checksum"`: a library file given to [`import_anisette_libraries`] isn't the version this
-///   build was tested with; the person may go on anyway;
 /// - `"network"`: Apple's servers couldn't be reached, or refused a request (a retry may
-///   work, on this network or another).
+///   work, on this network or another);
+/// - `"pairedMac"`: the Mac this computer is paired with for anisette couldn't be reached, or
+///   no longer accepts it (pair again, or check that the Mac's companion runs).
 pub fn failure_kind(error: &Report) -> Option<&'static str> {
     error.iter_reports().find_map(|cause| {
-        #[cfg(all(feature = "anisette", unix))]
-        if cause.downcast_current_context::<anisette::LibraryDownload>().is_some() {
-            return Some("libraries");
-        }
-        #[cfg(all(feature = "anisette", unix))]
-        if cause.downcast_current_context::<anisette::ChecksumMismatch>().is_some() {
-            return Some("checksum");
+        #[cfg(feature = "desktop")]
+        if cause.downcast_current_context::<companion_client::Unreachable>().is_some() {
+            return Some("pairedMac");
         }
         if cause.downcast_current_context::<isideload::auth::edge::EdgeError>().is_some() {
             return Some("network");
@@ -393,28 +355,75 @@ pub fn failure_kind(error: &Report) -> Option<&'static str> {
     })
 }
 
-/// The v3 server address to use for `requested`: itself, or the built-in provider's, which is
-/// started on first use and stays up for the life of the process.
+/// The v3 server address to use for `requested`: itself, this Mac's own provider's
+/// ([`BUILTIN_ANISETTE`]), or the paired Mac's local adapter ([`PAIRED_MAC_ANISETTE`]). Either
+/// of the last two is started on first use and stays up for the life of the process.
 async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result<String, Report> {
-    if requested != BUILTIN_ANISETTE {
-        return Ok(requested.to_string());
+    match requested {
+        BUILTIN_ANISETTE => builtin_address().await,
+        PAIRED_MAC_ANISETTE => paired_mac_address(data_dir).await,
+        other => Ok(other.to_string()),
     }
-    #[cfg(all(feature = "anisette", unix))]
+}
+
+async fn builtin_address() -> Result<String, Report> {
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
     {
         static SERVER: tokio::sync::OnceCell<anisette::Server> = tokio::sync::OnceCell::const_new();
         let server = SERVER
-            .get_or_try_init(|| async {
-                anisette::start(&anisette_dir(data_dir), std::net::SocketAddr::from(([127, 0, 0, 1], 0)), None).await
-            })
+            .get_or_try_init(|| async { anisette::start(std::net::SocketAddr::from(([127, 0, 0, 1], 0)), None).await })
             .await
-            .context("Couldn't start the built-in anisette provider")?;
+            .context("Couldn't use this Mac's anisette")?;
         Ok(server.url())
     }
-    #[cfg(not(all(feature = "anisette", unix)))]
+    #[cfg(not(all(feature = "anisette", target_os = "macos")))]
+    {
+        bail!("Only a Mac makes its own anisette. Pair this computer with your Mac (or a macOS VM) running Apparition, or give the address of an anisette server you run.")
+    }
+}
+
+async fn paired_mac_address(data_dir: &std::path::Path) -> Result<String, Report> {
+    #[cfg(feature = "desktop")]
+    {
+        companion_client::adapter_url(&anisette_dir(data_dir)).await
+    }
+    #[cfg(not(feature = "desktop"))]
     {
         let _ = data_dir;
-        bail!("This build has no built-in anisette provider; give the address of an anisette v3 server")
+        bail!("This build can't pair with a Mac")
     }
+}
+
+/// What [`check_anisette`] found, never the values themselves.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnisetteCheck {
+    /// What the server says it serves (`mac`, `android`...), if it says.
+    pub serves: Option<String>,
+    /// The device model the sign-in would claim, from the client info.
+    pub claims: String,
+    /// A Mac's server gave the two anisette headers (other servers aren't asked: they want a
+    /// provisioned identity first).
+    pub headers: Option<bool>,
+}
+
+/// Asks the anisette a sign-in would use (`requested`, as [`sign_in`] takes it) for its client
+/// info and, from a Mac, its headers, without an Apple ID. For checking a setup.
+pub async fn check_anisette(requested: &str, data_dir: &std::path::Path) -> Result<AnisetteCheck, Report> {
+    let url = anisette_address(requested, data_dir).await?;
+    let client = reqwest::Client::new();
+    let info: Value = client.get(format!("{url}/v3/client_info")).send().await?.error_for_status()?.json().await.context("the client info isn't JSON")?;
+    let serves = info.get("apparition_anisette").and_then(Value::as_str).map(str::to_string);
+    let claims = info.get("client_info").and_then(Value::as_str).and_then(|text| text.split('>').next()).map(|model| model.trim_start_matches('<').to_string()).unwrap_or_default();
+    let headers = if serves.as_deref() == Some("mac") {
+        let body = serde_json::json!({ "identifier": "AAAAAAAAAAAAAAAAAAAAAA==", "adi_pb": "AA==" });
+        let reply: Value = client.post(format!("{url}/v3/get_headers")).json(&body).send().await?.error_for_status()?.json().await?;
+        let present = |name: &str| reply.get(name).and_then(Value::as_str).is_some_and(|value| value.len() > 8);
+        Some(present("X-Apple-I-MD") && present("X-Apple-I-MD-M"))
+    } else {
+        None
+    };
+    Ok(AnisetteCheck { serves, claims, headers })
 }
 
 /// The code of the GrandSlam error behind `error` (-22411, -80045...), if one is.
@@ -1473,21 +1482,19 @@ pub unsafe extern "C" fn apparition_jit_script_close(script: *mut JitScript) -> 
     })())
 }
 
-#[cfg(all(test, feature = "anisette", unix))]
+#[cfg(all(test, feature = "anisette", target_os = "macos"))]
 mod builtin_anisette_tests {
-    /// The built-in address starts a server next to the Apple ID's folder and answers. Reaches
-    /// the network for the libraries: `APPARITION_NET=1`.
+    /// The built-in address starts this Mac's server and answers, on a Mac that gives its
+    /// anisette: `APPARITION_NATIVE=1`.
     #[tokio::test(flavor = "multi_thread")]
     async fn builtin_address_serves_client_info() {
-        if std::env::var_os("APPARITION_NET").is_none() {
+        if std::env::var_os("APPARITION_NATIVE").is_none() {
             return;
         }
         let _ = rustls::crypto::ring::default_provider().install_default();
         let root = std::env::temp_dir().join(format!("apparition-builtin-{}", std::process::id()));
         let url = super::anisette_address(super::BUILTIN_ANISETTE, &root.join("apple-id")).await.unwrap();
         assert!(url.starts_with("http://127.0.0.1:"), "{url}");
-        // (The libraries are loaded once per process, so another test may have fetched them
-        // into its own folder first.)
         let info = reqwest::get(format!("{url}/v3/client_info")).await.unwrap().text().await.unwrap();
         assert!(info.contains("client_info"), "{info}");
         // Anything else is passed through untouched.
@@ -1602,18 +1609,11 @@ mod failure_kind_tests {
         assert_eq!(failure_kind(&error), None);
     }
 
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "desktop")]
     #[test]
-    fn a_checksum_mismatch_has_its_own_kind() {
-        let error: Report = Err::<(), _>(report!(anisette::ChecksumMismatch)).context("Can't use applemusic.apk").unwrap_err().into();
-        assert_eq!(failure_kind(&error), Some("checksum"));
-    }
-
-    #[cfg(all(feature = "anisette", unix))]
-    #[test]
-    fn a_library_download_outranks_the_network_error_inside_it() {
-        let error: Report = Err::<(), _>(report!("Can't reach Apple's CDN")).context(anisette::LibraryDownload).unwrap_err().into();
-        assert_eq!(failure_kind(&error), Some("libraries"));
+    fn an_unreachable_paired_mac_outranks_the_network_error_inside_it() {
+        let error: Report = Err::<(), _>(report!("connection refused")).context(crate::companion_client::Unreachable).unwrap_err().into();
+        assert_eq!(failure_kind(&error), Some("pairedMac"));
     }
 }
 

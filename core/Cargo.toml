@@ -58,14 +58,14 @@ hkdf = { version = "0.12", optional = true }
 # The companion's cross-platform implementation of RAVECompanion's TLS 1.2-PSK channel.
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 tokio-openssl = { version = "0.6", optional = true }
-# The anisette provider (anisette/): loading Apple's Android libraries into the process.
+# The anisette provider (anisette/): this Mac's own, from macOS, served over the v3 protocol.
 libc = { version = "0.2", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json"], optional = true }
 
 [features]
 # For the desktop installer and app; the headset's static library leaves it out.
 desktop = ["dep:dirs", "dep:mdns-sd", "dep:x25519-dalek", "dep:hkdf", "dep:openssl", "dep:tokio-openssl", "tokio/time", "tokio/net", "tokio/io-util", "tokio/process"]
-# Anisette without Docker, on macOS and Linux (see anisette/mod.rs).
+# This Mac's own anisette, served in-process (macOS only, see anisette/mod.rs).
 anisette = ["dep:libc", "dep:axum", "tokio/net", "tokio/time", "tokio/sync"]
 
 

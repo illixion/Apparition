@@ -1,7 +1,23 @@
+//! The anisette v3 protocol, served from this Mac's own anisette (see `native`).
+//!
+//! This is the protocol isideload's `RemoteV3AnisetteProvider` speaks (MIT licensed, a dependency
+//! of this crate), so what it expects is what's implemented:
+//!
+//! - `GET /v3/client_info`: the `client_info` and `user_agent` strings to send to Apple;
+//! - `GET /v3/provisioning_session` (WebSocket): provisions a client. A Mac is provisioned by
+//!   macOS already, so this only takes the client's identifier and answers at once, with a
+//!   placeholder `adi.pb` the client stores (and sends back, unused);
+//! - `POST /v3/get_headers`: the `X-Apple-I-MD`, `X-Apple-I-MD-M` and `X-Apple-I-MD-RINFO`
+//!   headers, and whatever else AuthKit puts on the request.
+//!
+//! The client's identifier still gives its own `X-Mme-Device-Id` and `X-Apple-I-MD-LU`, which
+//! Apple takes alongside a Mac's headers.
+//!
+//! `/v3/client_info` also says what this server serves (`apparition_anisette`: `mac`), with the
+//! matching client info, which the sign-in claims (see claimed_platform).
+
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -16,9 +32,6 @@ use rootcause::prelude::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::adi::Adi;
-use super::apk;
-
 const RINFO: &str = "17106176";
 /// How long the server waits for the client's next message while provisioning.
 const STEP: Duration = Duration::from_secs(60);
@@ -31,31 +44,14 @@ pub type Access = Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>;
 
 struct Shared {
     access: Access,
-    adi: Arc<Adi>,
-    work: PathBuf,
-    /// Whether the headers come from this Mac rather than the libraries (see `native`).
-    native: bool,
 }
 
-/// The libraries are loaded once per process, whatever number of servers use them: they keep
-/// state of their own, and every call goes through one thread anyway.
-async fn shared_adi(data_dir: &Path) -> Result<Arc<Adi>, Report> {
-    static ADI: tokio::sync::OnceCell<Arc<Adi>> = tokio::sync::OnceCell::const_new();
-    ADI.get_or_try_init(|| async {
-        let (services, core) = apk::libraries(&data_dir.join("libraries")).await?;
-        let work = data_dir.join("work");
-        std::fs::create_dir_all(&work)?;
-        Ok(Arc::new(Adi::start(services, core, &work)?))
-    })
-    .await
-    .cloned()
-}
+/// What a client stores as its `adi.pb`: nothing of this Mac's, which keeps its own.
+const PLACEHOLDER_ADI_PB: &[u8] = b"apparition-mac-anisette";
 
 /// A running server. Dropping it stops serving.
 pub struct Server {
     pub address: SocketAddr,
-    /// The headers are this Mac's own (see `native`); otherwise the Android libraries make them.
-    pub native: bool,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -72,16 +68,15 @@ impl Drop for Server {
     }
 }
 
-/// Fetches the libraries if they aren't in `data_dir` yet, loads them (once per process), and
-/// serves on `bind` (use port 0 to take any free one). Several servers can run at once, say one
-/// on loopback for this computer's own sign-in and one on the LAN for a headset.
-pub async fn start(data_dir: &Path, bind: SocketAddr, access: Access) -> Result<Server, Report> {
-    let adi = shared_adi(data_dir).await?;
-    let work = data_dir.join("work");
-    std::fs::create_dir_all(&work)?;
-    let native = native_available().await;
+/// Serves this Mac's anisette on `bind` (use port 0 to take any free one). Several servers can
+/// run at once, say one on loopback for this computer's own sign-in and one for the companion's
+/// channel. Fails when this Mac doesn't give its anisette (macOS 27 outside a prepared VM).
+pub async fn start(bind: SocketAddr, access: Access) -> Result<Server, Report> {
+    if !tokio::task::spawn_blocking(|| super::native::source().is_some()).await.unwrap_or(false) {
+        bail!("{}", UNAVAILABLE);
+    }
     let open = access.is_none();
-    let shared = Arc::new(Shared { access, adi, work, native });
+    let shared = Arc::new(Shared { access });
     let app = if open {
         Router::new()
             .route("/v3/client_info", get(client_info))
@@ -100,20 +95,11 @@ pub async fn start(data_dir: &Path, bind: SocketAddr, access: Access) -> Result<
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    Ok(Server { address, native, task })
+    Ok(Server { address, task })
 }
 
-/// Whether this Mac gives its own anisette (found once; it can take a moment).
-async fn native_available() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        tokio::task::spawn_blocking(|| super::native::source().is_some()).await.unwrap_or(false)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
-}
+/// Why a Mac has no anisette to give.
+pub const UNAVAILABLE: &str = "This Mac doesn't give its anisette to other programs. Apparition needs a Mac on macOS 26 or earlier, or a macOS virtual machine prepared with selfhost/macos-vm/setup.sh (see docs/ANISETTE_VM.md); on macOS 27, pair this Mac with such a VM instead.";
 
 /// ADI's identifier for the client's 16 bytes.
 fn adi_identifier(bytes: &[u8; 16]) -> String {
@@ -125,25 +111,6 @@ fn adi_identifier(bytes: &[u8; 16]) -> String {
 fn identifier_from(value: &str) -> Option<String> {
     let bytes: [u8; 16] = B64.decode(value).ok()?.try_into().ok()?;
     Some(adi_identifier(&bytes))
-}
-
-/// A folder only this request uses.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new(work: &Path) -> Result<Scratch, Report> {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let name = format!("{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
-        let path = work.join(name);
-        std::fs::create_dir_all(&path)?;
-        Ok(Scratch(path))
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 impl Shared {
@@ -178,21 +145,18 @@ async fn token_provisioning_session(State(shared): State<Arc<Shared>>, UrlPath(t
     provisioning_session(State(shared), upgrade).await
 }
 
-async fn client_info(State(shared): State<Arc<Shared>>) -> Json<Value> {
+async fn client_info(State(_shared): State<Arc<Shared>>) -> Json<Value> {
     use crate::claimed_platform::{Served, USER_AGENT};
-    #[cfg(target_os = "macos")]
-    if shared.native && super::native::source() == Some(super::native::Source::Helper) {
+    if super::native::source() == Some(super::native::Source::Helper) {
         let (client_info, user_agent) = super::native::client_info();
         return Json(json!({ "client_info": client_info, "user_agent": user_agent, "apparition_anisette": Served::Mac.name() }));
     }
-    let served = if shared.native { Served::Mac } else { Served::Android };
-    Json(json!({ "client_info": served.client_info(), "user_agent": USER_AGENT, "apparition_anisette": served.name() }))
+    Json(json!({ "client_info": Served::Mac.client_info(), "user_agent": USER_AGENT, "apparition_anisette": Served::Mac.name() }))
 }
 
 #[derive(Deserialize)]
 struct HeadersRequest {
-    identifier: String,
-    adi_pb: String,
+    // The client's `identifier` and `adi_pb` come too, unused: this Mac's headers don't depend on them.
     /// Apple's resync data, sent by isideload 0.5.0 and later after GrandSlam answers hsc=434.
     #[serde(default)]
     sim: Option<String>,
@@ -206,49 +170,25 @@ async fn get_headers(State(shared): State<Arc<Shared>>, Json(request): Json<Head
     })
 }
 
-async fn headers_for(shared: &Arc<Shared>, request: HeadersRequest) -> Result<Value, Report> {
+async fn headers_for(_shared: &Arc<Shared>, request: HeadersRequest) -> Result<Value, Report> {
     // Resync isn't done here, and ordinary headers in its place would be refused again. The
     // message mustn't say "provision": isideload's client reprovisions on that word.
     if request.sim.is_some() {
         bail!("Apple asked for an anisette resync (hsc 434), which this server can't do");
     }
-    // This Mac's own headers, whatever the identity: the client's identifier and adi.pb still
-    // give its X-Mme-Device-Id and X-Apple-I-MD-LU, which Apple takes alongside them.
-    #[cfg(target_os = "macos")]
-    if shared.native {
-        let headers = tokio::task::spawn_blocking(super::native::headers).await.context("the native anisette task failed")??;
-        let mut reply = json!({
-            "result": "Headers",
-            "X-Apple-I-MD-M": headers.machine_id,
-            "X-Apple-I-MD": headers.one_time_password,
-            "X-Apple-I-MD-RINFO": RINFO,
-        });
-        for (key, value) in headers.extra {
-            reply[key] = Value::String(value);
-        }
-        return Ok(reply);
-    }
-    let identifier = identifier_from(&request.identifier).ok_or_else(|| report!("the identifier isn't 16 bytes of base64"))?;
-    let adi_pb = B64.decode(&request.adi_pb).context("adi_pb isn't base64")?;
-    let scratch = Scratch::new(&shared.work)?;
-    std::fs::write(scratch.0.join("adi.pb"), adi_pb)?;
-    let folder = scratch.0.clone();
-    let otp = shared
-        .adi
-        .run(move |adi| -> Result<_, Report> {
-            adi.select(&identifier, &folder)?;
-            let code = adi.login_code();
-            if code != 0 {
-                bail!("this device isn't provisioned (ADI {code})");
-            }
-            adi.request_otp()
-        })??;
-    Ok(json!({
+    // This Mac's own headers, whatever the client's identity: its identifier still gives its
+    // X-Mme-Device-Id and X-Apple-I-MD-LU, which Apple takes alongside them.
+    let headers = tokio::task::spawn_blocking(super::native::headers).await.context("the native anisette task failed")??;
+    let mut reply = json!({
         "result": "Headers",
-        "X-Apple-I-MD-M": B64.encode(otp.machine_id),
-        "X-Apple-I-MD": B64.encode(otp.one_time_password),
+        "X-Apple-I-MD-M": headers.machine_id,
+        "X-Apple-I-MD": headers.one_time_password,
         "X-Apple-I-MD-RINFO": RINFO,
-    }))
+    });
+    for (key, value) in headers.extra {
+        reply[key] = Value::String(value);
+    }
+    Ok(reply)
 }
 
 async fn provisioning_session(State(shared): State<Arc<Shared>>, upgrade: WebSocketUpgrade) -> axum::response::Response {
@@ -281,73 +221,27 @@ async fn hear(socket: &mut WebSocket) -> Result<Value, &'static str> {
     }
 }
 
-fn field(value: &Value, name: &str) -> Option<Vec<u8>> {
-    B64.decode(value.get(name)?.as_str()?).ok()
-}
-
-async fn provision(shared: Arc<Shared>, mut socket: WebSocket) -> Result<(), Report> {
-    macro_rules! hear {
-        () => {
-            match hear(&mut socket).await {
-                Ok(value) => value,
-                Err("Timeout") => return say(&mut socket, "Timeout", json!({})).await,
-                Err(_) => return Ok(()),
-            }
-        };
-    }
-
+/// A Mac is provisioned by macOS: take the client's identifier (it keeps its own device id
+/// from it) and answer with the placeholder at once, without asking Apple for anything.
+async fn provision(_shared: Arc<Shared>, mut socket: WebSocket) -> Result<(), Report> {
     say(&mut socket, "GiveIdentifier", json!({})).await?;
-    let reply = hear!();
-    let Some(identifier) = reply.get("identifier").and_then(Value::as_str).and_then(identifier_from) else {
+    let reply = match hear(&mut socket).await {
+        Ok(value) => value,
+        Err("Timeout") => return say(&mut socket, "Timeout", json!({})).await,
+        Err(_) => return Ok(()),
+    };
+    if reply.get("identifier").and_then(Value::as_str).and_then(identifier_from).is_none() {
         return say(&mut socket, "InvalidIdentifier", json!({})).await;
-    };
-    let scratch = Scratch::new(&shared.work)?;
-
-    say(&mut socket, "GiveStartProvisioningData", json!({})).await?;
-    let reply = hear!();
-    let Some(spim) = field(&reply, "spim") else {
-        return say(&mut socket, "StartProvisioningError", json!({ "message": "no spim" })).await;
-    };
-    let (select, folder) = (identifier.clone(), scratch.0.clone());
-    let started = shared
-        .adi
-        .run(move |adi| -> Result<_, Report> {
-            adi.select(&select, &folder)?;
-            adi.start_provisioning(&spim)
-        })?;
-    let (cpim, session) = match started {
-        Ok(started) => started,
-        Err(error) => return say(&mut socket, "StartProvisioningError", json!({ "message": format!("{error}") })).await,
-    };
-
-    say(&mut socket, "GiveEndProvisioningData", json!({ "cpim": B64.encode(cpim) })).await?;
-    let reply = hear!();
-    let (Some(ptm), Some(tk)) = (field(&reply, "ptm"), field(&reply, "tk")) else {
-        let _ = shared.adi.run(move |adi| adi.abandon(session));
-        return say(&mut socket, "EndProvisioningError", json!({ "message": "no ptm and tk" })).await;
-    };
-    let folder = scratch.0.clone();
-    let ended = shared
-        .adi
-        .run(move |adi| -> Result<_, Report> {
-            // Another request may have pointed the library elsewhere since.
-            adi.select(&identifier, &folder)?;
-            adi.end_provisioning(session, &ptm, &tk)
-        })?;
-    if let Err(error) = ended {
-        return say(&mut socket, "EndProvisioningError", json!({ "message": format!("{error}") })).await;
     }
-
-    let adi_pb = std::fs::read(scratch.0.join("adi.pb")).context("provisioning left no adi.pb")?;
-    say(&mut socket, "ProvisioningSuccess", json!({ "adi_pb": B64.encode(adi_pb) })).await
+    say(&mut socket, "ProvisioningSuccess", json!({ "adi_pb": B64.encode(PLACEHOLDER_ADI_PB) })).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Provisions against Apple and makes headers, through isideload's own client. Reaches the
-    /// network, needs no Apple ID: `APPARITION_NET=1`.
+    /// Provisions and makes headers through isideload's own client, on a Mac that gives its
+    /// anisette. Reaches Apple's URL bag, needs no Apple ID: `APPARITION_NET=1`.
     #[tokio::test(flavor = "multi_thread")]
     async fn isideloads_client_provisions_and_gets_headers() {
         use isideload::anisette::AnisetteDataGenerator;
@@ -355,12 +249,11 @@ mod tests {
         use isideload::auth::grandslam::GrandSlam;
         use isideload::util::storage::InMemoryStorage;
 
-        if std::env::var_os("APPARITION_NET").is_none() {
+        if std::env::var_os("APPARITION_NET").is_none() || super::super::native::source().is_none() {
             return;
         }
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let dir = std::env::temp_dir().join(format!("apparition-anisette-{}", std::process::id()));
-        let server = start(&dir, "127.0.0.1:0".parse().unwrap(), None).await.unwrap();
+        let server = start("127.0.0.1:0".parse().unwrap(), None).await.unwrap();
 
         let provider = RemoteV3AnisetteProvider::new(&server.url(), Box::new(InMemoryStorage::new()), "0".to_string()).unwrap();
         let mut generator = AnisetteDataGenerator::new(Arc::new(tokio::sync::RwLock::new(provider)));
@@ -373,7 +266,6 @@ mod tests {
         for name in ["X-Apple-I-MD", "X-Apple-I-MD-M", "X-Mme-Device-Id"] {
             assert!(headers.get(name).is_some_and(|value| value.len() > 8), "{name} missing or empty");
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

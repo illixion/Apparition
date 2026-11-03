@@ -111,7 +111,7 @@ pub struct Failure {
     shared_certificate: bool,
     cancelled: bool,
     /// What the page can offer for this failure (`api::failure_kind`): a retry for `"network"`,
-    /// files of the person's own for `"libraries"`, going on anyway for `"checksum"`.
+    /// pairing again for `"pairedMac"`.
     kind: Option<&'static str>,
 }
 
@@ -415,10 +415,34 @@ pub async fn xcode_version() -> Result<Option<String>, Failure> {
     }
 }
 
-/// Whether signing in can make its own anisette data (see `api::BUILTIN_ANISETTE`).
+/// Whether this Mac gives its own anisette (see `api::BUILTIN_ANISETTE`): never off a Mac.
 #[tauri::command]
-pub fn builtin_anisette() -> bool {
-    api::builtin_anisette_available()
+pub async fn builtin_anisette() -> bool {
+    tauri::async_runtime::spawn_blocking(api::native_anisette).await.unwrap_or(false)
+}
+
+/// The Mac this computer gets its anisette from (`{macName, address, paired}`), or null.
+#[tauri::command]
+pub fn paired_mac(state: Shared<'_>) -> Option<api::paired_mac::Summary> {
+    api::paired_mac::status(&api::anisette_dir(&state.store.apple_id_dir()))
+}
+
+/// Pairs this computer with the Mac at `address` for its anisette. The six-digit code to compare
+/// comes as a `mac-pairing-code` event while the person allows this computer on the Mac.
+#[tauri::command]
+pub async fn pair_mac(app: AppHandle, state: Shared<'_>, address: String) -> Result<api::paired_mac::Summary, Failure> {
+    let dir = api::anisette_dir(&state.store.apple_id_dir());
+    let paired = api::paired_mac::pair(&dir, &address, |code| {
+        let _ = app.emit("mac-pairing-code", code);
+    })
+    .await?;
+    Ok(paired)
+}
+
+/// Forgets the paired Mac here.
+#[tauri::command]
+pub fn forget_paired_mac(state: Shared<'_>) -> bool {
+    api::paired_mac::forget(&api::anisette_dir(&state.store.apple_id_dir()))
 }
 
 #[tauri::command]
@@ -442,8 +466,12 @@ pub async fn apple_id_sign_in(
         return Err("Enter the email address of your Apple ID.".into());
     }
     if anisette == api::BUILTIN_ANISETTE {
-        if !api::builtin_anisette_available() {
-            return Err("This computer can't make its own anisette data; give the address of an anisette server.".into());
+        if !builtin_anisette().await {
+            return Err(api::NO_ANISETTE.into());
+        }
+    } else if anisette == api::PAIRED_MAC_ANISETTE {
+        if paired_mac(state.clone()).is_none() {
+            return Err("Pair this computer with your Mac first.".into());
         }
     } else if !(anisette.starts_with("http://") || anisette.starts_with("https://")) {
         return Err("The anisette server's address starts with http:// or https://.".into());
@@ -483,35 +511,6 @@ pub async fn apple_id_sign_in(
         Ok(json!({ "email": email, "teamId": team_id, "team": info["team"] }))
     })
     .await
-}
-
-/// Takes the built-in anisette's libraries from files the person got themselves, for when Apple's
-/// CDN can't be reached: the Apple Music APK, or `libstoreservicescore.so` and `libCoreADI.so`
-/// from it. A file that isn't the version this build was tested with fails (kind `"checksum"`)
-/// unless `accept_unverified` says to go on. Returns `{services, core, unverified}`.
-#[tauri::command]
-pub async fn import_anisette_libraries(state: Shared<'_>, paths: Vec<String>, accept_unverified: bool) -> Result<Value, Failure> {
-    let state = state.inner().clone();
-    blocking(move || {
-        let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
-        let libraries = block_on(api::import_anisette_libraries(&state.store.apple_id_dir(), &paths, accept_unverified))?;
-        Ok(json!(libraries))
-    })
-    .await
-}
-
-/// Whether the built-in anisette runs libraries the person supplied that didn't match the
-/// checksum of the version Apparition was tested with: an unsupported setup the page warns about.
-#[tauri::command]
-pub fn anisette_unverified(state: Shared<'_>) -> bool {
-    api::anisette_libraries_unverified(&state.store.apple_id_dir())
-}
-
-/// Forgets the cached anisette libraries, supplied or fetched, so Apple's own are fetched again.
-#[tauri::command]
-pub async fn reset_anisette_libraries(state: Shared<'_>) -> Result<(), Failure> {
-    let state = state.inner().clone();
-    blocking(move || Ok(api::reset_anisette_libraries(&state.store.apple_id_dir())?)).await
 }
 
 #[tauri::command]
@@ -630,7 +629,7 @@ pub fn allow_new_certificate(state: Shared<'_>) -> Result<(), Failure> {
     Ok(())
 }
 
-/// A file picker for "ipa", "p12", "key", "profile" or "libraries" (several at once). Empty when cancelled.
+/// A file picker for "ipa", "p12", "key" or "profile" (several at once). Empty when cancelled.
 #[tauri::command]
 pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Failure> {
     blocking(move || {
@@ -649,11 +648,6 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
                 .blocking_pick_file()
                 .into_iter()
                 .collect(),
-            "libraries" => dialog
-                .set_title("Choose the Apple Music APK, or its two libraries")
-                .add_filter("Apple Music APK or libraries", &["apk", "so"])
-                .blocking_pick_files()
-                .unwrap_or_default(),
             "profile" => dialog
                 .set_title("Choose provisioning profiles")
                 .add_filter("Provisioning profiles", &["mobileprovision"])

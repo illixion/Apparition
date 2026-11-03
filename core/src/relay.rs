@@ -26,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 pub const RELAY_PORT: u16 = 49160;
-/// The port the self-hosted anisette server (Docker or built in) listens on.
+/// The loopback port a Mac's companion serves its own anisette on, for its encrypted channel.
 pub const ANISETTE_PORT: u16 = 6969;
 const SERVICE_TYPE: &str = "_apparition._tcp.local.";
 /// How many finished connections are remembered for display.
@@ -287,21 +287,6 @@ async fn read_line(stream: &mut TcpStream) -> Option<String> {
     };
     tokio::time::timeout(Duration::from_secs(10), read).await.ok()??;
     String::from_utf8(line).ok()
-}
-
-/// Whether an anisette v3 server answers on this machine's `port` (the Docker one, say).
-pub async fn anisette_answers(port: u16) -> bool {
-    let probe = async {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
-        stream
-            .write_all(b"GET /v3/client_info HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-            .await
-            .ok()?;
-        let mut reply = Vec::new();
-        stream.read_to_end(&mut reply).await.ok()?;
-        String::from_utf8_lossy(&reply).contains("client_info").then_some(())
-    };
-    tokio::time::timeout(Duration::from_secs(3), probe).await.ok().flatten().is_some()
 }
 
 struct Mdns {

@@ -30,10 +30,13 @@ pub use crate::{
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
     identity::{Platform, import_identity, import_profile, sign_offline},
     share::{SEALED_EXTENSION, export_apple_id_key, export_apple_id_key_sealed, import_any_signing_file, import_signing_file, sealed_from},
-    BUILTIN_ANISETTE, REFUSED_ANDROID_ANISETTE, REFUSED_ANISETTE, SharedCertificate, builtin_anisette_available, is_shared_certificate, native_anisette,
+    AnisetteCheck, BUILTIN_ANISETTE, NO_ANISETTE, check_anisette, PAIRED_MAC_ANISETTE, default_anisette, REFUSED_ANDROID_ANISETTE, REFUSED_ANISETTE, SharedCertificate, builtin_anisette_available, is_shared_certificate, native_anisette,
     sign_in, sign_with_apple_id, sign_with_apple_id_as, capability_refusals,
-    AnisetteLibraries, anisette_dir, anisette_libraries_unverified, failure_kind, import_anisette_libraries, reset_anisette_libraries,
+    anisette_dir, failure_kind,
 };
+/// Pairing this computer with a Mac for its anisette (companion_client.rs).
+#[cfg(feature = "desktop")]
+pub use crate::companion_client as paired_mac;
 /// Handing the certificate key to a nearby Apparition, checked by a six-digit code (nearby.rs).
 #[cfg(feature = "desktop")]
 pub use crate::nearby::net as nearby;

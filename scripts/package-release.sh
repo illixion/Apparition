@@ -155,12 +155,11 @@ linux_build() {
   local platform=linux/amd64 host="" src="$WORK/linux-src-$arch" out="$WORK/linux-$arch"
   [[ "$arch" == arm64 ]] && platform=linux/arm64
   [[ "$arch" == x86_64 ]] && host="${LINUX_X86_64_HOST:-}"
-  mkdir -p "$src/selfhost" "$src/scripts" "$out"
+  mkdir -p "$src/scripts" "$out"
   rsync -a --exclude target "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" "$ROOT/core" "$ROOT/installer" "$ROOT/desktop" "$ROOT/release-signers" "$src/"
   # The desktop embeds the same project UI the Store serves.
   mkdir -p "$src/store"
   rsync -a "$ROOT/store/public" "$src/store/"
-  rsync -a "$ROOT/selfhost/anisette" "$src/selfhost/"
   cp "$ROOT/scripts/desktop-linux.Dockerfile" "$ROOT/scripts/install-tauri-cli.sh" "$src/scripts/"
   # Where the source is on the machine that builds, and how to run a command there.
   local dir="$src"

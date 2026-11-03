@@ -12,7 +12,6 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const STEPS = ["welcome", "headset", "pair", "signing", "install", "done"];
-const DEFAULT_ANISETTE = "http://localhost:6969";
 
 const state = {
   step: "welcome",
@@ -35,8 +34,9 @@ const state = {
   /** @type {any} */ result: null,
   handOff: true,
   /** @type {any} */ settings: {},
-  builtinAnisette: false,
-  /** What the sign-in form has chosen: "builtin" or a server's address; null until it is open. @type {string|null} */ anisetteChoice: null,
+  /** This Mac gives its own anisette (never off a Mac). */ builtinAnisette: false,
+  /** The Mac this computer is paired with for anisette: {macName, address, paired}, or null. @type {any} */ pairedMac: null,
+  /** What the sign-in form has chosen: "builtin", "paired" or a server's address; null until it is open. @type {string|null} */ anisetteChoice: null,
   /** The latest companion status, for the header's badge. @type {any} */ companion: null,
   busy: false,
 };
@@ -121,28 +121,30 @@ async function receiveNearby(root) {
 
 /** What the anisette choice `choice` is, in a word or three. */
 function anisetteName(/** @type {string} */ choice) {
-  if (choice === "builtin") return "built-in";
-  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(choice.trim()) ? "Docker / local server" : "custom server";
+  if (choice === "builtin") return "this Mac's own";
+  if (choice === "paired") return state.pairedMac ? `paired Mac (${state.pairedMac.macName})` : "paired Mac (not paired)";
+  return choice.trim() ? "your own server" : "none";
+}
+
+/** The anisette a sign-in uses when nothing was chosen: this Mac's own, else the paired Mac's. */
+function defaultAnisette() {
+  return state.builtinAnisette ? "builtin" : state.pairedMac ? "paired" : "";
 }
 
 /**
- * The badge in the header's corner: where this computer's sign-in gets anisette, what the companion
- * offers devices, and, in red, an unsupported setup (library files the person supplied that didn't
- * match). On every screen, so a screenshot shows how Apparition is set up.
+ * The badge in the header's corner: where this computer's sign-in gets anisette, and what the
+ * companion offers devices. On every screen, so a screenshot shows how Apparition is set up.
  */
 async function drawSetupBadge() {
   const badge = /** @type {HTMLElement} */ (document.getElementById("setup-badge"));
   const text = /** @type {HTMLElement} */ (document.getElementById("setup-badge-text"));
-  const saved = state.settings?.anisette;
-  const choice = state.anisetteChoice ?? saved ?? (state.builtinAnisette ? "builtin" : DEFAULT_ANISETTE);
+  const choice = state.anisetteChoice ?? state.settings?.anisette ?? defaultAnisette();
   const offered = state.companion?.relay?.running ? state.companion?.anisette?.offered : null;
-  const usesLibraries = state.builtinAnisette && (choice === "builtin" || offered === "builtin");
-  const unverified = usesLibraries && (await invoke("anisette_unverified").catch(() => false));
   const parts = [`Sign-in anisette: ${anisetteName(choice)}`];
-  if (offered) parts.push(`Companion offers: ${offered === "builtin" ? "built-in" : "Docker / local server"}`);
-  if (unverified) parts.unshift("UNSUPPORTED: unverified libraries");
+  if (offered) parts.push("Companion offers: this Mac's own");
   text.textContent = parts.join(" · ");
-  badge.className = `setup-badge${unverified ? " unsupported" : anisetteName(choice) === "built-in" && !offered ? "" : " attention"}`;
+  const mac = choice === "builtin" || (choice === "paired" && state.pairedMac);
+  badge.className = `setup-badge${mac ? "" : " attention"}`;
   badge.hidden = false;
 }
 
@@ -568,21 +570,42 @@ function signing() {
   // Apple ID
   appleForm.email.value = state.settings.email ?? "";
   const savedAnisette = state.settings.anisette;
-  appleForm.anisette.value = savedAnisette && savedAnisette !== "builtin" ? savedAnisette : DEFAULT_ANISETTE;
-  const sourceField = /** @type {HTMLElement} */ ($(appleForm, "anisette-source"));
+  const isServer = (/** @type {string|null|undefined} */ choice) => !!choice && choice !== "builtin" && choice !== "paired";
+  // Docker's old default isn't carried over: Apparition no longer provides a server.
+  appleForm.anisette.value = isServer(savedAnisette) && !/^https?:\/\/localhost:6969\/?$/i.test(savedAnisette) ? savedAnisette : "";
   const sourceSelect = /** @type {HTMLSelectElement} */ (appleForm.elements.namedItem("source"));
-  // Only offered where this computer can make its own; elsewhere a server is the one way.
+  const builtinOption = /** @type {HTMLOptionElement} */ ($(appleForm, "source-builtin"));
+  // This Mac's own is offered only where macOS gives it.
+  builtinOption.hidden = builtinOption.disabled = !state.builtinAnisette;
   // Nothing saved comes back as null, so `!= null` (not `!== undefined`).
-  sourceSelect.value = state.builtinAnisette && savedAnisette != null && savedAnisette !== "builtin" ? "server" : state.builtinAnisette ? "builtin" : "server";
-  sourceField.hidden = !state.builtinAnisette;
+  const initial = savedAnisette != null && isServer(savedAnisette) && appleForm.anisette.value ? "server"
+    : savedAnisette === "builtin" && state.builtinAnisette ? "builtin"
+    : savedAnisette === "paired" ? "paired"
+    : defaultAnisette() || "paired";
+  sourceSelect.value = initial === "server" ? "server" : initial;
+  const macStatus = $(appleForm, "paired-mac-status");
+  const macPairRow = $(appleForm, "paired-mac-pair");
+  const macActions = $(appleForm, "paired-mac-actions");
+  const macCode = $(appleForm, "mac-pairing-code");
+  const macPairingStatus = $(appleForm, "mac-pairing-status");
+  const drawPairedMac = (/** @type {boolean} */ pairingAnother = false) => {
+    const paired = state.pairedMac;
+    macStatus.hidden = !paired;
+    if (paired) macStatus.textContent = `Paired with ${paired.macName} (${paired.address}).`;
+    macPairRow.hidden = !!paired && !pairingAnother;
+    macActions.hidden = !paired || pairingAnother;
+    if (!appleForm.macAddress.value && paired) appleForm.macAddress.value = paired.address;
+  };
   const drawSource = () => {
-    const builtin = sourceSelect.value === "builtin";
-    for (const role of ["anisette-builtin-hint"]) $(appleForm, role).hidden = !builtin;
-    for (const role of ["anisette-server", "anisette-server-hint"]) $(appleForm, role).hidden = builtin;
-    appleForm.anisette.required = !builtin;
+    const source = sourceSelect.value;
+    $(appleForm, "anisette-builtin-hint").hidden = source !== "builtin";
+    $(appleForm, "anisette-paired").hidden = source !== "paired";
+    for (const role of ["anisette-server", "anisette-server-hint"]) $(appleForm, role).hidden = source !== "server";
+    appleForm.anisette.required = source === "server";
+    drawPairedMac();
   };
   const chooseAnisette = () => {
-    state.anisetteChoice = sourceSelect.value === "builtin" ? "builtin" : appleForm.anisette.value.trim();
+    state.anisetteChoice = sourceSelect.value === "server" ? appleForm.anisette.value.trim() : sourceSelect.value;
     drawSetupBadge();
   };
   sourceSelect.addEventListener("change", () => {
@@ -592,26 +615,55 @@ function signing() {
   appleForm.anisette.addEventListener("input", chooseAnisette);
   drawSource();
   chooseAnisette();
-  // After a failure that trying again may cure (a connection, Apple's download of its libraries),
-  // the sign-in's details are kept here, in memory only and for a few minutes, so Try again needs no
-  // retyping. Cleared by the next sign-in, by success, and when this step is left.
-  const ownLibraries = /** @type {HTMLDetailsElement} */ ($(panel, "own-libraries"));
-  const librariesStatus = $(panel, "libraries-status");
-  const librariesAnyway = $(panel, "libraries-anyway");
+  // Pairing with a Mac: the code comes as an event while the Mac's person allows this computer.
+  const pairButton = /** @type {HTMLButtonElement} */ ($(appleForm, "pair-mac"));
+  pairButton.addEventListener("click", async () => {
+    const address = appleForm.macAddress.value.trim();
+    if (!address) {
+      setStatus(macPairingStatus, "Type the Mac's address: its name, LAN or Tailscale address.", "error");
+      return;
+    }
+    setBusy(pairButton, true);
+    setStatus(macPairingStatus, `Asking ${address} to pair…`);
+    const stop = await listen("mac-pairing-code", (/** @type {any} */ e) => {
+      macCode.textContent = String(e.payload);
+      macCode.hidden = false;
+      setStatus(macPairingStatus, "On the Mac, allow this computer if it shows the same code.");
+    });
+    try {
+      state.pairedMac = await invoke("pair_mac", { address });
+      setStatus(macPairingStatus, "Paired. Sign in above.", "good");
+      drawPairedMac();
+      chooseAnisette();
+    } catch (error) {
+      setStatus(macPairingStatus, messageOf(error), "error");
+    } finally {
+      stop();
+      macCode.hidden = true;
+      setBusy(pairButton, false);
+    }
+  });
+  $(appleForm, "repair-mac").addEventListener("click", () => {
+    appleForm.macAddress.value = "";
+    drawPairedMac(true);
+  });
+  $(appleForm, "forget-mac").addEventListener("click", async () => {
+    await invoke("forget_paired_mac");
+    state.pairedMac = null;
+    setStatus(macPairingStatus, "Forgot this Mac here. Unpair this computer in the Mac's Apparition too.", "");
+    drawPairedMac();
+    chooseAnisette();
+  });
+  // After a failure that trying again may cure (a connection), the sign-in's details are kept
+  // here, in memory only and for a few minutes, so Try again needs no retyping. Cleared by the
+  // next sign-in, by success, and when this step is left.
   /** @type {{email: string, password: string, anisette: string}|null} */ let retry = null;
   /** @type {number|undefined} */ let retryTimer;
-  /** @type {string[]} */ let libraryPaths = [];
   const clearRecovery = () => {
     if (retry) retry.password = "";
     retry = null;
     clearTimeout(retryTimer);
     recovery.hidden = true;
-    ownLibraries.hidden = true;
-    ownLibraries.open = false;
-    librariesAnyway.hidden = true;
-    setStatus(librariesStatus, "");
-    $(panel, "libraries-name").textContent = "No file chosen";
-    libraryPaths = [];
   };
   leaveStep = clearRecovery;
   const attempt = async (/** @type {{email: string, password: string, anisette: string}} */ args) => {
@@ -629,14 +681,11 @@ function signing() {
       args.password = "";
       drawSetupBadge();
     } catch (error) {
-      setStatus(status, signInError(error, args.anisette !== "builtin"), error?.cancelled ? "" : "error");
-      const kind = error?.kind;
-      if (kind === "network" || kind === "libraries") {
+      setStatus(status, signInError(error, args.anisette), error?.cancelled ? "" : "error");
+      if (error?.kind === "network" || error?.kind === "pairedMac") {
         retry = { ...args };
         retryTimer = setTimeout(clearRecovery, 5 * 60 * 1000);
         recovery.hidden = false;
-        ownLibraries.hidden = kind !== "libraries";
-        if (kind === "libraries") ownLibraries.open = true;
         // The error and what can be done about it, together, rather than the error alone.
         status.scrollIntoView({ block: "start" });
       }
@@ -649,7 +698,12 @@ function signing() {
   };
   appleForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    const args = { email: appleForm.email.value, password: appleForm.password.value, anisette: sourceSelect.value === "builtin" ? "builtin" : appleForm.anisette.value };
+    const source = sourceSelect.value;
+    if (source === "paired" && !state.pairedMac) {
+      setStatus(status, "Pair this computer with your Mac first, below the password.", "error");
+      return;
+    }
+    const args = { email: appleForm.email.value, password: appleForm.password.value, anisette: source === "server" ? appleForm.anisette.value : source };
     appleForm.password.value = "";
     attempt(args);
   });
@@ -657,66 +711,7 @@ function signing() {
     if (retry) attempt({ ...retry });
     else setStatus(status, "Type your password again, then sign in.", "error");
   });
-
-  // Said for as long as it lasts, not only when the files are taken: it is an unsupported setup.
-  const unsupported = $(panel, "unsupported");
-  const resetStatus = $(panel, "reset-status");
-  const drawUnsupported = async () => {
-    try {
-      unsupported.hidden = !(state.builtinAnisette && (await invoke("anisette_unverified")));
-    } catch {
-      unsupported.hidden = true;
-    }
-    drawSetupBadge();
-  };
-  drawUnsupported();
-  $(panel, "reset-libraries").addEventListener("click", async () => {
-    try {
-      await invoke("reset_anisette_libraries");
-      setStatus(resetStatus, "Done. Apple's own libraries are fetched again from the next start of Apparition.", "good");
-      setTimeout(() => (unsupported.hidden = true), 4000);
-      drawSetupBadge();
-    } catch (error) {
-      setStatus(resetStatus, messageOf(error), "error");
-    }
-  });
-
-  // The person's own copy of Apple's libraries
-  const useLibraries = async (/** @type {boolean} */ anyway) => {
-    const pick = /** @type {HTMLButtonElement} */ ($(panel, "pick-libraries"));
-    setBusy(pick, true);
-    librariesAnyway.hidden = true;
-    setStatus(librariesStatus, "Checking the files…");
-    try {
-      const got = await invoke("import_anisette_libraries", { paths: libraryPaths, acceptUnverified: anyway });
-      drawUnsupported();
-      const missing = !got.services ? "libstoreservicescore.so" : !got.core ? "libCoreADI.so" : "";
-      if (missing) {
-        setStatus(librariesStatus, `Got one of the two. Choose ${missing} too.`, "");
-        return;
-      }
-      setStatus(
-        librariesStatus,
-        got.unverified ? "Done. The files didn't match the version Apparition was built with and were used because you chose to. Signing in…" : "Done. Signing in…",
-        "good",
-      );
-      if (retry) attempt({ ...retry });
-      else setStatus(librariesStatus, "Done. Sign in above to continue.", "good");
-    } catch (error) {
-      setStatus(librariesStatus, messageOf(error), "error");
-      librariesAnyway.hidden = error?.kind !== "checksum";
-    } finally {
-      setBusy(pick, false);
-    }
-  };
-  $(panel, "pick-libraries").addEventListener("click", async () => {
-    const paths = await invoke("pick_file", { kind: "libraries" });
-    if (!paths.length) return;
-    libraryPaths = paths;
-    $(panel, "libraries-name").textContent = paths.map(basename).join(", ");
-    await useLibraries(false);
-  });
-  $(panel, "use-anyway").addEventListener("click", () => useLibraries(true));
+  drawSetupBadge();
 
   // Another device's certificate key, before signing in: over the network, or as a file
   $(keyForm, "nearby-receive").addEventListener("click", async () => {
@@ -868,13 +863,12 @@ function platformMatches(/** @type {string[]|undefined} */ platforms) {
   return (platforms ?? []).some((p) => names.includes(p));
 }
 
-function signInError(/** @type {any} */ error, /** @type {boolean} */ usingServer = true) {
+function signInError(/** @type {any} */ error, /** @type {string} */ anisette = "") {
   const message = messageOf(error);
   if (error?.cancelled) return message;
-  // core's REFUSED_ANISETTE already explains it.
-  if (/-80045/.test(message)) return message;
-  if (!usingServer && /anisette|connect|dns|resolve|refused/i.test(message))
-    return `Couldn't sign in. Check the internet connection (Apparition fetches Apple's anisette libraries on first use).\n\n${message}`;
+  // core's REFUSED_ANISETTE and the paired Mac's failures already explain themselves.
+  if (/-80045|-80046/.test(message) || error?.kind === "pairedMac") return message;
+  const usingServer = anisette !== "builtin" && anisette !== "paired";
   if (usingServer && (/anisette/i.test(message) || /connect|dns|resolve|refused/i.test(message)))
     return `Couldn't sign in. Check that the anisette server is running and its address is right.\n\n${message}`;
   return message;
@@ -1260,7 +1254,7 @@ function openCompanionPairing(/** @type {any} */ payload) {
   if (!Number.isInteger(payload?.id) || !request) return;
   companionPairingId = payload.id;
   document.getElementById("companion-pairing-text").textContent =
-    `${request.deviceName || "A device"} (${request.peer || "unknown address"}) asks to use this computer's anisette.`;
+    `${request.deviceName || "A device"} (${request.peer || "unknown address"}) asks to use this Mac's anisette.`;
   document.getElementById("companion-pairing-code").textContent = request.code || "";
   const error = document.getElementById("companion-pairing-error");
   error.hidden = true;
@@ -1552,18 +1546,10 @@ function buildCompanion() {
   companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((input) =>
     input.addEventListener("change", () => {
       const mode = /** @type {HTMLInputElement} */ (input).value;
-      const note = mode === "builtin" ? "Starting this computer's anisette (the first time, it fetches Apple's libraries)…" : "";
+      const note = mode === "builtin" ? "Starting this Mac's anisette…" : "";
       companionCall("companion_set_anisette", { mode }, note);
     }),
   );
-  for (const [role, up] of [["docker-up", true], ["docker-down", false]]) {
-    const button = $(companionPanel, role);
-    button.addEventListener("click", async () => {
-      setBusy(button, true);
-      await companionCall("companion_docker", { up }, up ? "Starting the Docker server…" : "Stopping the Docker server…");
-      setBusy(button, false);
-    });
-  }
   // Also the only way to quit where there's no tray to show the menu (niri, plain GNOME).
   $(companionPanel, "quit").addEventListener("click", () => invoke("quit_app"));
   const login = /** @type {HTMLInputElement} */ ($(companionPanel, "login"));
@@ -1655,15 +1641,17 @@ function drawCompanion(/** @type {any} */ status) {
   $(companionPanel, "no-connections").hidden = rows.length > 0 || !status.relay.running;
 
   const anisette = status.anisette;
-  $(companionPanel, "mode-builtin").hidden = !anisette.builtinAvailable;
-  companionPanel.querySelectorAll('[data-role="anisette-port"]').forEach((el) => (el.textContent = String(anisette.port)));
+  $(companionPanel, "mode-builtin").hidden = !anisette.native;
+  $(companionPanel, "anisette-not-mac").hidden = anisette.native;
+  $(companionPanel, "anisette-not-mac-why").textContent = anisette.builtinAvailable
+    ? "macOS 27 keeps it to itself outside a VM set up for it"
+    : "only a Mac does";
   companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((el) => {
     const input = /** @type {HTMLInputElement} */ (el);
     input.checked = input.value === anisette.mode;
     // Offering anisette goes through the relay's advertisement, so it needs the relay.
     input.disabled = !status.relay.on;
   });
-  $(companionPanel, "docker-row").hidden = anisette.mode !== "local";
 
   const pairing = status.pairing;
   const builtin = anisette.mode === "builtin";
@@ -1706,14 +1694,8 @@ function drawCompanion(/** @type {any} */ status) {
     ?? (!status.relay.on
       ? "Turn the relay on to offer anisette."
       : anisette.offered === "builtin"
-        ? anisette.native
-          ? `Offering this Mac's own anisette on port ${anisette.port}.`
-          : `Offering anisette from Apple's Android libraries on port ${anisette.port}.`
-        : anisette.offered === "local"
-          ? `Offering the server on port ${anisette.port}.`
-          : anisette.mode === "local"
-            ? `Nothing answers on port ${anisette.port} yet. Start the Docker server, or run your own there.`
-            : "");
+        ? "Offering this Mac's own anisette to paired devices and computers."
+        : "");
   const kind = companionNote?.kind ?? (anisette.error ? "error" : anisette.offered ? "good" : "");
   setStatus($(companionPanel, "anisette-status"), text, kind);
 }
@@ -1728,7 +1710,7 @@ async function start() {
   state.info = await invoke("app_info");
   document.body.classList.toggle("mac", state.info.platform === "macos-universal");
   state.settings = await invoke("saved_settings");
-  state.builtinAnisette = await invoke("builtin_anisette");
+  [state.builtinAnisette, state.pairedMac] = await Promise.all([invoke("builtin_anisette"), invoke("paired_mac")]);
   drawSetupBadge();
   // The companion's status only polls on its own tab; the badge needs to know on every screen.
   setInterval(refreshCompanion, 5000);

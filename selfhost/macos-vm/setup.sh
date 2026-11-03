@@ -1,6 +1,6 @@
 #!/bin/bash
-# setup.sh: turn a macOS virtual machine into Apparition's anisette server, the Mac's own
-# anisette that Apple accepts (core/src/anisette/native.rs). See docs/ANISETTE.md for the full
+# setup.sh: turn a macOS virtual machine on your Mac into Apparition's companion with the Mac's
+# own anisette that Apple accepts (core/src/anisette/native.rs). See selfhost/macos-vm/README.md for the full
 # walkthrough. In short: install macOS in UTM (any version from 26), go through Setup Assistant,
 # turn on automatic login, then boot the VM into recoveryOS and, in Utilities > Terminal:
 #
@@ -10,8 +10,9 @@
 # AuthKit's private entitlements gets, and macOS runs that helper only with SIP off and
 # amfi_get_out_of_my_way=1: this sets both (turning SIP off asks for the password of the account
 # Setup Assistant made). That attestation is only valid inside a GUI login session, so `apparition
-# anisette serve` is installed as a LaunchAgent (Aqua): with automatic login on, the VM serves
-# anisette on port 6969 after a restart with no one at the keyboard. Only for a VM: SIP off is not
+# relay` (the companion) is installed as a LaunchAgent (Aqua): with automatic login on, the VM
+# offers its anisette to paired devices and computers on port 49160 (pairing 49161, encrypted
+# channel 49162) after a restart with no one at the keyboard. Only for a VM: SIP off is not
 # something to do to the Mac you use. (A real Mac on macOS 26 or earlier needs no SIP change;
 # run this there from Terminal with sudo and it stays on.)
 #
@@ -21,7 +22,7 @@
 set -u
 
 REPO=https://github.com/illixion/Apparition
-PORT=${APPARITION_PORT:-6969}
+PORT=${APPARITION_PORT:-49160}
 LABEL=com.illixion.apparition.anisette
 BOOT_ARG=amfi_get_out_of_my_way=1
 
@@ -134,10 +135,10 @@ cat > "$agent" <<EOF
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/local/apparition/apparition</string>
-		<string>anisette</string>
-		<string>serve</string>
+		<string>relay</string>
 		<string>--port</string>
 		<string>$PORT</string>
+		<string>--no-prompt</string>
 	</array>
 	<key>LimitLoadToSessionType</key><string>Aqua</string>
 	<key>RunAtLoad</key><true/>
@@ -152,12 +153,13 @@ chown 0:0 "$agent"
 chmod 644 "$agent"
 
 if [ "$RECOVERY" = 1 ]; then
-  say "Done. With automatic login on, the VM serves anisette on port $PORT after it restarts."
+  say "Done. With automatic login on, the VM runs Apparition's companion on port $PORT after it restarts."
   echo "Turn automatic login on in System Settings > Users & Groups if you haven't, then restart."
-  echo "Point Apparition at http://<the VM's address>:$PORT (in the VM: ipconfig getifaddr en0)."
+  echo "Then pair your devices and computers with it once (selfhost/macos-vm/README.md, step 6)."
   [ "$(ask "Restart now? [Y/n] ")" = n ] || reboot
 else
   owner=$(stat -f%u /dev/console)
   launchctl bootstrap "gui/$owner" "$agent" 2>/dev/null || launchctl kickstart -k "gui/$owner/$LABEL" 2>/dev/null
-  say "Done. Anisette is on port $PORT; log: /tmp/apparition-anisette.log"
+  say "Done. The companion is on port $PORT; log: /tmp/apparition-anisette.log"
+  echo "Pair your devices and computers with it once: see selfhost/macos-vm/README.md, step 6."
 fi

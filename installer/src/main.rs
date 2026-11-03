@@ -82,9 +82,9 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       profile. Installing Apparition also puts the certificate in its Files inbox
       (--no-handoff skips that). --no-watch leaves the app's watch app out: nothing goes to the
       Apple Watch and its App ID isn't spent.
-      Signing in to Apple needs anisette data. Where this build has it (macOS, Linux), it makes
-      its own from Apple's libraries; --anisette <url> uses an anisette v3 server instead,
-      and is required elsewhere.
+      Signing in to Apple needs anisette data from a Mac you own: this Mac's own (macOS 26 or
+      earlier, or a macOS VM set up for it), else the Mac this computer is paired with
+      (`apparition anisette pair`). --anisette <url> uses an anisette v3 server you run instead.
   apparition sign <app.ipa or .deb> [--device <name or UDID>] [--keep-extensions] [--no-watch]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
       Sign for a paired device without reaching it and install nothing. With an Apple ID,
@@ -138,30 +138,30 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       .apparitionsigning file, for that Apple ID's signing here.
   apparition forget <name or UDID>
       Forget a paired device (remove the computer from its Remote Devices list too).
-  apparition relay [--port <port>] [--no-mdns] [--anisette builtin|local|none] [--no-prompt]
+  apparition relay [--port <port>] [--no-mdns] [--anisette builtin|none] [--no-prompt]
       Be the companion for Apparition on your devices: relay its connection back to the
-      device (port 49160) and offer it an anisette server. builtin (the default where this
-      build has it) serves this computer's own on loopback port 6969; local offers a server already
-      answering on port 6969 here (the Docker one); none offers nothing. Runs until Ctrl-C.
-      The built-in one serves only devices paired with this computer: a device asks to pair
-      (port 49161), both show a six-digit code, and you answer in this terminal. Without a
-      terminal, or with --no-prompt, requests are declined: pair in a terminal once (paired
-      devices are remembered). All device requests use the encrypted channel on port 49162. --no-mdns doesn't announce this computer: devices then need its address typed in.
+      device (port 49160), and on a Mac that gives its own anisette (macOS 26 or earlier, or a
+      macOS VM set up for it), offer that anisette (builtin, the default there; none offers
+      nothing). Runs until Ctrl-C. Anisette goes only to devices and computers paired with this
+      Mac: one asks to pair (port 49161), both show a six-digit code, and you answer in this
+      terminal. Without a terminal, or with --no-prompt, requests are declined: pair in a
+      terminal once (paired devices are remembered). All anisette requests use the encrypted
+      channel on port 49162. --no-mdns doesn't announce this computer: devices then need its
+      address typed in.
   apparition relay devices [forget <id>]
-      List the devices paired to use this computer's anisette, or unpair one.
-  apparition anisette serve [--port <port>]
-      Serve the built-in anisette (v3) to this computer's network (port 6969 by default).
-  apparition anisette import [--accept-unverified] <Apple Music APK or .so file>...
-      When Apple's download server can't be reached: use the Apple Music APK for Android, or
-      libstoreservicescore.so and libCoreADI.so from its lib/<abi>/ folder, from Apple some other
-      way. The only check is a SHA-256 against the version this build was tested with; it can't tell
-      that a file came from Apple, and these run inside Apparition. --accept-unverified uses files
-      that differ (a newer version, say) anyway: an unsupported setup, warned about at every start.
-      What is imported replaces the libraries Apparition would otherwise use, until replaced again.
-  apparition anisette import --reset
-      Forget the cached libraries, supplied or fetched; the next sign-in fetches Apple's own.
-  apparition anisette up | down | compose
-      Start or stop the self-hosted anisette server with your Docker; compose prints its file.
+      List the devices and computers paired to use this Mac's anisette, or unpair one.
+  apparition anisette pair <address>[:<port>]
+      Pair this computer with a Mac running `apparition relay` or the Apparition app with its
+      anisette offered: your own Mac on macOS 26 or earlier, or a macOS VM on your Mac
+      (selfhost/macos-vm/README.md). Both show a six-digit code; allow this computer on the Mac if
+      they match. Sign-ins here then use that Mac's anisette, over the encrypted channel.
+  apparition anisette status | check [--anisette <url>] | forget
+      Which anisette sign-ins here use; ask it for its client info and, from a Mac, its
+      headers, without an Apple ID (only yes or no is shown); forget the pairing with a Mac
+      (unpair this computer on the Mac too, with `apparition relay devices forget`).
+  apparition anisette serve [--port <port>]      (macOS)
+      Serve this Mac's own anisette (v3) on loopback (port 6969 by default), for programs on
+      this Mac.
   apparition browse
       List the companions mDNS finds from here, for 10 seconds: a check that multicast works.
   apparition link [--dir <dir>] [--remove]      (macOS and Linux)
@@ -244,11 +244,8 @@ async fn main() -> ExitCode {
         Err(error) => {
             eprintln!("error: {}", api::describe(&error));
             match api::failure_kind(&error) {
-                Some("libraries") => eprintln!(
-                    "Run the command again to retry. If Apple's download server stays out of reach, give Apparition the files yourself: apparition anisette import <file>... (see `apparition help`)."
-                ),
                 Some("network") => eprintln!("Run the command again to retry, or try another network."),
-                Some("checksum") => eprintln!("If you got the file from Apple and want to use it anyway, add --accept-unverified."),
+                Some("pairedMac") => eprintln!("`apparition anisette status` shows the Mac this computer is paired with; `apparition anisette pair <address>` pairs again."),
                 _ => {}
             }
             ExitCode::FAILURE
@@ -973,9 +970,6 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
         }
     }
     match (&options.apple_id, &options.p12) {
-        (Some(_), None) if options.anisette.is_none() && !api::builtin_anisette_available() => {
-            Err(fail("--apple-id needs --anisette <url> (an anisette v3 server) on this platform"))
-        }
         (Some(_), None) => Ok(options),
         (None, Some(_)) if options.profiles.is_empty() => Err(fail("--p12 needs at least one --profile")),
         (None, Some(_)) => Ok(options),
@@ -1048,7 +1042,7 @@ fn two_factor(params: &TwoFactorCallbackParams) -> TwoFactorCallbackResponse {
 /// Signs `options.ipa` with the Apple ID for the device `udid` (registering it), freeing a full
 /// certificate or App ID slot if the person agrees. Returns the signing reply and the (email, team).
 async fn sign_with_apple_id(options: &Options, udid: &str, name: &str, strip: bool, platform: api::Platform) -> Result<(serde_json::Value, (String, String)), Error> {
-    let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref().unwrap_or(api::BUILTIN_ANISETTE)).await?;
+    let mut session = sign_in(options.apple_id.as_deref().unwrap(), options.anisette.as_deref()).await?;
     println!("Signing for team {}…", session.team_id());
     let signer = (session.email().to_string(), session.team_id().to_string());
     let signed = match api::sign_with_apple_id(&mut session, options.ipa.clone(), udid, name, strip, platform).await {
@@ -1430,22 +1424,20 @@ async fn handoff(
 
 // MARK: Apple ID and its slots
 
-/// Said at every start that uses the built-in anisette while it runs libraries the person
-/// supplied that didn't match the tested version: an unsupported setup.
-fn warn_if_unsupported() {
-    if api::anisette_libraries_unverified(&store().apple_id_dir()) {
-        eprintln!("WARNING: unsupported setup. The built-in anisette runs library files you supplied that don't match the version Apparition was built with.");
-        eprintln!("         Sign-in may fail or behave unpredictably, and nothing checks that the files are Apple's. `apparition anisette import --reset` goes back to Apple's own.");
+/// The anisette a sign-in uses: `requested` (`builtin`, `paired` or a v3 server's address), or
+/// the default (`api::default_anisette`).
+fn anisette_for(requested: Option<&str>) -> Result<String, Error> {
+    match requested {
+        Some(requested) => Ok(requested.to_string()),
+        None => api::default_anisette(&store().apple_id_dir()).map(str::to_string).ok_or_else(|| fail(api::NO_ANISETTE)),
     }
 }
 
-async fn sign_in(email: &str, anisette: &str) -> Result<api::Session, Error> {
-    if anisette == api::BUILTIN_ANISETTE {
-        warn_if_unsupported();
-    }
+async fn sign_in(email: &str, anisette: Option<&str>) -> Result<api::Session, Error> {
+    let anisette = anisette_for(anisette)?;
     let password = ask_secret(&format!("Apple ID password for {email}: "));
     println!("Signing in…");
-    let (session, _) = api::sign_in(email, password, anisette, &store().apple_id_dir(), two_factor).await?;
+    let (session, _) = api::sign_in(email, password, &anisette, &store().apple_id_dir(), two_factor).await?;
     Ok(session)
 }
 
@@ -1462,12 +1454,7 @@ async fn account_command(args: &[String], slot: Slot) -> Result<(), Error> {
     let Some(email) = email else {
         return Err(fail("needs --apple-id <email>"));
     };
-    let anisette = match anisette {
-        Some(url) => url,
-        None if api::builtin_anisette_available() => api::BUILTIN_ANISETTE.to_string(),
-        None => return Err(fail("needs --anisette <url> (an anisette v3 server) on this platform")),
-    };
-    let mut session = sign_in(&email, &anisette).await?;
+    let mut session = sign_in(&email, anisette.as_deref()).await?;
     manage(&mut session, slot).await?;
     Ok(())
 }
@@ -1624,7 +1611,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         return relay_devices(&args[1..]);
     }
     let (mut port, mut advertise, mut prompt) = (relay::RELAY_PORT, true, true);
-    let mut anisette = if api::builtin_anisette_available() { "builtin" } else { "local" }.to_string();
+    let mut anisette = if api::native_anisette() { "builtin" } else { "none" }.to_string();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         let mut value = || args.next().cloned().ok_or_else(|| fail(format!("{arg} needs a value")));
@@ -1662,7 +1649,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
             return;
         }
         println!(
-            "\n{} ({}) asks to use anisette and relay encrypted Apple connections. Its code: {}\nAllow it if the same code shows on the device. Allow? [y/N]",
+            "\n{} ({}) asks to use this Mac's anisette and relay encrypted Apple connections. Its code: {}\nAllow it if the same code shows on the device or computer. Allow? [y/N]",
             request.device_name, request.peer, request.code
         );
         let _ = asked.send(id);
@@ -1680,25 +1667,14 @@ async fn relay(args: &[String]) -> Result<(), Error> {
     });
     match anisette.as_str() {
         "builtin" => {
-            warn_if_unsupported();
-            println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
             companion.share_builtin_anisette().await?;
-            println!("Offering {} on port {}.", anisette_kind(), relay::ANISETTE_PORT);
-            println!("Only paired devices can use the encrypted channel; Apple TLS stays on the device.");
+            println!("Offering this Mac's own anisette to paired devices and computers, over the encrypted channel; Apple TLS stays on the device.");
         }
-        "local" => println!("Offering an anisette server on port {} whenever one answers here.", relay::ANISETTE_PORT),
-        "none" => {}
-        other => return Err(fail(format!("--anisette is builtin, local or none, not {other}"))),
+        "none" if api::builtin_anisette_available() => println!("Not offering anisette: this Mac doesn't give its own (macOS 27 outside a VM set up for it)."),
+        "none" => println!("Not offering anisette: only a Mac does. Pair your devices with your Mac's Apparition for it."),
+        other => return Err(fail(format!("--anisette is builtin or none, not {other}"))),
     }
-    loop {
-        if anisette == "local" {
-            companion.refresh().await;
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
-            _ = tokio::signal::ctrl_c() => break,
-        }
-    }
+    let _ = tokio::signal::ctrl_c().await;
     Ok(())
 }
 
@@ -1728,75 +1704,65 @@ fn relay_devices(args: &[String]) -> Result<(), Error> {
     }
 }
 
-/// `anisette import`: the libraries from files the person got themselves (see
-/// `api::import_anisette_libraries`).
-async fn anisette_import(args: &[&str]) -> Result<(), Error> {
-    if args == ["--reset"] {
-        api::reset_anisette_libraries(&store().apple_id_dir())?;
-        println!("Forgot the cached libraries. The next sign-in fetches Apple's own again.");
-        return Ok(());
-    }
-    let accept_unverified = args.contains(&"--accept-unverified");
-    let paths: Vec<PathBuf> = args.iter().filter(|arg| **arg != "--accept-unverified").map(PathBuf::from).collect();
-    if paths.is_empty() {
-        return Err(fail("usage: apparition anisette import [--accept-unverified] <Apple Music APK or .so file>... | --reset"));
-    }
-    if !api::builtin_anisette_available() {
-        return Err(fail("this build has no built-in anisette to give libraries to"));
-    }
-    let libraries = api::import_anisette_libraries(&store().apple_id_dir(), &paths, accept_unverified).await?;
-    if libraries.unverified {
-        println!("WARNING: unsupported setup. A file didn't match the version Apparition was built with and was used because of --accept-unverified.");
-        println!("         Apparition can't tell whether it is Apple's, sign-in may fail, and every start using the built-in anisette says so until you run `apparition anisette import --reset`.");
-    }
-    match (libraries.services, libraries.core) {
-        (true, true) => println!("Done: both libraries are in place; the next sign-in uses them."),
-        (true, false) => println!("Saved libstoreservicescore.so. Give libCoreADI.so too (or the whole APK)."),
-        (false, true) => println!("Saved libCoreADI.so. Give libstoreservicescore.so too (or the whole APK)."),
-        (false, false) => return Err(fail("no library was saved")),
-    }
-    Ok(())
-}
-
-/// What the built-in anisette serves, said plainly.
-fn anisette_kind() -> &'static str {
-    if api::native_anisette() { "this Mac's own anisette" } else { "anisette from Apple's Android libraries" }
-}
-
 async fn anisette(args: &[String]) -> Result<(), Error> {
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["pair", address] => {
+            println!("Asking {address} to pair…");
+            let paired = api::paired_mac::pair(&anisette_dir(), address, |code| {
+                println!("Code: {code}\nOn the Mac, allow this computer if it shows the same code.");
+            })
+            .await?;
+            println!("Paired with {}. Sign-ins here use its anisette.", paired.mac_name);
+            Ok(())
+        }
+        ["status"] => {
+            match api::default_anisette(&store().apple_id_dir()) {
+                Some(api::BUILTIN_ANISETTE) => println!("Sign-ins use this Mac's own anisette."),
+                Some(_) => {
+                    let paired = api::paired_mac::status(&anisette_dir()).expect("paired");
+                    println!("Sign-ins use the anisette of {}, at {}, over the encrypted channel.", paired.mac_name, paired.address);
+                }
+                None => println!("{}", api::NO_ANISETTE),
+            }
+            Ok(())
+        }
+        ["check"] | ["check", "--anisette", _] => {
+            let requested = anisette_for(args.get(2).map(String::as_str))?;
+            let check = api::check_anisette(&requested, &store().apple_id_dir()).await?;
+            println!("Anisette answers: serves {}, claims {}.", check.serves.as_deref().unwrap_or("(doesn't say)"), check.claims);
+            match check.headers {
+                Some(true) => println!("A Mac's headers: yes. Sign-in can use it."),
+                Some(false) => return Err(fail("the Mac's anisette gave no headers")),
+                None => println!("Not a Mac's anisette: Apple gives developer access only to a Mac's."),
+            }
+            Ok(())
+        }
+        ["forget"] => {
+            if api::paired_mac::forget(&anisette_dir()) {
+                println!("Forgot the paired Mac. Unpair this computer there too (`apparition relay devices forget <id>`, or the app's list).");
+            } else {
+                println!("This computer isn't paired with a Mac.");
+            }
+            Ok(())
+        }
         ["serve"] | ["serve", "--port", _] => {
-            let port = match args.get(2) {
+            let port: u16 = match args.get(2) {
                 Some(port) => port.parse().map_err(|_| fail("--port needs a number"))?,
                 None => relay::ANISETTE_PORT,
             };
-            if !api::builtin_anisette_available() {
-                return Err(fail("this build has no built-in anisette; use `apparition anisette up` (Docker)"));
-            }
-            #[cfg(any(target_os = "macos", target_os = "linux"))]
+            #[cfg(target_os = "macos")]
             {
-                warn_if_unsupported();
-                println!("Starting the built-in anisette (the first time, this fetches Apple's libraries)…");
-                let server = apparition_core::anisette::start(&anisette_dir(), SocketAddr::from(([127, 0, 0, 1], port)), None).await?;
-                println!("Serving {} (v3) on port {}. Ctrl-C stops it.", anisette_kind(), server.address.port());
+                let server = apparition_core::anisette::start(SocketAddr::from(([127, 0, 0, 1], port)), None).await?;
+                println!("Serving this Mac's own anisette (v3) on 127.0.0.1:{}. Ctrl-C stops it.", server.address.port());
                 let _ = tokio::signal::ctrl_c().await;
+                Ok(())
             }
-            let _ = port;
-            Ok(())
-        }
-        ["import", rest @ ..] => anisette_import(rest).await,
-        ["up"] | ["down"] => {
-            let up = args[0] == "up";
-            companion::docker_anisette(up).await?;
-            if up {
-                println!("Anisette starting on port {}. `apparition relay --anisette local` offers it once it answers.", relay::ANISETTE_PORT);
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = port;
+                Err(fail("only a Mac serves its own anisette; pair this computer with one: apparition anisette pair <address>"))
             }
-            Ok(())
         }
-        ["compose"] => {
-            print!("{}", companion::COMPOSE);
-            Ok(())
-        }
-        _ => Err(fail("usage: apparition anisette serve [--port <port>] | import [--accept-unverified] <file>... | import --reset | up | down | compose")),
+        _ => Err(fail("usage: apparition anisette pair <address> | status | check [--anisette <url>] | forget | serve [--port <port>]")),
     }
 }

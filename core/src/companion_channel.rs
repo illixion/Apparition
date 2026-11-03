@@ -26,11 +26,11 @@ use tokio_openssl::SslStream as AsyncSslStream;
 
 use crate::companion::PairedDevices;
 
-const CHANNEL_IDENTITY: &str = "Apparition/Anisette";
-const CHANNEL_SALT: &[u8] = b"Apparition-Anisette-v1";
-const PROOF_SALT: &[u8] = b"Apparition-Device-Proof-v1";
-const EXPORTER_LABEL: &str = "EXPORTER-Apparition-Anisette-Device-v1";
-const CIPHER: &str = "PSK-AES128-GCM-SHA256";
+pub(crate) const CHANNEL_IDENTITY: &str = "Apparition/Anisette";
+pub(crate) const CHANNEL_SALT: &[u8] = b"Apparition-Anisette-v1";
+pub(crate) const PROOF_SALT: &[u8] = b"Apparition-Device-Proof-v1";
+pub(crate) const EXPORTER_LABEL: &str = "EXPORTER-Apparition-Anisette-Device-v1";
+pub(crate) const CIPHER: &str = "PSK-AES128-GCM-SHA256";
 const MAX_IDENTIFY: usize = 16 * 1024;
 const MAX_HTTP_HEADER: usize = 32 * 1024;
 
@@ -289,7 +289,7 @@ fn prepare_http_request(header: &mut Vec<u8>, token: Option<&str>) -> Result<(),
     Ok(())
 }
 
-fn derive(input: &[u8], salt: &[u8], info: &[u8], length: usize) -> Vec<u8> {
+pub(crate) fn derive(input: &[u8], salt: &[u8], info: &[u8], length: usize) -> Vec<u8> {
     let mut output = vec![0; length];
     Hkdf::<Sha256>::new(Some(salt), input)
         .expand(info, &mut output)

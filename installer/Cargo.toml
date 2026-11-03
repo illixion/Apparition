@@ -21,7 +21,7 @@ rpassword = "7"
 serde_json = "1"
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "signal", "process"] }
 
-# Anisette from Apple's own libraries, in this process (core/src/anisette): macOS and Linux, not
-# Windows (the loader maps ELF libraries with POSIX calls).
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+# This Mac's own anisette, served in this process (core/src/anisette): macOS only. Elsewhere the
+# anisette comes from a paired Mac (core/src/companion_client.rs) or a server the person runs.
+[target.'cfg(target_os = "macos")'.dependencies]
 apparition-core = { path = "../core", features = ["anisette"] }

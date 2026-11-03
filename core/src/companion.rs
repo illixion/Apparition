@@ -1,10 +1,7 @@
-//! The companion: what a computer runs for Apparition on a device. The relay (`relay.rs`), and
-//! an anisette server the device can sign in to Apple with:
-//!
-//! - built in (the `anisette` feature): Apple's libraries in this process, served on the LAN
-//!   on port 6969;
-//! - or the self-hosted Docker image (selfhost/anisette/compose.yaml), started with the user's
-//!   Docker, which the companion offers once it answers.
+//! The companion: what a computer runs for Apparition on a device. The relay (`relay.rs`), and,
+//! on a Mac that gives its own anisette, that anisette for the device to sign in to Apple with,
+//! served on loopback and reached only through the encrypted channel by paired devices and
+//! computers (companion_channel.rs). A computer that isn't such a Mac offers the relay alone.
 //!
 //! The command line (`apparition relay`) and the desktop app both run this.
 
@@ -24,16 +21,12 @@ use crate::pairing;
 #[allow(unused_imports)]
 use crate::relay::{ANISETTE_PORT, Log, Relay};
 
-/// The compose file for the self-hosted anisette server.
-pub const COMPOSE: &str = include_str!("../../selfhost/anisette/compose.yaml");
-
 /// Where the anisette server the companion offers comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AnisetteSource {
+    /// This Mac's own (anisette::native).
     Builtin,
-    /// Another server on this machine's port 6969, normally the Docker one.
-    Local,
 }
 
 pub struct Companion {
@@ -46,17 +39,15 @@ pub struct Companion {
     _channel_task: Option<AbortOnDrop>,
     channel_enabled: Arc<std::sync::atomic::AtomicBool>,
     paired_path: Arc<std::sync::atomic::AtomicBool>,
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
     builtin: tokio::sync::Mutex<Option<crate::anisette::Server>>,
     source: Mutex<Option<AnisetteSource>>,
-    data_dir: PathBuf,
     anisette_port: u16,
 }
 
 impl Companion {
-    /// Starts the relay on `port`. `data_dir` holds the built-in anisette's libraries, and
-    /// `anisette_port` is where an anisette server is served or looked for (normally
-    /// [`ANISETTE_PORT`]).
+    /// Starts the relay on `port`. `data_dir` holds the paired devices, and `anisette_port` is
+    /// the loopback port this Mac's anisette is served on (normally [`ANISETTE_PORT`]).
     pub async fn start(port: u16, anisette_port: u16, advertise: bool, data_dir: &Path, log: Log) -> Result<Companion, Report> {
         let relay = Relay::start(port, advertise, log.clone()).await?;
         let devices = Arc::new(PairedDevices::load(data_dir));
@@ -104,10 +95,9 @@ impl Companion {
             _channel_task: channel_task,
             channel_enabled,
             paired_path,
-            #[cfg(all(feature = "anisette", unix))]
+            #[cfg(all(feature = "anisette", target_os = "macos"))]
             builtin: Default::default(),
             source: Mutex::new(None),
-            data_dir: data_dir.to_owned(),
             anisette_port,
         })
     }
@@ -143,7 +133,7 @@ impl Companion {
 
     /// Serves the built-in anisette on loopback and offers it through the encrypted channel.
     pub async fn share_builtin_anisette(&self) -> Result<(), Report> {
-        #[cfg(all(feature = "anisette", unix))]
+        #[cfg(all(feature = "anisette", target_os = "macos"))]
         {
             let mut builtin = self.builtin.lock().await;
             if builtin.is_none() {
@@ -151,8 +141,8 @@ impl Companion {
                 let bind = std::net::SocketAddr::from(([127, 0, 0, 1], port));
                 let devices = self.devices.clone();
                 let access: crate::anisette::Access = Some(Arc::new(move |token: &str| devices.accepts(token)));
-                let server = crate::anisette::start(&self.data_dir, bind, access).await.context(format!(
-                    "Couldn't serve anisette on port {port}. If another program uses that port (the Docker server, say), stop it or offer that one instead."
+                let server = crate::anisette::start(bind, access).await.context(format!(
+                    "Couldn't serve anisette on port {port}. If another program uses that port, stop it."
                 ))?;
                 *builtin = Some(server);
             }
@@ -161,16 +151,15 @@ impl Companion {
             self.update_pairing();
             Ok(())
         }
-        #[cfg(not(all(feature = "anisette", unix)))]
+        #[cfg(not(all(feature = "anisette", target_os = "macos")))]
         {
-            let _ = &self.data_dir;
-            bail!("This build has no built-in anisette; run the Docker server instead")
+            bail!("Only a Mac on macOS 26 or earlier, or a macOS VM prepared for it, offers its anisette to devices. Pair your device with that Mac's Apparition instead.")
         }
     }
 
     /// Stops serving the built-in anisette.
     pub async fn stop_builtin_anisette(&self) {
-        #[cfg(all(feature = "anisette", unix))]
+        #[cfg(all(feature = "anisette", target_os = "macos"))]
         {
             self.builtin.lock().await.take();
         }
@@ -181,39 +170,6 @@ impl Companion {
         self.update_pairing();
     }
 
-    /// When not serving the built-in one, offers a server on this machine's port 6969 if one
-    /// answers (and stops offering it when it doesn't). Call every few seconds.
-    pub async fn refresh(&self) {
-        if self.anisette() == Some(AnisetteSource::Builtin) {
-            return;
-        }
-        let answers = crate::relay::anisette_answers(self.anisette_port).await;
-        let source = answers.then_some(AnisetteSource::Local);
-        *self.source.lock().unwrap() = source;
-        self.relay.set_anisette(answers.then_some(self.anisette_port));
-        self.update_pairing();
-    }
-}
-
-/// Runs `docker compose up -d` (or `down`) with the bundled compose file.
-pub async fn docker_anisette(up: bool) -> Result<(), Report> {
-    let file = std::env::temp_dir().join("apparition-anisette-compose.yaml");
-    std::fs::write(&file, COMPOSE).context(format!("Can't write {}", file.display()))?;
-    let mut command = tokio::process::Command::new("docker");
-    command.arg("compose").arg("-f").arg(&file);
-    if up {
-        command.args(["up", "-d"]);
-    } else {
-        command.arg("down");
-    }
-    let output = command
-        .output()
-        .await
-        .context("Can't run docker (Docker Desktop, OrbStack, Colima, or Docker Engine with the compose plugin)")?;
-    if !output.status.success() {
-        bail!("docker compose failed: {}", String::from_utf8_lossy(&output.stderr).trim());
-    }
-    Ok(())
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -315,7 +271,7 @@ impl PairedDevices {
         self.file.lock().unwrap().host_id.clone()
     }
 
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
     fn accepts(&self, token: &str) -> bool {
         !token.is_empty() && self.file.lock().unwrap().devices.iter().any(|device| device.token == token)
     }
@@ -370,7 +326,7 @@ impl PairedDevices {
     }
 
     /// Mints the device's token (replacing an earlier pairing of the same device) and saves it.
-    fn add(&self, request: &pairing::Request) -> String {
+    pub(crate) fn add(&self, request: &pairing::Request) -> String {
         let token = pairing::new_token();
         {
             let mut file = self.file.lock().unwrap();

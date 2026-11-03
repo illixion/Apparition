@@ -30,6 +30,9 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+# This Mac's own anisette, served in this process (core/src/anisette): macOS only. Elsewhere the
+# anisette comes from a paired Mac (core/src/companion_client.rs) or a server the person runs.
+apparition-core = { path = "../core", features = ["anisette"] }
 
 [target.'cfg(windows)'.dependencies]
 base64 = "0.22"
@@ -39,8 +42,3 @@ dunce = "1"
 # Serves the bundled ui/ instead of a dev server. `cargo tauri build` turns it on; a plain
 # `cargo build` for a release (scripts/package-release.sh, Windows) passes it.
 custom-protocol = ["tauri/custom-protocol"]
-
-# Anisette from Apple's own libraries, in this process (core/src/anisette): macOS and Linux, not
-# Windows (the loader maps ELF libraries with POSIX calls).
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-apparition-core = { path = "../core", features = ["anisette"] }
