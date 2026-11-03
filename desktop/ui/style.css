@@ -144,6 +144,10 @@ input, code, .selectable { user-select: text; -webkit-user-select: text; }
 .dev-target-where { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
 .dev-target-where strong { margin-right: .15rem; }
 .dev-target-state { margin: 0; line-height: 1.4; }
+.dev-target-progress { margin: 0; padding: .45rem .65rem; border-left: 3px solid var(--lilac); border-radius: var(--radius-s);
+  color: var(--ink); background: color-mix(in srgb, var(--lilac) 13%, transparent); font-size: .9rem; }
+.dev-target-progress[hidden] { display: none; }
+.dev-target[aria-busy="true"] { border-color: var(--lilac); }
 .dev-target .service-row { margin: .1rem 0 0; gap: .5rem; }
 .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--line); flex: none; display: inline-block; }
 .dot.on { background: var(--glow-soft); box-shadow: 0 0 5px var(--glow-soft); }

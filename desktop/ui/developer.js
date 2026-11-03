@@ -792,14 +792,25 @@ export class DeveloperView {
     where.append(pill(badge.text, badge.tone));
     const { install, text } = targetState(repo, target, this.installs);
     const state = element('p', 'hint dev-target-state', text);
+    const activeJob = this.jobsList.find(job => job.repo === repo.name && job.device === target.device && job.platform === target.platform && ACTIVE.includes(job.status));
+    const progress = element('p', 'dev-target-progress', activeJob
+      ? `${activeJob.status === 'queued' ? 'Queued' : 'Working'} · ${jobKind(activeJob)} #${activeJob.id}` : '');
+    progress.hidden = !activeJob;
     const actions = element('div', 'service-row');
     const submit = async (deploy, control) => {
       control.disabled = true;
+      progress.textContent = 'Starting build…';
+      progress.hidden = false;
+      row.setAttribute('aria-busy', 'true');
       try {
         const reply = await this.action('build', { repo: repo.name, device: target.device, targetPlatform: target.platform, branch: branch.value,
           ...Object.fromEntries(Object.entries(flags).map(([key, input]) => [key, key === 'injectBackend' ? input.value : (deploy ? input.checked : (key === 'run' ? false : input.checked))])),
           ...(deploy ? {} : { deploy: false }) });
         if (reply?.jobs?.[0]) { this.followJob(reply.jobs[0].id); this.status(`Queued ${deploy ? 'build' : 'build-only'} #${this.selectedLog}. Follow it in Activity.`); }
+        else { progress.textContent = 'Build request accepted'; row.removeAttribute('aria-busy'); }
+      } catch (error) {
+        progress.textContent = `Could not start: ${error.message || error}`;
+        row.removeAttribute('aria-busy');
       } finally { control.disabled = false; }
     };
     if (this.capabilities.has('entry-patching')) {
@@ -825,7 +836,7 @@ export class DeveloperView {
       if (source) actions.append(button('Re-sign…', () => this.openResign({ ...source, repo: repo.name, device: target.device,
         bundleId: target.bundleId, platform: target.platform, name: repo.name }), 'button quiet small'));
     }
-    row.append(where, state, actions);
+    row.append(where, state, progress, actions);
     return row;
   }
 

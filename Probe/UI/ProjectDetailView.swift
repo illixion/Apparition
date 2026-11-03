@@ -124,6 +124,13 @@ struct ProjectDetailView: View {
         let choices = developer.installOptions(target)
         let working = developer.phase(project, target)?.isWorking == true || service.busy
         Section {
+            if (project.branches ?? []).filter({ $0 != "current" }).count > 0 {
+                Picker("Build branch", selection: $options.branch) {
+                    Text("Current checkout · \(project.git?.branch ?? "unknown")").tag("current")
+                    ForEach((project.branches ?? []).filter { $0 != "current" }, id: \.self) { Text($0).tag($0) }
+                }
+                .accessibilityIdentifier("developerInstallBranch")
+            }
             if let route = choices.preferred {
                 Button {
                     Task { await developer.buildAndInstall(project: project, target: target, route: route, options: options) }
