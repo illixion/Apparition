@@ -103,6 +103,7 @@ final class AccountModel {
     private static let autoSignInPausedKey = "autoSignInPaused"
     private let twoFactorBox = PinBox()
     private var rememberedSignIn: Task<Bool, Never>?
+    private let companionAnisetteProxy = CompanionAnisetteProxy()
 
     nonisolated static var dataDir: URL {
         AppFolders.support
@@ -170,7 +171,19 @@ final class AccountModel {
         defer { busy = false; twoFactor = nil }
         log.info("sign-in start (\(attended ? "attended" : "unattended", privacy: .public))")
 
-        let anisette = anisetteURL
+        let configuredAnisette = anisetteURL
+        let anisette: String
+        if configuredAnisette.hasPrefix("apparition-anisette://") {
+            do {
+                anisette = try await companionAnisetteProxy.start(for: configuredAnisette)
+            } catch {
+                lastError = "Couldn't connect to the paired computer for anisette: \(error)"
+                return false
+            }
+        } else {
+            anisette = configuredAnisette
+        }
+        defer { companionAnisetteProxy.stop() }
         let dataDir = Self.dataDir.path
         let asked = TwoFactorAsked()
         let reply: [String: Any]
@@ -225,7 +238,7 @@ final class AccountModel {
                 ? "The two-factor code wasn't entered. Sign in again when you're ready; refreshes wait until then."
                 : "Apple asked for a two-factor code, which nobody was here to enter. Sign in again to continue; refreshes wait until then."
             log.notice("automatic sign-ins paused: a 2FA step went unanswered")
-        } else if let problem = Self.anisetteProblem(in: error, url: anisette) {
+        } else if let problem = Self.anisetteProblem(in: error, url: configuredAnisette) {
             anisetteProblem = problem
             lastError = problem.message
         } else {

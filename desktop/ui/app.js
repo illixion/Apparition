@@ -1709,7 +1709,7 @@ function drawCompanion(/** @type {any} */ status) {
     return tr;
   });
   paired.querySelector("tbody").replaceChildren(...pairedRows);
-  paired.hidden = anisette.mode !== "builtin" || pairing.open || pairedRows.length === 0;
+  paired.hidden = !anisette.offered || pairedRows.length === 0;
   const text = companionNote?.text
     ?? anisette.error
     ?? (!status.relay.on

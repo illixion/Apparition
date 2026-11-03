@@ -77,11 +77,12 @@ Enable these NixOS services and apply the configuration:
 ```nix
 services.flatpak.enable = true;
 services.usbmuxd.enable = true;
-networking.firewall.allowedTCPPorts = [ 49160 6969 ];
+networking.firewall.allowedTCPPorts = [ 49160 49161 49162 6969 ];
 networking.firewall.allowedUDPPorts = [ 5353 ];
 ```
 
-Merge the ports into existing lists. TCP 6969 is needed only when sharing builtin
+Merge the ports into existing lists. TCP 49161 is needed only for first-time pairing, and 49162
+for paired encrypted anisette. TCP 6969 is needed only for direct anisette compatibility when sharing builtin
 anisette, TCP 49160 for the relay, and UDP 5353 for discovery. USB pairing still
 needs the host's usbmuxd, regardless of the application's packaging.
 

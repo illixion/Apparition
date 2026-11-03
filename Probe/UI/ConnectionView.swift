@@ -241,9 +241,11 @@ struct ConnectionView: View {
     /// Whether `companion`'s anisette server is the one in use (with this device's token, for
     /// one that serves paired devices only).
     private func inUse(_ companion: CompanionFinder.Companion) -> Bool {
-        companion.anisettePairingPort == nil
-            ? account.anisetteURL == companion.anisetteURL
-            : CompanionPairing.isPaired(account.anisetteURL, to: companion)
+        if companion.anisetteChannelPort != nil {
+            return CompanionPairing.isPaired(account.anisetteURL, to: companion)
+                || account.anisetteURL == companion.anisetteURL
+        }
+        return account.anisetteURL == companion.anisetteURL
     }
 
     private func isFailure(_ phase: CompanionPairing.Phase) -> Bool {
@@ -277,7 +279,7 @@ struct ConnectionView: View {
         }
         #else
         ForEach(offered) { companion in
-            if let url = companion.anisetteURL {
+            if companion.anisetteURL != nil {
                 HStack(spacing: 12) {
                     Image(systemName: "desktopcomputer")
                     Text("\(companion.name) runs one")

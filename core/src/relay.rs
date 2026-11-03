@@ -53,6 +53,7 @@ struct Inner {
     port: u16,
     connections: Mutex<VecDeque<Connection>>,
     anisette: Mutex<Option<u16>>,
+    channel: Mutex<Option<u16>>,
     /// The port devices pair on, while anisette is offered only to paired devices.
     pairing: Mutex<Option<u16>>,
     mdns: Mutex<Option<Mdns>>,
@@ -86,13 +87,14 @@ impl Relay {
             port,
             connections: Mutex::new(VecDeque::new()),
             anisette: Mutex::new(None),
+            channel: Mutex::new(None),
             pairing: Mutex::new(None),
             mdns: Mutex::new(mdns),
             log,
             next: Default::default(),
         });
         if let Some(mdns) = &*inner.mdns.lock().unwrap() {
-            mdns.publish(None, &inner.log);
+            mdns.publish(None, None, None, &inner.log);
         }
         let accepting = Arc::downgrade(&inner);
         let task = tokio::spawn(async move {
@@ -122,7 +124,16 @@ impl Relay {
         }
         *current = port;
         if let Some(mdns) = &*self.inner.mdns.lock().unwrap() {
-            mdns.publish(port, &self.inner.log);
+            mdns.publish(port, *self.inner.pairing.lock().unwrap(), *self.inner.channel.lock().unwrap(), &self.inner.log);
+        }
+    }
+
+    pub fn set_channel(&self, port: Option<u16>) {
+        let mut current = self.inner.channel.lock().unwrap();
+        if *current == port { return; }
+        *current = port;
+        if let Some(mdns) = &*self.inner.mdns.lock().unwrap() {
+            mdns.publish(*self.inner.anisette.lock().unwrap(), *self.inner.pairing.lock().unwrap(), port, &self.inner.log);
         }
     }
 
@@ -134,7 +145,7 @@ impl Relay {
             (true, false) => {
                 *mdns = Mdns::start(self.inner.port, &self.inner.log);
                 if let Some(started) = &*mdns {
-                    started.publish(*self.inner.anisette.lock().unwrap(), &self.inner.log);
+                    started.publish(*self.inner.anisette.lock().unwrap(), *self.inner.pairing.lock().unwrap(), *self.inner.channel.lock().unwrap(), &self.inner.log);
                 }
             }
             (false, true) => {
@@ -155,6 +166,9 @@ impl Relay {
     /// anisette server (if any) serves anyone.
     pub fn set_pairing(&self, port: Option<u16>) {
         *self.inner.pairing.lock().unwrap() = port;
+        if let Some(mdns) = &*self.inner.mdns.lock().unwrap() {
+            mdns.publish(*self.inner.anisette.lock().unwrap(), port, *self.inner.channel.lock().unwrap(), &self.inner.log);
+        }
     }
 
     pub fn anisette(&self) -> Option<u16> {
@@ -192,11 +206,12 @@ async fn serve(inner: Arc<Inner>, mut client: TcpStream, peer: SocketAddr) {
         let mut info = serde_json::json!({ "version": 1 });
         if let Some(port) = *inner.anisette.lock().unwrap() {
             info["anisette"] = port.into();
-            // Paired devices only: the device pairs on this port, then puts its token in the
-            // anisette URL's path.
             if let Some(pairing) = *inner.pairing.lock().unwrap() {
                 info["anisettePairing"] = pairing.into();
             }
+        }
+        if let Some(port) = *inner.channel.lock().unwrap() {
+            info["anisetteChannel"] = port.into();
         }
         let _ = client.write_all(format!("INFO {info}\n").as_bytes()).await;
         return;
@@ -331,11 +346,13 @@ impl Mdns {
     }
 
     /// Registers (or re-registers, which updates the TXT record) the service.
-    fn publish(&self, anisette: Option<u16>, log: &Log) {
+    fn publish(&self, anisette: Option<u16>, pairing: Option<u16>, channel: Option<u16>, log: &Log) {
         let mut txt = vec![("v".to_string(), "1".to_string())];
         if let Some(port) = anisette {
             txt.push(("anisette".to_string(), port.to_string()));
         }
+        if let Some(port) = pairing { txt.push(("anisettePairing".to_string(), port.to_string())); }
+        if let Some(port) = channel { txt.push(("anisetteChannel".to_string(), port.to_string())); }
         let host = mdns_host(&self.name);
         let info = mdns_sd::ServiceInfo::new(SERVICE_TYPE, &self.name, &host, "", self.port, &txt[..])
             .map(|info| info.enable_addr_auto());

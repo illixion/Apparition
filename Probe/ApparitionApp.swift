@@ -33,13 +33,17 @@ struct ApparitionApp: App {
         CompanionEndpoints.register(_companions.wrappedValue, probe: model)
         let finder = _companions.wrappedValue
         model.locateCompanion = { [weak finder] name in await finder?.locate(name: name) }
-        // An anisette server on the companion moved with it.
-        // Only the host changes: a paired device's token stays in the path.
+        // A paired anisette channel follows the companion's address; its credential moves in
+        // Keychain and never enters the saved URL.
         model.onCompanionMoved = { [weak account] old, found in
             guard let account, let newHost = found.anisetteURL.flatMap(URL.init(string:))?.host,
-                  let oldHost = old.split(separator: ":").first,
-                  var components = URLComponents(string: account.anisetteURL),
-                  components.host == String(oldHost) else { return }
+                  let oldHost = URLComponents(string: "tcp://\(old)")?.host,
+                  var components = URLComponents(string: account.anisetteURL), components.host == oldHost else { return }
+            if components.scheme == "apparition-anisette", let port = components.port,
+               let channelPort = UInt16(exactly: port),
+               let deviceID = components.path.split(separator: "/").first.map(String.init) {
+                CompanionCredentialStore.move(host: oldHost, to: newHost, port: channelPort, deviceID: deviceID)
+            }
             components.host = newHost
             if let moved = components.string { account.anisetteURL = moved }
         }

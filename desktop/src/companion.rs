@@ -219,6 +219,7 @@ impl CompanionState {
                 "required": settings.anisette == AnisetteMode::Builtin && !settings.anisette_open,
                 "open": settings.anisette_open,
                 "port": running.as_ref().map(|c| c.pairing_port()),
+                "channelPort": running.as_ref().map(|c| c.channel_port()),
                 "devices": running.as_ref().map(|c| c.devices.list()).unwrap_or_default(),
                 "waiting": running.as_ref().map(|c| c.devices.waiting().into_iter()
                     .map(|(id, request)| json!({ "id": id, "request": request })).collect::<Vec<_>>()).unwrap_or_default(),

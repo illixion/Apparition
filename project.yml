@@ -38,7 +38,7 @@ targets:
         product: DebugTraceUI
       - package: RAVESDK
         product: RAVEUI
-      # Pairing with a companion to use its anisette server (CompanionPairing.swift).
+      # Pairing and TLS-PSK anisette channel to the desktop companion.
       - package: RAVESDK
         product: RAVECompanion
     info:

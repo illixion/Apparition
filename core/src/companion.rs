@@ -44,7 +44,11 @@ pub struct Companion {
     /// rather than paired devices only.
     anisette_open: AtomicBool,
     pairing_port: u16,
+    channel_port: u16,
     _pairing_task: Option<AbortOnDrop>,
+    _channel_task: Option<AbortOnDrop>,
+    channel_enabled: Arc<std::sync::atomic::AtomicBool>,
+    paired_path: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(all(feature = "anisette", unix))]
     builtin: tokio::sync::Mutex<Option<crate::anisette::Server>>,
     source: Mutex<Option<AnisetteSource>>,
@@ -59,9 +63,10 @@ impl Companion {
     pub async fn start(port: u16, anisette_port: u16, advertise: bool, data_dir: &Path, log: Log) -> Result<Companion, Report> {
         let relay = Relay::start(port, advertise, log.clone()).await?;
         let devices = Arc::new(PairedDevices::load(data_dir));
-        // The pairing port is the relay's plus one (49161), so a firewall rule for the app
-        // covers both. Not fatal: without it, only the open anisette mode works.
-        let pairing_port = if port == 0 { 0 } else { port.wrapping_add(1) };
+        // Pairing and the encrypted capability channel use relay +1 and +2. A single firewall
+        // rule covering the companion executable can admit all three listeners.
+        let pairing_port = if port == 0 { 0 } else { relay.port().wrapping_add(1) };
+        let channel_port = if port == 0 { 0 } else { relay.port().wrapping_add(2) };
         let (pairing_port, pairing_task) = match TcpListener::bind(("0.0.0.0", pairing_port)).await {
             Ok(listener) => {
                 let bound = listener.local_addr()?.port();
@@ -73,12 +78,36 @@ impl Companion {
                 (0, None)
             }
         };
+        let channel_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let paired_path = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(feature = "desktop")]
+        let channel_task = if channel_port == 0 {
+            None
+        } else {
+            match crate::companion_channel::start(
+                std::net::SocketAddr::from(([0, 0, 0, 0], channel_port)),
+                std::net::SocketAddr::from(([127, 0, 0, 1], anisette_port)),
+                devices.clone(), channel_enabled.clone(), paired_path.clone(),
+            ).await {
+                Ok((_, task)) => Some(AbortOnDrop(task)),
+                Err(error) => {
+                    log(&format!("can't listen for secure companion channels on port {channel_port}: {error}"));
+                    None
+                }
+            }
+        };
+        #[cfg(not(feature = "desktop"))]
+        let channel_task: Option<AbortOnDrop> = None;
         Ok(Companion {
             relay,
             devices,
             anisette_open: AtomicBool::new(false),
             pairing_port,
+            channel_port: if channel_task.is_some() { channel_port } else { 0 },
             _pairing_task: pairing_task,
+            _channel_task: channel_task,
+            channel_enabled,
+            paired_path,
             #[cfg(all(feature = "anisette", unix))]
             builtin: Default::default(),
             source: Mutex::new(None),
@@ -100,6 +129,10 @@ impl Companion {
         self.pairing_port
     }
 
+    pub fn channel_port(&self) -> u16 {
+        self.channel_port
+    }
+
     pub fn anisette_open(&self) -> bool {
         self.anisette_open.load(Ordering::Relaxed)
     }
@@ -118,11 +151,16 @@ impl Companion {
         Ok(())
     }
 
-    /// What the relay tells devices about pairing: a port while the built-in anisette wants paired devices.
+    /// Advertises pairing whenever a provider is available; only the built-in HTTP route needs
+    /// the token path after the encrypted channel has authenticated the device.
     fn update_pairing(&self) {
-        let paired_only = self.anisette() == Some(AnisetteSource::Builtin) && !self.anisette_open() && self.pairing_port != 0;
-        self.devices.accepting.store(paired_only, Ordering::Relaxed);
-        self.relay.set_pairing(paired_only.then_some(self.pairing_port));
+        let can_pair = self.anisette().is_some() && self.pairing_port != 0;
+        let paired_http_path = self.anisette() == Some(AnisetteSource::Builtin) && !self.anisette_open();
+        self.devices.accepting.store(can_pair, Ordering::Relaxed);
+        self.channel_enabled.store(self.anisette().is_some(), Ordering::Release);
+        self.paired_path.store(paired_http_path, Ordering::Release);
+        self.relay.set_pairing(can_pair.then_some(self.pairing_port));
+        self.relay.set_channel((self.channel_port != 0 && self.anisette().is_some()).then_some(self.channel_port));
     }
 
     /// Serves the built-in anisette on the LAN and offers it.
@@ -179,6 +217,7 @@ impl Companion {
         let source = answers.then_some(AnisetteSource::Local);
         *self.source.lock().unwrap() = source;
         self.relay.set_anisette(answers.then_some(self.anisette_port));
+        self.update_pairing();
     }
 }
 
@@ -222,7 +261,12 @@ pub struct PairedDevice {
     token: String,
     /// Seconds since 1970.
     pub paired: u64,
+    /// Capabilities granted by the person. Old files represented anisette-only pairings.
+    #[serde(default = "legacy_grants")]
+    pub grants: Vec<String>,
 }
+
+fn legacy_grants() -> Vec<String> { vec!["anisette".to_string()] }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct DevicesFile {
@@ -297,8 +341,18 @@ impl PairedDevices {
         self.file.lock().unwrap().host_id.clone()
     }
 
+    #[cfg(all(feature = "anisette", unix))]
     fn accepts(&self, token: &str) -> bool {
         !token.is_empty() && self.file.lock().unwrap().devices.iter().any(|device| device.token == token)
+    }
+
+    pub(crate) fn channel_token(&self, id: &str) -> Option<String> {
+        self.file.lock().unwrap().devices.iter().find(|device| device.id == id).map(|device| device.token.clone())
+    }
+
+    pub(crate) fn channel_allows_anisette(&self, id: &str) -> bool {
+        self.file.lock().unwrap().devices.iter().find(|device| device.id == id)
+            .is_some_and(|device| device.grants.iter().any(|grant| grant == "anisette"))
     }
 
     /// The paired devices, without their tokens.
@@ -348,6 +402,7 @@ impl PairedDevices {
                 name: request.device_name.clone(),
                 token: token.clone(),
                 paired: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+                grants: vec!["anisette".into()],
             });
         }
         self.save();

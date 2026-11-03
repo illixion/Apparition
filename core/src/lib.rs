@@ -43,6 +43,8 @@ pub mod anisette;
 #[cfg(feature = "desktop")]
 pub mod companion;
 #[cfg(feature = "desktop")]
+mod companion_channel;
+#[cfg(feature = "desktop")]
 pub mod relay;
 #[cfg(feature = "desktop")]
 pub mod pairing;

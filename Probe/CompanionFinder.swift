@@ -19,6 +19,8 @@ final class CompanionFinder {
         let anisetteURL: String?
         /// The port to pair on first, when its anisette server serves paired devices only.
         var anisettePairingPort: UInt16? = nil
+        /// TLS-PSK channel for anisette, advertised after pairing is enabled.
+        var anisetteChannelPort: UInt16? = nil
     }
 
     nonisolated static let serviceType = "_apparition._tcp"
@@ -209,7 +211,9 @@ final class CompanionFinder {
         }
         let anisette = (json["anisette"] as? Int).map { "http://\(address):\($0)" }
         let pairing = (json["anisettePairing"] as? Int).flatMap(UInt16.init(exactly:))
-        return Companion(name: name, relay: "\(address):\(port)", anisetteURL: anisette, anisettePairingPort: pairing)
+        let channel = (json["anisetteChannel"] as? Int).flatMap(UInt16.init(exactly:))
+        return Companion(name: name, relay: "\(address):\(port)", anisetteURL: anisette,
+                         anisettePairingPort: pairing, anisetteChannelPort: channel)
     }
 }
 

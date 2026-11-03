@@ -2,6 +2,7 @@ import DebugTrace
 import Foundation
 import Observation
 import RAVECompanion
+import Security
 
 private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "Companion")
 
@@ -20,10 +21,8 @@ enum CompanionGrant: String, Codable, Hashable, Sendable {
     case anisette
 }
 
-/// Pairs this device with a companion whose anisette server serves paired devices only, and
-/// hands back the server's URL with this device's token in its path (`http://ip:6969/t/<token>`),
-/// which any v3 client takes as its base URL. Both screens show a six-digit code; the person
-/// allows the pairing on the computer if they match.
+/// Pairs this device with a companion and stores its capability token in the device Keychain.
+/// New companions return an address without the secret; older companions retain their HTTP URL.
 @MainActor @Observable
 final class CompanionPairing {
     enum Phase: Equatable {
@@ -47,6 +46,9 @@ final class CompanionPairing {
     /// Whether `url` is an anisette URL a pairing with this companion gave.
     nonisolated static func isPaired(_ url: String, to companion: CompanionFinder.Companion) -> Bool {
         guard let offered = companion.anisetteURL.flatMap(URL.init(string:)), let current = URL(string: url) else { return false }
+        if current.scheme == "apparition-anisette" {
+            return current.host == offered.host && current.port == Int(companion.anisetteChannelPort ?? 0)
+        }
         return current.host == offered.host && current.port == offered.port && current.path.hasPrefix("/t/")
     }
 
@@ -56,6 +58,10 @@ final class CompanionPairing {
         guard let offered = companion.anisetteURL else { return nil }
         guard let port = companion.anisettePairingPort else { return offered }
         guard let host = URL(string: offered)?.host else { return nil }
+        guard let channelPort = companion.anisetteChannelPort else {
+            phase = .failed("This companion doesn't offer the encrypted anisette channel. Update Apparition on that computer, then try again.")
+            return nil
+        }
         cancel()
         let link = RAVECompanionPairLink(.apparition, macID: "", name: companion.name, port: port, addresses: [host])
         let client = RAVEPairingClient<CompanionGrant>(
@@ -95,9 +101,17 @@ final class CompanionPairing {
         }
         phase = .idle
         log.info("paired with a companion")
-        var components = URLComponents(string: offered)
-        components?.path = "/t/\(grant.token)"
-        return components?.string
+        let account = CompanionCredentialStore.account(host: host, port: channelPort, deviceID: locator.deviceID)
+        guard CompanionCredentialStore.save(grant.token, account: account) else {
+            phase = .failed("This device couldn't save the companion credential in Keychain.")
+            return nil
+        }
+        var secure = URLComponents()
+        secure.scheme = "apparition-anisette"
+        secure.host = host
+        secure.port = Int(channelPort)
+        secure.path = "/\(locator.deviceID)"
+        return secure.string
     }
 
     func cancel() {
@@ -110,4 +124,49 @@ final class CompanionPairing {
     func dismissFailure() {
         if case .failed = phase { phase = .idle }
     }
+}
+
+enum CompanionCredentialStore {
+    private static let service = "com.illixion.apparition.companion"
+
+    static func account(host: String, port: UInt16, deviceID: String) -> String {
+        "\(host.lowercased()):\(port):\(deviceID)"
+    }
+
+    static func save(_ token: String, account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let data = Data(token.utf8)
+        let update = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        guard update == errSecItemNotFound else { return update == errSecSuccess }
+        var item = query
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        item[kSecValueData as String] = data
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func load(host: String, port: UInt16, deviceID: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account(host: host, port: port, deviceID: deviceID),
+            kSecReturnData as String: true,
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func move(host oldHost: String, to newHost: String, port: UInt16, deviceID: String) {
+        guard let token = load(host: oldHost, port: port, deviceID: deviceID),
+              save(token, account: account(host: newHost, port: port, deviceID: deviceID)) else { return }
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                       kSecAttrService as String: service,
+                       kSecAttrAccount as String: account(host: oldHost, port: port, deviceID: deviceID)] as CFDictionary)
+    }
+
 }

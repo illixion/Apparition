@@ -199,7 +199,7 @@ Sharing or a game streaming PC from anywhere, for example with
 
 Only encrypted traffic crosses the companion, and it only connects back to the device that
 asked. If a Windows or Linux companion doesn't answer over Tailscale while it does at home, its
-firewall is blocking the Tailscale network: allow TCP 49160, 49161 and 6969 there too (see How
+firewall is blocking the Tailscale network: allow TCP 49160, 49161 and 49162 there too (see How
 it works).
 
 ## How it works
@@ -234,10 +234,12 @@ the menu bar or tray, or `apparition relay` on the command line (see below); bot
 `core/src/companion.rs`.
 
 Windows asks to allow the companion through its firewall the first time it starts from a
-desktop session; elsewhere allow inbound TCP 49160 (and 49161 and 6969 to offer anisette), e.g.
+desktop session; elsewhere allow inbound TCP 49160, 49161 and 49162 to use the companion and its
+encrypted anisette channel, e.g.
 from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction Inbound
--Protocol TCP -LocalPort 49160,49161,6969 -Action Allow -Profile Private`. On Linux, open the
-same ports if a firewall runs (`sudo ufw allow 49160,49161,6969/tcp`, or firewalld's `--add-port`), and
+-Protocol TCP -LocalPort 49160,49161,49162 -Action Allow -Profile Private`. Port 6969 is needed
+only for direct anisette clients and the compatibility mode that serves anyone on the network.
+On Linux, open the same ports if a firewall runs (`sudo ufw allow 49160,49161,49162/tcp`, or firewalld's `--add-port`), and
 UDP 5353 for mDNS. On macOS, Local Network
 privacy blocks an unbundled binary's multicast, so `apparition relay` there can't advertise
 itself: use the desktop app, or type the address in Apparition. `apparition browse` lists the
@@ -912,14 +914,17 @@ The built-in server serves only devices paired with the computer. Choosing it on
 (`core/src/pairing.rs` is the computer's half, held to the SDK's test vectors): both screens show
 a six-digit code, and you allow the device in the Settings tab (or answer `apparition relay` in
 its terminal) if they match. A relay with no terminal (launchd, systemd) or with `--no-prompt`
-declines and logs how to pair instead; pair once from a terminal and the device is remembered. The device gets a token of its own, sealed under the key the
-exchange agreed, and uses `http://<computer>:6969/t/<token>` as its server, which any v3 client
-takes as a base URL. Anything else on port 6969 gets 401. Unpair a device in the Settings tab or
-with `apparition relay devices forget <id>`. The Settings tab's Advanced option "Serve anyone on
-this network, without pairing" (`--anisette-open`) serves anyone who reaches the port, for v3 clients that can't pair (SideStore, AltServer); `apparition
-anisette serve` always does. The Docker server is Dadoum's and has no access control. The token
-travels in plain HTTP, like the anisette data itself: pairing keeps out whoever merely reaches
-the port, not someone who can read your Wi-Fi traffic.
+declines and logs how to pair instead; pair once from a terminal and the device is remembered.
+After pairing, the device keeps its grant in Keychain and saves an address with no secret. TCP
+49162 carries a device-specific TLS 1.2 PSK channel; the host checks the anisette grant and a
+proof bound to that TLS session, then forwards the v3 request to its configured provider on
+loopback. Sign-in, Apple credentials, and the Apple session stay on the device. The existing
+`/t/<token>` HTTP route remains for older clients, but new Apparition clients use the encrypted
+channel. Unpair a device in the Settings tab or with `apparition relay devices forget <id>`.
+The Settings tab's Advanced option "Serve anyone on this network, without pairing"
+(`--anisette-open`) keeps direct v3 compatibility for clients that can't pair (SideStore,
+AltServer); `apparition anisette serve` always does. Those direct HTTP modes don't use the
+encrypted channel. The Docker server is Dadoum's and has no access control.
 
 Apple's servers sometimes refuse a request that another one would take: sign-in then fails "403
 Forbidden". Apparition retries on another server (`core/vendor/isideload/src/auth/edge.rs`): it
