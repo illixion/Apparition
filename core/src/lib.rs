@@ -47,6 +47,8 @@ mod companion_channel;
 #[cfg(feature = "desktop")]
 pub mod companion_client;
 #[cfg(feature = "desktop")]
+pub mod stay_awake;
+#[cfg(feature = "desktop")]
 pub mod relay;
 #[cfg(feature = "desktop")]
 pub mod pairing;

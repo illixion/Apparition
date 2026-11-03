@@ -353,6 +353,7 @@ async fn accept_pairings(listener: TcpListener, devices: Arc<PairedDevices>, log
         let devices = devices.clone();
         let log = log.clone();
         tokio::spawn(async move {
+            let _busy = crate::stay_awake::busy();
             // One at a time: a second device asking meanwhile is declined, so nobody on the
             // network can pile up prompts.
             if !devices.accepting.load(Ordering::Relaxed) || !devices.waiting.lock().unwrap().is_empty() {

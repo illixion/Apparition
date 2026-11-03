@@ -100,6 +100,7 @@ pub async fn start(
             let enabled = enabled.clone();
             let paired_path = paired_path.clone();
             tokio::spawn(async move {
+                let _busy = crate::stay_awake::busy();
                 if let Err(error) =
                     handle(stream, acceptor, anisette, devices, enabled, paired_path).await
                 {

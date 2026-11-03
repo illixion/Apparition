@@ -37,6 +37,9 @@ final class CompanionAnisetteProxy {
         guard components.queryItems?.contains(URLQueryItem(name: "relay", value: "1")) == true else {
             throw ProxyError.pairAgain
         }
+        // A Mac asleep on this network wakes on a knock (CompanionWake); signing in is no time to
+        // find it asleep.
+        await CompanionWake.wakeIfAsleep(host: host, port: port)
         let credential = RAVECompanionCredential(token: token, deviceID: deviceID)
         let channel = RAVECompanionChannel(identityBase: "Apparition/Anisette", salt: "Apparition-Anisette-v1")
         let parameters = NWParameters.tcp

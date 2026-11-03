@@ -219,6 +219,20 @@ Sharing or a game streaming PC from anywhere, for example with
    Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion
    replaces LocalDevVPN.
 
+**A sleeping Mac wakes up for the device.** With "Wake for network access" on (System Settings >
+Battery > Options, or Energy on a desktop Mac; `pmset -g` shows `womp 1`), a sleeping Mac keeps
+answering on its network and wakes when a connection arrives for a port it listens on. So when
+the companion doesn't answer, Apparition on the device knocks: it connects to the companion's
+port at the Mac's LAN address, again and again for up to 20 seconds, until the Mac is up
+(`Probe/CompanionWake.swift`; a MacBook Pro asleep answered in 8.6 seconds). It knows the Mac's
+LAN addresses from the companion's own reply, so a companion saved by its Tailscale address is
+knocked at home too. It works only on the same network: Tailscale's UDP never wakes a Mac, so away
+from home leave it awake. Woken this way macOS sleeps again within a minute, so the companion
+holds it awake while devices use it and for three minutes after (`core/src/stay_awake.rs`, the
+assertion `caffeinate -i` takes; `pmset -g assertions` shows "Apparition companion serving a
+device"). A Windows or Linux PC needs a Wake-on-LAN broadcast, which iOS lets an app send only
+with an entitlement Apple grants on request, so a PC companion isn't woken.
+
 Only encrypted traffic crosses the companion, and it only connects back to the device that
 asked. If a Windows or Linux companion doesn't answer over Tailscale while it does at home, its
 firewall is blocking the Tailscale network: allow TCP 49160, 49161 and 49162 there too (see How

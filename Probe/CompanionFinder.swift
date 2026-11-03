@@ -209,6 +209,7 @@ final class CompanionFinder {
               let json = try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as? [String: Any] else {
             throw IDevice.ProbeError("not an Apparition companion (or an old one): \(line.prefix(40))")
         }
+        if let lan = json["addresses"] as? [String] { CompanionWake.remember(lan, for: address) }
         let anisette = (json["anisette"] as? Int).map { "http://\(address):\($0)" }
         let pairing = (json["anisettePairing"] as? Int).flatMap(UInt16.init(exactly:))
         let channel = (json["anisetteChannel"] as? Int).flatMap(UInt16.init(exactly:))

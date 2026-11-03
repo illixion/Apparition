@@ -51,6 +51,8 @@ ed25519-dalek = "2"
 # The desktop front ends' shared pieces (api.rs): where they keep pairings, and mDNS.
 dirs = { version = "6", optional = true }
 mdns-sd = { version = "0.21.5", optional = true }
+# This computer's LAN addresses, where a device knocks to wake it (relay.rs); mdns-sd uses it too.
+if-addrs = { version = "0.15", optional = true }
 # Pairing a device with the companion (pairing.rs): RAVESDK's exchange, which needs a fixed
 # X25519 key in its tests and a plain HKDF.
 x25519-dalek = { version = "2", features = ["static_secrets"], optional = true }
@@ -64,7 +66,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 
 [features]
 # For the desktop installer and app; the headset's static library leaves it out.
-desktop = ["dep:dirs", "dep:mdns-sd", "dep:x25519-dalek", "dep:hkdf", "dep:openssl", "dep:tokio-openssl", "tokio/time", "tokio/net", "tokio/io-util", "tokio/process"]
+desktop = ["dep:dirs", "dep:mdns-sd", "dep:if-addrs", "dep:x25519-dalek", "dep:hkdf", "dep:openssl", "dep:tokio-openssl", "tokio/time", "tokio/net", "tokio/io-util", "tokio/process"]
 # This Mac's own anisette, served in-process (macOS only, see anisette/mod.rs).
 anisette = ["dep:libc", "dep:axum", "tokio/net", "tokio/time", "tokio/sync"]
 

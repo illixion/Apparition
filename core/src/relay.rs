@@ -202,8 +202,17 @@ async fn serve(inner: Arc<Inner>, mut client: TcpStream, peer: SocketAddr) {
     let Some(request) = read_line(&mut client).await else {
         return;
     };
+    // The Mac stays awake while a device uses it (see stay_awake), INFO included: it's how a
+    // device checks that the Mac it just woke answers.
+    let _busy = crate::stay_awake::busy();
     if request == "APPARITION-INFO 1" {
         let mut info = serde_json::json!({ "version": 1 });
+        // Where to knock to wake this computer, for a device that saved another address of it
+        // (a Tailscale one): a sleeping Mac wakes on a TCP SYN at its LAN address only.
+        let addresses = lan_addresses();
+        if !addresses.is_empty() {
+            info["addresses"] = serde_json::json!(addresses.iter().map(|ip| ip.to_string()).collect::<Vec<_>>());
+        }
         if let Some(port) = *inner.anisette.lock().unwrap() {
             info["anisette"] = port.into();
             if let Some(pairing) = *inner.pairing.lock().unwrap() {
@@ -373,6 +382,23 @@ pub fn primary_address() -> Option<IpAddr> {
     socket.local_addr().ok().map(|address| address.ip()).filter(|ip| !ip.is_unspecified())
 }
 
+/// This computer's private IPv4 addresses on a LAN (10/8, 172.16/12, 192.168/16): where a device
+/// knocks to wake it. Not Tailscale's (100.64/10), whose UDP never wakes a Mac.
+pub fn lan_addresses() -> Vec<std::net::Ipv4Addr> {
+    let mut addresses: Vec<std::net::Ipv4Addr> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|interface| !interface.is_loopback())
+        .filter_map(|interface| match interface.ip() {
+            IpAddr::V4(v4) if v4.is_private() => Some(v4),
+            _ => None,
+        })
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    addresses
+}
+
 /// This computer's name, as the companion is advertised.
 pub fn machine_name() -> String {
     std::env::var("COMPUTERNAME")
@@ -427,7 +453,14 @@ mod tests {
         info.write_all(b"APPARITION-INFO 1\n").await.unwrap();
         let mut reply = String::new();
         info.read_to_string(&mut reply).await.unwrap();
-        assert_eq!(reply, "INFO {\"anisette\":6969,\"version\":1}\n");
+        let info: serde_json::Value = serde_json::from_str(reply.strip_prefix("INFO ").unwrap().trim()).unwrap();
+        assert_eq!(info["anisette"], 6969);
+        assert_eq!(info["version"], 1);
+        // Where a device knocks to wake it: this machine's LAN address, when it has one.
+        let addresses: Vec<String> = lan_addresses().iter().map(|ip| ip.to_string()).collect();
+        if !addresses.is_empty() {
+            assert_eq!(info["addresses"], serde_json::json!(addresses));
+        }
 
         // A "device" listening on this machine, which the relay connects back to.
         let device = TcpListener::bind("127.0.0.1:0").await.unwrap();

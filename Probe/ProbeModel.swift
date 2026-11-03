@@ -171,6 +171,13 @@ final class ProbeModel {
             companionChecked = true
             return
         }
+        // Asleep, perhaps: a knock at its LAN address wakes a Mac (CompanionWake).
+        if let colon = old.lastIndex(of: ":"), let port = UInt16(old[old.index(after: colon)...]),
+           await CompanionWake.wakeIfAsleep(host: String(old[..<colon]).trimmingCharacters(in: CharacterSet(charactersIn: "[]")), port: port),
+           await CompanionFinder.answers(relay: old) {
+            companionChecked = true
+            return
+        }
         guard let found = await locateCompanion?(name) else { return }
         companionChecked = true
         guard found.relay != old else { return }

@@ -181,6 +181,7 @@ dependencies = [
  "hkdf",
  "idevice",
  "idevice-ffi",
+ "if-addrs",
  "isideload",
  "isideload-p12-keystore",
  "libc",
