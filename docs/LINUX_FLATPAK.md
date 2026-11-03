@@ -118,9 +118,7 @@ Known integration gaps to address before recommending this package:
 - The native **open at login** checkbox is not Flatpak-aware. Do not rely on it;
   use a desktop startup entry running `flatpak run com.illixion.apparition.desktop --hidden`
   for manual testing. A Background portal implementation is the intended fix.
-- The Docker anisette start/stop action cannot launch host Docker. Use builtin
-  anisette, or start the external server on the host and select the local server.
-- Tray icon export, file portals, graphics, builtin anisette and device workflows
+- Tray icon export, file portals, graphics, pairing with a Mac for anisette and device workflows
   need runtime validation. Successful bundle creation proves packaging only.
 - No automatic package updates, native-data migration, signed Flatpak remote or
   Flathub review yet. Keep these bundles as local test artifacts.

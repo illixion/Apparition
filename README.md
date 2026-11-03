@@ -2,17 +2,35 @@
 
 # Apparition
 
-Apparition is a developer tool and sideloader that runs on the device itself. Install apps from AltStore-format
-sources on Apple Vision Pro, iPhone, iPad or Apple TV, sign them with your own Apple ID (a free
-one works) or your own certificate, keep them refreshed, and launch them with JIT for emulators
-such as UTM. A computer puts Apparition on the device the first time. After that, refreshing
-and JIT go either through the desktop app left running as Apparition's companion, which doesn't
-need to be on the same Wi-Fi (Tailscale works), or through LocalDevVPN on the device, with no
-computer at all.
+Apparition is an on-device developer tool for Apple Vision Pro, iPhone, iPad and Apple TV. It keeps
+the apps you sideload with your own free Apple ID signed and running past Apple's seven-day limit
+without a cable or a trip back to your desk, and it launches them with JIT for emulators such as
+UTM. Your Mac is Apparition's companion for the Apple ID work: it signs in and provides anisette
+from macOS itself, over the network, and needn't be on the same Wi-Fi (Tailscale works). Apps
+install from AltStore-format sources, from a GitHub project's releases, or from an IPA you have,
+signed with a free Apple ID or your own certificate. A computer installs Apparition on the device
+the first time; after that, refreshing and JIT run on the device, reaching your Mac only when the
+Apple ID work needs it.
 
 <p align="center">
   <img src="docs/images/desktop.png" height="420" alt="The desktop app's welcome screen">
 </p>
+
+## Requirements
+
+**A Mac you own.** Signing apps with a free Apple ID needs a Mac: Apple gives the developer
+access that signing needs only to a sign-in with a Mac's anisette, so Apparition gets it from
+macOS on your own Mac, as Xcode does. That Mac is either
+
+- your Mac on **macOS 26 or earlier**, which needs no setup, or
+- a **macOS virtual machine** on your Mac ([how](selfhost/macos-vm/README.md)), which is the way on
+  macOS 27, where macOS keeps its anisette to itself.
+
+Windows and Linux computers, and devices away from home, pair with that Mac for it over an
+encrypted channel. Apparition doesn't provide anisette, and doesn't run Apple code made for other
+platforms to stand in for a Mac. Without a Mac, only a paid developer account's own certificate
+and profile sign apps (they need no sign-in). The Apple ID is yours too: use a spare one for
+sideloading if you can.
 
 ## What it does
 
@@ -79,7 +97,9 @@ computer at all.
    - **iPhone or iPad:** plug it into the computer with a USB cable and unlock it, then tap
      Trust and enter its passcode if it asks. There's no code to type. You only need the cable
      until the device trusts the computer: after that, pairing it again works over Wi-Fi.
-3. Sign in with your Apple ID, or choose your own certificate and profile, and install.
+3. Sign in with your Apple ID, or choose your own certificate and profile, and install. On a
+   Mac on macOS 26 or earlier the anisette is the Mac's own; elsewhere choose From my paired
+   Mac and pair with your Mac's Apparition first (see [Requirements](#requirements)).
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
    signing it used.
 4. If the device won't open Apparition, it needs one of two settings. Turn on Developer Mode
@@ -192,7 +212,9 @@ Sharing or a game streaming PC from anywhere, for example with
    menu on the computer), then Use and Check. Bonjour doesn't cross Tailscale, so Find
    companion only finds it at home.
 3. Under Anisette, choose Use Companion's Anisette: Apparition reaches it at the same Tailscale
-   address, so signing in works away from home too.
+   address, so signing in works away from home too. Anisette comes only from a Mac (see
+   [Anisette](#anisette)): use your Mac, or a macOS VM on it, as this companion, or pair the
+   device with the Mac as a second companion for signing in.
 4. Keep Tailscale connected on the device when a refresh or a Shortcuts automation runs.
    Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion
    replaces LocalDevVPN.
@@ -237,8 +259,8 @@ Windows asks to allow the companion through its firewall the first time it start
 desktop session; elsewhere allow inbound TCP 49160, 49161 and 49162 to use the companion and its
 encrypted anisette channel, e.g.
 from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction Inbound
--Protocol TCP -LocalPort 49160,49161,49162 -Action Allow -Profile Private`. Port 6969 is needed
-only for direct anisette clients and the compatibility mode that serves anyone on the network.
+-Protocol TCP -LocalPort 49160,49161,49162 -Action Allow -Profile Private`. Port 6969 stays on
+the Mac's loopback and needs no rule.
 On Linux, open the same ports if a firewall runs (`sudo ufw allow 49160,49161,49162/tcp`, or firewalld's `--add-port`), and
 UDP 5353 for mDNS. On macOS, Local Network
 privacy blocks an unbundled binary's multicast, so `apparition relay` there can't advertise
@@ -532,7 +554,7 @@ with no IPA installs the latest release this way.
 
 `installer/` is `apparition`, the command line for Windows, Linux and macOS: it puts
 Apparition (or any IPA) on the headset without Xcode, using the same Rust core, and runs the
-companion (`apparition relay`, `apparition anisette serve|up|down`):
+companion (`apparition relay`) and pairs with a Mac for anisette (`apparition anisette pair`):
 
     apparition pair       # with Settings > General > Remote Devices open; type the PIN
     apparition pair --usb # an iPhone or iPad: a cable until it trusts this computer, then Wi-Fi works too
@@ -543,12 +565,13 @@ companion (`apparition relay`, `apparition anisette serve|up|down`):
     apparition uninstall com.example.app --device ATV
     apparition launch com.example.app --device ATV --console   # launch, streaming its stdout/stderr here
     apparition launch com.example.emu --device AVP --jit --console   # launch suspended and serve its JIT requests
-    apparition install --apple-id you@example.com   # on Windows add --anisette <url>
+    apparition anisette pair my-mac.local   # Windows, Linux, macOS 27: once, for a Mac's anisette
+    apparition install --apple-id you@example.com   # this Mac's anisette, or the paired Mac's
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
-    apparition install Other.ipa --apple-id you@example.com --anisette http://host:6969
+    apparition install Other.ipa --apple-id you@example.com --anisette https://anisette.example
     apparition install kodi.deb --apple-id you@example.com   # a .deb package: the app inside is installed
     apparition sign UTM.ipa --apple-id you@example.com   # sign only, for a paired device; nothing installed
-    apparition relay      # the companion, with this computer's anisette (not on Windows); until Ctrl-C
+    apparition relay      # the companion, with this Mac's anisette on a Mac that gives it; until Ctrl-C
 
 #### Getting `apparition` on your PATH
 
@@ -577,16 +600,16 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `pair [<address>[:<port>]]` | Pairs with a headset or Apple TV showing its pairing screen; finds it over mDNS without an address. |
 | `pair --usb [<UDID>]` | Pairs an iPhone or iPad. Despite the name, the cable is only needed until it trusts this computer; after that this works over Wi-Fi. Also makes the pairing for Apparition on the device. |
 | `pairing hand-off` | Gives Apparition, already installed on an iPhone, iPad or Apple TV, its pairing with that device, without reinstalling it. |
-| `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (and `--anisette <url>` where there's no built-in one) or `--p12 <file> --profile <file>`. `--no-watch` leaves the app's watch app out. |
+| `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (anisette from this Mac or the paired Mac, or `--anisette <url>` for a server you run) or `--p12 <file> --profile <file>`. `--no-watch` leaves the app's watch app out. |
 | `sign <app.ipa or .deb>` | Signs for a paired device and installs nothing; says which capabilities the app got. |
 | `watches [--device <name>] [--install <signed watch .app>]` | Lists the Apple Watches paired with an iPhone, and can put an already signed watch app on them through the phone. |
 | `jit <bundle ID>` | Is the app's debugger from this computer so it can use JIT: launches it, or with `--attach` takes the running process, and serves its JIT requests. |
 | `certificates`, `app-ids` | Show what uses up a free account's two certificates and ten App IDs, and free one you choose after you confirm. |
 | `signing receive`, `send`, `hand-off`, `share`, `import` | Move the Apple ID's certificate key between your devices and computers; see Sharing one certificate below. |
 | `forget <name or UDID>` | Forgets a paired device. |
-| `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Settings tab). |
-| `anisette serve`, `up`, `down`, `compose` | Serve this computer's built-in anisette, or run the self-hosted server with your Docker. |
-| `anisette import [--accept-unverified] <file>…`, `anisette import --reset` | Troubleshooting, for "Couldn't fetch Apple's anisette libraries": use the Apple Music APK, or its two libraries, from a file you got from Apple, in place of the download. `--accept-unverified` uses files that don't match the tested version (an unsupported setup, warned about everywhere). `--reset` goes back to fetching Apple's. Steps in [When Apparition can't fetch Apple's libraries](#when-apparition-cant-fetch-apples-libraries). |
+| `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Companion tab), offering this Mac's anisette to paired devices and computers on a Mac that gives it. |
+| `anisette pair <address>`, `status`, `forget` | Pair this computer with a Mac running the companion, for its anisette; say which anisette sign-ins use; forget the pairing. See [Anisette](#anisette). |
+| `anisette serve` | Serve this Mac's own anisette on loopback, for other programs on this Mac. |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
 | `link` | Puts `apparition` on your `PATH` (above). |
 
@@ -851,84 +874,35 @@ for bundle creation, NixOS/Fusion USB setup, permissions and current integration
 
 ## Anisette
 
-> [!NOTE]
-> **Sign-in works with the built-in anisette again (from 0.4.3).** From 29 October 2026 Apple
-> refused it, and for a day or so nothing but a Mac's anisette signed in. The anisette was never
-> the problem: Apple had put a firewall rule in front of its sign-in servers that rejected the
-> `Content-Type` sideloaders have always sent, so the request was turned away before Apple looked
-> at it. Apparition sends `text/xml` now and Apple accepts the Android libraries' anisette as
-> before. A Mac's anisette, a macOS VM or a third-party server still work, if you prefer one.
-> Details [below](#why-sign-in-stopped-in-october-2026).
+Apple sign-in requires an anisette source. Apparition supports anisette from a Mac you own, a paired Mac, its built-in Android provider on supported platforms, or a third-party server you choose. You can also run a local server with Docker using `selfhost/anisette/compose.yaml`.
 
-Signing in to Apple needs "anisette" data that identifies the computer. On macOS and Linux
-(arm64 and x86_64) the installer makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
-Android uses; nothing of Apple's is stored in this repository), loads them in its own process
-(`core/src/anisette/`) and talks to Apple through them. Nothing to run or install. On Windows, and
-wherever you prefer it, use a server: Apparition ships none, so enter the URL of
-any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
-up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
-digest), and use `http://127.0.0.1:6969` on that computer. The server sees this device's anisette identity
-and IP address, never the Apple ID or password, which go straight to Apple. These server settings apply to desktop sign-in. Mobile devices pair with the Apparition
-companion, which can offer its local provider through the encrypted channel.
+On Apple silicon, Companion can set up a macOS virtual machine as an additional Mac source. Run `apparition vm setup` or use Companion settings. Pair your devices with the computer offering anisette. See [the VM overview](selfhost/macos-vm/README.md).
 
-**Since 12 October 2026 Apple checks that the anisette matches the device the sign-in claims
-to be**, and refuses the sign-in (`-80045`, "This action cannot be completed at this time")
-when it doesn't. isideload, like most sideloaders, claimed a Mac while sending the Android
-libraries' anisette. Apparition claims Android for that anisette (`core/src/claimed_platform.rs`),
-which Apple accepts. Where the libraries are used — a server that makes its anisette with them,
-say — the claim still follows the server
-(`Claim::after_sign_in`; Dadoum's anisette-v3-server reports a Mac but runs those libraries, so it
-gets the Android claim, while jkcoxson's native-c server reports a Mac and is claimed a Mac). A
-sign-in Apple asks a 2FA code for goes through the usual prompt; one it doesn't is asked for the
-code Apple pushes to your trusted devices if the Xcode token is refused (`core/vendor/isideload`,
-`code_after_login`).
+Choose a source you control and review the platform's current setup guidance before signing in.
 
-On a Mac the built-in provider asks macOS for the Mac's own anisette instead, and the sign-in
-claims a Mac and goes through the usual 2FA (`core/src/anisette/native.rs`):
+### Devices, the companion and its encrypted channel
 
+On the Mac, the companion offers its anisette to Apparition on your devices and to your other
+computers (the desktop app's Companion tab, or `apparition relay --anisette builtin`, the default
+on a Mac that gives its own). A Windows or Linux companion relays only: pair your devices with
+the Mac for signing in.
 
-
-In a **macOS virtual machine**, Apple also needs the host's attestation, which the helper forwards
-along with the rest of AuthKit's headers; it's only valid inside a desktop session, so the server
-runs as a login item. [`selfhost/macos-vm/setup.sh`](selfhost/macos-vm/setup.sh) arranges all of
-this — see **[Self-hosting anisette in a macOS VM](selfhost/macos-vm/README.md)**.
-
-Provisioning goes through the Android libraries either way, so a device's stored identity works
-with any server. With a paid developer account there is also a route with no sign-in at all:
-make the certificate and a wildcard or single-App-ID profile on Apple's developer website and
-sign with them (`--p12 … --profile …`, or the app's Signing screen).
-
-Release builds aren't notarized, so the built-in provider needs no entitlement today. It maps
-the libraries into memory and makes them executable itself, so if the macOS apps are ever
-notarized (hardened runtime), their entitlements must include
-`com.apple.security.cs.allow-unsigned-executable-memory`, or loading fails.
-
-The companion can offer the headset an anisette server too: this computer's own (built in,
-served locally on loopback port 6969), or the same compose file run with your Docker (Docker
-Desktop, OrbStack or Colima), from the desktop app's Settings tab or `apparition relay
---anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
-anisette server" next to the companion; nothing switches on its own.
-
-The built-in server serves only devices paired with the computer. Choosing it on a device
-("Pair and Use") pairs once over TCP 49161, with RAVESDK's `RAVECompanion` exchange
-(`core/src/pairing.rs` is the computer's half, held to the SDK's test vectors): both screens show
-a six-digit code, and you allow the device in the Settings tab (or answer `apparition relay` in
-its terminal) if they match. A relay with no terminal (launchd, systemd) or with `--no-prompt`
+The anisette is served only on the Mac's loopback port 6969 and reached only by devices and
+computers paired with the Mac. Choosing it on a device ("Pair and Use") or on a computer pairs
+once over TCP 49161, with RAVESDK's `RAVECompanion` exchange (`core/src/pairing.rs` is the Mac's
+half, `core/src/companion_client.rs` a computer's, both held to the SDK's test vectors): both
+screens show a six-digit code, and you allow it in the Companion tab (or answer `apparition relay`
+in its terminal) if they match. A relay with no terminal (launchd, systemd) or with `--no-prompt`
 declines and logs how to pair instead; pair once from a terminal and the device is remembered.
-After pairing, the device keeps its grant in Keychain and saves an address with no secret. TCP
-49162 carries a device-specific TLS 1.2 PSK channel; the host checks the anisette grant and a
-proof bound to that TLS session, then forwards the v3 request to its configured loopback
-provider. A separate `appleRelay` grant permits opaque HTTPS CONNECT tunnels to the Apple
-sign-in and developer services. Apple TLS and certificate verification stay on the device,
-along with the password, Apple session and signing keys. The computer sees destinations and
-traffic timing and can interrupt connections. Old pairings need one new pairing to grant
-Apple relay access. Unpair in the Settings tab or with `apparition relay devices forget <id>`.
-
-Direct LAN HTTP compatibility and `--anisette-open` have been removed. Built-in providers,
-`apparition anisette serve`, and the bundled Docker configuration listen only on loopback.
-Apple sign-in on mobile devices requires a paired companion, even with Local VPN for installs.
-See [the channel protocol](docs/COMPANION_ANISETTE_CHANNEL.md). Apps MCP's `checkAppleRelay`
-checks the complete anisette and Apple TLS URL-bag path without signing in.
+After pairing, the device keeps its grant in Keychain (a computer, in `paired-mac.json`, readable
+only by its owner). TCP 49162 carries a per-device TLS 1.2 PSK channel; the Mac checks the
+anisette grant and a proof bound to that TLS session, then forwards the v3 request to its loopback
+provider. A separate `appleRelay` grant lets a device open opaque HTTPS CONNECT tunnels to the
+Apple sign-in and developer services. Apple TLS and certificate verification stay on the device,
+along with the password, Apple session and signing keys. The Mac sees destinations and traffic
+timing and can interrupt connections. Unpair in the Companion tab or with `apparition relay
+devices forget <id>`. See [the channel protocol](docs/COMPANION_ANISETTE_CHANNEL.md). Apps MCP's
+`checkAppleRelay` checks the complete anisette and Apple TLS URL-bag path without signing in.
 
 Apple's servers sometimes refuse a request that another one would take: sign-in then fails "403
 Forbidden". Apparition retries on another server (`core/vendor/isideload/src/auth/edge.rs`): it
@@ -938,68 +912,19 @@ connected to. Only that lookup goes elsewhere, never the Apple ID. If every serv
 refuses, the error says so; try again later or on another network.
 
 The header corner of the desktop app always says where this computer's sign-in gets its anisette
-(built-in, Docker or another server) and what the companion offers, so a screenshot shows the
-setup.
+(this Mac's own, the paired Mac, or your own server) and what the companion offers, so a
+screenshot shows the setup.
 
-### Why sign-in stopped in October 2026
+### Why Apparition no longer runs Apple's Android libraries
 
-From about 29 October Apple refused the anisette the built-in provider makes: provisioning
-(`gsd.apple.com`) and sign-in (`gsa.apple.com`) answered an HTML `403 Forbidden` with no Apple
-error code. It looked like Apple had stopped accepting the Android libraries' anisette, and for
-a day it was worked around by choosing a different Apple server, since the first servers to
-refuse were only some of them. On 30 October it was traced to the request's `Content-Type`:
-Apple's servers reject the legacy `text/x-xml-plist` at provisioning, and (the opposite way)
-`application/x-xml-plist` at sign-in. `text/xml` passes both, Apple parses the body the same and
-answers as usual. With that one header the same anisette is accepted, so it never was the
-anisette, the serial or the network. Apple may change the rule again; the same symptom would be
-a 403 before any Apple error code.
-
-### When Apparition can't fetch Apple's libraries
-
-The built-in anisette needs two libraries, `libstoreservicescore.so` and `libCoreADI.so`, from
-Apple's CDN (`apps.mzstatic.com`), once. Where that fails (a firewall or proxy, no route to the
-CDN, Apple moving the file), signing in stops with "Couldn't fetch Apple's anisette libraries from
-Apple's CDN". Work through this in order:
-
-1. **Try again.** The desktop app shows a Try again button, which keeps what you typed for five
-   minutes; on the command line run the command again. Most failures are the network. Check that
-   `apps.mzstatic.com` opens from this computer, and a VPN or proxy that blocks it.
-2. **Give Apparition the files yourself.** Only after step 1 fails does the desktop app show
-   "Advanced: use Apple Music's libraries from a file", under the Try again button; it isn't there
-   on a working setup, so nobody is sent looking for files they don't need. On the command line
-   it is always available:
-
-       apparition anisette import ~/Downloads/applemusic.apk
-       apparition anisette import libstoreservicescore.so libCoreADI.so
-
-   Either the Apple Music APK for Android, or both libraries from its `lib/arm64-v8a` or
-   `lib/x86_64` folder (the one for this computer's processor). What you give replaces what
-   Apparition would otherwise use, until you replace it again.
-3. **Where to get them.** From Apple only. The APK is at
-   `https://apps.mzstatic.com/content/android-apple-music-apk/applemusic.apk`, the address
-   Apple's own Android page links to; download it on a network that reaches it, such as a phone's
-   hotspot, and import it. Or copy the two libraries from another computer where Apparition has
-   already signed in: they are in the `anisette` folder beside its `apple-id` folder (macOS
-   `~/Library/Application Support/Apparition Installer/anisette`, Linux
-   `~/.local/share/Apparition Installer/anisette`, in the Flatpak
-   `~/.var/app/com.illixion.apparition.desktop/data/Apparition Installer/anisette`). Don't use an APK
-   from anywhere else: these libraries run inside Apparition, with everything Apparition can do,
-   and the app can't tell that a file came from Apple.
-4. **If no file matches.** Apparition checks one thing: each file's SHA-256 against the version it
-   was tested with (the APK Apple's CDN held on 29 October 2026), and refuses a mismatch with
-   "isn't the version of the libraries Apparition was built with". If Apple has updated the
-   libraries and taken the old address down, the desktop app offers "Use these files anyway", and
-   on the command line `--accept-unverified` does the same:
-
-       apparition anisette import --accept-unverified libstoreservicescore.so libCoreADI.so
-
-   It still checks that each is a 64-bit library for this computer's processor, under the right name.
-   This is an **unsupported setup**, and says so for as long as it lasts: in red in the desktop
-   app's header corner and above the sign-in form, and at every command that starts the built-in
-   anisette. Sign-in may fail or behave unpredictably; please say so in any bug report.
-5. **Going back.** `apparition anisette import --reset` (the desktop app's "Go back to Apple's own
-   libraries", on the red banner) forgets the cached libraries, supplied or fetched, and the next
-   sign-in fetches Apple's own.
+Up to 0.4.5, Apparition made anisette off a Mac with the two libraries Apple Music for Android uses,
+fetched from Apple's CDN and run in its own process. Since October 2026 Apple gives the Xcode token
+only to a Mac's anisette, so those libraries no longer get a free account to signing, and running
+another platform's Apple code to stand in for a Mac isn't something Apparition wants to depend on.
+It now needs a Mac you own, which is what Apple's own tools need too. The October refusals that
+looked like the end of that anisette (an HTML `403 Forbidden` from `gsd.apple.com` and
+`gsa.apple.com`) were a request header: Apple rejects the legacy `text/x-xml-plist` and
+`application/x-xml-plist` content types, and Apparition sends `text/xml`.
 
 ## Build
 

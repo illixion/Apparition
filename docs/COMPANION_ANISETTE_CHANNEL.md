@@ -32,8 +32,8 @@ The channel must match `RAVECompanionChannel` and `RAVECompanionIdentify` in RAV
 The token is saved in the device Keychain, never in the saved companion URL or logs. New
 addresses contain `?relay=1`; older pairings must pair again to explicitly grant `appleRelay`.
 The client checks the returned grant. The host does not upgrade old anisette-only grants.
-There is no direct LAN HTTP compatibility mode: built-in and bundled Docker providers bind
-loopback; the open-mode desktop setting and CLI flag were removed. Device sign-in requires
+There is no direct LAN HTTP compatibility mode: the Mac's provider binds loopback; the open-mode
+desktop setting and CLI flag were removed. Device sign-in requires
 the encrypted companion, including when Local VPN handles installs.
 
 The device-local adapter lives for the signed-in session, because developer signing uses both
@@ -47,10 +47,21 @@ and certificate verification as login, without an Apple account. Unit tests cove
 Swift identify key and empty exporter context, invalid proofs, old grants, CONNECT restrictions,
 and a fake Apple certificate (rejected before credentials are sent).
 
+## Computers as clients
+
+A computer that isn't a Mac giving its own anisette (Windows, Linux, macOS 27) pairs with the Mac
+the same way a device does, through `core/src/companion_client.rs`: the same numeric pairing on
+49161 (requesting `anisette`), the token kept in `paired-mac.json` (mode 0600), and the same
+TLS-PSK identify on 49162. Signing in, it serves the v3 protocol on a loopback port and carries
+each connection over a fresh channel, so isideload's ordinary v3 client works unchanged. It checks
+the channel with `/v3/client_info` first, telling apart a Mac that can't be reached, one that no
+longer knows this computer (the TLS-PSK handshake fails) and one not offering its anisette (the
+channel closes after identify). Unlike a device, the computer makes its Apple TLS connections
+itself; it uses only the anisette part of the channel.
+
 ## Providers
 
-The channel forwards to the provider already selected on the computer: the built-in provider or a
-local v3 service such as Docker. This keeps the transport independent of how anisette was made.
-Dionysus and rosetta-free-wine are not required: macOS already has its native anisette provider,
-and a Windows CoreADI provider would be a separate optional provider implementation. It should
-not change pairing, the channel protocol, or move Apple credentials off the device.
+The channel forwards to the Mac's own anisette (`core/src/anisette`), served on loopback. Only a
+Mac offers one: a Windows or Linux companion relays only, and Apparition provides no other
+provider. A Mac's anisette needs no provisioning, so the v3 provisioning session answers at once
+with a placeholder.
