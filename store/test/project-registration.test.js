@@ -49,3 +49,30 @@ test('registration rejects unsafe names, missing setup, duplicate targets and no
   assert.throws(() => registerProject(f.file, f.input), /build-signing.conf/);
   assert.deepEqual(JSON.parse(fs.readFileSync(f.file)), f.config);
 });
+
+test('registration can write a minimal conf, keeps it out of Git and undoes it when the config changed', () => {
+  const f = fixture();
+  fs.unlinkSync(path.join(f.repo, 'build-signing.conf'));
+  fs.mkdirSync(path.join(f.repo, 'App.xcodeproj'));
+  const generate = { container: 'App.xcodeproj', scheme: "My App's" };
+  assert.throws(() => registerProject(f.file, { ...f.input, generate: { container: '../x.xcodeproj', scheme: 'S' } }), /not at the root|Choose/);
+  assert.equal(fs.existsSync(path.join(f.repo, 'build-signing.conf')), false);
+  // The config file changes between validation and the write: nothing is left behind.
+  const original = fs.readFileSync(f.file);
+  const { project } = registerProject(f.file, { ...f.input, generate });
+  const conf = fs.readFileSync(path.join(f.repo, 'build-signing.conf'), 'utf8');
+  assert.match(conf, /^PROJECT_PATH='App.xcodeproj'$/m);
+  assert.match(conf, /^SCHEME_NAME='My App'\\''s'$/m);
+  assert.match(conf, /PLATFORM="\$\{PLATFORM:-visionOS\}"/);
+  assert.equal(execFileSync('git', ['-C', f.repo, 'status', '--porcelain', '--untracked-files=all']).toString().includes('build-signing.conf'), false);
+  assert.equal(Object.getOwnPropertySymbols(project).length, 1);
+  assert.ok(!JSON.stringify(JSON.parse(fs.readFileSync(f.file))).includes('generate'));
+  assert.notEqual(fs.readFileSync(f.file).toString(), original.toString());
+});
+
+test('registration never replaces an existing conf with a generated one', () => {
+  const f = fixture();
+  fs.mkdirSync(path.join(f.repo, 'App.xcodeproj'));
+  registerProject(f.file, { ...f.input, generate: { container: 'App.xcodeproj', scheme: 'App' } });
+  assert.match(fs.readFileSync(path.join(f.repo, 'build-signing.conf'), 'utf8'), /exit 77/);
+});

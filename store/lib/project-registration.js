@@ -4,6 +4,10 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
+const { validateGeneration, writeConf } = require('./project-discovery');
+
+// Carries what to generate out of validate() without it ever reaching config.json.
+const GENERATE = Symbol('generate');
 
 class RegistrationError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
@@ -15,7 +19,7 @@ function canonical(value) {
 }
 function validate(input, existing) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Enter a project and at least one target.');
-  if (Object.keys(input).some(key => !['name', 'path', 'branches', 'platforms'].includes(key))) fail('Unknown project field.');
+  if (Object.keys(input).some(key => !['name', 'path', 'branches', 'platforms', 'generate'].includes(key))) fail('Unknown project field.');
   if (!text(input.name, 80) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.name)) fail('Use a project name with letters, numbers, dots, underscores or hyphens.');
   if (!text(input.path, 4096)) fail('Enter the checkout path on the Mac.');
   const requested = input.path.startsWith('~/') ? path.join(os.homedir(), input.path.slice(2)) : input.path;
@@ -27,9 +31,8 @@ function validate(input, existing) {
   const top = git(['rev-parse', '--show-toplevel']);
   if (top.status !== 0 || canonical(top.stdout.trim()) !== directory) fail('Choose the root of an existing Git checkout.');
   const configs = ['build-signing.conf', 'scripts/build-signing.conf'];
-  if (!configs.some(name => { try { return fs.statSync(path.join(directory, name)).isFile(); } catch { return false; } })) {
-    fail('Set up build-signing.conf in this checkout before registering it.');
-  }
+  const hasConf = configs.some(name => { try { return fs.statSync(path.join(directory, name)).isFile(); } catch { return false; } });
+  if (!hasConf && !input.generate) fail('Set up build-signing.conf in this checkout before registering it, or choose its project and scheme so Apparition can write one.');
   if (existing.some(repo => repo.name === input.name || canonical(repo.path) === directory)) {
     throw new RegistrationError('That project name or checkout is already registered.', 409);
   }
@@ -52,7 +55,10 @@ function validate(input, existing) {
   }
   if (!Array.isArray(branches) || branches.length > 64 || branches.some(branch => !text(branch, 255) || branch === 'current' ||
       git(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).status !== 0)) fail('Choose existing local branches; current checkout is always offered separately.');
-  return { name: input.name, path: directory, branches: [...new Set(branches)], platforms };
+  const project = { name: input.name, path: directory, branches: [...new Set(branches)], platforms };
+  // An existing conf is never replaced: the person's setup wins over a generated one.
+  if (!hasConf) project[GENERATE] = validateGeneration(directory, input.generate, platforms);
+  return project;
 }
 
 // Preserve every unrelated configuration value. Never source a signing config,
@@ -61,16 +67,20 @@ function registerProject(file, input) {
   const original = fs.readFileSync(file);
   const config = JSON.parse(original);
   const project = validate(input, config.repos || []);
+  const generation = project[GENERATE];
   const next = { ...config, repos: [...(config.repos || []), project] };
   const temporary = file + '.incoming-' + crypto.randomUUID();
-  let descriptor;
+  let descriptor, undoConf = null, registered = false;
   try {
+    if (generation) undoConf = writeConf(project.path, generation);
     descriptor = fs.openSync(temporary, 'wx', 0o600);
     fs.writeFileSync(descriptor, JSON.stringify(next, null, 2) + '\n'); fs.fsyncSync(descriptor);
     fs.closeSync(descriptor); descriptor = undefined;
     if (!fs.readFileSync(file).equals(original)) throw new RegistrationError('The Mac configuration changed; try registering again.', 409);
     fs.renameSync(temporary, file);
+    registered = true;
   } finally {
+    if (undoConf && !registered) undoConf();
     if (descriptor !== undefined) fs.closeSync(descriptor);
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
   }

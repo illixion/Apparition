@@ -1425,6 +1425,7 @@ const service = require('./lib/service').createService({ auth, config: () => CON
       return JSON.parse(result.stdout.trim());
     } finally { patchingTargets.delete(key); }
   },
+  discoverProject: dir => require('./lib/project-discovery').discover(dir, CONFIG.repos || []),
   registerProject: input => {
     const result = require('./lib/project-registration').registerProject(CONFIG_PATH, input);
     CONFIG = result.config;

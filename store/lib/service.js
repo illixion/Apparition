@@ -8,6 +8,7 @@ const ROUTES = [
   ['POST', /^\/inject$/],
   ['POST', /^\/installs$/],
   ['POST', /^\/projects$/],
+  ['POST', /^\/projects\/discover$/],
   ['GET', /^\/resign\/options$/],
   ['POST', /^\/resign$/],
   ['GET', /^\/builds\/\d+\/log$/],
@@ -29,7 +30,7 @@ const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.lengt
 function capabilities() {
   return { protocol: 'apparition-service', version: 1, hostPlatform: process.platform,
     capabilities: ['projects', 'devices', 'builds', 'build-logs', 'cancel-builds',
-      'traces', 'crash-logs', 'debug-endpoints', 'artifact-manifests', 'artifact-downloads', 'project-registration', 'resign', 'resign-build', 'entry-patching', 'install-modes', 'report-install'], authentication: 'password-session' };
+      'traces', 'crash-logs', 'debug-endpoints', 'artifact-manifests', 'artifact-downloads', 'project-registration', 'project-discovery', 'resign', 'resign-build', 'entry-patching', 'install-modes', 'report-install'], authentication: 'password-session' };
 }
 
 // The name a client sends for the device it runs on. It is percent-encoded (headers are ASCII).
@@ -41,7 +42,7 @@ function deviceHeader(value) {
 // `hostToken()` is the token of the Apparition desktop app hosting this server (null when run
 // directly). It is accepted as a bearer like a session, needs no password, and alone reaches
 // `/host` (status) and `/host/web-ui` (turn the web pages on or off, set the password).
-function createService({ auth, config, json, readBody, registerProject, inject, presence, reportInstall, hostToken = () => null, host = null }) {
+function createService({ auth, config, json, readBody, registerProject, discoverProject, inject, presence, reportInstall, hostToken = () => null, host = null }) {
   return async function route(req, res, url) {
     if (url.pathname === '/api/service' && req.method === 'GET') {
       json(res, 200, capabilities());
@@ -96,6 +97,17 @@ function createService({ auth, config, json, readBody, registerProject, inject, 
     }
     if (!ROUTES.some(([method, pattern]) => method === req.method && pattern.test(suffix))) {
       json(res, 404, { error: 'Unknown service operation.' });
+      return { handled: true };
+    }
+    if (suffix === '/projects/discover') {
+      try {
+        if (!discoverProject) throw new Error('unavailable');
+        const body = await readBody(req).catch(() => null);
+        json(res, 200, { discovery: discoverProject(body?.path) });
+      } catch (error) {
+        const known = error instanceof require('./project-discovery').DiscoveryError;
+        json(res, known ? error.status : 500, { error: known ? error.message : 'Could not read the checkout on the Mac.' });
+      }
       return { handled: true };
     }
     if (suffix === '/projects') {
