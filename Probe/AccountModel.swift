@@ -199,7 +199,9 @@ final class AccountModel {
         let asked = TwoFactorAsked()
         let reply: [String: Any]
         if attended {
-            let box = Unmanaged.passUnretained(twoFactorBox).toOpaque()
+            let callbackContext = TwoFactorCallbackContext(box: twoFactorBox, progress: asked)
+            let box = Unmanaged.passRetained(callbackContext).toOpaque()
+            defer { Unmanaged<TwoFactorCallbackContext>.fromOpaque(box).release() }
             twoFactorBox.onRequestJSON = { [weak self] json in
                 asked.set()
                 let request = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
@@ -244,8 +246,8 @@ final class AccountModel {
             return false
         }
         log.error("sign-in failed: \(error, privacy: .private)")
-        if asked.value {
-            autoSignInPaused = true
+        if asked.value { autoSignInPaused = true }
+        if asked.unanswered {
             lastError = attended
                 ? "The two-factor code wasn't entered. Sign in again when you're ready; refreshes wait until then."
                 : "Apple asked for a two-factor code, which nobody was here to enter. Sign in again to continue; refreshes wait until then."
@@ -288,15 +290,24 @@ final class AccountModel {
 
     /// `code:123456`, `devices`, `sms:<id>`, `resend` or `abort`.
     func answerTwoFactor(_ answer: String) {
+        // Ignore a second auto-submit, Verify, or sheet-dismissal callback for the same prompt.
+        // A late submission must not replace/free the C string while Rust is reading it.
+        guard twoFactor != nil else { return }
         twoFactor = nil
         twoFactorBox.submit(answer)
     }
 
     nonisolated static let twoFactorCallback: apparition_two_factor_fn = { context, params in
         guard let context else { return nil }
-        let box = Unmanaged<PinBox>.fromOpaque(context).takeUnretainedValue()
-        box.onRequestJSON?(params.map { String(cString: $0) } ?? "{}")
-        return box.waitForPin()
+        let callback = Unmanaged<TwoFactorCallbackContext>.fromOpaque(context).takeUnretainedValue()
+        // Arm the wait before publishing the prompt, so immediate AutoFill cannot be discarded
+        // as a stale submission by PinBox.
+        let response = callback.box.waitForPin {
+            callback.box.onRequestJSON?(params.map { String(cString: $0) } ?? "{}")
+        }
+        let kind = callback.progress.record(response.map { String(cString: $0) })
+        log.info("2FA callback response: \(kind, privacy: .public)")
+        return response
     }
 
     /// With nobody to ask: notes that Apple asked for a code, and gives none, which stops the sign-in.
@@ -523,17 +534,9 @@ enum Keychain {
     }
 }
 
-/// Whether a sign-in reached Apple's 2FA step; set on the core's thread, read after the sign-in.
-final class TwoFactorAsked: @unchecked Sendable {
-    private let lock = NSLock()
-    private var asked = false
-
-    func set() {
-        lock.lock(); asked = true; lock.unlock()
-    }
-
-    var value: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return asked
-    }
+/// Retained across the C callback; both objects synchronize their own mutable state.
+private final class TwoFactorCallbackContext: @unchecked Sendable {
+    let box: PinBox
+    let progress: TwoFactorAsked
+    init(box: PinBox, progress: TwoFactorAsked) { self.box = box; self.progress = progress }
 }

@@ -862,9 +862,10 @@ final class PinBox: @unchecked Sendable {
     }
 
     /// Called on idevice's thread; blocks until a PIN arrives or five minutes pass.
-    func waitForPin() -> UnsafePointer<CChar>? {
+    func waitForPin(onReady: (() -> Void)? = nil) -> UnsafePointer<CChar>? {
         lock.lock(); free(pin); pin = nil; lock.unlock()
         while semaphore.wait(timeout: .now()) == .success {}  // drop stale submissions
+        onReady?()
         onRequest?()
         log.info("pin requested")
         guard semaphore.wait(timeout: .now() + 300) == .success else { return nil }
