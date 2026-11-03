@@ -65,6 +65,8 @@ fn main() {
             flow::answer_prompt,
             flow::cancel_prompt,
             flow::saved_settings,
+            flow::set_mode,
+            flow::xcode_version,
             flow::builtin_anisette,
             flow::apple_id_sign_in,
             flow::sign_out,

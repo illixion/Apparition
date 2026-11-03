@@ -16,7 +16,8 @@ screen does.
   receives debug traces from apps
   that link [DebugTrace](https://github.com/illixion/DebugTrace). It has its own web page too, but
   Apparition talks to its versioned service API.
-- **Apparition on the Mac** (the desktop app) has a **Developer** tab that connects to the Apparition Store on
+- **Apparition on the Mac** (the desktop app) has a **Develop** tab (choose **Develop apps** the first
+  time it opens, or switch with the buttons in the header) that connects to the Apparition Store on
   the same Mac or another one. It can also register projects and send your signing certificates to
   a device.
 - **Apparition on a device** (Apple Vision Pro, iPhone, iPad, Apple TV) has the same **Developer**
@@ -63,12 +64,17 @@ access or code changes.
    `https://your-mac.your-tailnet.ts.net`; Apparition refuses plain HTTP to another host. The
    device can remember the password in its Keychain.
 
-3. **Add your projects.** On the Mac, Developer > **Register a project** takes the checkout's path,
-   its branches, and one target per device it installs on: a platform alias (`visionOS`, `iOS`,
-   `iPad`, `tvOS`), the device's name as Xcode shows it, and the bundle ID. You can also add them to
-   the Apparition Store's `config.json` by hand (`~/Library/Application Support/Apparition/Store/`).
+3. **Add your projects.** On the Mac, Develop > **Add a project**: choose the checkout's folder and
+   **Look**. Apparition reads its schemes, finds each app's platforms and bundle ID, and you tick the
+   apps to add and pick the device each installs on. If the checkout has no `build-signing.conf`, it
+   writes a small one (project, scheme, platform, device; no certificates or passwords) and adds it to
+   the clone's local Git exclude. An existing conf is never replaced. For anything unusual,
+   **Advanced: register a project by hand** takes the path, branches and one target per device (a
+   platform alias such as `visionOS`, `iOS`, `iPad` or `tvOS`, the device's name as Xcode shows it,
+   and the bundle ID), or edit the Apparition Store's `config.json`
+   (`~/Library/Application Support/Apparition/Store/`).
 
-## The Developer screen
+## The Develop screen
 
 Before you connect, it shows how to get started. Once connected it has four sections.
 

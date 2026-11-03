@@ -365,6 +365,54 @@ pub fn cancel_prompt(state: Shared<'_>) {
 pub struct Settings {
     email: Option<String>,
     anisette: Option<String>,
+    /// What the person uses Apparition for: "install" or "develop". Unset until they choose (or, for
+    /// someone who used an earlier version, until the page infers it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+}
+
+fn read_settings(state: &State) -> Settings {
+    std::fs::read(state.settings_path()).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
+}
+
+fn write_settings(state: &State, settings: &Settings) -> Result<(), Failure> {
+    std::fs::create_dir_all(&state.store.dir)?;
+    std::fs::write(state.settings_path(), serde_json::to_vec_pretty(settings).unwrap_or_default())?;
+    Ok(())
+}
+
+/// Remembers what Apparition is being used for. Only the two known modes are accepted.
+#[tauri::command]
+pub fn set_mode(state: Shared<'_>, mode: String) -> Result<(), Failure> {
+    if mode != "install" && mode != "develop" {
+        return Err("Choose Install apps or Develop apps.".into());
+    }
+    let mut settings = read_settings(&state);
+    settings.mode = Some(mode);
+    write_settings(&state, &settings)
+}
+
+/// Whether Xcode is usable on this computer: the first line of `xcodebuild -version`, or none.
+/// Only macOS has it; the page says so elsewhere.
+#[tauri::command]
+pub async fn xcode_version() -> Result<Option<String>, Failure> {
+    #[cfg(target_os = "macos")]
+    {
+        blocking(move || {
+            let Ok(output) = std::process::Command::new("/usr/bin/xcodebuild").arg("-version").output() else {
+                return Ok(None);
+            };
+            if !output.status.success() {
+                return Ok(None);
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).lines().next().map(|line| line.trim().to_string()))
+        })
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
 }
 
 /// Whether signing in can make its own anisette data (see `api::BUILTIN_ANISETTE`).
@@ -375,7 +423,7 @@ pub fn builtin_anisette() -> bool {
 
 #[tauri::command]
 pub fn saved_settings(state: Shared<'_>) -> Settings {
-    std::fs::read(state.settings_path()).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
+    read_settings(&state)
 }
 
 /// Signs in to Apple. 2FA is asked for with a `prompt` event of kind "twoFactor". The
@@ -422,9 +470,10 @@ pub async fn apple_id_sign_in(
             Err(_) if cancelled.load(Ordering::Relaxed) => return Err(Failure::cancelled("Sign-in was cancelled.")),
             Err(error) => return Err(error.into()),
         };
-        let settings = Settings { email: Some(email.clone()), anisette: Some(anisette) };
-        let _ = std::fs::create_dir_all(&state.store.dir)
-            .and_then(|_| std::fs::write(state.settings_path(), serde_json::to_vec_pretty(&settings).unwrap_or_default()));
+        let mut settings = read_settings(&state);
+        settings.email = Some(email.clone());
+        settings.anisette = Some(anisette);
+        let _ = write_settings(&state, &settings);
         let team_id = session.team_id().to_string();
         *state.session.lock().unwrap() = Some(session);
         // Signing with the Apple ID from now on: drop an imported certificate and its key.
@@ -610,6 +659,7 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
                 .add_filter("Provisioning profiles", &["mobileprovision"])
                 .blocking_pick_files()
                 .unwrap_or_default(),
+            "folder" => dialog.set_title("Choose the project's Git checkout").blocking_pick_folder().into_iter().collect(),
             _ => return Err("unknown kind of file".into()),
         };
         Ok(paths.into_iter().filter_map(|p| p.into_path().ok()).map(|p| p.to_string_lossy().to_string()).collect())

@@ -270,6 +270,7 @@ fn operation(name: &str, args: &Value) -> Result<(Method, String, Option<Value>)
             }
             Ok((Method::POST, "resign".into(), Some(body)))
         }
+        "discoverProject" => Ok((Method::POST, "projects/discover".into(), Some(args.clone()))),
         "registerProject" => Ok((Method::POST, "projects".into(), Some(args.clone()))),
         "inject" => Ok((Method::POST, "inject".into(), Some(args.clone()))),
         "build" => {

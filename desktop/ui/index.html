@@ -17,10 +17,14 @@
     <img src="logo.svg" alt="" width="30" height="30" data-tauri-drag-region>
     <span data-tauri-drag-region>Apparition</span>
   </div>
-  <div class="views" role="tablist" aria-label="Views" data-tauri-drag-region>
+  <div class="views" role="tablist" aria-label="Views" data-tauri-drag-region hidden>
     <button type="button" role="tab" id="tab-install" aria-selected="true" aria-controls="view-install" data-tauri-drag-region>Install</button>
-    <button type="button" role="tab" id="tab-companion" aria-selected="false" aria-controls="view-companion" data-tauri-drag-region>Companion <span class="tab-dot" id="companion-dot" hidden data-tauri-drag-region></span></button>
+    <button type="button" role="tab" id="tab-companion" aria-selected="false" aria-controls="view-companion" data-tauri-drag-region>Settings <span class="tab-dot" id="companion-dot" data-tauri-drag-region role="img" aria-label="Companion stopped" title="Companion stopped"></span></button>
     <button type="button" role="tab" id="tab-developer" aria-selected="false" aria-controls="view-developer" data-tauri-drag-region>Developer</button>
+  </div>
+  <div class="mode-switch" id="mode-switch" role="group" aria-label="What Apparition is for" hidden>
+    <button type="button" id="mode-install" data-mode="install" aria-pressed="false">Install apps</button>
+    <button type="button" id="mode-develop" data-mode="develop" aria-pressed="false">Develop apps</button>
   </div>
   <div id="setup-badge" class="setup-badge" role="status" hidden><span id="setup-badge-text"></span></div>
 </header>
@@ -48,6 +52,25 @@
   </div>
 </div>
 
+<div class="companion-view" id="view-mode" hidden>
+  <main class="panel mode-panel" tabindex="-1">
+    <h1>What do you want to do?</h1>
+    <p class="lede">Both start from the same place: pairing a device and signing in to Apple. You can switch whenever you like with the buttons in the corner.</p>
+    <div class="mode-cards">
+      <button type="button" class="mode-card" data-mode="install">
+        <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="m7.5 10 4.5 4.5 4.5-4.5"/><path d="M4 16v3a1.5 1.5 0 0 0 1.5 1.5h13A1.5 1.5 0 0 0 20 19v-3"/></svg>
+        <span class="mode-card-title">Install apps</span>
+        <span class="mode-card-text">Put apps on your Vision Pro, iPhone, iPad or Apple TV from an .ipa, and keep them refreshed before they expire. Works with a free or paid Apple ID, on Windows, Linux or Mac.</span>
+      </button>
+      <button type="button" class="mode-card" data-mode="develop">
+        <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4.5 4L8 16"/><path d="m16 8 4.5 4L16 16"/><path d="m13.5 5-3 14"/></svg>
+        <span class="mode-card-title">Develop apps</span>
+        <span class="mode-card-text">Build your own Xcode projects, install them on your devices and keep them working past the seven-day limit, with live Swift patching and debugging. <span data-role="develop-needs">Needs a Mac with Xcode.</span></span>
+      </button>
+    </div>
+  </main>
+</div>
+
 <div class="companion-view" id="view-companion" role="tabpanel" aria-labelledby="tab-companion" hidden>
   <main class="panel" id="companion-panel" tabindex="-1"></main>
 </div>
@@ -59,8 +82,9 @@
 
 <template id="t-companion">
   <section class="step companion">
-    <h1>Companion</h1>
-    <p class="lede">Apparition on your devices relies on this computer for two things: reaching the device it runs on (the relay) and, if you choose, signing in to Apple (anisette). It keeps doing both from the <span data-role="where">menu bar</span> when this window is closed.</p>
+    <h1>Settings</h1>
+    <p class="lede">Apparition on your devices relies on this computer for two things: reaching the device it runs on (the relay) and, if you choose, signing in to Apple (anisette). Together they are the companion, which keeps running from the <span data-role="where">menu bar</span> when this window is closed.</p>
+    <p class="companion-state" data-role="companion-state"><span class="tab-dot"></span><span data-role="companion-state-text">Companion stopped</span></p>
 
     <div class="group">
       <div class="group-head">
@@ -145,7 +169,7 @@
 <template id="t-welcome">
   <section class="step welcome">
     <div class="welcome-copy">
-      <h1>Put Apparition on your Apple device.</h1>
+      <h1 data-role="welcome-title">Put Apparition on your Apple device.</h1>
       <p class="lede">Apparition installs apps on your Vision Pro, iPhone, iPad or Apple TV and signs them right there, with your own Apple ID. This computer is needed once, to put Apparition itself on the device; after that it can keep running as Apparition's companion.</p>
       <h2 class="small">What you need</h2>
       <ul class="needs">

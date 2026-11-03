@@ -74,8 +74,12 @@ export class DeveloperView {
     this.jobsList = [];
     this.section = 'projects';
     this.showAllJobs = false;
-    root.append(element('h1', '', 'Developer'));
-    root.append(element('p', 'lede', 'Build, install and debug projects from this Mac or a connected Apparition Store.'));
+    root.append(element('h1', '', 'Develop apps'));
+    root.append(element('p', 'lede', 'Build your Xcode projects, install them on your devices and keep them refreshed, with live Swift patching and debugging while they run.'));
+    // Navigation into the rest of the app (the Devices tab holds pairing and signing).
+    this.go = () => {};
+    this.readiness = this.readinessCard();
+    root.append(this.readiness);
     this.intro = this.introCard();
     this.hostCard = this.hostSection();
     const form = element('form', 'dev-card dev-connect');
@@ -140,9 +144,10 @@ export class DeveloperView {
       extend: (card, repo) => this.extendProject(card, repo),
     });
     this.registration = this.registrationForm(); this.registration.hidden = true;
+    this.addProject = this.addProjectSection(); this.addProject.hidden = true;
     this.artifacts = this.block('Other kept builds', 'Builds the Mac kept that no project here installs, such as Xcode products registered by hand.');
     this.artifacts.hidden = true;
-    this.panes.projects.append(this.resign, this.projects, this.registration, this.artifacts);
+    this.panes.projects.append(this.resign, this.projects, this.addProject, this.registration, this.artifacts);
 
     this.jobs = this.block('Builds', 'Newest first. Builds for one project run one at a time.');
     this.panes.activity.append(this.jobs);
@@ -445,9 +450,117 @@ export class DeveloperView {
     return this.capabilities.has('resign') ? button('Re-sign…', () => this.openResign(build)) : null;
   }
 
+  // The first thing a developer sees: what is ready and what is not, each with one way to fix it.
+  readinessCard() {
+    const card = element('section', 'dev-card dev-ready');
+    card.append(element('h2', 'small', 'Ready to build?'));
+    this.readyList = element('ul', 'dev-ready-list');
+    card.append(this.readyList);
+    this.drawReadiness();
+    return card;
+  }
+  async drawReadiness() {
+    const epoch = (this.readyEpoch = (this.readyEpoch || 0) + 1);
+    const ask = async (command, args) => { try { return await this.invoke(command, args); } catch { return undefined; } };
+    const [xcode, devices, settings] = await Promise.all([ask('xcode_version'), ask('paired_devices'), ask('saved_settings')]);
+    if (epoch !== this.readyEpoch) return;
+    const rows = [];
+    const row = (ok, title, detail, action) => rows.push({ ok, title, detail, action });
+    row(!!xcode, 'Xcode', xcode || 'Not found on this computer. Builds run on a Mac with Xcode; install it from the App Store, or connect to another Mac below.',
+      null);
+    row(this.connected, 'Build service', this.connected
+      ? (this.local ? 'Running on this Mac.' : 'Connected.')
+      : 'Not running. Start it on this Mac or connect to another one below.', null);
+    const count = Array.isArray(devices) ? devices.length : 0;
+    row(count > 0, 'A device', count ? `${plural(count, 'device')} paired with Apparition.` : 'None paired yet. Pair a Vision Pro, iPhone, iPad or Apple TV.',
+      count ? null : ['Pair a device', () => this.go('devices')]);
+    const email = settings?.email;
+    row(!!email, 'Signing', email ? `Apple ID ${email}. Add a certificate in Devices to sign with a paid account.` : 'Sign in with an Apple ID (free or paid) or add your own certificate.',
+      email ? null : ['Set up signing', () => this.go('devices')]);
+    this.readyList.replaceChildren(...rows.map(item => {
+      const li = element('li', `dev-ready-row ${item.ok ? 'ok' : 'todo'}`);
+      li.append(element('span', 'dev-ready-mark', item.ok ? '✓' : '○'));
+      const text = element('span', 'dev-ready-text');
+      text.append(element('strong', '', item.title), element('span', 'hint', item.detail));
+      li.append(text);
+      if (item.action) li.append(button(item.action[0], item.action[1], 'button small'));
+      return li;
+    }));
+  }
+
+  // Add a project by choosing its folder: Apparition reads what it builds and writes the routine
+  // configuration, so nothing has to be prepared first.
+  addProjectSection() {
+    const card = element('section', 'dev-card dev-add');
+    card.append(element('h2', 'small', 'Add a project'));
+    card.append(element('p', 'hint', 'Choose the folder of a Git checkout with an Xcode project. Apparition finds the app and its platforms and sets up building and installing. It writes a small build-signing.conf with no passwords or certificates, and keeps it out of Git.'));
+    const row = element('div', 'service-row');
+    const path = element('input'); path.placeholder = '~/Projects/MyApp'; path.setAttribute('aria-label', 'Checkout path on the Mac');
+    this.addPath = path;
+    this.pickFolder = button('Choose folder…', async () => {
+      try { const [folder] = await this.invoke('pick_file', { kind: 'folder' }); if (folder) { path.value = folder; await this.look(); } } catch {}
+    });
+    const lookButton = button('Look', () => this.look(), 'button primary');
+    row.append(path, this.pickFolder, lookButton);
+    this.addResult = element('div', 'dev-add-result');
+    card.append(row, this.addResult);
+    return card;
+  }
+  async look() {
+    const value = this.addPath.value.trim();
+    if (!value) return;
+    this.addResult.replaceChildren(element('p', 'hint', 'Reading the project. Xcode is asked for its schemes, which can take a moment.'));
+    try {
+      const { discovery } = await this.request('discoverProject', { path: value });
+      this.drawDiscovery(discovery);
+    } catch (error) { this.addResult.replaceChildren(element('p', 'status error', String(error?.message || error))); }
+  }
+  drawDiscovery(found) {
+    const out = [];
+    if (found.registered) { this.addResult.replaceChildren(element('p', 'status', `${found.name} is already added.`)); return; }
+    if (found.note) { this.addResult.replaceChildren(element('p', 'status error', found.note)); return; }
+    out.push(element('p', '', `${found.container}: ${found.apps.map(app => app.scheme).join(', ')}`));
+    const known = new Set((this.deviceList || []).map(device => device.name || device).filter(Boolean));
+    const devices = [...known];
+    // One row per app and platform; the device is the one this Mac can install to.
+    const picks = [];
+    for (const app of found.apps) {
+      const platforms = app.platforms.length ? app.platforms : ['iOS'];
+      for (const platform of platforms) {
+        const line = element('label', 'check');
+        const box = element('input'); box.type = 'checkbox'; box.checked = picks.length === 0;
+        const device = element('select'); device.setAttribute('aria-label', `Device for ${app.scheme} on ${platform}`);
+        for (const name of devices.length ? devices : ['']) { const option = element('option', '', name || 'No device found'); option.value = name; device.append(option); }
+        line.append(box, element('span', '', `${app.scheme} on ${platform} (${app.bundleId}) → `), device);
+        picks.push({ app, platform, box, device });
+        out.push(line);
+      }
+    }
+    const go = button('Add project', async () => {
+      const chosen = picks.filter(pick => pick.box.checked);
+      const first = chosen[0];
+      if (!first) return this.addResult.append(element('p', 'status error', 'Choose at least one app to add.'));
+      if (chosen.some(pick => !pick.device.value)) return this.addResult.append(element('p', 'status error', 'Pair a device with this Mac in Xcode (Window > Devices and Simulators) first, then look again.'));
+      go.disabled = true;
+      try {
+        const reply = await this.request('registerProject', {
+          name: found.name, path: found.path, ...(found.currentBranch ? { branches: [found.currentBranch] } : {}),
+          platforms: chosen.map(pick => ({ platform: pick.platform, device: pick.device.value, bundleId: pick.app.bundleId })),
+          ...(found.hasConf ? {} : { generate: { container: found.container, scheme: first.app.scheme } }),
+        });
+        this.status(`Added ${reply.project.name}.`);
+        this.addResult.replaceChildren(); this.addPath.value = '';
+        await this.refresh();
+      } catch (error) { this.addResult.append(element('p', 'status error', String(error?.message || error))); }
+      finally { go.disabled = false; }
+    }, 'button primary');
+    out.push(go);
+    this.addResult.replaceChildren(...out);
+  }
+
   registrationForm() {
     const container = element('details', 'dev-card');
-    container.append(element('summary', '', 'Register a project'));
+    container.append(element('summary', '', 'Advanced: register a project by hand'));
     const form = element('form', 'service-project');
     const input = (title, placeholder = '') => {
       const label = element('label', '', title), field = element('input');
@@ -506,7 +619,7 @@ export class DeveloperView {
   request(operation, args = {}) { return this.invoke('service_request', { operation, arguments: args }); }
   show(visible) {
     this.visible = visible;
-    if (visible) this.loadSigning();
+    if (visible) { this.loadSigning(); this.drawReadiness(); }
     clearInterval(this.timer);
     if (visible && this.connected) { this.refresh(); this.timer = setInterval(() => this.refresh(), 4000); }
   }
@@ -530,6 +643,8 @@ export class DeveloperView {
       this.remoteForm.hidden = this.local;
       this.capabilities = new Set(service.capabilities || []);
       this.registration.hidden = !this.capabilities.has('project-registration');
+      this.addProject.hidden = this.registration.hidden;
+      this.pickFolder.hidden = !this.local;
       this.epoch += 1;
       this.fields.hidden = this.hint.hidden = this.intro.hidden = true;
       this.connected_bar.hidden = false;

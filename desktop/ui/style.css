@@ -257,7 +257,37 @@ code { font: .875em/1.4 var(--mono); }
 }
 .views button[aria-selected="true"] { color: var(--ink); background: var(--surface); }
 .views button:focus-visible { outline: 2px solid var(--lilac); outline-offset: 1px; }
-.tab-dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--glow); box-shadow: 0 0 6px var(--glow-soft); }
+.tab-dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--muted); opacity: .55; flex: none; }
+.tab-dot.on { background: var(--glow); box-shadow: 0 0 6px var(--glow-soft); opacity: 1; }
+.views[hidden], .mode-switch[hidden] { display: none; }
+.companion-state { display: inline-flex; align-items: center; gap: .5rem; margin: .25rem 0 0; color: var(--muted); font-size: .875rem; }
+.companion-state.on { color: var(--ink); }
+
+/* Install apps | Develop apps, in the header on every screen. */
+.mode-switch { display: inline-flex; gap: .2rem; padding: .2rem; border: 1px solid var(--line); border-radius: 999px; flex: none; }
+.mode-switch button { font: 500 .8rem/1 var(--text); color: var(--muted); background: none; border: 0; border-radius: 999px; padding: .4rem .8rem; cursor: pointer; }
+.mode-switch button[aria-pressed="true"] { color: var(--ink); background: var(--surface); }
+.mode-switch button:focus-visible { outline: 2px solid var(--lilac); outline-offset: 1px; }
+
+/* First run: what do you want to do? */
+.mode-panel { max-width: 52rem; margin-inline: auto; }
+.mode-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; margin-top: 1.5rem; }
+.mode-card { display: flex; flex-direction: column; align-items: flex-start; gap: .6rem; text-align: left; padding: 1.4rem; font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; cursor: pointer; }
+.mode-card:hover { border-color: var(--lilac); }
+.mode-card:focus-visible { outline: 2px solid var(--lilac); outline-offset: 2px; }
+.mode-card svg { color: var(--lilac); }
+.mode-card-title { font: 600 1.15rem/1.2 var(--text); }
+.mode-card-text { color: var(--muted); font-size: .9rem; line-height: 1.45; }
+
+/* Develop: what is ready and what is not. */
+.dev-ready-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; }
+.dev-ready-row { display: flex; align-items: center; gap: .75rem; }
+.dev-ready-mark { width: 1.2rem; text-align: center; color: var(--muted); }
+.dev-ready-row.ok .dev-ready-mark { color: var(--good, var(--glow)); }
+.dev-ready-text { display: flex; flex-direction: column; gap: .1rem; flex: 1; min-width: 0; }
+.dev-add .service-row input { flex: 1; min-width: 12rem; }
+.dev-add-result { display: grid; gap: .6rem; }
 
 .companion-view { flex: 1; min-height: 0; display: flex; }
 .companion-view[hidden] { display: none; }

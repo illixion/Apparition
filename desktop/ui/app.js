@@ -23,6 +23,7 @@ const state = {
   /** @type {any} */ selected: null,
   /** The headset installed to: {udid, name, address, osVersion?}. @type {any} */ device: null,
   pairSkipped: false,
+  /** What Apparition is used for: "install" or "develop" (unset until chosen). @type {"install"|"develop"|undefined} */ useMode: undefined,
   mode: "appleId",
   /** @type {any} */ signing: null,
   /** @type {string|null} */ p12: null,
@@ -203,6 +204,9 @@ function render() {
 function welcome() {
   const view = template("t-welcome");
   panel.append(view);
+  // Developing needs a device set up too, so the first screen says what this one is for.
+  if (state.useMode === "develop") $(panel, "welcome-title").textContent = "Set up a device for development.";
+  else if (state.useMode === "install") $(panel, "welcome-title").textContent = "Install apps on your Apple device.";
   let starting = false;
   panel.querySelector('[data-go="headset"]')?.addEventListener("click", async () => {
     // A second press while the update prompt is open must not advance twice.
@@ -1470,8 +1474,16 @@ const developer = new DeveloperView(document.getElementById("developer-panel"), 
 /** What an action in progress, or one that just failed, has to say. @type {{text: string, kind?: "error"|"good"|""}|null} */
 let companionNote = null;
 
-function showView(/** @type {"install"|"companion"|"developer"} */ view) {
+const modeView = /** @type {HTMLElement} */ (document.getElementById("view-mode"));
+const viewsBar = /** @type {HTMLElement} */ (document.querySelector(".views"));
+const modeSwitch = /** @type {HTMLElement} */ (document.getElementById("mode-switch"));
+
+/** The tabs each mode shows, in order. Develop adds the Develop tab and turns Install into Devices. */
+const MODE_TABS = { install: [tabInstall, tabCompanion], develop: [tabDeveloper, tabInstall, tabCompanion] };
+
+function showView(/** @type {"install"|"companion"|"developer"|"mode"} */ view) {
   const companion = view === "companion";
+  modeView.hidden = view !== "mode";
   installView.hidden = view !== "install";
   companionView.hidden = !companion;
   tabInstall.setAttribute("aria-selected", String(view === "install"));
@@ -1480,6 +1492,7 @@ function showView(/** @type {"install"|"companion"|"developer"} */ view) {
   developer.show(view === "developer");
   tabCompanion.setAttribute("aria-selected", String(companion));
   clearInterval(companionTimer);
+  if (view === "mode") modeView.querySelector("main")?.focus({ preventScroll: true });
   if (companion) {
     if (!companionPanel.firstElementChild) buildCompanion();
     refreshCompanion();
@@ -1487,6 +1500,34 @@ function showView(/** @type {"install"|"companion"|"developer"} */ view) {
     companionPanel.focus({ preventScroll: true });
   }
 }
+
+/** Shows the tabs of `mode` and marks the switch. Does not save or navigate. */
+function applyMode(/** @type {"install"|"develop"} */ mode) {
+  state.useMode = mode;
+  document.body.dataset.mode = mode;
+  tabInstall.textContent = mode === "develop" ? "Devices" : "Install";
+  tabDeveloper.textContent = "Develop";
+  viewsBar.replaceChildren(...MODE_TABS[mode]);
+  viewsBar.hidden = modeSwitch.hidden = false;
+  for (const button of modeSwitch.querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+}
+
+/** Where a mode opens: Develop on its projects, Install on the install steps. */
+const landing = (/** @type {"install"|"develop"} */ mode) => (mode === "develop" ? "developer" : "install");
+
+async function chooseMode(/** @type {"install"|"develop"} */ mode) {
+  const changed = state.useMode !== mode;
+  applyMode(mode);
+  try { await invoke("set_mode", { mode }); } catch {}
+  state.settings = { ...state.settings, mode };
+  // The install steps word their first screen by mode; redraw it only if it is showing.
+  if (changed && state.step === "welcome") render();
+  showView(landing(mode));
+}
+for (const button of document.querySelectorAll("[data-mode]")) {
+  button.addEventListener("click", () => chooseMode(/** @type {any} */ (button).dataset.mode));
+}
+developer.go = () => showView("install");
 tabInstall.addEventListener("click", () => showView("install"));
 tabCompanion.addEventListener("click", () => showView("companion"));
 tabDeveloper.addEventListener("click", () => showView("developer"));
@@ -1563,7 +1604,18 @@ const amount = (/** @type {number} */ bytes) => (bytes < 1000 ? `${bytes} B` : m
 const clock = (/** @type {number} */ seconds) => new Date(seconds * 1000).toLocaleTimeString(undefined, { timeStyle: "medium" });
 
 function drawCompanion(/** @type {any} */ status) {
-  /** @type {HTMLElement} */ (document.getElementById("companion-dot")).hidden = !status.relay.running;
+  const running = !!status.relay.running;
+  const dot = /** @type {HTMLElement} */ (document.getElementById("companion-dot"));
+  const label = running ? "Companion running" : "Companion stopped";
+  dot.classList.toggle("on", running);
+  dot.setAttribute("aria-label", label);
+  dot.title = label;
+  const stateLine = companionPanel.querySelector('[data-role="companion-state"]');
+  if (stateLine) {
+    stateLine.classList.toggle("on", running);
+    stateLine.querySelector(".tab-dot")?.classList.toggle("on", running);
+    $(companionPanel, "companion-state-text").textContent = running ? "Companion running" : "Companion stopped";
+  }
   const before = JSON.stringify([state.companion?.relay?.running, state.companion?.anisette?.offered]);
   state.companion = status;
   if (before !== JSON.stringify([status.relay.running, status.anisette.offered])) drawSetupBadge();
@@ -1699,12 +1751,25 @@ async function start() {
   updates.draw(await invoke("update_status"));
 
   refreshCompanion();
+  // Someone who used Apparition before modes existed is not asked: a saved Build service means
+  // they develop, anything else means they install. They can switch from the header.
+  let mode = state.settings.mode;
+  if (!mode && (state.settings.email || state.info.preview)) {
+    const service = await invoke("service_settings").catch(() => ({}));
+    mode = service?.url ? "develop" : "install";
+    if (!state.info.preview) invoke("set_mode", { mode }).catch(() => {});
+  }
+  if (mode) applyMode(mode);
   if (state.info.preview === "companion") {
     render();
     return showView("companion");
   }
   if (state.info.preview) return preview(state.info.preview);
   render();
+  const macHost = state.info.platform === "macos-universal";
+  const needs = modeView.querySelector('[data-role="develop-needs"]');
+  if (needs && !macHost) needs.textContent = "Builds run on a Mac with Xcode: connect this computer to one.";
+  showView(mode ? landing(mode) : "mode");
 }
 
 /** Debug builds only (the backend passes `preview` only there): open on a step with sample data. */

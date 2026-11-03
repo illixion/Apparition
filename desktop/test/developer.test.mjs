@@ -4,6 +4,9 @@ import { createRequire } from 'node:module';
 const {ProjectList, targetKey} = createRequire(import.meta.url)('../../store/public/shared/projects.js');
 import { DeveloperView, jobKind } from '../ui/developer.js';
 
+// The readiness checklist asks the app about this computer on its own; tests of other calls skip those.
+const READINESS = new Set(['xcode_version', 'paired_devices', 'saved_settings']);
+
 // A DOM event fixture for the controller's credential and deployment boundaries.
 // Rendering and platform appearance are deliberately outside these unit tests.
 class Node {
@@ -106,7 +109,7 @@ test('artifact downloads pass only the build identity through the native bridge'
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
     if (command === 'service_settings' || command === 'host_status') return {};
-    calls.push({ command, args }); return { path: '/chosen/app.ipa' };
+    if (!READINESS.has(command)) calls.push({ command, args }); return { path: '/chosen/app.ipa' };
   });
   const download = view.downloadButton('build-id');
   await download.listeners.click();
@@ -120,7 +123,7 @@ test('registered builds are visible without queue jobs and do not duplicate queu
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
     if (command === 'service_settings' || command === 'host_status') return {};
-    calls.push({ command, args }); return { path: '/chosen/app.ipa' };
+    if (!READINESS.has(command)) calls.push({ command, args }); return { path: '/chosen/app.ipa' };
   });
   view.renderArtifacts({ status: 'fulfilled', value: { builds: [
     { buildId: 'in-queue', app: { name: 'Queued' } }, { buildId: 'external', app: { name: 'Xcode build' } },
@@ -135,7 +138,7 @@ test('project registration sends the Mac checkout and explicit targets without b
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
     if (command === 'service_settings' || command === 'host_status') return {};
-    calls.push({ command, args }); return { project: { name: 'Example' } };
+    if (!READINESS.has(command)) calls.push({ command, args }); return { project: { name: 'Example' } };
   });
   const fields = view.registration.all().filter(node => node.tagName === 'input');
   ['Example', '~/Projects/Example', 'main, feature/ui', 'visionOS', 'AVP', 'com.example.app'].forEach((value, index) => fields[index].value = value);
@@ -350,4 +353,37 @@ test('patching uses only the configured target and does not enqueue a build', as
   await view.projects.all().find(n => n.tagName === 'button' && n.textContent === 'Patch running app').listeners.click();
   assert.deepEqual(calls.map(c => c.operation), ['inject']);
   assert.deepEqual(calls[0].arguments, { repo: 'Sample', device: 'AVP', targetPlatform: 'visionOS' });
+});
+
+test('the readiness checklist reports Xcode, service, devices and signing, and offers fixes only for what is missing', async () => {
+  const answers = { xcode_version: 'Xcode 27.0', paired_devices: [], saved_settings: {} };
+  const view = new DeveloperView(new Node('main'), async command => answers[command]);
+  const went = []; view.go = where => went.push(where);
+  await view.drawReadiness();
+  const text = view.readyList.textContent;
+  assert.match(text, /Xcode 27\.0/);
+  assert.match(text, /None paired yet/);
+  assert.match(text, /Sign in with an Apple ID/);
+  const fixes = view.readyList.all().filter(node => node.tagName === 'button');
+  assert.deepEqual(fixes.map(node => node.textContent), ['Pair a device', 'Set up signing']);
+  fixes[0].listeners.click(); assert.deepEqual(went, ['devices']);
+  answers.paired_devices = [{ name: 'AVP' }]; answers.saved_settings = { email: 'me@example.com' };
+  await view.drawReadiness();
+  assert.equal(view.readyList.all().filter(node => node.tagName === 'button').length, 0);
+});
+
+test('adding a project from a folder registers what discovery found and asks for a conf only when none exists', async () => {
+  const calls = [];
+  const view = new DeveloperView(new Node('main'), async (command, args) => {
+    if (command === 'service_request') { calls.push(args); return args.operation === 'registerProject' ? { project: { name: 'App' } } : {}; }
+  });
+  view.deviceList = [{ name: 'AVP' }];
+  view.drawDiscovery({ name: 'App', path: '/Users/me/App', currentBranch: 'main', hasConf: false, registered: false, container: 'App.xcodeproj',
+    apps: [{ scheme: 'App', bundleId: 'com.example.app', platforms: ['visionOS'] }] });
+  const add = view.addResult.all().find(node => node.textContent === 'Add project');
+  await add.listeners.click();
+  assert.deepEqual(calls.at(-1), { operation: 'registerProject', arguments: {
+    name: 'App', path: '/Users/me/App', branches: ['main'],
+    platforms: [{ platform: 'visionOS', device: 'AVP', bundleId: 'com.example.app' }],
+    generate: { container: 'App.xcodeproj', scheme: 'App' } } });
 });

@@ -582,7 +582,7 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `certificates`, `app-ids` | Show what uses up a free account's two certificates and ten App IDs, and free one you choose after you confirm. |
 | `signing receive`, `send`, `hand-off`, `share`, `import` | Move the Apple ID's certificate key between your devices and computers; see Sharing one certificate below. |
 | `forget <name or UDID>` | Forgets a paired device. |
-| `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Companion tab). |
+| `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Settings tab). |
 | `anisette serve`, `up`, `down`, `compose` | Serve this computer's built-in anisette, or run the self-hosted server with your Docker. |
 | `anisette import [--accept-unverified] <file>…`, `anisette import --reset` | Troubleshooting, for "Couldn't fetch Apple's anisette libraries": use the Apple Music APK, or its two libraries, from a file you got from Apple, in place of the download. `--accept-unverified` uses files that don't match the tested version (an unsupported setup, warned about everywhere). `--reset` goes back to fetching Apple's. Steps in [When Apparition can't fetch Apple's libraries](#when-apparition-cant-fetch-apples-libraries). |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
@@ -712,9 +712,18 @@ revoke one you choose.
 
 ### The desktop app
 
+The first time it opens, the app asks what you want to do. **Install apps** shows the install
+steps and Settings. **Develop apps** adds a Develop tab (a checklist of what is ready, your
+projects, builds and reports) and turns Install into Devices, where you pair a device and set up
+signing. Both modes share the same pairing and signing, and the buttons in the header's corner
+switch between them at any time; the choice is remembered. To add a project, choose its folder: the
+Apparition Store reads its schemes and bundle IDs and writes a small `build-signing.conf` with no
+signing material, kept out of Git. Settings holds the companion (a dot on the tab shows whether it
+is running), anisette, opening at login and updates.
+
 `desktop/` is Apparition for macOS, Windows and Linux (Tauri v2): the same installer as a
 guided app, so nobody needs a terminal, and the companion, kept running from the menu bar or
-tray after the window closes (its Companion tab: the relay and its connections, the anisette
+tray after the window closes (its Settings tab: the relay and its connections, the anisette
 server offered to devices, opening at login). As an installer, it finds the headset over mDNS (or takes its address) and pairs with
 the PIN it shows, or pairs an iPhone or iPad over its cable (like `pair --usb`), signs in to an Apple ID (asking for the 2FA code) or opens a .p12 and
 profiles, installs the latest signed release (or an IPA or .deb you pick) with progress, and hands
@@ -894,19 +903,19 @@ notarized (hardened runtime), their entitlements must include
 
 The companion can offer the headset an anisette server too: this computer's own (built in,
 served to the network on port 6969), or the same compose file run with your Docker (Docker
-Desktop, OrbStack or Colima), from the desktop app's Companion tab or `apparition relay
+Desktop, OrbStack or Colima), from the desktop app's Settings tab or `apparition relay
 --anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
 anisette server" next to the companion; nothing switches on its own.
 
 The built-in server serves only devices paired with the computer. Choosing it on a device
 ("Pair and Use") pairs once over TCP 49161, with RAVESDK's `RAVECompanion` exchange
 (`core/src/pairing.rs` is the computer's half, held to the SDK's test vectors): both screens show
-a six-digit code, and you allow the device in the Companion tab (or answer `apparition relay` in
+a six-digit code, and you allow the device in the Settings tab (or answer `apparition relay` in
 its terminal) if they match. A relay with no terminal (launchd, systemd) or with `--no-prompt`
 declines and logs how to pair instead; pair once from a terminal and the device is remembered. The device gets a token of its own, sealed under the key the
 exchange agreed, and uses `http://<computer>:6969/t/<token>` as its server, which any v3 client
-takes as a base URL. Anything else on port 6969 gets 401. Unpair a device in the Companion tab or
-with `apparition relay devices forget <id>`. The Companion tab's Advanced option "Serve anyone on
+takes as a base URL. Anything else on port 6969 gets 401. Unpair a device in the Settings tab or
+with `apparition relay devices forget <id>`. The Settings tab's Advanced option "Serve anyone on
 this network, without pairing" (`--anisette-open`) serves anyone who reaches the port, for v3 clients that can't pair (SideStore, AltServer); `apparition
 anisette serve` always does. The Docker server is Dadoum's and has no access control. The token
 travels in plain HTTP, like the anisette data itself: pairing keeps out whoever merely reaches
