@@ -553,6 +553,15 @@ async fn sign_in_with_proxy(
             claim_after_sign_in(&mut account);
             developer_session_with_retry(&mut account).await.context("Failed to open a developer session")?
         }
+        Err(error) if served == claimed_platform::Served::Windows && auth_code(&error) == Some(-80046) => {
+            tracing::info!("Windows login succeeded; retrying the refused Xcode token with Mac client metadata");
+            account.grandslam_client = Arc::new(signing_in.claiming(isideload::anisette::AnisetteClientInfo {
+                client_info: claimed_platform::MAC_CLIENT_INFO.to_string(),
+                user_agent: claimed_platform::USER_AGENT.to_string(),
+            }));
+            developer_session_with_retry(&mut account).await
+                .context("Failed to open the Xcode session using Mac client metadata after Windows-claim rejection")?
+        }
         Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-80046) => {
             return Err(error.context(REFUSED_ANDROID_ANISETTE).into_dynamic());
         }
