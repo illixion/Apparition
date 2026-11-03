@@ -791,7 +791,7 @@ impl AppleAccount {
         let gs_service_url = self.grandslam_client.get_url("gsService")?;
         debug!("GrandSlam service URL: {}", gs_service_url);
 
-        let cpd = anisette_data.get_client_provided_data();
+        let cpd = self.grandslam_client.client_provided_data(&anisette_data);
 
         let srp_client = srp::Client::<G2048, Sha256>::new_with_options(false);
         let a: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
@@ -808,7 +808,7 @@ impl AppleAccount {
                 .resync(&sim)
                 .await
                 .context("Anisette resync failed")?;
-            let fresh_cpd = fresh_anisette.get_client_provided_data();
+            let fresh_cpd = self.grandslam_client.client_provided_data(&fresh_anisette);
             raw_response = self
                 .send_init_request(&gs_service_url, &fresh_cpd, &a_pub)
                 .await
@@ -987,7 +987,7 @@ impl AppleAccount {
             .to_vec();
 
         let gs_service_url = self.grandslam_client.get_url("gsService")?;
-        let cpd = anisette_data.get_client_provided_data();
+        let cpd = self.grandslam_client.client_provided_data(&anisette_data);
 
         let request = plist!(dict {
             "Header": {

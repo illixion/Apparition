@@ -28,6 +28,7 @@ pub struct GrandSlam {
     pub client: reqwest_middleware::ClientWithMiddleware,
     pub client_info: AnisetteClientInfo,
     url_bag: Dictionary,
+    windows_adi: bool,
 }
 
 impl GrandSlam {
@@ -44,10 +45,12 @@ impl GrandSlam {
             Self::build_reqwest_client(debug, proxy_url).context("Failed to build HTTP client")?;
         let base_headers = Self::base_headers(&client_info, false)?;
         let url_bag = Self::fetch_url_bag(&client, base_headers).await?;
+        let windows_adi = client_info.client_info.contains("<Windows;");
         Ok(Self {
             client,
             client_info,
             url_bag,
+            windows_adi,
         })
     }
 
@@ -56,7 +59,14 @@ impl GrandSlam {
             client: self.client.clone(),
             client_info,
             url_bag: self.url_bag.clone(),
+            windows_adi: self.windows_adi,
         }
+    }
+
+    pub fn client_provided_data(&self, data: &crate::anisette::AnisetteData) -> Dictionary {
+        let mut cpd = data.get_client_provided_data();
+        if self.windows_adi { windows_client_provided_data(&mut cpd); }
+        cpd
     }
 
     /// Fetch the URL bag from GrandSlam and cache it
@@ -230,14 +240,10 @@ impl GrandSlam {
             "User-Agent",
             HeaderValue::from_str(&client_info.user_agent)?,
         );
-        headers.insert(
-            "X-Xcode-Version",
-            HeaderValue::from_static("27.0 (27A5218g)"),
-        );
-        headers.insert(
-            "X-Apple-App-Info",
-            HeaderValue::from_static("com.apple.gs.xcode.auth"),
-        );
+        if !client_info.client_info.contains("<Windows;") {
+            headers.insert("X-Xcode-Version", HeaderValue::from_static("27.0 (27A5218g)"));
+            headers.insert("X-Apple-App-Info", HeaderValue::from_static("com.apple.gs.xcode.auth"));
+        }
         headers.insert(
             reqwest::header::CONNECTION,
             HeaderValue::from_static("close"),
@@ -294,6 +300,59 @@ impl GrandSlam {
             builder
         };
         Ok(builder.build())
+    }
+}
+
+fn windows_client_provided_data(cpd: &mut Dictionary) {
+    for key in ["bootstrap", "ckgen", "icscrec", "pbe", "winprot", "wpbe"] {
+        cpd.insert(key.into(), plist::Value::Boolean(true));
+    }
+    cpd.remove("prkgen");
+    cpd.insert("cou".into(), plist::Value::String("US".into()));
+    cpd.insert("X-Apple-I-Device-Configuration-Mode".into(), plist::Value::String("0".into()));
+}
+
+#[cfg(test)]
+mod windows_cpd_tests {
+    use super::*;
+    #[test]
+    fn windows_authkit_and_mac_xcode_use_their_own_header_profiles() {
+        let info = |platform: &str| AnisetteClientInfo { client_info: platform.into(), user_agent: "test".into() };
+        let windows = GrandSlam::base_headers(&info("<PC> <Windows;10>"), false).unwrap();
+        assert!(!windows.contains_key("X-Xcode-Version"));
+        assert!(!windows.contains_key("X-Apple-App-Info"));
+        let mac = GrandSlam::base_headers(&info("<Mac15,7> <macOS;27>"), false).unwrap();
+        assert!(mac.contains_key("X-Xcode-Version"));
+        assert!(mac.contains_key("X-Apple-App-Info"));
+    }
+
+    #[test]
+    fn changing_request_metadata_preserves_windows_cpd_profile() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let original = GrandSlam {
+            client: MwClientBuilder::new(reqwest::Client::new()).build(),
+            client_info: AnisetteClientInfo { client_info: "<PC> <Windows;10>".into(), user_agent: "test".into() },
+            url_bag: Dictionary::new(),
+            windows_adi: true,
+        };
+        let mac = original.claiming(AnisetteClientInfo { client_info: "<Mac15,7> <macOS;27>".into(), user_agent: "test".into() });
+        assert!(mac.windows_adi);
+        assert!(original.client_info.client_info.contains("<Windows;"));
+        assert!(mac.client_info.client_info.contains("<macOS;"));
+    }
+
+    #[test]
+    fn windows_flags_match_the_observed_authkit_types_without_replacing_identity() {
+        let mut cpd = Dictionary::new();
+        cpd.insert("pbe".into(), plist::Value::String("false".into()));
+        cpd.insert("prkgen".into(), plist::Value::String("true".into()));
+        cpd.insert("X-Apple-I-MD".into(), plist::Value::String("test-otp".into()));
+        windows_client_provided_data(&mut cpd);
+        for key in ["bootstrap", "ckgen", "icscrec", "pbe", "winprot", "wpbe"] {
+            assert_eq!(cpd.get(key).and_then(plist::Value::as_boolean), Some(true));
+        }
+        assert!(!cpd.contains_key("prkgen"));
+        assert_eq!(cpd.get("X-Apple-I-MD").and_then(plist::Value::as_string), Some("test-otp"));
     }
 }
 
