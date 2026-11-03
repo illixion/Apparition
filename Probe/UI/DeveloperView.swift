@@ -123,13 +123,21 @@ private struct ProjectRow: View {
                 if let label = project.gitLabel { Text(label).font(.caption.monospaced()).foregroundStyle(.secondary) }
             }
             ForEach(project.platforms, id: \.self) { target in
-                Label {
-                    Text("\(target.device) · \(target.platform) — \(service.installSummary(project: project, target: target))")
-                        .font(.callout).foregroundStyle(.secondary)
-                } icon: {
-                    Image(systemName: service.device(named: target.device)?.reachable == true ? "circle.fill" : "circle")
-                        .foregroundStyle(service.device(named: target.device)?.reachable == true ? .green : .secondary)
-                        .imageScale(.small)
+                HStack(alignment: .top, spacing: 9) {
+                    Circle()
+                        .fill(statusColor(for: target))
+                        .frame(width: 9, height: 9)
+                        .padding(.top, 5)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(target.device) · \(target.platform)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Text(service.installSummary(project: project, target: target))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
             }
             if let job = service.jobs(for: project).first {
@@ -137,6 +145,14 @@ private struct ProjectRow: View {
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private func statusColor(for target: BuildService.Target) -> Color {
+        guard let install = service.install(for: target) else { return .gray }
+        guard let head = project.git?.commit, !head.isEmpty else { return .blue }
+        if install.branch == project.git?.branch, install.commit == head { return .green }
+        if install.branch == project.git?.branch { return .orange }
+        return .purple
     }
 }
 
