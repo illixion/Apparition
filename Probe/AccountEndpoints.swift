@@ -8,6 +8,7 @@ enum AccountEndpoints {
     struct State: Encodable {
         let busy: Bool
         let signedIn: Bool
+        let developerSessionPending: Bool
         let team: AccountModel.Team?
         let teams: [AccountModel.Team]
         let anisetteURL: String
@@ -24,7 +25,7 @@ enum AccountEndpoints {
     }
 
     static func state(_ model: AccountModel) -> State {
-        State(busy: model.busy, signedIn: model.team != nil, team: model.team, teams: model.teams,
+        State(busy: model.busy, signedIn: model.team != nil, developerSessionPending: model.developerSessionPending, team: model.team, teams: model.teams,
               anisetteURL: model.anisetteURL, lastError: model.lastError,
               twoFactorPending: model.twoFactor != nil, twoFactorSMS: model.twoFactor?.sms,
               autoSignInPaused: model.autoSignInPaused,
@@ -38,6 +39,11 @@ enum AccountEndpoints {
         DebugSurface.shared.register([
             .query("accountState", "Sign-in state, team, anisette server, downloaded IPAs and signing results") { _ in
                 state(model)
+            },
+            .command("retryDeveloperSession", "Retry developer access using the authenticated account held only on the device; no password or code is supplied",
+                     parameters: [.string("claim", "current, original, or mac (client metadata preset)", default: "current", choices: ["current", "original", "mac"])], timeout: .seconds(65)) { args in
+                await model.retryDeveloperSession(claim: args.string("claim") ?? "current")
+                return state(model)
             },
             .command("checkAppleSignIn", "Check provider acceptance using a generated reserved .invalid identity; never uses the saved Apple account", timeout: .seconds(120)) { _ in
                 await model.checkAppleRelay(signIn: true)

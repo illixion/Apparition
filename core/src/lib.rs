@@ -499,6 +499,8 @@ async fn sign_in_with_proxy(
     data_dir: &std::path::Path,
     two_factor: impl Fn(&TwoFactorCallbackParams) -> TwoFactorCallbackResponse + Send + Sync,
 ) -> Result<(Session, Value), Report> {
+    let retain_authenticated = apple_proxy.is_some();
+    *PENDING_DEVELOPER.lock().unwrap() = None;
     std::fs::create_dir_all(data_dir)?;
     let storage_path = data_dir.join("storage.json");
     let anisette_url = anisette_address(anisette_url, data_dir).await?;
@@ -544,30 +546,54 @@ async fn sign_in_with_proxy(
         }
     };
     claim_after_sign_in(&mut account);
-    let session = match developer_session_with_retry(&mut account).await {
-        Ok(session) => session,
-        Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-22411) => {
-            account.grandslam_client = signing_in.clone();
-            account.code_after_login = true;
-            account.login(&password, callback).await.map_err(refused)?;
-            claim_after_sign_in(&mut account);
-            developer_session_with_retry(&mut account).await.context("Failed to open a developer session")?
-        }
-        Err(error) if served == claimed_platform::Served::Windows && auth_code(&error) == Some(-80046) => {
-            tracing::info!("Windows login succeeded; retrying the refused Xcode token with Mac client metadata");
-            account.grandslam_client = Arc::new(signing_in.claiming(isideload::anisette::AnisetteClientInfo {
-                client_info: claimed_platform::MAC_CLIENT_INFO.to_string(),
-                user_agent: claimed_platform::USER_AGENT.to_string(),
-            }));
-            developer_session_with_retry(&mut account).await
-                .context("Failed to open the Xcode session using Mac client metadata after Windows-claim rejection")?
-        }
-        Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-80046) => {
-            return Err(error.context(REFUSED_ANDROID_ANISETTE).into_dynamic());
-        }
-        Err(error) => return Err(error.context("Failed to open a developer session").into_dynamic()),
-    };
+    let developer_result = async {
+        let session = match developer_session_with_retry(&mut account).await {
+            Ok(session) => session,
+            Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-22411) => {
+                account.grandslam_client = signing_in.clone();
+                account.code_after_login = true;
+                account.login(&password, callback).await.map_err(refused)?;
+                claim_after_sign_in(&mut account);
+                developer_session_with_retry(&mut account).await.context("Failed to open a developer session")?
+            }
+            Err(error) if served == claimed_platform::Served::Windows && auth_code(&error) == Some(-80046) => {
+                tracing::info!("Windows login succeeded; retrying the refused Xcode token with Mac client metadata");
+                account.grandslam_client = Arc::new(signing_in.claiming(isideload::anisette::AnisetteClientInfo {
+                    client_info: claimed_platform::MAC_CLIENT_INFO.to_string(),
+                    user_agent: claimed_platform::USER_AGENT.to_string(),
+                }));
+                developer_session_with_retry(&mut account).await
+                    .context("Failed to open the Xcode session using Mac client metadata after Windows-claim rejection")?
+            }
+            Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-80046) => {
+                return Err(error.context(REFUSED_ANDROID_ANISETTE).into_dynamic());
+            }
+            Err(error) => return Err(error.context("Failed to open a developer session").into_dynamic()),
+        };
+        complete_developer_session(email, data_dir, session).await
+    }.await;
     drop(password);
+    match developer_result {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            if retain_authenticated && served != claimed_platform::Served::Android {
+                retain_developer(PendingDeveloper {
+                    account, original: signing_in, data_dir: data_dir.to_path_buf(),
+                    started: std::time::Instant::now(),
+                });
+                return Err(error.context("Apple ID verified; developer access is pending. Retry developer sign-in without re-entering the password.").into_dynamic());
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn complete_developer_session(
+    email: &str,
+    data_dir: &std::path::Path,
+    session: DeveloperSession,
+) -> Result<(Session, Value), Report> {
+    let storage_path = data_dir.join("storage.json");
     let mut sideloader: Sideloader<MaxCertsCallbackBox, ExtensionsBehaviorCallbackBox> = SideloaderBuilder::new(session, email.to_string())
         .team_selection(TeamSelection::First)
         // Never revoke someone's existing certificates on our own: report instead.
@@ -744,6 +770,29 @@ pub async fn capability_refusals(session: &mut Session, signed: &std::path::Path
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+
+/// Authenticated secrets remain only in device memory; never contains the password.
+struct PendingDeveloper {
+    account: AppleAccount,
+    original: Arc<isideload::auth::grandslam::GrandSlam>,
+    data_dir: PathBuf,
+    started: std::time::Instant,
+}
+static PENDING_DEVELOPER: Mutex<Option<PendingDeveloper>> = Mutex::new(None);
+const DEVELOPER_RETRY_LIFETIME: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+fn retain_developer(pending: PendingDeveloper) {
+    let started = pending.started;
+    let remaining = DEVELOPER_RETRY_LIFETIME.saturating_sub(started.elapsed());
+    *PENDING_DEVELOPER.lock().unwrap() = Some(pending);
+    tokio::spawn(async move {
+        tokio::time::sleep(remaining).await;
+        let mut current = PENDING_DEVELOPER.lock().unwrap();
+        if current.as_ref().is_some_and(|value| value.started == started) { *current = None; }
+    });
+}
+
+
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {
@@ -1022,6 +1071,54 @@ pub unsafe extern "C" fn apparition_check_apple_sign_in(adapter: *const c_char) 
     })())
 }
 
+/// Whether a previous login can retry developer access without its password or another 2FA.
+#[unsafe(no_mangle)]
+pub extern "C" fn apparition_developer_pending() -> bool {
+    let mut pending = PENDING_DEVELOPER.lock().unwrap();
+    if pending.as_ref().is_some_and(|value| value.started.elapsed() > DEVELOPER_RETRY_LIFETIME) {
+        *pending = None;
+    }
+    pending.is_some()
+}
+
+/// Retry only a retained account's developer phase. Presets never expose credentials.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_retry_developer_session(claim: *const c_char) -> *mut c_char {
+    reply((|| {
+        let claim = unsafe { text(claim) }?;
+        if !matches!(claim.as_str(), "current" | "original" | "mac") { bail!("Unknown developer retry preset"); }
+        let mut pending = PENDING_DEVELOPER.lock().unwrap().take()
+            .ok_or_else(|| report!("No authenticated login to retry; sign in first"))?;
+        if pending.started.elapsed() > DEVELOPER_RETRY_LIFETIME { bail!("Authenticated login expired; sign in again"); }
+        runtime().block_on(crate::stop::stoppable(async move {
+            match claim.as_str() {
+                "original" => pending.account.grandslam_client = pending.original.clone(),
+                "mac" => pending.account.grandslam_client = Arc::new(pending.original.claiming(isideload::anisette::AnisetteClientInfo {
+                    client_info: claimed_platform::MAC_CLIENT_INFO.to_string(),
+                    user_agent: claimed_platform::USER_AGENT.to_string(),
+                })),
+                _ => {}
+            }
+            let remaining = DEVELOPER_RETRY_LIFETIME.saturating_sub(pending.started.elapsed())
+                .min(std::time::Duration::from_secs(60));
+            let result = tokio::time::timeout(remaining, async {
+                let developer = developer_session_with_retry(&mut pending.account).await?;
+                complete_developer_session(&pending.account.email, &pending.data_dir, developer).await
+            }).await.context("Developer sign-in retry timed out; sign in again")?;
+            match result {
+                Ok((session, result)) => {
+                    *SESSION.lock().unwrap() = Some(session);
+                    Ok(result)
+                }
+                Err(error) => {
+                    retain_developer(pending);
+                    Err(error.context("Developer sign-in retry failed; authenticated login is still retained on this device").into_dynamic())
+                }
+            }
+        }))
+    })())
+}
+
 /// The signed-in account, or `{ok, signedIn: false}`.
 #[unsafe(no_mangle)]
 pub extern "C" fn apparition_session() -> *mut c_char {
@@ -1036,6 +1133,7 @@ pub extern "C" fn apparition_session() -> *mut c_char {
 #[unsafe(no_mangle)]
 pub extern "C" fn apparition_logout() -> *mut c_char {
     *SESSION.lock().unwrap() = None;
+    *PENDING_DEVELOPER.lock().unwrap() = None;
     reply(Ok(json!({})))
 }
 

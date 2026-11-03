@@ -327,6 +327,14 @@ struct AppleIDStep: View {
             if let error = account.lastError {
                 Note(text: error, kind: .error)
             }
+            if account.developerSessionPending {
+                Button("Retry Developer Sign-In") { Task { await account.retryDeveloperSession() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(account.busy)
+                Text("Your Apple ID is verified. Developer access can be retried for 15 minutes without entering your password or another code.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             Note(text: "Apple IDs protected with security keys can't sign in here: Apple then asks for the key, which Apparition can't answer on the \(ThisDevice.noun). Use an Apple ID without security keys (a free one works).")
         }
         .onAppear { if email.isEmpty { email = account.lastAppleID ?? "" } }

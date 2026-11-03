@@ -21,6 +21,8 @@ char *apparition_login(const char *email, const char *password, const char *anis
 char *apparition_check_apple_relay(const char *adapter);
 // Uses only a generated .invalid identity to check Apple acceptance of the provider.
 char *apparition_check_apple_sign_in(const char *adapter);
+bool apparition_developer_pending(void);
+char *apparition_retry_developer_session(const char *claim);
 char *apparition_session(void);
 // Forgets the signed-in session in this process. Returns {ok}.
 char *apparition_logout(void);

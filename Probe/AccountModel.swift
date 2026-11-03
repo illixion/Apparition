@@ -87,6 +87,7 @@ final class AccountModel {
     /// so; nil after a sign-in gets through, or once the address changes.
     private(set) var anisetteProblem: AnisetteProblem?
     private(set) var busy = false
+    private(set) var developerSessionPending = false
     private(set) var email: String?
     private(set) var team: Team?
     private(set) var teams: [Team] = []
@@ -172,6 +173,7 @@ final class AccountModel {
     /// way pauses automatic sign-ins until one succeeds.
     private func login(email: String, password: String, attended: Bool) async -> Bool {
         busy = true
+        developerSessionPending = false
         lastError = nil
         defer { busy = false; twoFactor = nil }
         log.info("sign-in start (\(attended ? "attended" : "unattended", privacy: .public))")
@@ -194,7 +196,7 @@ final class AccountModel {
         }
         // DeveloperSession retains this transport for later signing requests.
         var signedIn = false
-        defer { if !signedIn { companionAnisetteProxy.stop() } }
+        defer { if !signedIn && !developerSessionPending { companionAnisetteProxy.stop() } }
         let dataDir = Self.dataDir.path
         let asked = TwoFactorAsked()
         let reply: [String: Any]
@@ -226,6 +228,11 @@ final class AccountModel {
             }.value
         }
 
+        developerSessionPending = apparition_developer_pending()
+        if developerSessionPending {
+            UserDefaults.standard.set(email, forKey: "appleID")
+            if rememberPassword { Keychain.save(password, account: email) }
+        }
         if reply["ok"] as? Bool == true {
             UserDefaults.standard.set(email, forKey: "appleID")
             if rememberPassword { Keychain.save(password, account: email) }
@@ -259,6 +266,30 @@ final class AccountModel {
             lastError = error
         }
         return false
+    }
+
+    /// Uses only the account already authenticated in this process. No password or 2FA callback.
+    func retryDeveloperSession(claim: String = "current") async {
+        guard !busy, developerSessionPending else { return }
+        busy = true
+        defer { busy = false }
+        let reply = await Task.detached { Self.call(apparition_retry_developer_session(claim)) }.value
+        developerSessionPending = apparition_developer_pending()
+        if reply["ok"] as? Bool == true {
+            email = reply["email"] as? String
+            team = Self.team(reply["team"])
+            teams = (reply["teams"] as? [Any] ?? []).compactMap(Self.team)
+            if let email { UserDefaults.standard.set(email, forKey: "appleID") }
+            LogScrub.remember(teams.map(\.name))
+            autoSignInPaused = false
+            lastError = nil
+            anisetteProblem = nil
+            log.info("developer sign-in retry succeeded")
+        } else {
+            lastError = reply["error"] as? String ?? "Developer sign-in retry failed"
+            if !developerSessionPending { companionAnisetteProxy.stop() }
+            log.error("developer sign-in retry failed: \(lastError ?? "unknown error", privacy: .private)")
+        }
     }
 
     struct AnisetteProblem: Equatable, Sendable {
@@ -414,6 +445,7 @@ final class AccountModel {
     func signOut() {
         guard !busy else { return }
         _ = Self.call(apparition_logout())
+        developerSessionPending = false
         companionAnisetteProxy.stop()
         email = nil
         team = nil
@@ -431,6 +463,7 @@ final class AccountModel {
     /// Reads the core's session again. An imported certificate key leaves it open (the next
     /// signing uses the key), so this only catches up with a session ended elsewhere.
     func refreshSession() {
+        developerSessionPending = apparition_developer_pending()
         let reply = Self.call(apparition_session())
         if reply["signedIn"] as? Bool == true {
             email = reply["email"] as? String
