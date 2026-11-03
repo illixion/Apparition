@@ -97,7 +97,6 @@ fn main() {
             companion::companion_set_relay,
             companion::companion_set_anisette,
             companion::companion_set_advertise,
-            companion::companion_set_anisette_open,
             companion::companion_pairing_decide,
             companion::companion_forget_device,
             companion::companion_docker,

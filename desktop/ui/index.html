@@ -110,8 +110,8 @@
       <p class="hint">To sign in to Apple, Apparition on a device needs an anisette server. This computer can offer one, and Apparition then offers to use it.</p>
       <div class="modes compact" data-role="anisette-modes">
         <label class="mode"><input type="radio" name="anisette-mode" value="off"><span class="mode-title">Don't offer one</span><span class="mode-text">Apparition uses whichever v3 server you give it.</span></label>
-        <label class="mode" data-role="mode-builtin"><input type="radio" name="anisette-mode" value="builtin"><span class="mode-title">This computer's own</span><span class="mode-text">Made with Apple's libraries (fetched from Apple the first time) and sent to paired devices over the encrypted channel. Direct clients use port <span data-role="anisette-port">6969</span>. It never sees an Apple ID or password.</span></label>
-        <label class="mode"><input type="radio" name="anisette-mode" value="local"><span class="mode-title">The Docker server</span><span class="mode-text">Dadoum's anisette-v3-server in your Docker (Docker Desktop, OrbStack or Colima), on port <span data-role="anisette-port">6969</span>, offered while it answers. Apparition devices can pair and use it over the encrypted channel; the Docker server itself has no access control.</span></label>
+        <label class="mode" data-role="mode-builtin"><input type="radio" name="anisette-mode" value="builtin"><span class="mode-title">This computer's own</span><span class="mode-text">Made with Apple's libraries (fetched from Apple the first time) and sent to paired devices over the encrypted channel. Its HTTP provider listens only on this computer. It never sees an Apple ID or password.</span></label>
+        <label class="mode"><input type="radio" name="anisette-mode" value="local"><span class="mode-title">The Docker server</span><span class="mode-text">Dadoum's anisette-v3-server in your Docker (Docker Desktop, OrbStack or Colima), on port <span data-role="anisette-port">6969</span>, offered while it answers. Apparition devices can pair and use it over the encrypted channel; the bundled Docker configuration binds it only to this computer.</span></label>
       </div>
       <div class="row" data-role="docker-row" hidden>
         <button type="button" class="button quiet small" data-role="docker-up">Start the Docker server</button>
@@ -123,12 +123,12 @@
           <span class="pill" data-role="access-pill">Paired devices only</span>
         </div>
         <p class="hint" data-role="access-paired-hint">The first time, Apparition on a device asks to pair: both screens show a six-digit code, and you allow it here. Paired Apparition requests use the encrypted channel.</p>
-        <p class="status error" data-role="access-open-warning" hidden>Anyone who can reach this computer on port <span data-role="anisette-port">6969</span> can get anisette data made with its identity, with no pairing. Paired devices keep working. Turn this off unless a client that can't pair needs it.</p>
+
       </div>
       <div class="pairing-request" data-role="pairing-request" hidden>
-        <p><strong data-role="pairing-device">A device</strong> (<span data-role="pairing-peer"></span>) asks to use this computer's anisette.</p>
+        <p><strong data-role="pairing-device">A device</strong> (<span data-role="pairing-peer"></span>) asks to use anisette and relay encrypted Apple connections.</p>
         <p class="pairing-code" data-role="pairing-code">000 000</p>
-        <p class="hint">Allow it only if the device shows the same code.</p>
+        <p class="hint">Allow it only if the device shows the same code. This grants anisette and Apple connection relay access; Apple credentials stay on the device.</p>
         <div class="row">
           <button type="button" class="button small" data-role="pairing-allow">Allow</button>
           <button type="button" class="button quiet small" data-role="pairing-deny">Decline</button>
@@ -139,11 +139,6 @@
         <tbody></tbody>
       </table>
       <p class="status" data-role="anisette-status" hidden></p>
-      <details class="advanced" data-role="access-advanced" hidden>
-        <summary>Advanced: serve clients that can't pair</summary>
-        <p class="hint">SideStore, AltServer and other v3 clients can't pair, so they can't use this computer's anisette while it serves paired devices only.</p>
-        <label class="check"><input type="checkbox" data-role="anisette-open"><span>Serve anyone on this network, without pairing (less secure)</span></label>
-      </details>
     </div>
 
     <div class="group">

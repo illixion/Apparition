@@ -39,8 +39,11 @@ enum AccountEndpoints {
             .query("accountState", "Sign-in state, team, anisette server, downloaded IPAs and signing results") { _ in
                 state(model)
             },
-            .command("setAnisette", "Set the anisette-v3 server URL used for the next sign-in",
-                     parameters: [.string("url", "An anisette-v3 server, e.g. http://<host>:6969", required: true)]) { args in
+            .command("checkAppleRelay", "Check paired anisette and Apple's TLS URL bag through the companion, without signing in") { _ in
+                await model.checkAppleRelay()
+            },
+            .command("setAnisette", "Set the paired companion address used for the next sign-in",
+                     parameters: [.string("url", "Paired apparition-anisette:// address (credential must already be in Keychain)", required: true)]) { args in
                 model.anisetteURL = try args.requireString("url")
                 return state(model)
             },

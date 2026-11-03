@@ -58,14 +58,13 @@ struct ConnectionProblemNote: View {
     }
 
     /// The other mode, when this device offers it and it has what it needs: a companion
-    /// address, and for an anisette problem, an anisette server of its own.
+    /// address. Changing the install route cannot repair an Apple companion connection.
     private var other: ProbeModel.ConnectionMode? {
         guard let mode else { return nil }
         let other: ProbeModel.ConnectionMode = mode == .localVPN ? .companion : .localVPN
         guard ProbeModel.ConnectionMode.offered.contains(other) else { return nil }
         if other == .companion && model.companionAddress.isEmpty { return nil }
-        if case .anisette = problem,
-           (UserDefaults.standard.string(forKey: "anisetteURL." + other.rawValue) ?? "").isEmpty { return nil }
+        if case .anisette = problem { return nil }
         return other
     }
 
@@ -77,7 +76,6 @@ struct ConnectionProblemNote: View {
     }
 
     private func use(_ other: ProbeModel.ConnectionMode) {
-        account.switchAnisette(from: model.connectionMode, to: other)
         model.switchMode(to: other)
         retry()
     }

@@ -16,11 +16,12 @@ private final class ResumeOnce: @unchecked Sendable {
     }
 }
 
-/// A loopback-only adapter so isideload's existing anisette-v3 client can use the encrypted
-/// companion capability without learning about Network.framework or storing its PSK token.
+/// Device-local adapter for anisette HTTP and Apple HTTPS CONNECT. The companion sees only
+/// the destination of CONNECT and encrypted Apple TLS bytes; Rust verifies Apple's certificate.
 @MainActor
 final class CompanionAnisetteProxy {
     private var listener: NWListener?
+    private var connections: [UUID: (NWConnection, NWConnection)] = [:]
 
     func start(for address: String) async throws -> String {
         stop()
@@ -32,6 +33,9 @@ final class CompanionAnisetteProxy {
               let token = CompanionCredentialStore.load(host: host, port: port, deviceID: deviceID),
               let remotePort = NWEndpoint.Port(rawValue: port) else {
             throw ProxyError.invalidAddress
+        }
+        guard components.queryItems?.contains(URLQueryItem(name: "relay", value: "1")) == true else {
+            throw ProxyError.pairAgain
         }
         let credential = RAVECompanionCredential(token: token, deviceID: deviceID)
         let channel = RAVECompanionChannel(identityBase: "Apparition/Anisette", salt: "Apparition-Anisette-v1")
@@ -65,12 +69,17 @@ final class CompanionAnisetteProxy {
     func stop() {
         listener?.cancel()
         listener = nil
+        for (local, remote) in connections.values { local.cancel(); remote.cancel() }
+        connections.removeAll()
     }
 
     private func forward(_ local: NWConnection, host: String, port: NWEndpoint.Port,
                          credential: RAVECompanionCredential, channel: RAVECompanionChannel) async {
         let remote = NWConnection(host: NWEndpoint.Host(host), port: port,
                                   using: channel.tcpParameters(credentials: [credential], connectionTimeout: 12))
+        let id = UUID()
+        connections[id] = (local, remote)
+        defer { connections.removeValue(forKey: id); local.cancel(); remote.cancel() }
         do {
             try await Self.ready(local)
             try await Self.ready(remote)
@@ -82,14 +91,12 @@ final class CompanionAnisetteProxy {
             var frame = UInt32(body.count).littleEndian
             let header = withUnsafeBytes(of: &frame) { Data($0) }
             try await Self.send(header + body, on: remote)
-            async let upstream: Void = Self.pipe(from: local, to: remote)
-            async let downstream: Void = Self.pipe(from: remote, to: local)
+            async let upstream: Void = Self.pipeOrCancel(from: local, to: remote)
+            async let downstream: Void = Self.pipeOrCancel(from: remote, to: local)
             _ = try await (upstream, downstream)
         } catch {
-            log.error("secure anisette channel failed: \(LogScrub.text(String(describing: error)), privacy: .public)")
+            log.error("secure companion channel failed: \(LogScrub.text(String(describing: error)), privacy: .public)")
         }
-        local.cancel()
-        remote.cancel()
     }
 
     private static func ready(_ connection: NWConnection) async throws {
@@ -122,6 +129,16 @@ final class CompanionAnisetteProxy {
         }
     }
 
+    private static func pipeOrCancel(from source: NWConnection, to destination: NWConnection) async throws {
+        do { try await pipe(from: source, to: destination) }
+        catch {
+            // Wake the opposite receive before async-let waits for its sibling to finish.
+            source.cancel()
+            destination.cancel()
+            throw error
+        }
+    }
+
     private static func pipe(from source: NWConnection, to destination: NWConnection) async throws {
         while true {
             let (data, complete) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data, Bool), Error>) in
@@ -131,11 +148,29 @@ final class CompanionAnisetteProxy {
                 }
             }
             if !data.isEmpty { try await send(data, on: destination) }
-            if complete { return }
+            if complete {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    destination.send(content: nil, contentContext: .finalMessage, isComplete: true,
+                                     completion: .contentProcessed { error in
+                        if let error { continuation.resume(throwing: error) }
+                        else { continuation.resume() }
+                    })
+                }
+                return
+            }
         }
     }
 
-    private enum ProxyError: Error {
-        case invalidAddress, listenerFailed, identifyFailed, cancelled
+    private enum ProxyError: LocalizedError {
+        case invalidAddress, listenerFailed, identifyFailed, cancelled, pairAgain
+        var errorDescription: String? {
+            switch self {
+            case .pairAgain: return "Pair again using Find Companion to grant Apple connection relay access."
+            case .invalidAddress: return "The saved companion address or credential is invalid. Pair again using Find Companion."
+            case .listenerFailed: return "The device could not open its local companion adapter."
+            case .identifyFailed: return "The encrypted companion channel could not authenticate this device."
+            case .cancelled: return "The companion connection was cancelled."
+            }
+        }
     }
 }

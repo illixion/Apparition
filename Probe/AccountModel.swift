@@ -65,8 +65,7 @@ final class AccountModel {
         }
     }
 
-    /// An anisette-v3 server URL. Apparition ships none: the user enters one, or self-hosts
-    /// selfhost/anisette/compose.yaml.
+    /// Paired companion address, without its credential (which stays in Keychain).
     var anisetteURL: String = UserDefaults.standard.string(forKey: "anisetteURL") ?? "" {
         didSet {
             UserDefaults.standard.set(anisetteURL, forKey: "anisetteURL")
@@ -76,6 +75,12 @@ final class AccountModel {
             }
         }
     }
+    var hasSecureCompanion: Bool {
+        guard let address = URLComponents(string: anisetteURL) else { return false }
+        return address.scheme == "apparition-anisette"
+            && address.queryItems?.contains(URLQueryItem(name: "relay", value: "1")) == true
+    }
+
     /// Told when the address changes, so the Library can drop failures that blamed the old one.
     @ObservationIgnored var anisetteChanged: (() -> Void)?
     /// The anisette server the last sign-in couldn't get its data from, so the Library can say
@@ -127,7 +132,7 @@ final class AccountModel {
     func signIn(email: String, password: String) async {
         guard !busy else { return }
         guard !anisetteURL.isEmpty else {
-            lastError = "Enter an anisette server URL first (or self-host one: selfhost/anisette in the Apparition repo)."
+            lastError = "Use Find Companion and pair with your computer before signing in."
             return
         }
         _ = await login(email: email, password: password, attended: true)
@@ -173,17 +178,23 @@ final class AccountModel {
 
         let configuredAnisette = anisetteURL
         let anisette: String
+        let appleProxy: String
         if configuredAnisette.hasPrefix("apparition-anisette://") {
             do {
                 anisette = try await companionAnisetteProxy.start(for: configuredAnisette)
+                appleProxy = anisette
             } catch {
-                lastError = "Couldn't connect to the paired computer for anisette: \(error)"
+                companionAnisetteProxy.stop()
+                lastError = "Couldn't connect to the paired computer: \(error.localizedDescription)"
                 return false
             }
         } else {
-            anisette = configuredAnisette
+            lastError = "Choose Find Companion and pair with an updated Apparition computer to sign in over the encrypted channel."
+            return false
         }
-        defer { companionAnisetteProxy.stop() }
+        // DeveloperSession retains this transport for later signing requests.
+        var signedIn = false
+        defer { if !signedIn { companionAnisetteProxy.stop() } }
         let dataDir = Self.dataDir.path
         let asked = TwoFactorAsked()
         let reply: [String: Any]
@@ -204,12 +215,12 @@ final class AccountModel {
                 }
             }
             reply = await Task.detached {
-                Self.call(apparition_login(email, password, anisette, dataDir, AccountModel.twoFactorCallback, box))
+                Self.call(apparition_login(email, password, anisette, appleProxy, dataDir, AccountModel.twoFactorCallback, box))
             }.value
         } else {
             let context = Unmanaged.passUnretained(asked).toOpaque()
             reply = await Task.detached {
-                Self.call(apparition_login(email, password, anisette, dataDir, AccountModel.unattendedTwoFactorCallback, context))
+                Self.call(apparition_login(email, password, anisette, appleProxy, dataDir, AccountModel.unattendedTwoFactorCallback, context))
             }.value
         }
 
@@ -222,6 +233,7 @@ final class AccountModel {
             LogScrub.remember(teams.map(\.name))
             autoSignInPaused = false
             anisetteProblem = nil
+            signedIn = true
             log.info("sign-in ok, \(self.teams.count, privacy: .public) teams")
             return true
         }
@@ -358,11 +370,36 @@ final class AccountModel {
         await Task.detached { call(apparition_sign(path, udid, deviceName, stripExtensions)) }.value
     }
 
-    /// Forgets the session and, with it, the remembered password, so nothing signs in again
-    /// until the user does. Nothing is sent to Apple.
+    struct AppleRelayCheck: Encodable {
+        let ok: Bool
+        let anisette: Bool
+        let appleTLS: Bool
+        let urlBag: Bool
+        let error: String?
+    }
+
+    /// Exercises the same anisette and Apple TLS path as login, without account credentials.
+    func checkAppleRelay() async -> AppleRelayCheck {
+        let adapter = CompanionAnisetteProxy()
+        defer { adapter.stop() }
+        do {
+            let url = try await adapter.start(for: anisetteURL)
+            let reply = await Task.detached { Self.call(apparition_check_apple_relay(url)) }.value
+            return AppleRelayCheck(ok: reply["ok"] as? Bool == true,
+                                   anisette: reply["anisette"] as? Bool == true,
+                                   appleTLS: reply["appleTLS"] as? Bool == true,
+                                   urlBag: reply["urlBag"] as? Bool == true,
+                                   error: reply["error"] as? String)
+        } catch {
+            return AppleRelayCheck(ok: false, anisette: false, appleTLS: false, urlBag: false, error: error.localizedDescription)
+        }
+    }
+
+    /// Forgets the session and remembered password until the person signs in again.
     func signOut() {
         guard !busy else { return }
         _ = Self.call(apparition_logout())
+        companionAnisetteProxy.stop()
         email = nil
         team = nil
         teams = []

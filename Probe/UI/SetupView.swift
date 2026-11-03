@@ -16,7 +16,7 @@ struct SetupStatus {
     init(model: ProbeModel, account: AccountModel, pairedUDID: String?) {
         companion = model.routeChosen
         paired = model.hasPairingFile && pairedUDID != nil && model.pairingProblem == nil
-        anisette = !account.anisetteURL.isEmpty
+        anisette = account.hasSecureCompanion
         // Signed in now, or able to sign in unattended with the remembered password (not while
         // that waits for the person, after a 2FA code went unentered).
         self.account = account.team != nil || (account.rememberPassword && Keychain.hasPassword && !account.autoSignInPaused)
@@ -67,7 +67,7 @@ struct SetupView: View {
                         PairStep(model: model)
                     }
                     StepPanel(number: 3, title: "Apple ID", systemImage: "person.crop.circle", done: status.account,
-                              blocked: status.anisette ? nil : "Choose an anisette server in the Connection step first: Apple's sign-in needs one.") {
+                              blocked: status.anisette ? nil : "Pair an Apple sign-in companion in the Connection step first.") {
                         AppleIDStep(account: account)
                     }
                     finish(status)
@@ -308,7 +308,7 @@ struct AppleIDStep: View {
                             Task { await account.signInWithRememberedPassword(byPerson: true) }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(account.busy || account.anisetteURL.isEmpty)
+                        .disabled(account.busy || !account.hasSecureCompanion)
                     } else {
                         Note(text: "Your password is remembered on this \(ThisDevice.noun), so refreshes sign in on their own. Sign in now to check it.", kind: .success)
                     }
@@ -360,7 +360,7 @@ struct AppleIDStep: View {
             .frame(maxWidth: 620)
             Button("Sign In", action: signIn)
                 .buttonStyle(.borderedProminent)
-                .disabled(account.busy || email.isEmpty || password.isEmpty || account.anisetteURL.isEmpty)
+                .disabled(account.busy || email.isEmpty || password.isEmpty || !account.hasSecureCompanion)
         }
     }
 

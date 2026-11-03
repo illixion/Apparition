@@ -56,16 +56,13 @@ struct Settings {
     /// Announce this computer over mDNS, so Find Companion lists it. Off, devices type its
     /// address; ones that already have it keep connecting as before.
     advertise: bool,
-    /// Serve the built-in anisette to anyone on the network (the compatibility mode) instead
-    /// of only to devices paired with this computer.
-    anisette_open: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         // The relay is what Apparition on a device needs to do anything, so it's on unless
         // turned off; serving anisette to the network is a choice the user makes.
-        Self { relay: true, anisette: AnisetteMode::Off, auto_updates: false, advertise: true, anisette_open: false }
+        Self { relay: true, anisette: AnisetteMode::Off, auto_updates: false, advertise: true }
     }
 }
 
@@ -171,9 +168,6 @@ impl CompanionState {
         let companion = running.as_ref().expect("running").clone();
         drop(running);
         companion.relay.set_advertise(settings.advertise);
-        if let Err(error) = companion.set_anisette_open(settings.anisette_open).await {
-            *self.anisette_error.lock().unwrap() = Some(error.to_string());
-        }
         let result = match settings.anisette {
             AnisetteMode::Builtin => companion.share_builtin_anisette().await.map_err(|error| error.to_string()),
             AnisetteMode::Local | AnisetteMode::Off => {
@@ -216,8 +210,7 @@ impl CompanionState {
             },
             "pairing": {
                 // Built-in anisette for paired devices only.
-                "required": settings.anisette == AnisetteMode::Builtin && !settings.anisette_open,
-                "open": settings.anisette_open,
+                "required": settings.anisette != AnisetteMode::Off,
                 "port": running.as_ref().map(|c| c.pairing_port()),
                 "channelPort": running.as_ref().map(|c| c.channel_port()),
                 "devices": running.as_ref().map(|c| c.devices.list()).unwrap_or_default(),
@@ -459,15 +452,6 @@ pub async fn companion_set_advertise(state: Shared<'_>, on: bool) -> Result<Valu
     Ok(state.status().await)
 }
 
-/// The built-in anisette for anyone on the network (`open`), or paired devices only.
-#[tauri::command]
-pub async fn companion_set_anisette_open(state: Shared<'_>, open: bool) -> Result<Value, Failure> {
-    state.settings.lock().unwrap().anisette_open = open;
-    state.save();
-    state.apply().await;
-    Ok(state.status().await)
-}
-
 /// The person's answer to a device asking to pair.
 #[tauri::command]
 pub async fn companion_pairing_decide(state: Shared<'_>, id: u64, allow: bool) -> Result<Value, Failure> {
@@ -525,7 +509,6 @@ mod tests {
         assert!(!old.auto_updates);
         // Settings from before these existed: announced, and anisette for paired devices only.
         assert!(old.advertise);
-        assert!(!old.anisette_open);
         assert!(!old.relay);
         assert_eq!(old.anisette, AnisetteMode::Local);
     }

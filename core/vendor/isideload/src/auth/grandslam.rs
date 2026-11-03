@@ -1,3 +1,4 @@
+#[cfg(feature = "wasm")]
 use super::middleware::WasmProxyMiddleware;
 use plist::Dictionary;
 use plist_macro::plist_to_xml_string;
@@ -270,15 +271,23 @@ impl GrandSlam {
             // An edge that doesn't answer is given up on, and another tried (edge.rs).
             .connect_timeout(std::time::Duration::from_secs(10))
             // An edge that answers 403 is avoided and the request goes to another (edge.rs).
-            .dns_resolver(super::edge::EdgeResolver::system())
-            // .pool_max_idle_per_host(0)
-            .build()?;
+            .dns_resolver(super::edge::EdgeResolver::system());
+        #[cfg(not(feature = "wasm"))]
+        let client = if let Some(ref proxy) = proxy_url {
+            if debug { bail!("Apple relay requires certificate verification"); }
+            client.https_only(true).proxy(reqwest::Proxy::https(proxy)?)
+        } else { client };
+        #[cfg(not(feature = "wasm"))]
+        let client = client.build()?;
         #[cfg(feature = "wasm")]
         let client = ClientBuilder::new().build()?;
 
         let builder = MwClientBuilder::new(client);
         #[cfg(not(feature = "wasm"))]
-        let builder = builder.with(super::edge::EdgeAvoidance);
+        let builder = if proxy_url.is_none() {
+            builder.with(super::edge::EdgeAvoidance)
+        } else { builder };
+        #[cfg(feature = "wasm")]
         let builder = if let Some(proxy_url) = proxy_url {
             builder.with(WasmProxyMiddleware::new(proxy_url))
         } else {

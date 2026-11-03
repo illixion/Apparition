@@ -40,8 +40,6 @@ struct ConnectionView: View {
 
     @State private var draft = ""
     @State private var checking = false
-    /// The anisette server in use is a found companion's, shown by name rather than address.
-    @AppStorage("anisetteAuto") private var anisetteAuto = false
     /// Pairing with a companion whose anisette serves paired devices only.
     @State private var pairing = CompanionPairing()
 
@@ -49,7 +47,6 @@ struct ConnectionView: View {
         VStack(alignment: .leading, spacing: 16) {
             ForEach(ProbeModel.ConnectionMode.offered) { mode in
                 ModeOption(mode: mode, selected: model.connectionMode == mode) {
-                    account.switchAnisette(from: model.connectionMode, to: mode)
                     model.switchMode(to: mode)
                 }
             }
@@ -63,17 +60,6 @@ struct ConnectionView: View {
             }
         }
         .onAppear { draft = model.companionAddress }
-        // A companion that runs an anisette server is the likely choice for one: take it when
-        // none is set yet.
-        .onChange(of: companions.found.map(\.relay)) { _, _ in
-            // One that wants pairing first waits for the person to choose it: pairing asks
-            // something of them on the computer.
-            guard model.connectionMode == .companion, account.anisetteURL.isEmpty,
-                  let companion = companions.found.first(where: { $0.relay == model.relay }),
-                  companion.anisettePairingPort == nil, let url = companion.anisetteURL else { return }
-            account.anisetteURL = url
-            anisetteAuto = true
-        }
         .panel(isPresented: Binding(get: { pairing.phase != .idle }, set: { shown in
             guard !shown else { return }
             if case .failed = pairing.phase { pairing.dismissFailure() }
@@ -178,74 +164,29 @@ struct ConnectionView: View {
 
     // MARK: Anisette
 
-    /// The anisette server for Apple's sign-in, which goes with the connection: a companion
-    /// usually runs one itself, where Local VPN has no computer to run it, so a public server
-    /// is the likelier choice. Each mode keeps its own (`AccountModel.switchAnisette`). With a
-    /// companion it's chosen from the ones found, by name; typing a URL is the advanced way.
+    /// Apple authentication always uses a paired companion, independently of the install route.
     private func anisetteControls(_ mode: ProbeModel.ConnectionMode) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Divider()
-            Label("Anisette Server", systemImage: "server.rack")
+            Label("Apple Sign-In Companion", systemImage: "server.rack")
                 .font(.headline)
-            Text(mode == .companion
-                 ? "Signing in to Apple needs an anisette server (v3). Your companion can run one: Apparition on your Mac offers its own. The server sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password."
-                 : "Signing in to Apple needs an anisette server (v3), and Local VPN has no computer to run one. Use a public one you trust, or host your own. The server sees this \(ThisDevice.noun)'s anisette identity and IP address, never your Apple ID or password.")
+            Text("Pair with Apparition on your computer for Apple sign-in and signing. Your computer provides anisette and forwards encrypted Apple connections. This \(ThisDevice.noun) verifies Apple's certificate and keeps your Apple ID, password and signing credentials.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-
-            if mode == .companion {
-                companionAnisetteChoices
-                if !account.anisetteURL.isEmpty {
-                    Note(text: anisetteAuto ? "Using \(model.companionName ?? "your companion")'s anisette server." : "Using \(account.anisetteURL).",
-                         kind: .info)
-                }
-                Expander("Advanced: use another server") { anisetteField }
-            } else {
-                anisetteField
+            companionAnisetteChoices
+            if account.anisetteURL.hasPrefix("apparition-anisette://") {
+                Note(text: "Paired companion selected. After updating an older companion, pair again to enable Apple connection relay access.", kind: .info)
             }
-
-            Expander("Host your own") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Apparition on your Mac can offer its own (no Docker needed), and on any computer it can run one with your Docker: choose it in its Companion tab, then use Find Companion.")
-                    Text("Or, on any machine with Docker, from the Apparition repository:")
-                    Text("docker compose -f selfhost/anisette/compose.yaml up -d")
-                        .font(.callout.monospaced())
-                        .selectableText()
-                        .padding(10)
-                        .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
-                    Text("and enter http://<that machine>:6969 as the server.")
-                }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding(.top, 8)
+            Expander("Set up your computer") {
+                Text("Open Apparition on your computer and enable anisette in its Companion tab. macOS can provide its own; Windows and Linux can use the local Docker provider. Then use Find Companion here and choose Pair and Use. Local VPN can still handle installs while the paired computer handles Apple connections.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    private var anisetteField: some View {
-        TextField(model.connectionMode == .companion ? "http://your-computer:6969" : "https://your-anisette-server", text: Binding(
-            get: { account.anisetteURL },
-            set: {
-                account.anisetteURL = $0.trimmingCharacters(in: .whitespaces)
-                anisetteAuto = false
-            }))
-            .keyboardType(.URL)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.body.monospaced())
-            .roundedFieldStyle()
-            .wideFieldOnTV()
-            .frame(maxWidth: 480)
-    }
-
-    /// Whether `companion`'s anisette server is the one in use (with this device's token, for
-    /// one that serves paired devices only).
     private func inUse(_ companion: CompanionFinder.Companion) -> Bool {
-        if companion.anisetteChannelPort != nil {
-            return CompanionPairing.isPaired(account.anisetteURL, to: companion)
-                || account.anisetteURL == companion.anisetteURL
-        }
-        return account.anisetteURL == companion.anisetteURL
+        CompanionPairing.isPaired(account.anisetteURL, to: companion)
     }
 
     private func isFailure(_ phase: CompanionPairing.Phase) -> Bool {
@@ -256,7 +197,6 @@ struct ConnectionView: View {
         Task {
             guard let url = await pairing.anisetteURL(for: companion) else { return }
             account.anisetteURL = url
-            anisetteAuto = true
         }
     }
 
@@ -288,7 +228,7 @@ struct ConnectionView: View {
                     if inUse(companion) {
                         StatusPill(text: "In use", systemImage: "checkmark", tint: .green)
                     } else {
-                        Button(companion.anisettePairingPort == nil ? "Use" : "Pair and Use") { useAnisette(of: companion) }
+                        Button("Pair and Use") { useAnisette(of: companion) }
                             .buttonStyle(.bordered)
                             .disabled(pairing.phase != .idle && !isFailure(pairing.phase))
                     }
@@ -436,21 +376,5 @@ private struct ModeOption: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-extension AccountModel {
-    /// Each connection mode keeps its own anisette server: a companion's is not what Local VPN
-    /// uses, so switching saves the one in use (and whether it was a found companion's) under
-    /// the mode being left and brings back the one the other mode had (none the first time).
-    func switchAnisette(from old: ProbeModel.ConnectionMode?, to new: ProbeModel.ConnectionMode) {
-        guard old != new else { return }
-        let defaults = UserDefaults.standard
-        if let old {
-            defaults.set(anisetteURL, forKey: "anisetteURL." + old.rawValue)
-            defaults.set(defaults.bool(forKey: "anisetteAuto"), forKey: "anisetteAuto." + old.rawValue)
-        }
-        anisetteURL = defaults.string(forKey: "anisetteURL." + new.rawValue) ?? ""
-        defaults.set(defaults.bool(forKey: "anisetteAuto." + new.rawValue), forKey: "anisetteAuto")
     }
 }

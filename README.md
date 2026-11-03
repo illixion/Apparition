@@ -867,9 +867,9 @@ Android uses; nothing of Apple's is stored in this repository), loads them in it
 wherever you prefer it, use a server: Apparition ships none, so enter the URL of
 any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
 up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
-digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
-and IP address, never the Apple ID or password, which go straight to Apple. A third-party
-server is optional now; use one only if you'd rather not have the built-in one.
+digest), and use `http://127.0.0.1:6969` on that computer. The server sees this device's anisette identity
+and IP address, never the Apple ID or password, which go straight to Apple. These server settings apply to desktop sign-in. Mobile devices pair with the Apparition
+companion, which can offer its local provider through the encrypted channel.
 
 **Since 12 October 2026 Apple checks that the anisette matches the device the sign-in claims
 to be**, and refuses the sign-in (`-80045`, "This action cannot be completed at this time")
@@ -904,7 +904,7 @@ notarized (hardened runtime), their entitlements must include
 `com.apple.security.cs.allow-unsigned-executable-memory`, or loading fails.
 
 The companion can offer the headset an anisette server too: this computer's own (built in,
-served to the network on port 6969), or the same compose file run with your Docker (Docker
+served locally on loopback port 6969), or the same compose file run with your Docker (Docker
 Desktop, OrbStack or Colima), from the desktop app's Settings tab or `apparition relay
 --anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
 anisette server" next to the companion; nothing switches on its own.
@@ -917,14 +917,18 @@ its terminal) if they match. A relay with no terminal (launchd, systemd) or with
 declines and logs how to pair instead; pair once from a terminal and the device is remembered.
 After pairing, the device keeps its grant in Keychain and saves an address with no secret. TCP
 49162 carries a device-specific TLS 1.2 PSK channel; the host checks the anisette grant and a
-proof bound to that TLS session, then forwards the v3 request to its configured provider on
-loopback. Sign-in, Apple credentials, and the Apple session stay on the device. The existing
-`/t/<token>` HTTP route remains for older clients, but new Apparition clients use the encrypted
-channel. Unpair a device in the Settings tab or with `apparition relay devices forget <id>`.
-The Settings tab's Advanced option "Serve anyone on this network, without pairing"
-(`--anisette-open`) keeps direct v3 compatibility for clients that can't pair (SideStore,
-AltServer); `apparition anisette serve` always does. Those direct HTTP modes don't use the
-encrypted channel. The Docker server is Dadoum's and has no access control.
+proof bound to that TLS session, then forwards the v3 request to its configured loopback
+provider. A separate `appleRelay` grant permits opaque HTTPS CONNECT tunnels to the Apple
+sign-in and developer services. Apple TLS and certificate verification stay on the device,
+along with the password, Apple session and signing keys. The computer sees destinations and
+traffic timing and can interrupt connections. Old pairings need one new pairing to grant
+Apple relay access. Unpair in the Settings tab or with `apparition relay devices forget <id>`.
+
+Direct LAN HTTP compatibility and `--anisette-open` have been removed. Built-in providers,
+`apparition anisette serve`, and the bundled Docker configuration listen only on loopback.
+Apple sign-in on mobile devices requires a paired companion, even with Local VPN for installs.
+See [the channel protocol](docs/COMPANION_ANISETTE_CHANNEL.md). Apps MCP's `checkAppleRelay`
+checks the complete anisette and Apple TLS URL-bag path without signing in.
 
 Apple's servers sometimes refuse a request that another one would take: sign-in then fails "403
 Forbidden". Apparition retries on another server (`core/vendor/isideload/src/auth/edge.rs`): it

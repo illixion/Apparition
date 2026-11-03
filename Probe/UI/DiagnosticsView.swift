@@ -99,10 +99,7 @@ struct DiagnosticsView: View {
                         if model.relay != companion.relay {
                             Button("Use as relay") { model.useCompanion(companion.relay) }
                         }
-                        // The user's own server, used only when they choose it here.
-                        if let anisette = companion.anisetteURL, account.anisetteURL != anisette {
-                            Button("Use its anisette server") { account.anisetteURL = anisette }
-                        }
+
                     }
                     .focusRow()
                     .buttonStyle(.borderless)

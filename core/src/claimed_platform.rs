@@ -84,20 +84,18 @@ impl Claim {
     }
 }
 
-/// The claim for the server at `url`. A server that doesn't answer is taken to be an Android one;
-/// the sign-in then fails on the server, not here.
-pub async fn claim_for(url: &str) -> Claim {
-    let reply = async {
-        let response = reqwest::Client::new()
-            .get(format!("{}/v3/client_info", url.trim_end_matches('/')))
-            .timeout(std::time::Duration::from_secs(20))
-            .send()
-            .await
-            .ok()?;
-        let implementation = response.headers().get("implementation-version").and_then(|value| value.to_str().ok()).map(str::to_string);
-        Some((response.json::<serde_json::Value>().await.ok()?, implementation))
-    };
-    reply.await.map(|(reply, implementation)| Claim::from_reply(&reply, implementation.as_deref())).unwrap_or(Claim::of(Served::Android))
+/// The claim for the server at `url`. Provider failures must stop sign-in before Apple
+/// is contacted; guessing Android would hide a failed secure companion connection.
+pub async fn claim_for(url: &str) -> Result<Claim, Report> {
+    let response = reqwest::Client::new()
+        .get(format!("{}/v3/client_info", url.trim_end_matches('/')))
+        .timeout(std::time::Duration::from_secs(20))
+        .send().await.context("Couldn't reach the companion anisette provider")?
+        .error_for_status().context("Companion anisette provider refused client info")?;
+    let implementation = response.headers().get("implementation-version")
+        .and_then(|value| value.to_str().ok()).map(str::to_string);
+    let reply = response.json::<serde_json::Value>().await.context("Invalid anisette client info")?;
+    Ok(Claim::from_reply(&reply, implementation.as_deref()))
 }
 
 /// `inner`, claiming the device that matches what its server serves.

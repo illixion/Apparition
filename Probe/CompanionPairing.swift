@@ -19,10 +19,11 @@ extension RAVECompanionNamespace {
 /// What a device asks a companion for when pairing.
 enum CompanionGrant: String, Codable, Hashable, Sendable {
     case anisette
+    case appleRelay
 }
 
 /// Pairs this device with a companion and stores its capability token in the device Keychain.
-/// New companions return an address without the secret; older companions retain their HTTP URL.
+/// The address contains no secret; all service traffic uses the encrypted channel.
 @MainActor @Observable
 final class CompanionPairing {
     enum Phase: Equatable {
@@ -48,15 +49,19 @@ final class CompanionPairing {
         guard let offered = companion.anisetteURL.flatMap(URL.init(string:)), let current = URL(string: url) else { return false }
         if current.scheme == "apparition-anisette" {
             return current.host == offered.host && current.port == Int(companion.anisetteChannelPort ?? 0)
+                && URLComponents(url: current, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "relay", value: "1")) == true
         }
-        return current.host == offered.host && current.port == offered.port && current.path.hasPrefix("/t/")
+        return false
     }
 
     /// The anisette URL for `companion`: as offered when it serves anyone, after a pairing
     /// when it serves paired devices only. nil when the pairing failed or was cancelled.
     func anisetteURL(for companion: CompanionFinder.Companion) async -> String? {
         guard let offered = companion.anisetteURL else { return nil }
-        guard let port = companion.anisettePairingPort else { return offered }
+        guard let port = companion.anisettePairingPort else {
+            phase = .failed("Update Apparition on that computer to pair over the encrypted channel.")
+            return nil
+        }
         guard let host = URL(string: offered)?.host else { return nil }
         guard let channelPort = companion.anisetteChannelPort else {
             phase = .failed("This companion doesn't offer the encrypted anisette channel. Update Apparition on that computer, then try again.")
@@ -67,7 +72,7 @@ final class CompanionPairing {
         let client = RAVEPairingClient<CompanionGrant>(
             locator: locator, link: link,
             deviceName: UserDefaults.standard.string(forKey: "pairedName") ?? ThisDevice.name,
-            requested: [.anisette])
+            requested: [.anisette, .appleRelay])
         self.client = client
         phase = .waiting(companion: companion.name)
         client.start()
@@ -99,6 +104,10 @@ final class CompanionPairing {
             log.info("companion pairing ended without a grant")
             return nil
         }
+        guard grant.grants?.contains("appleRelay") == true else {
+            phase = .failed("Update Apparition on that computer, then pair again to enable Apple connection relay access.")
+            return nil
+        }
         phase = .idle
         log.info("paired with a companion")
         let account = CompanionCredentialStore.account(host: host, port: channelPort, deviceID: locator.deviceID)
@@ -111,6 +120,7 @@ final class CompanionPairing {
         secure.host = host
         secure.port = Int(channelPort)
         secure.path = "/\(locator.deviceID)"
+        secure.queryItems = [URLQueryItem(name: "relay", value: "1")]
         return secure.string
     }
 

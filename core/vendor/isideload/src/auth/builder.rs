@@ -43,7 +43,7 @@ impl AppleAccountBuilder {
         self
     }
 
-    /// Set a proxy URL to use for all network requests, useful for running in a browser with WASM
+    /// Set the HTTPS CONNECT proxy for native builds, or URL-rewriting proxy for WASM
     ///
     /// # Arguments
     /// - `proxy_url`: The proxy URL to use for all network requests

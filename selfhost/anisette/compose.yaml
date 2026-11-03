@@ -1,7 +1,7 @@
 # Self-hosted anisette for Apparition: Dadoum's anisette-v3-server, pulled from its own registry.
-# Apparition ships no default anisette server. Run this on a machine Apparition can reach (the
-# companion's Mac or PC, a home server; over Tailscale when away), then enter
-# http://<that machine>:6969 in Apparition.
+# It listens only on loopback. In Apparition's desktop Companion tab choose the local Docker
+# provider, then pair from Find Companion on the device. All LAN traffic uses the encrypted
+# companion channel.
 #
 #   docker compose -f selfhost/anisette/compose.yaml up -d
 #
@@ -14,7 +14,7 @@ services:
     image: dadoum/anisette-v3-server@sha256:8577c27cb7592900947960799bf03c79a53bf857ed951e4c48ef6e06c6e0f488
     restart: unless-stopped
     ports:
-      - "6969:6969"
+      - "127.0.0.1:6969:6969"
     volumes:
       - data:/home/Alcoholic/.config/anisette-v3/lib
 volumes:

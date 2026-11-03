@@ -16,7 +16,9 @@ void apparition_string_free(char *string);
 void apparition_init_logging(const char *log_path);
 
 char *apparition_login(const char *email, const char *password, const char *anisette_url,
-                   const char *data_dir, apparition_two_factor_fn two_factor, void *context);
+                   const char *apple_proxy, const char *data_dir, apparition_two_factor_fn two_factor, void *context);
+// Account-free check through the device-local encrypted companion adapter.
+char *apparition_check_apple_relay(const char *adapter);
 char *apparition_session(void);
 // Forgets the signed-in session in this process. Returns {ok}.
 char *apparition_logout(void);

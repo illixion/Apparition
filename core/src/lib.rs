@@ -487,11 +487,23 @@ pub async fn sign_in(
     data_dir: &std::path::Path,
     two_factor: impl Fn(&TwoFactorCallbackParams) -> TwoFactorCallbackResponse + Send + Sync,
 ) -> Result<(Session, Value), Report> {
+    sign_in_with_proxy(email, password, anisette_url, None, data_dir, two_factor).await
+}
+
+/// Sign in with an optional device-local CONNECT adapter. Apple TLS remains in this process.
+async fn sign_in_with_proxy(
+    email: &str,
+    password: String,
+    anisette_url: &str,
+    apple_proxy: Option<String>,
+    data_dir: &std::path::Path,
+    two_factor: impl Fn(&TwoFactorCallbackParams) -> TwoFactorCallbackResponse + Send + Sync,
+) -> Result<(Session, Value), Report> {
     std::fs::create_dir_all(data_dir)?;
     let storage_path = data_dir.join("storage.json");
     let anisette_url = anisette_address(anisette_url, data_dir).await?;
     // Claim the platform the anisette was made on, or Apple refuses the sign-in (claimed_platform).
-    let claim = claimed_platform::claim_for(&anisette_url).await;
+    let claim = claimed_platform::claim_for(&anisette_url).await?;
     let served = claim.served;
     let after_sign_in = claim.after_sign_in();
     let anisette = claimed_platform::ClaimedPlatform::new(
@@ -510,7 +522,7 @@ pub async fn sign_in(
             error.context("Apple ID sign-in failed").into_dynamic()
         }
     };
-    let mut account = AppleAccount::builder(email).anisette_provider(anisette).build().await.map_err(refused)?;
+    let mut account = AppleAccount::builder(email).anisette_provider(anisette).proxy_url(apple_proxy).build().await.map_err(refused)?;
     if let Err(error) = account.login(&password, callback).await {
         if !is_transient_srp_503(&error) {
             return Err(refused(error));
@@ -917,6 +929,7 @@ pub unsafe extern "C" fn apparition_login(
     email: *const c_char,
     password: *const c_char,
     anisette_url: *const c_char,
+    apple_proxy: *const c_char,
     data_dir: *const c_char,
     two_factor: TwoFactorFn,
     context: *mut c_void,
@@ -926,11 +939,44 @@ pub unsafe extern "C" fn apparition_login(
         let email = unsafe { text(email) }?;
         let password = unsafe { text(password) }?;
         let anisette_url = unsafe { text(anisette_url) }?;
+        let apple_proxy = unsafe { text(apple_proxy) }?;
+        let apple_proxy = loopback_apple_proxy(&apple_proxy)?;
         let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
         runtime().block_on(crate::stop::stoppable(async move {
-            let (session, result) = sign_in(&email, password, &anisette_url, &data_dir, |params| callback.ask(params)).await?;
+            let (session, result) = sign_in_with_proxy(&email, password, &anisette_url, apple_proxy, &data_dir, |params| callback.ask(params)).await?;
             *SESSION.lock().unwrap() = Some(session);
             Ok(result)
+        }))
+    })())
+}
+
+// Only our in-process loopback adapter is accepted, never a remote plaintext proxy.
+fn loopback_apple_proxy(address: &str) -> Result<Option<String>, Report> {
+    if address.is_empty() { return Ok(None); }
+    let url = reqwest::Url::parse(address)?;
+    if url.scheme() != "http" || url.host_str() != Some("127.0.0.1") || url.port().is_none()
+        || !url.username().is_empty() || url.password().is_some()
+        || url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
+        bail!("Apple relay adapter must be a loopback HTTP proxy");
+    }
+    Ok(Some(address.to_string()))
+}
+
+/// Checks the configured companion and Apple's TLS URL bag without using an Apple account.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_check_apple_relay(adapter: *const c_char) -> *mut c_char {
+    reply((|| {
+        let adapter = unsafe { text(adapter) }?;
+        let proxy = loopback_apple_proxy(&adapter)?;
+        if proxy.is_none() { bail!("Apple relay adapter is missing"); }
+        runtime().block_on(crate::stop::stoppable(async move {
+            let claim = claimed_platform::claim_for(&adapter).await?;
+            let info = isideload::anisette::AnisetteClientInfo {
+                client_info: claim.client_info,
+                user_agent: claim.user_agent,
+            };
+            let _ = isideload::auth::grandslam::GrandSlam::new(info, false, proxy).await?;
+            Ok(json!({"anisette": true, "appleTLS": true, "urlBag": true}))
         }))
     })())
 }
