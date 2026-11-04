@@ -39,13 +39,15 @@ computer, and **[RUST_STORE.md](RUST_STORE.md)** describes how it is built.
 ## From the command line
 
 Everything the Store does works from a terminal through `apparition store`, against the Store this
-computer reaches: the app's (or `serve`'s) here, else the Mac paired for developer access
-(`apparition mac pair`). `--local` insists on this computer's, and `--json` prints the Store's
-answer as it is. `apparition store help` has the details.
+computer reaches: the one signed in to with its password (`store login`), else the Mac paired for
+developer access (`apparition mac pair`), else the app's (or `serve`'s) here. `--local` insists on
+this computer's, and `--json` prints the Store's answer as it is. `store status` says which it is.
+`apparition store help` has the details.
 
 | | |
 |---|---|
 | `store serve [--port N]` | run the Store without the app |
+| `store login <address> [--password-stdin]` · `store logout` | sign in to another computer's Store with its password, and out again |
 | `store status` · `store web-ui on\|off [--password]` · `store open [debug [<app>]]` | the Store itself, its web pages and password, its page or Debug console in the browser here |
 | `store projects` · `store add <folder> [--app S] [--device D]` | the projects; add an Xcode project (as the Developer tab's Add project) |
 | `store devices [--refresh [--force]]` | paired devices and what they have installed |
@@ -59,6 +61,19 @@ answer as it is. `apparition store help` has the details.
 Alongside: `apparition updates` (the update queue), `apparition deploy` (send an IPA built
 elsewhere), `apparition deploy-signing` (the certificate the Store signs sent builds with),
 `apparition crash-reports` and `apparition mcp` (the apps' debug servers, for agents).
+
+**Signing in with the password.** For a Store on another computer that this one isn't paired with
+(a server running `store serve`, a Mac whose web pages you turned on), `apparition store login
+https://mac.your-tailnet.ts.net` asks for the Store's password (or reads one line of it from stdin
+with `--password-stdin`) and keeps the session it gets back, not the password, in a file only this
+user reads, next to the pairing (`anisette/store-login.json`). `store`, `deploy`, `updates` and
+`mcp` then drive that Store. The address is HTTPS (what `tailscale serve` gives you), or `http://`
+for this computer; the password and the session are never sent over plain HTTP, and a redirect is
+never followed. The session is the web page's: builds, deploys, updates and debugging, not the
+Store's own settings (its password, its web pages), which stay with its Mac (`store status` and
+`store web-ui` work there). It lasts 30 idle days and ends when the password changes; sign in
+again then. `store logout` ends it on the Store and here. Pairing (`apparition mac pair`) needs no
+password and the Mac's person approves each computer once; prefer it for a Mac you can reach.
 
 Links for devices made from the command line (OTA, AltStore, Mac) would otherwise name
 `127.0.0.1`, which a phone can't reach: set `"publicUrl": "https://your-mac.your-tailnet.ts.net"` in

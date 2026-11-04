@@ -30,6 +30,7 @@ mod inject;
 mod developer;
 mod builder;
 mod crash_reports;
+mod login;
 mod scratch;
 mod store;
 mod vm;

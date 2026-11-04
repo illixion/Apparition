@@ -14,8 +14,9 @@ use crate::{Error, fail};
 
 pub const USAGE: &str = "\
 apparition store: the Apparition Store from a terminal. Every subcommand but serve drives the Store
-this computer reaches: the Apparition app's (or `store serve`'s) here, else the Mac paired for
-developer access (`apparition mac pair`); --local insists on this computer's. --json prints the
+this computer reaches: the Store signed in to with its password (`store login`), else the Mac
+paired for developer access (`apparition mac pair`), else the Apparition app's (or `store serve`'s)
+here; --local insists on this computer's. --json prints the
 Store's answer as it is.
 
   apparition store serve [--port <port>]
@@ -23,8 +24,17 @@ Store's answer as it is.
       Ctrl-C or SIGTERM. What the app's Store does, it does: builds and the update queue, OTA and
       AltStore links, Mac downloads, re-signs, trace uploads, MCP at /mcp. `apparition relay`
       beside it lets paired computers reach it. Only one Store runs per folder.
+  apparition store login <address> [--password-stdin]
+      Sign in to another computer's Store with its password (set under Web UI and other devices
+      in its Apparition, or `apparition store web-ui on --password` there). The address is HTTPS,
+      like a `tailscale serve` one (http:// only for this computer). Asks for the password, or
+      reads one line of it with --password-stdin. The session (30 days, renewed as it is used)
+      is kept for this user; the commands that drive a Store then use it. Builds, deploys,
+      updates and debugging are reachable this way; the Store's own settings stay with its Mac.
+  apparition store logout
+      End the sign-in, on that Store and here.
   apparition store status
-      Where the Store is, whether its web pages are on, its folder.
+      Where the Store is, and how this computer reaches it; whether its web pages are on, its folder.
   apparition store web-ui on|off [--password]
       Turn the Store's web pages (and other devices' Apparition connecting with a password) on or
       off. --password asks for a new password (8 characters or more); turning on needs one set.
@@ -91,6 +101,12 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
         return Ok(());
     }
     let opts = Opts::parse(rest)?;
+    // These two talk to the Store signed in to, not through one found for the rest.
+    match command {
+        "login" => return login(&opts).await,
+        "logout" => return logout(&opts).await,
+        _ => {}
+    }
     let store = Store::find(opts.has("--local"))?;
     match command {
         "status" => status(&store, &opts).await,
@@ -184,6 +200,9 @@ impl Store {
     async fn call(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, Error> {
         let reply = self.raw(method, path, body).await?;
         let value: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        if reply.status == 404 && value["error"] == "Unknown service operation." && path.starts_with("/host") && !matches!(self.target, Target::Local { .. }) {
+            return Err(fail(format!("The Store's own settings stay with the Mac it runs on: run `apparition store {}` there. This computer reaches it {}.", if path.starts_with("/host/web-ui") { "web-ui" } else { "status" }, self.target.route())));
+        }
         if reply.status == 404 && value["error"] == "Unknown service operation." {
             return Err(fail(format!("{}'s Store doesn't do that (or it's older than this command line): update the Apparition app there.", self.target.name())));
         }
@@ -234,6 +253,43 @@ fn ago(ms: u64) -> String {
     }
 }
 
+// ---- login ----
+
+/// `login <address>`: signs in to another computer's Store with its password.
+async fn login(opts: &Opts) -> Result<(), Error> {
+    opts.only(&["--password-stdin"])?;
+    let raw = opts.word(0).ok_or_else(|| fail("usage: apparition store login <address> [--password-stdin]"))?;
+    let url = crate::login::address(raw)?;
+    let password = if opts.has("--password-stdin") {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).map_err(|e| fail(e.to_string()))?;
+        line.trim_end_matches(['\r', '\n']).to_string()
+    } else {
+        crate::ask_secret(&format!("Password for the Store at {url}: "))
+    };
+    if password.is_empty() {
+        return Err(fail("No password given."));
+    }
+    let capabilities = crate::login::connect(&url, &password).await?;
+    if opts.has("--json") {
+        print_json(&json!({ "url": url.as_str(), "capabilities": capabilities["capabilities"], "hostPlatform": capabilities["hostPlatform"] }));
+        return Ok(());
+    }
+    println!("Signed in to the Store at {url} ({}).", text(&capabilities, "hostPlatform"));
+    println!("`apparition store`, `deploy`, `updates` and `mcp` use it now (--local uses this computer's instead); `apparition store logout` ends the sign-in.");
+    Ok(())
+}
+
+/// `logout`: ends the sign-in, on the Store and here.
+async fn logout(opts: &Opts) -> Result<(), Error> {
+    opts.only(&[])?;
+    match crate::login::disconnect().await? {
+        Some(url) => println!("Signed out of the Store at {url}."),
+        None => println!("Not signed in to a Store."),
+    }
+    Ok(())
+}
+
 // ---- serve ----
 
 async fn serve(args: &[String]) -> Result<(), Error> {
@@ -275,10 +331,10 @@ async fn status(store: &Store, opts: &Opts) -> Result<(), Error> {
     let host = store.get("/host").await;
     let capabilities = store.get("").await?;
     if opts.has("--json") {
-        print_json(&json!({ "store": store.target.name(), "capabilities": capabilities, "host": host.ok() }));
+        print_json(&json!({ "store": store.target.name(), "route": store.target.route(), "capabilities": capabilities, "host": host.ok() }));
         return Ok(());
     }
-    println!("The Store on {} ({}), service API v{}.", store.target.name(), text(&capabilities, "hostPlatform"), capabilities["version"]);
+    println!("The Store on {} ({}), service API v{}; {}.", store.target.name(), text(&capabilities, "hostPlatform"), capabilities["version"], store.target.route());
     match host {
         Ok(host) => {
             println!("Web pages: {}{}.", if host["webUiOn"] == true { "on" } else { "off" },
@@ -370,7 +426,7 @@ async fn add(store: &Store, opts: &Opts) -> Result<(), Error> {
     // A folder here is named as this computer sees it; one on the paired Mac, as the Mac does.
     let path = match &store.target {
         Target::Local { .. } => std::fs::canonicalize(folder).map_err(|e| fail(format!("{folder}: {e}")))?.display().to_string(),
-        Target::Paired { .. } => folder.to_string(),
+        Target::Paired { .. } | Target::Remote(_) => folder.to_string(),
     };
     println!("Reading the project (Xcode is asked for its schemes, which can take a moment)...");
     let found = store.post("/projects/discover", json!({ "path": path })).await?["discovery"].clone();

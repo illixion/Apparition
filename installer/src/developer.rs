@@ -21,6 +21,8 @@ use crate::{Error, anisette_dir, fail};
 
 /// Where requests go.
 pub(crate) enum Target {
+    /// Another computer's Store this one signed in to with its password (`apparition store login`).
+    Remote(crate::login::Login),
     /// The Mac this computer is paired with, through the channel.
     Paired { dir: PathBuf, name: String },
     /// This Mac's own app.
@@ -32,13 +34,19 @@ impl Target {
         let dir = anisette_dir();
         let paired = paired_mac::status(&dir).filter(|p| p.developer);
         let local = local_store();
+        // A sign-in is something the person did on purpose, and is the newer of the two ways to
+        // reach another computer; `--local` still means this one, and `store logout` forgets it.
+        let signed_in = if prefer_local && local.is_some() { None } else { crate::login::load() };
+        if let Some(login) = signed_in {
+            return Ok(Target::Remote(login));
+        }
         match (paired, local) {
             (_, Some((address, token))) if prefer_local => Ok(Target::Local { address, token }),
             (Some(paired), _) => Ok(Target::Paired { dir, name: paired.mac_name }),
             (None, Some((address, token))) => Ok(Target::Local { address, token }),
             (None, None) => Err(fail(match paired_mac::status(&dir) {
                 Some(p) => format!("{} paired this computer for anisette only. Pair again with `apparition mac pair {}` and allow developer access on the Mac.", p.mac_name, p.address),
-                None => "Open the Apparition app on this computer (its Store starts with it), run `apparition store serve`, or pair this computer with your build Mac: `apparition mac pair <address>`.".into(),
+                None => "Open the Apparition app on this computer (its Store starts with it), run `apparition store serve`, sign in to a Store with its password (`apparition store login <address>`), or pair this computer with your build Mac: `apparition mac pair <address>`.".into(),
             })),
         }
     }
@@ -47,6 +55,16 @@ impl Target {
         match self {
             Target::Paired { name, .. } => name.clone(),
             Target::Local { .. } => "this computer".into(),
+            Target::Remote(login) => login.name(),
+        }
+    }
+
+    /// How this computer reaches it, for `apparition store status`.
+    pub(crate) fn route(&self) -> String {
+        match self {
+            Target::Paired { name, .. } => format!("paired with {name} (apparition mac pair)"),
+            Target::Local { .. } => "running on this computer".into(),
+            Target::Remote(login) => format!("signed in at {} with its password (apparition store login)", login.url),
         }
     }
 
@@ -54,6 +72,7 @@ impl Target {
         match self {
             Target::Paired { dir, .. } => paired_mac::developer(dir, method, path, content_type, body).await,
             Target::Local { address, token } => paired_mac::local_developer(*address, token, method, path, content_type, body).await,
+            Target::Remote(login) => login.request(method, path, content_type, body).await,
         }
     }
 }

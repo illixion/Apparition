@@ -26,6 +26,9 @@ ring = "0.17"
 base64 = "0.22"
 # `apparition store serve`: the Store without the app.
 apparition-service = { path = "../service", features = ["hosted"] }
+# `apparition store login`: another computer's Store, over HTTPS, with its password's session.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "http2", "system-proxy", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
 
 # This Mac's own anisette, served in this process (core/src/anisette): macOS only. Elsewhere the
 # anisette comes from a paired Mac (core/src/companion_client.rs) or a server the person runs.

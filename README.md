@@ -179,7 +179,8 @@ device connect. **Connect to another Mac** takes the HTTPS address and password 
 Store. The Store speaks the `apparition-service` version 1 API. Builds run `apparition build`,
 which builds with Xcode and installs and launches over Apparition's own pairing with the device,
 never `devicectl`. Without the app, `apparition store serve` runs the same Store, and
-`apparition store` does everything the Developer tab does from a terminal ([docs/STORE.md](docs/STORE.md)).
+`apparition store` does everything the Developer tab does from a terminal, on this computer's Store, a paired Mac's,
+or, after `apparition store login <address>`, another computer's by its password ([docs/STORE.md](docs/STORE.md)).
 
 **Console** on a running app (Reports › Running apps, this Mac's Store) opens the Store's
 Debug console in its own window: live log, tuning panels (sliders for `DebugTunables` values and
