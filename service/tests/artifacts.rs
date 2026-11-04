@@ -1,7 +1,6 @@
 //! Kept builds: list, manifest and download from Rust against the real Node store, on one build
 //! store holding good, corrupt and half-written builds.
 
-#![cfg(target_os = "macos")]
 
 mod common;
 
@@ -26,7 +25,7 @@ fn keep(store: &Path, id: &str, age_secs: u64, mutate: impl FnOnce(&mut Value, &
     mutate(&mut manifest, &dir);
     std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
     let when = SystemTime::now() - Duration::from_secs(age_secs);
-    std::fs::File::open(&dir).unwrap().set_modified(when).unwrap();
+    directory(&dir).set_modified(when).unwrap();
 }
 
 #[tokio::test]
@@ -74,4 +73,17 @@ async fn artifacts_match_the_node_store() {
     let list: Value = serde_json::from_str(&node.get("/api/artifacts").1).unwrap();
     let ids: Vec<&str> = list["builds"].as_array().unwrap().iter().map(|b| b["buildId"].as_str().unwrap()).collect();
     assert_eq!(ids, ["newest", "older-1"], "corrupt and half-written builds are skipped, newest first");
+}
+
+/// A directory opened so its times can be set: Windows opens one only with backup semantics, and
+/// sets a time only through a handle opened for writing.
+fn directory(dir: &std::path::Path) -> std::fs::File {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        return std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(dir).unwrap();
+    }
+    #[cfg(not(windows))]
+    std::fs::File::open(dir).unwrap()
 }

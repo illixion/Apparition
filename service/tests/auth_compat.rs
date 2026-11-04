@@ -1,6 +1,5 @@
 //! The Rust auth against the Node store's own `store/lib/auth.js`, on a shared data directory:
 //! whatever one writes, the other must accept. Skipped where `node` is not installed.
-#![cfg(target_os = "macos")]
 
 use apparition_service::auth::{Auth, Login, hash_password, verify_password};
 use std::{path::Path, process::Command};

@@ -1,7 +1,6 @@
 //! Debug routes: discovery from Bonjour services and launch records, and the proxy to a (fake)
 //! DebugTrace app. The advertisement tag is checked against the Python tool's own function.
 
-#![cfg(target_os = "macos")]
 
 use apparition_service::{debug::{Fixed, Service, advertisement_tag, legacy_advertisement_tag, request_proof}, server::{Settings, router}};
 use axum::{Json, Router, body::{Body, Bytes}, extract::State, http::{HeaderMap, Method, Request, StatusCode, Uri}, response::IntoResponse, routing::{get, post}};

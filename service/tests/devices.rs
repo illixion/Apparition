@@ -2,7 +2,6 @@
 //! install a build that arrived from another computer, through a (fake) backend standing in for
 //! the core's pairings.
 
-#![cfg(target_os = "macos")]
 
 use apparition_service::{debug::Fixed, devices::{App, Device, Devices, Fut, Installed}, server::{Settings, router}};
 use axum::{Router, body::Body, http::Request};
@@ -118,7 +117,7 @@ async fn a_deploy_can_ask_the_mac_to_finish_the_install_itself() {
 
     // Without install=, nothing is installed and the device's Apparition is asked, as before.
     let (_, reply) = call(&r.app, "POST", "/api/service/v1/deploy?device=ixPhone", HOST, ipa("iPhoneOS")).await;
-    assert_eq!(reply["install"]["message"], "Thing is on the Mac. Open Apparition on ixPhone to install it.");
+    assert_eq!(reply["install"]["message"], format!("Thing is on {}. Open Apparition on ixPhone to install it.", apparition_service::HERE));
     assert_eq!(r.fake.installs.lock().unwrap().len(), 1);
 }
 
@@ -140,7 +139,7 @@ async fn when_the_mac_cannot_install_the_build_is_kept_for_the_device() {
     for (query, ipa_for, expect) in [
         ("device=ghost&install=1", "iPhoneOS", "not paired with a device named 'ghost'"),
         ("device=Living%20Room&install=1", "iPhoneOS", "the build is for iOS, and Living Room runs tvOS"),
-        ("install=1", "iPhoneOS", "Name a device to install it from the Mac"),
+        ("install=1", "iPhoneOS", "Name a device to install it from the"),
     ] {
         let (status, reply) = call(&r.app, "POST", &format!("/api/service/v1/deploy?{query}"), HOST, ipa(ipa_for)).await;
         assert_eq!(status, 201, "{reply}");

@@ -1,10 +1,10 @@
 //! The MCP server over HTTP, against a fake DebugTrace app, and its tool schemas and panel
 //! validation against the Python `debugtrace-mcp` it replaces.
 
-#![cfg(target_os = "macos")]
 
 use apparition_service::{debug::{Fixed, Service, advertisement_tag, request_proof}, server::{Settings, router}};
 use axum::{Json, Router, body::{Body, Bytes}, extract::State, http::{HeaderMap, Method, Request, Uri}, response::IntoResponse, routing::{get, post}};
+#[cfg(target_os = "macos")]
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::{Arc, Mutex}};
@@ -181,7 +181,7 @@ async fn apps_help_and_call_with_the_forgiving_arguments() {
     let file = tool(&r.app, "call", json!({ "endpoint": "_file" })).await;
     let saved = serde_json::from_str::<Value>(&text_of(&file)).unwrap();
     let path = saved["savedTo"].as_str().unwrap();
-    assert!(path.starts_with(r.dir.path().join("project/build/debugtrace").to_str().unwrap()) && path.ends_with("_file.zip"), "{path}");
+    assert!(Path::new(path).starts_with(r.dir.path().join("project").join("build").join("debugtrace")) && path.ends_with("_file.zip"), "{path}");
     assert_eq!(std::fs::read(path).unwrap(), vec![9u8; 10]);
 }
 
@@ -280,6 +280,8 @@ async fn an_endpoint_name_cannot_leave_the_project() {
 
 /// `inject` drives the external patch tool from the project root and sends what it builds to the
 /// app: reset when the app has no patches, patch, one `_inject` per library, then commit.
+// Live patching runs the app's Xcode toolchain, so only a Mac's Store does it.
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn inject_runs_the_patch_tool_and_sends_its_libraries() {
     let r = rig(true).await;
@@ -340,5 +342,6 @@ async fn inject_needs_a_build_made_for_patching() {
     let r = rig(true).await;
     let result = tool(&r.app, "inject", json!({ "app": "com.x.app" })).await;
     assert_eq!(result["isError"], true);
-    assert!(text_of(&result).contains("was not launched for live patching"), "{result}");
+    let expected = if cfg!(target_os = "macos") { "was not launched for live patching" } else { "only a Mac has" };
+    assert!(text_of(&result).contains(expected), "{result}");
 }

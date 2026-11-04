@@ -2,7 +2,6 @@
 //! key ledger. Every archive, valid or tampered, must get the same status and the same error text
 //! from both. Skipped without `node`.
 
-#![cfg(target_os = "macos")]
 
 mod common;
 use apparition_service::server::{Settings, router};

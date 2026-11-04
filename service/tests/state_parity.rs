@@ -1,7 +1,6 @@
 //! `GET /api/state` from the Rust service against the same answer from the real Node store,
 //! started on an identical config, state file and git checkout. Skipped without `node` or `git`.
 
-#![cfg(target_os = "macos")]
 
 use apparition_service::server::{Settings, router};
 use axum::{body::Body, http::Request};

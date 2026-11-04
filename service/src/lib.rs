@@ -30,6 +30,20 @@ pub fn home() -> std::path::PathBuf {
     std::env::home_dir().unwrap_or_default()
 }
 
+/// A path segment that names a file inside its folder. On macOS and Linux anything without a
+/// separator does. Windows reads more into a name: `C:x` is a drive, `a:b` a stream of `a`, and
+/// `CON`, `NUL`, or a name ending in a dot or a space aren't the file they look like.
+pub fn plain_segment(segment: &str) -> bool {
+    if !cfg!(windows) {
+        return true;
+    }
+    let stem = segment.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit());
+    !segment.contains(':') && !segment.ends_with(['.', ' ']) && !reserved
+        && !segment.bytes().any(|b| b < 0x20 || b"<>\"|?*".contains(&b))
+}
+
 /// Options for a file only its owner reads: mode 0600 on Unix. On Windows the profile folder's
 /// ACL already keeps other users out.
 pub(crate) fn private_file() -> std::fs::OpenOptions {
@@ -38,4 +52,17 @@ pub(crate) fn private_file() -> std::fs::OpenOptions {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn windows_special_names_are_not_plain() {
+        for name in ["file.txt", "a b", "Logs", "console.log", "com10"] {
+            assert!(super::plain_segment(name), "{name}");
+        }
+        for name in ["C:x", "a:b", "CON", "nul.txt", "COM1", "lpt9.log", "trailing.", "space ", "a|b", "a?b"] {
+            assert_eq!(super::plain_segment(name), !cfg!(windows), "{name}");
+        }
+    }
 }

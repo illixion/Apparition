@@ -1,7 +1,6 @@
 //! A build sent from another computer: kept so that the Node store (what the devices' Apparition
 //! talks to today) lists, describes and serves it exactly like one built on this Mac.
 
-#![cfg(target_os = "macos")]
 
 mod common;
 
@@ -61,7 +60,7 @@ async fn an_uploaded_ipa_is_kept_as_a_build_the_node_store_serves() {
     let (status, reply) = deploy(&app, HOST, "?file=Thing.ipa&device=ixVision", good.clone(), Some("Gaming PC")).await;
     assert_eq!(status, 201, "{reply}");
     assert_eq!(reply["platform"], "visionOS");
-    assert_eq!(reply["install"]["message"], "Spatial Thing is on the Mac. Open Apparition on ixVision to install it.");
+    assert_eq!(reply["install"]["message"], format!("Spatial Thing is on {}. Open Apparition on ixVision to install it.", apparition_service::HERE));
     let id = reply["buildId"].as_str().unwrap().to_string();
     assert!(id.starts_with("upload-") && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'), "{id}");
 

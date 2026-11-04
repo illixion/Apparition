@@ -1,5 +1,4 @@
 //! The HTTP layer, driven in process.
-#![cfg(target_os = "macos")]
 
 use apparition_service::{auth::hash_password, server::{Settings, router}};
 use axum::{Router, body::Body, http::{Request, Response, StatusCode}};

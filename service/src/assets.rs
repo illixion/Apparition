@@ -32,8 +32,9 @@ mod tests {
         }
         assert_eq!(on_disk.len(), super::FILES.len(), "a file was added to or removed from store/public: update assets.rs");
         for path in on_disk {
-            let rel = path.strip_prefix(&root).unwrap().to_str().unwrap();
-            assert_eq!(super::get(rel), Some(std::fs::read(&path).unwrap().as_slice()), "{rel}");
+            // As a URL names it, with '/' on every OS.
+            let rel = path.strip_prefix(&root).unwrap().components().map(|c| c.as_os_str().to_str().unwrap()).collect::<Vec<_>>().join("/");
+            assert_eq!(super::get(&rel), Some(std::fs::read(&path).unwrap().as_slice()), "{rel}");
         }
     }
 }

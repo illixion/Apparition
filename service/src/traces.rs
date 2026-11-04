@@ -154,7 +154,7 @@ fn zip_read(buf: &[u8], entry: &Entry, expected: Option<u64>) -> Result<Vec<u8>,
 /// filesystem would read differently.
 pub fn safe_trace_path(name: &str) -> bool {
     !name.is_empty() && name.len() <= 255 && !name.starts_with('/') && !name.contains(['\\', '\0'])
-        && name.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+        && name.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != ".." && crate::plain_segment(seg))
 }
 
 fn js(value: Option<&Value>) -> String {

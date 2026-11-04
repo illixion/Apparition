@@ -1,7 +1,6 @@
 //! Crash logs against the real Node store: the list (including forgetting an entry whose file was
 //! moved away), the file routes, and the MetricKit refs and linking that tie a log to a trace.
 
-#![cfg(target_os = "macos")]
 
 mod common;
 

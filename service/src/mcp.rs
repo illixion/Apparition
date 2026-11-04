@@ -596,7 +596,7 @@ impl Mcp {
             return Ok(text_result(String::from_utf8_lossy(&archive).into_owned(), true));
         }
         let filename = data["filename"].as_str().unwrap_or("trace.zip");
-        if filename.contains(['/', '\\']) || filename.starts_with('.') {
+        if filename.contains(['/', '\\']) || filename.starts_with('.') || !crate::plain_segment(filename) {
             return Err(err("the app named its trace file with a path; not saving it"));
         }
         let path = self.save_file(&session, &format!("traces/{filename}"), &archive).await?;

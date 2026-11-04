@@ -685,8 +685,22 @@ async fn deploy_route(app: &Arc<App>, parts: axum::http::request::Parts, body: B
 /// Installs a kept build on a device through this Mac's own pairing. The platform must fit
 /// (visionOS also runs iOS apps).
 async fn install_kept(app: &Arc<App>, build_id: &str, device: &str) -> Result<devices::Installed, String> {
-    let backend = app.settings.devices.clone().ok_or("this Store has no devices.")?;
-    let kept = artifacts::read_build(build_id, &app.build_store()).map_err(|e| format!("{e}."))?;
+    install_kept_status(app, build_id, device).await.map_err(|(_, e)| e)
+}
+
+/// `install_kept` with the status a route answers: 404 for a build that isn't kept, 409 for one
+/// that can't go to that device.
+async fn install_kept_status(app: &Arc<App>, build_id: &str, device: &str) -> Result<devices::Installed, (u16, String)> {
+    let backend = app.settings.devices.clone().ok_or((501, "this Store has no devices.".to_string()))?;
+    let store = app.build_store();
+    let kept = artifacts::read_build(build_id, &store).map_err(|e| {
+        let missing = !artifacts::valid_build_id(build_id) || !store.join(build_id).join("manifest.json").is_file();
+        (if missing { 404 } else { 409 }, format!("{e}."))
+    })?;
+    install_on(backend, kept, device).await.map_err(|e| (409, e))
+}
+
+async fn install_on(backend: Arc<dyn devices::Devices>, kept: artifacts::Kept, device: &str) -> Result<devices::Installed, String> {
     let known = backend.list().await?;
     let target = devices::find(&known, device).map_err(|e| format!("{e}."))?;
     let built = kept.manifest.get("platform").and_then(Value::as_str).unwrap_or("").to_lowercase();
@@ -740,9 +754,9 @@ async fn devices_route(app: &Arc<App>, parts: &axum::http::request::Parts) -> Op
     let Some(device) = query.get("device").filter(|d| !d.is_empty()) else {
         return Some(fail(400, "name the device with ?device=".into()));
     };
-    Some(match install_kept(app, segments[1], device).await {
+    Some(match install_kept_status(app, segments[1], device).await {
         Ok(done) => json_reply(200, json!({ "ok": true, "installed": done })),
-        Err(e) => fail(if e.contains("invalid build") || e.contains("No such file") { 404 } else { 409 }, e),
+        Err((status, e)) => fail(status, e),
     })
 }
 
