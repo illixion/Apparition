@@ -7,6 +7,10 @@ fn main() {
     for (source_name, name) in [("freshness.js", "freshness.js"), ("shared/projects.js", "projects.js"), ("shared/projects.css", "projects.css")] {
         let path = source.join(source_name);
         println!("cargo:rerun-if-changed={}", path.display());
+        // The copy too: ui/shared is ignored by git, so a clean checkout (git clean -x, as the
+        // release build's does) removes it while the source stays unchanged, and the app would be
+        // bundled without these files.
+        println!("cargo:rerun-if-changed={}", destination.join(name).display());
         std::fs::copy(path, destination.join(name)).expect("copy Store project UI");
     }
     tauri_build::build()
