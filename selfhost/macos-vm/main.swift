@@ -1,5 +1,6 @@
-// Development-only macOS 26 VM runner; not part of release packaging.
-// See README.md for create, install, run and recovery setup commands.
+// The anisette VM's runner: creates, installs and runs one macOS 26 VM bundle with Virtualization.framework.
+// The desktop app and `apparition vm` drive it (core/src/vm.rs); it ships in Apparition.app as `apparition-vm`.
+// See README.md for the commands and what was measured.
 import AppKit
 import Foundation
 import Network
@@ -126,7 +127,7 @@ func makeConfig(_ b: Bundle_, hardwareModel: VZMacHardwareModel, machineID: VZMa
 // MARK: install
 
 /// The restore images this flow has been verified with, end to end (install, recovery automation, trim, Apple accepting
-/// the anisette). vm.py pins the download of the first one. APPARITION_VM_ALLOW_UNVERIFIED=1 lets any other macOS 26 build
+/// the anisette). core/src/vm.rs pins the download of the first one. APPARITION_VM_ALLOW_UNVERIFIED=1 lets any other macOS 26 build
 /// through, for trying the next one.
 let verifiedBuilds = ["25G83"]  // macOS 26.6.2
 
@@ -229,6 +230,15 @@ final class Delegate: NSObject, VZVirtualMachineDelegate, NSApplicationDelegate 
         print("NETWORK ERROR: \(error)")
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+    /// Logging out, restarting or shutting the Mac down sends this app the quit event, as closing its window does:
+    /// the VM is saved first, so the next start resumes it instead of booting it cold.
+    func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let machine else { return .terminateNow }
+            Task { await machine.quit("asked to quit") { app.reply(toApplicationShouldTerminate: true) } }
+            return .terminateLater
+        }
+    }
 }
 
 struct RunnerError: LocalizedError {
@@ -257,8 +267,9 @@ struct RunnerError: LocalizedError {
     /// Called each time the VM runs again after starting, resuming or a failed suspend.
     var onRunning: ((_ resumedAfter: TimeInterval?) -> Void)?
     private var waiters: [CheckedContinuation<Void, Error>] = []
-    /// Why this configuration can't be saved, if it can't.
+    /// Why this VM can't be saved, if it can't: a configuration VZ can't save, or recoveryOS (which is never resumed).
     var unsaveable: String?
+    private var quitting = false
 
     nonisolated static func savedState(_ dir: URL) -> URL { dir.appendingPathComponent("suspended.vzvmsave") }
     var savedState: URL { Self.savedState(dir) }
@@ -360,12 +371,44 @@ struct RunnerError: LocalizedError {
         phase = .suspended
         suspendedAt = Date()
         print(String(format: "VM SUSPENDED in %.1f s (%d MB saved)", -started.timeIntervalSinceNow, size >> 20))
-        if !waiters.isEmpty { wake() }
+        if quitting {
+            let stranded = waiters
+            waiters = []
+            stranded.forEach { $0.resume(throwing: RunnerError("the runner is stopping")) }
+        } else if !waiters.isEmpty { wake() }
+    }
+
+    /// Every way of stopping the runner ends here (the quit event macOS sends at logout and shutdown, SIGTERM, the
+    /// window closed, the `quit` control operation): the VM is saved first, so the next start resumes it in a second
+    /// instead of booting it cold for a minute. A suspend or a resume under way is waited for; a VM that can't be saved
+    /// just stops. `then` ends the process (by default, exit).
+    func quit(_ why: String, then: (() -> Void)? = nil) async {
+        let finish = then ?? { exit(0) }
+        guard !quitting else { return }
+        quitting = true
+        let deadline = Date().addingTimeInterval(60)
+        while [.starting, .resuming, .suspending].contains(phase), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        if phase == .running, unsaveable == nil {
+            do { try await suspend(); print("QUIT (\(why)): saved") } catch { print("QUIT (\(why)): NOT SAVED: \(error.localizedDescription)") }
+        } else {
+            print("QUIT (\(why)): \(phase == .suspended ? "already saved" : "nothing to save (\(unsaveable ?? phase.rawValue))")")
+        }
+        finish()
+    }
+
+    /// The Mac is going to sleep: suspend now rather than freeze the guest with its clock and connections. The next
+    /// request after the wake resumes it and sets its clock.
+    func hostWillSleep() async {
+        guard phase == .running, unsaveable == nil, !quitting else { return }
+        do { try await suspend(); print("host sleeps: suspended") } catch { print("SUSPEND BEFORE SLEEP FAILED: \(error.localizedDescription)") }
     }
 
     /// Returns once the VM runs, resuming it first (or booting it, if its saved state can't be used).
     func running() async throws {
         if phase == .running { return }
+        if quitting { throw RunnerError("the runner is stopping") }
         try await withCheckedThrowingContinuation { (k: CheckedContinuation<Void, Error>) in
             waiters.append(k)
             if phase == .suspended { wake() }
@@ -828,6 +871,15 @@ final class ControlServer {
                         self.respond(connection, ["ok": reply == "ok", "reply": reply])
                     }
                     return
+                case "quit":
+                    // Saved (when it can be) and exited: the next start resumes it. Answered once saved.
+                    Task { @MainActor in
+                        await self.machine.quit("control") {
+                            self.respond(connection, ["ok": true, "phase": self.machine.phase.rawValue])
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
+                        }
+                    }
+                    return
                 case "suspend", "resume":
                     let suspend = request["operation"] == "suspend"
                     Task { @MainActor in
@@ -880,17 +932,30 @@ final class ControlServer {
             }
         }
     }
-    // Logging out or shutting down the host: suspend instead of pulling the plug, and the next start resumes.
-    signal(SIGTERM, SIG_IGN)
-    let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-    terminate.setEventHandler {
-        Task { @MainActor in
-            if machine.phase == .running && machine.unsaveable == nil { try? await machine.suspend() }
-            exit(0)
-        }
+    // A sleeping Mac freezes the guest with its clock: suspend it instead, and the next request after the wake resumes it.
+    return NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
+        Task { @MainActor in await machine.hostWillSleep() }
+    } as AnyObject
+}
+
+/// Stopping without pulling the plug: SIGTERM (launchd tearing the session down, or `kill`), SIGINT (Ctrl-C) and the
+/// start of a logout or shutdown (which the quit event follows) all save the VM before the runner exits.
+@MainActor func saveOnStop(_ machine: Machine) -> [AnyObject] {
+    var keep: [AnyObject] = []
+    for number in [SIGTERM, SIGINT] {
+        signal(number, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+        source.setEventHandler { Task { @MainActor in await machine.quit(number == SIGTERM ? "SIGTERM" : "SIGINT") } }
+        source.resume()
+        keep.append(source)
     }
-    terminate.resume()
-    return terminate
+    keep.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) { _ in
+        Task { @MainActor in await machine.quit("logout or shutdown") }
+    } as AnyObject)
+    // Without these, macOS may kill an idle-looking app at logout instead of asking it to quit.
+    ProcessInfo.processInfo.disableSuddenTermination()
+    ProcessInfo.processInfo.disableAutomaticTermination("a virtual machine runs")
+    return keep
 }
 
 /// `background`: an automated run. It is an accessory app (no Dock icon, never active) whose window stays behind
@@ -900,7 +965,7 @@ final class ControlServer {
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { fail("bundle is already in use") }
     defer { close(lock) }
     let saved = FileManager.default.fileExists(atPath: Machine.savedState(dir).path)
-    if recovery && saved { fail("this VM is suspended; resume and shut it down first (vm.py shutdown does both)") }
+    if recovery && saved { fail("this VM is suspended; resume and shut it down first (apparition vm shutdown does both)") }
     // recoveryOS runs from a RAM disk and shows a black screen forever in 2 GiB (and in 1.5), so recovery gets the same
     // 4 GiB as the install; the appliance itself only needs its small size.
     let config = try configuration(dir, network: network, minimumMemoryMB: recovery ? 4096 : 0)
@@ -912,11 +977,12 @@ final class ControlServer {
     let statusListener = VZVirtioSocketListener()
     statusListener.delegate = status
     let machine = Machine(dir: dir, configuration: config, network: network, delegate: delegate, statusListener: statusListener)
-    machine.unsaveable = unsaveable
     if let unsaveable, !recovery { print("SUSPEND UNAVAILABLE: \(unsaveable)") }
+    // recoveryOS runs from a RAM disk and is never resumed: it just stops.
+    machine.unsaveable = recovery ? "recoveryOS" : unsaveable
     let control = try ControlServer(machine: machine, dir: dir, recovery: recovery)
     control.guestStatus = status
-    let signalSource = serving ? try serve(machine, control: control, settings: VMSettings.load(Bundle_(dir: dir))) : nil
+    let observers = saveOnStop(machine) + (serving ? [try serve(machine, control: control, settings: VMSettings.load(Bundle_(dir: dir)))] : [])
 
     let app = NSApplication.shared
     app.setActivationPolicy(background ? .accessory : .regular)
@@ -933,7 +999,9 @@ final class ControlServer {
     win.title = recovery ? "Apparition — Recovery" : "Apparition macOS 26"
     win.contentView = view
     win.makeFirstResponder(view)
-    if background {
+    if background && serving {
+        // The appliance has nothing to show: its window stays off screen (`apparition vm screen` still captures it).
+    } else if background {
         win.orderBack(nil)
     } else {
         win.makeKeyAndOrderFront(nil)
@@ -947,7 +1015,7 @@ final class ControlServer {
             do { try machine.boot(recovery: false) } catch { fail("boot failed: \(error)") }
         }
     }
-    withExtendedLifetime((control, status, statusListener, machine, signalSource)) { app.run() }
+    withExtendedLifetime((control, status, statusListener, machine, observers)) { app.run() }
 }
 
 // MARK: main
