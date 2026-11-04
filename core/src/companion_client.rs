@@ -65,6 +65,13 @@ struct PairedMac {
     device_id: String,
     token: String,
     paired: u64,
+    /// What the Mac granted. Pairings saved before this was recorded were for anisette alone.
+    #[serde(default = "anisette_only")]
+    grants: Vec<String>,
+}
+
+fn anisette_only() -> Vec<String> {
+    vec!["anisette".into()]
 }
 
 /// What can be shown of the pairing: no token.
@@ -76,12 +83,22 @@ pub struct Summary {
     pub address: String,
     /// Seconds since 1970.
     pub paired: u64,
+    /// The Mac gives this computer its anisette.
+    pub anisette: bool,
+    /// This computer can build, deploy and debug through the Mac's Apparition Store.
+    pub developer: bool,
 }
 
 impl PairedMac {
     fn summary(&self) -> Summary {
         let address = if self.relay_port == RELAY_PORT { self.host.clone() } else { format!("{}:{}", self.host, self.relay_port) };
-        Summary { mac_name: self.mac_name.clone(), address, paired: self.paired }
+        Summary {
+            mac_name: self.mac_name.clone(),
+            address,
+            paired: self.paired,
+            anisette: self.grants.iter().any(|g| g == "anisette"),
+            developer: self.grants.iter().any(|g| g == "developer"),
+        }
     }
 
     fn hosts(&self) -> Vec<String> {
@@ -174,7 +191,8 @@ async fn ports(host: &str, relay_port: u16) -> Result<(Option<u16>, Option<u16>)
         .and_then(|json| serde_json::from_str(json).ok())
         .ok_or_else(|| report!("{host}:{relay_port} isn't Apparition's companion"))?;
     let port = |key: &str| info.get(key).and_then(|value| value.as_u64()).and_then(|port| u16::try_from(port).ok());
-    Ok((port("anisettePairing"), port("anisetteChannel")))
+    // `pairing` is there whatever the Mac offers; `anisettePairing` only with its anisette.
+    Ok((port("anisettePairing").or_else(|| port("pairing")), port("anisetteChannel")))
 }
 
 /// What a companion that doesn't offer anisette is.
@@ -184,9 +202,40 @@ const NOT_A_MAC: &str = "That computer's Apparition doesn't offer anisette. Pair
 /// port, 49160 by default). `show_code` gets the six-digit code ("123 456") to show while the
 /// person compares it with the Mac's and allows this computer there. Replaces an earlier pairing.
 pub async fn pair(dir: &Path, address: &str, show_code: impl FnOnce(&str)) -> Result<Summary, Report> {
+    pair_for(dir, address, Access::Anisette, show_code).await
+}
+
+/// What this computer asks the Mac for when pairing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// Its anisette, to sign in to Apple (a computer that isn't such a Mac).
+    Anisette,
+    /// Its Apparition Store: deploy builds to devices, the apps' debug servers over MCP.
+    Developer,
+    /// Both, with one approval.
+    Both,
+}
+
+impl Access {
+    fn requested(self) -> Vec<String> {
+        match self {
+            Access::Anisette => vec!["anisette".into()],
+            Access::Developer => vec!["developer".into()],
+            Access::Both => vec!["anisette".into(), "developer".into()],
+        }
+    }
+}
+
+/// [`pair`], asking for `access`. Succeeds when the Mac grants at least one part of it (a Mac
+/// on macOS 27 has no anisette to give, but can still be a build and deploy server); the
+/// summary says which.
+pub async fn pair_for(dir: &Path, address: &str, access: Access, show_code: impl FnOnce(&str)) -> Result<Summary, Report> {
     let (host, relay_port) = split_address(address)?;
     let (pairing_port, _) = ports(&host, relay_port).await.context(Unreachable)?;
-    let Some(pairing_port) = pairing_port else { bail!("{NOT_A_MAC}") };
+    let Some(pairing_port) = pairing_port else {
+        if access == Access::Anisette { bail!("{NOT_A_MAC}") }
+        bail!("That computer's Apparition isn't offering pairing. Open Apparition on the Mac: it offers its Apparition Store, and on macOS 26 or earlier its anisette, while it runs.")
+    };
     let device_id = load(dir).map(|paired| paired.device_id).unwrap_or_else(pairing::new_token);
     let mut stream = connect(&host, pairing_port).await.context(Unreachable)?;
 
@@ -196,7 +245,7 @@ pub async fn pair(dir: &Path, address: &str, show_code: impl FnOnce(&str)) -> Re
         headset_id: device_id.clone(),
         headset_name: crate::relay::machine_name(),
         commitment: committed.clone(),
-        requested: Some(vec!["anisette".into()]),
+        requested: Some(access.requested()),
         ssh_public_key: None,
     };
     stream.write_all(&commit.framed()).await?;
@@ -222,8 +271,9 @@ pub async fn pair(dir: &Path, address: &str, show_code: impl FnOnce(&str)) -> Re
     if grant.mac_id != mac_id {
         bail!("The Mac's answer names another computer");
     }
-    if !grant.grants.as_ref().is_some_and(|grants| grants.iter().any(|grant| grant == "anisette")) {
-        bail!("The Mac paired this computer without anisette access");
+    let grants = grant.grants.clone().unwrap_or_else(anisette_only);
+    if !access.requested().iter().any(|asked| grants.contains(asked)) {
+        bail!("The Mac paired this computer without the access it asked for");
     }
     let paired = PairedMac {
         mac_id,
@@ -234,6 +284,7 @@ pub async fn pair(dir: &Path, address: &str, show_code: impl FnOnce(&str)) -> Re
         device_id,
         token: grant.token,
         paired: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        grants,
     };
     save(dir, &paired)?;
     Ok(paired.summary())
@@ -408,6 +459,178 @@ pub async fn adapter_url(dir: &Path) -> Result<String, Report> {
     Ok(format!("http://{}", adapter.as_ref().expect("started").address))
 }
 
+/// A request body for [`developer`].
+pub enum Upload<'a> {
+    None,
+    Bytes(&'a [u8]),
+    /// Streamed from disk: a whole IPA.
+    File(&'a Path),
+}
+
+/// The Store's answer to a [`developer`] request.
+#[derive(Debug)]
+pub struct Reply {
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+/// Why a developer request didn't reach the Mac's Store.
+#[derive(Debug)]
+pub struct NoDeveloperAccess;
+
+impl std::fmt::Display for NoDeveloperAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Couldn't reach the paired Mac's Apparition Store")
+    }
+}
+
+impl std::error::Error for NoDeveloperAccess {}
+
+/// The channel port of the Mac, asked of its relay once per pairing.
+async fn channel_port(paired: &PairedMac) -> u16 {
+    static KNOWN: std::sync::Mutex<Option<(String, u16)>> = std::sync::Mutex::new(None);
+    if let Some((id, port)) = KNOWN.lock().unwrap().clone() {
+        if id == paired.mac_id {
+            return port;
+        }
+    }
+    let mut found = None;
+    for host in paired.hosts() {
+        if let Ok((_, Some(port))) = ports(&host, paired.relay_port).await {
+            found = Some(port);
+            break;
+        }
+    }
+    let port = found.unwrap_or(paired.relay_port.wrapping_add(2));
+    if found.is_some() {
+        *KNOWN.lock().unwrap() = Some((paired.mac_id.clone(), port));
+    }
+    port
+}
+
+/// One request to the paired Mac's Apparition Store, over the encrypted channel: `path` as the
+/// Store names it (`/mcp`, `/api/service/v1/deploy?...`). The Mac's Store answers as it does
+/// its own app; this computer never holds a password or the Store's token.
+pub async fn developer(dir: &Path, method: &str, path: &str, content_type: Option<&str>, body: Upload<'_>) -> Result<Reply, Report> {
+    let Some(paired) = load(dir) else {
+        bail!("This computer isn't paired with a Mac. Pair it with `apparition mac pair <address>`, with Apparition open on the Mac.");
+    };
+    if !paired.grants.iter().any(|g| g == "developer") {
+        bail!("{} paired this computer for anisette only. Pair again with `apparition mac pair {}` and allow developer access on the Mac.", paired.mac_name, paired.summary().address);
+    }
+    let port = channel_port(&paired).await;
+    let connector = connector(&paired)?;
+    let mut tls = open_channel(&paired, port, &connector).await.map_err(|refusal| match refusal {
+        Refusal::Unreachable(why) => report!("Can't reach {} ({why}). Check that it's on, awake and running Apparition, on this network or your tailnet.", paired.mac_name),
+        Refusal::NotPaired => report!("{} no longer accepts this computer. Pair with it again.", paired.mac_name),
+    }).map_err(|e| e.context(NoDeveloperAccess).into_dynamic())?;
+    let path = format!("{}{path}", crate::companion_channel::DEVELOPER_PREFIX);
+    exchange(&mut tls, method, &path, "apparition-companion", None, content_type, body).await
+        .map_err(|e| e.context(format!("{} didn't answer", paired.mac_name)).into_dynamic())
+}
+
+/// One request to this Mac's own Store on loopback (`apparition mcp` on the Mac the app runs on),
+/// with the token the app left for this user.
+pub async fn local_developer(address: SocketAddr, token: &str, method: &str, path: &str, content_type: Option<&str>, body: Upload<'_>) -> Result<Reply, Report> {
+    if !address.ip().is_loopback() {
+        bail!("the Store's address {address} isn't on loopback");
+    }
+    let mut stream = connect(&address.ip().to_string(), address.port()).await
+        .map_err(|e| e.context("Apparition isn't running on this Mac (open it, and its Store starts)").into_dynamic())?;
+    exchange(&mut stream, method, path, &address.to_string(), Some(token), content_type, body).await
+}
+
+/// Writes one HTTP/1.1 request (`Connection: close`) and reads the whole reply.
+async fn exchange<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+    stream: &mut S, method: &str, path: &str, host: &str, token: Option<&str>, content_type: Option<&str>, body: Upload<'_>,
+) -> Result<Reply, Report> {
+    if !path.starts_with('/') || path.contains(['\r', '\n', ' ']) || method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
+        bail!("invalid request {method} {path}");
+    }
+    let length = match &body {
+        Upload::None => 0,
+        Upload::Bytes(bytes) => bytes.len() as u64,
+        Upload::File(file) => tokio::fs::metadata(file).await.context(format!("Can't read {}", file.display()))?.len(),
+    };
+    let mut head = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {length}\r\nConnection: close\r\n");
+    if let Some(token) = token {
+        head.push_str(&format!("Authorization: Bearer {token}\r\n"));
+    }
+    if let Some(content_type) = content_type {
+        head.push_str(&format!("Content-Type: {content_type}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).await?;
+    match body {
+        Upload::None => {}
+        Upload::Bytes(bytes) => stream.write_all(bytes).await?,
+        Upload::File(file) => {
+            let mut file = tokio::fs::File::open(file).await?;
+            tokio::io::copy(&mut file, stream).await?;
+        }
+    }
+    stream.flush().await?;
+    let mut raw = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut raw).await {
+        // A peer that closes without a TLS close-notify after a full reply: that's the end.
+        if raw.is_empty() {
+            return Err(error.into());
+        }
+    }
+    if raw.is_empty() {
+        bail!("the connection closed without an answer");
+    }
+    parse_reply(&raw)
+}
+
+/// An HTTP/1.1 response read to its end: status, content type, and the body (de-chunked).
+fn parse_reply(raw: &[u8]) -> Result<Reply, Report> {
+    let end = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or_else(|| report!("the Mac's answer was cut off"))?;
+    let head = std::str::from_utf8(&raw[..end]).context("the Mac's answer isn't HTTP")?;
+    let mut lines = head.split("\r\n");
+    let status: u16 = lines.next().and_then(|l| l.split(' ').nth(1)).and_then(|s| s.parse().ok()).ok_or_else(|| report!("the Mac's answer isn't HTTP"))?;
+    let mut content_type = String::new();
+    let mut chunked = false;
+    let mut content_length: Option<usize> = None;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else { continue };
+        let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
+        match name.as_str() {
+            "content-type" => content_type = value.to_string(),
+            "transfer-encoding" => chunked = value.to_ascii_lowercase().contains("chunked"),
+            "content-length" => content_length = value.parse().ok(),
+            _ => {}
+        }
+    }
+    let mut body = raw[end + 4..].to_vec();
+    if chunked {
+        let mut out = Vec::new();
+        let mut rest = &body[..];
+        loop {
+            let line_end = rest.windows(2).position(|w| w == b"\r\n").ok_or_else(|| report!("the Mac's answer was cut off"))?;
+            let size = std::str::from_utf8(&rest[..line_end]).ok().and_then(|l| usize::from_str_radix(l.split(';').next().unwrap_or("").trim(), 16).ok())
+                .ok_or_else(|| report!("the Mac's answer was garbled"))?;
+            rest = &rest[line_end + 2..];
+            if size == 0 {
+                break;
+            }
+            if rest.len() < size + 2 {
+                bail!("the Mac's answer was cut off");
+            }
+            out.extend_from_slice(&rest[..size]);
+            rest = &rest[size + 2..];
+        }
+        body = out;
+    } else if let Some(length) = content_length {
+        if body.len() < length {
+            bail!("the Mac's answer was cut off");
+        }
+        body.truncate(length);
+    }
+    Ok(Reply { status, content_type, body })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,6 +733,96 @@ mod tests {
         assert_eq!(crate::failure_kind(&error), Some("pairedMac"));
         assert!(forget(here.path()));
         assert!(status(here.path()).is_none());
+        channel.abort();
+        relay_task.abort();
+    }
+}
+
+#[cfg(test)]
+mod developer_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn replies_are_read_plain_sized_or_chunked() {
+        let r = parse_reply(b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}extra").unwrap();
+        assert_eq!((r.status, r.content_type.as_str(), r.body.as_slice()), (201, "application/json", &b"{}"[..]));
+        let r = parse_reply(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2;x=y\r\nde\r\n0\r\n\r\n").unwrap();
+        assert_eq!(r.body, b"abcde");
+        assert!(parse_reply(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nshort").is_err());
+        assert!(parse_reply(b"garbage").is_err());
+    }
+
+    /// A Mac on macOS 27 (no anisette) running its Store: a computer pairs for developer access,
+    /// sends an upload, and the Store gets it with the app's token and the computer's name.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pairs_for_developer_access_and_reaches_the_store() {
+        let host = tempfile::tempdir().unwrap();
+        let here = tempfile::tempdir().unwrap();
+        let devices = Arc::new(crate::companion::PairedDevices::open(host.path()));
+        let store = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target: crate::companion_channel::DeveloperTarget = Arc::new(std::sync::Mutex::new(Some(crate::companion_channel::DeveloperRoute {
+            address: store.local_addr().unwrap(), token: "app-token".into(),
+        })));
+        let (channel_port, channel) = crate::companion_channel::start(
+            "127.0.0.1:0".parse().unwrap(), "127.0.0.1:9".parse().unwrap(), devices.clone(),
+            Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), target,
+        ).await.unwrap();
+        let pairing_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let pairing_port = pairing_listener.local_addr().unwrap().port();
+        let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_port = relay.local_addr().unwrap().port();
+        // No anisette: only the new `pairing` key says where to pair.
+        let info = format!("INFO {{\"version\":1,\"pairing\":{pairing_port},\"anisetteChannel\":{channel_port},\"developer\":true}}\n");
+        let relay_task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = relay.accept().await.unwrap();
+                let mut line = [0u8; 18];
+                stream.read_exact(&mut line).await.unwrap();
+                stream.write_all(info.as_bytes()).await.unwrap();
+            }
+        });
+        let host_devices = devices.clone();
+        let pairing_task = tokio::spawn(async move {
+            let (mut stream, _) = pairing_listener.accept().await.unwrap();
+            crate::pairing::serve(
+                Namespace::APPARITION, &mut stream, "test".into(), &host_devices.host_id(), "Build Mac",
+                vec!["127.0.0.1".into()], vec!["developer".into()],
+                |request| async move {
+                    assert_eq!(request.grants, ["developer"], "anisette was asked for but isn't offered");
+                    Some(host_devices.add(&request))
+                },
+            ).await.unwrap()
+        });
+        let summary = pair_for(here.path(), &format!("127.0.0.1:{relay_port}"), Access::Both, |_| {}).await.unwrap();
+        assert!(pairing_task.await.unwrap());
+        assert!(summary.developer && !summary.anisette, "{summary:?}");
+        assert!(adapter_url(here.path()).await.is_err(), "no anisette from this Mac");
+
+        let upload = here.path().join("App.ipa");
+        std::fs::write(&upload, b"PK fake ipa").unwrap();
+        let store_task = tokio::spawn(async move {
+            let (mut stream, _) = store.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"PK fake ipa") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"a\"\r\n3\r\n:1}\r\n0\r\n\r\n").await.unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let reply = developer(here.path(), "POST", "/api/service/v1/deploy?file=App.ipa", Some("application/octet-stream"), Upload::File(&upload)).await.unwrap();
+        assert_eq!((reply.status, reply.body.as_slice()), (201, &b"{\"a\":1}"[..]));
+        let request = store_task.await.unwrap();
+        assert!(request.starts_with("POST /api/service/v1/deploy?file=App.ipa HTTP/1.1\r\n"), "{request}");
+        assert!(request.contains("Authorization: Bearer app-token\r\n") && request.contains("Content-Length: 11\r\n"), "{request}");
+        assert!(request.contains(&format!("X-Apparition-Computer: {}\r\n", crate::relay::machine_name())), "{request}");
+
+        // An anisette-only pairing is told to pair again, without a connection.
+        let mut saved = load(here.path()).unwrap();
+        saved.grants = vec!["anisette".into()];
+        save(here.path(), &saved).unwrap();
+        let error = developer(here.path(), "GET", "/mcp", None, Upload::None).await.unwrap_err();
+        assert!(error.to_string().contains("Pair again"), "{error}");
         channel.abort();
         relay_task.abort();
     }

@@ -43,7 +43,7 @@ pub mod anisette;
 #[cfg(feature = "desktop")]
 pub mod companion;
 #[cfg(feature = "desktop")]
-mod companion_channel;
+pub mod companion_channel;
 #[cfg(feature = "desktop")]
 pub mod companion_client;
 #[cfg(feature = "desktop")]
