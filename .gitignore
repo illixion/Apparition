@@ -4,6 +4,8 @@ build/
 DerivedData/
 xcuserdata/
 core/target/
+# Building the vendored crate on its own (cargo test inside it) puts a target here.
+core/vendor/isideload/target/
 installer/target/
 /target/
 
