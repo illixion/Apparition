@@ -158,6 +158,11 @@ impl CompanionState {
                             let _ = app.emit("companion-pairing", json!({ "id": id, "request": request }));
                         }));
                     }
+                    // The Store may already be up: paired computers can reach it at once.
+                    #[cfg(target_os = "macos")]
+                    if let Some(route) = crate::developer::route() {
+                        companion.set_developer(Some(route));
+                    }
                     *running = Some(Arc::new(companion));
                     *self.relay_error.lock().unwrap() = None;
                 }
@@ -178,6 +183,14 @@ impl CompanionState {
             }
         };
         *self.anisette_error.lock().unwrap() = result.err();
+    }
+
+    /// The in-process Store is up: offer it to computers paired for developer access.
+    #[cfg(target_os = "macos")]
+    pub async fn offer_developer(&self, route: apparition_core::companion_channel::DeveloperRoute) {
+        if let Some(companion) = self.running.lock().await.as_ref() {
+            companion.set_developer(Some(route));
+        }
     }
 
     async fn status(&self) -> Value {

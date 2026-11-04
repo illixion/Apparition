@@ -19,9 +19,15 @@ apparition-core = { path = "../core", features = ["desktop"] }
 rootcause = "0.12.0"
 rpassword = "7"
 serde_json = "1"
-tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "signal", "process"] }
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "signal", "process", "io-std", "io-util", "fs"] }
 
 # This Mac's own anisette, served in this process (core/src/anisette): macOS only. Elsewhere the
 # anisette comes from a paired Mac (core/src/companion_client.rs) or a server the person runs.
 [target.'cfg(target_os = "macos")'.dependencies]
 apparition-core = { path = "../core", features = ["anisette"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The Store, for the end-to-end test of `mcp` and `deploy` through a paired companion.
+apparition-service = { path = "../service" }
+tempfile = "3"
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }

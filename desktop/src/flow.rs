@@ -427,12 +427,16 @@ pub fn paired_mac(state: Shared<'_>) -> Option<api::paired_mac::Summary> {
     api::paired_mac::status(&api::anisette_dir(&state.store.apple_id_dir()))
 }
 
-/// Pairs this computer with the Mac at `address` for its anisette. The six-digit code to compare
+/// Pairs this computer with the Mac at `address` for its anisette, and with `developer` for its
+/// Store too. The six-digit code to compare
 /// comes as a `mac-pairing-code` event while the person allows this computer on the Mac.
 #[tauri::command]
-pub async fn pair_mac(app: AppHandle, state: Shared<'_>, address: String) -> Result<api::paired_mac::Summary, Failure> {
+pub async fn pair_mac(app: AppHandle, state: Shared<'_>, address: String, developer: Option<bool>) -> Result<api::paired_mac::Summary, Failure> {
     let dir = api::anisette_dir(&state.store.apple_id_dir());
-    let paired = api::paired_mac::pair(&dir, &address, |code| {
+    // Developer access too, when asked: deploys and the apps' debug servers through the Mac's
+    // Store, for `apparition mcp` and `apparition deploy` here. One approval on the Mac.
+    let access = if developer.unwrap_or(false) { api::paired_mac::Access::Both } else { api::paired_mac::Access::Anisette };
+    let paired = api::paired_mac::pair_for(&dir, &address, access, |code| {
         let _ = app.emit("mac-pairing-code", code);
     })
     .await?;

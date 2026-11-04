@@ -49,7 +49,7 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn support_dir() -> PathBuf {
+pub(crate) fn support_dir() -> PathBuf {
     home().join("Library/Application Support/Apparition/Store")
 }
 
@@ -101,7 +101,7 @@ fn child_path() -> String {
 }
 
 /// 32 random bytes as 43 characters of unpadded base64url, the token shape Apparition Store accepts.
-fn token() -> Result<String, String> {
+pub(crate) fn token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))
@@ -118,7 +118,7 @@ fn token() -> Result<String, String> {
 }
 
 /// The service's config, made on first start: an empty project list on the usual port.
-fn ensure_config() -> Result<(PathBuf, u16), String> {
+pub(crate) fn ensure_config() -> Result<(PathBuf, u16), String> {
     let dir = support_dir();
     std::fs::create_dir_all(dir.join("data")).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
     let path = dir.join("config.json");

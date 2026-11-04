@@ -304,6 +304,7 @@
           <label class="field">Mac's address<input name="macAddress" autocomplete="off" spellcheck="false" placeholder="name.local, 192.168.1.20 or a Tailscale address"></label>
           <button type="button" class="button quiet" data-role="pair-mac">Pair</button>
         </div>
+        <label class="check"><input type="checkbox" name="macDeveloper" checked><span>Also deploy and debug apps through this Mac (<code>apparition mcp</code> for your agents, <code>apparition deploy</code> for builds)</span></label>
         <p class="pairing-code" data-role="mac-pairing-code" hidden></p>
         <p class="status" data-role="mac-pairing-status" hidden></p>
         <div class="row" data-role="paired-mac-actions" hidden>

@@ -28,6 +28,7 @@ use apparition_core::{
 use rootcause::prelude::*;
 mod xcode;
 mod inject;
+mod developer;
 
 const USAGE: &str = "\
 Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
@@ -155,6 +156,19 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       anisette offered: your own Mac on macOS 26 or earlier, or a macOS VM on your Mac
       (selfhost/macos-vm/README.md). Both show a six-digit code; allow this computer on the Mac if
       they match. Sign-ins here then use that Mac's anisette, over the encrypted channel.
+  apparition mac pair <address>[:<port>] [--developer-only | --anisette-only]
+      Pair this computer with the Mac you build and deploy on: one approval there gives it
+      developer access to that Mac's Apparition Store and, from a Mac on macOS 26 or earlier,
+      its anisette. Requests go over the companion's encrypted channel, at home over the LAN
+      and away over your tailnet. `apparition mac status | forget`.
+  apparition deploy <app.ipa> [--device <name>] [--local]
+      Send an app built here (xtool, Xcode, any build) to the paired Mac's Store; the device's
+      Apparition installs it with its own signing once someone opens it there. --local uses
+      the Store of the Apparition app running on this Mac.
+  apparition mcp [--local]
+      An MCP server on stdin/stdout for agents here: the apps' debug servers the Mac can see
+      (apps, help, call, trace, panel), plus deploy for builds made on this computer. Add it
+      to an agent as a command: `claude mcp add apps -- apparition mcp`.
   apparition anisette status | check [--anisette <url>] | forget
       Which anisette sign-ins here use; ask it for its client info and, from a Mac, its
       headers, without an Apple ID (only yes or no is shown); forget the pairing with a Mac
@@ -226,6 +240,9 @@ async fn main() -> ExitCode {
         Some("app-ids") => account_command(&args[1..], Slot::AppIds).await,
         Some("relay") => relay(&args[1..]).await,
         Some("anisette") => anisette(&args[1..]).await,
+        Some("mac") => developer::mac(&args[1..]).await,
+        Some("deploy") => developer::deploy(&args[1..]).await,
+        Some("mcp") => developer::mcp(&args[1..]).await,
         Some("browse") => {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
         }

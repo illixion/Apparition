@@ -631,7 +631,7 @@ function signing() {
       setStatus(macPairingStatus, "On the Mac, allow this computer if it shows the same code.");
     });
     try {
-      state.pairedMac = await invoke("pair_mac", { address });
+      state.pairedMac = await invoke("pair_mac", { address, developer: appleForm.macDeveloper?.checked ?? false });
       setStatus(macPairingStatus, "Paired. Sign in above.", "good");
       drawPairedMac();
       chooseAnisette();
@@ -1246,6 +1246,16 @@ const promptError = /** @type {HTMLElement} */ (document.getElementById("prompt-
 const promptSms = /** @type {HTMLElement} */ (document.getElementById("prompt-sms"));
 /** @type {any} */ let promptKind = null;
 let installPlanReply = null;
+/** What a pairing would grant, in words. Developer access is the one to think about: it lets
+ * that computer install builds on your devices and read and drive your apps' debug servers. */
+function pairingAsks(/** @type {string[] | undefined} */ grants) {
+  const list = grants ?? ["anisette"];
+  const parts = [];
+  if (list.includes("anisette")) parts.push("to use this Mac's anisette");
+  if (list.includes("developer")) parts.push("to build, deploy and debug apps through this Mac (it can send builds to your devices and drive your apps' debug servers)");
+  return parts.join(", and ") || "to pair";
+}
+
 const companionPairingDialog = /** @type {HTMLDialogElement} */ (document.getElementById("companion-pairing-prompt"));
 /** @type {number|null} */ let companionPairingId = null;
 
@@ -1254,7 +1264,7 @@ function openCompanionPairing(/** @type {any} */ payload) {
   if (!Number.isInteger(payload?.id) || !request) return;
   companionPairingId = payload.id;
   document.getElementById("companion-pairing-text").textContent =
-    `${request.deviceName || "A device"} (${request.peer || "unknown address"}) asks to use this Mac's anisette.`;
+    `${request.deviceName || "A device"} (${request.peer || "unknown address"}) asks ${pairingAsks(request.grants)}.`;
   document.getElementById("companion-pairing-code").textContent = request.code || "";
   const error = document.getElementById("companion-pairing-error");
   error.hidden = true;
@@ -1717,7 +1727,8 @@ function drawCompanion(/** @type {any} */ status) {
   const paired = $(companionPanel, "paired-devices");
   const pairedRows = pairing.devices.map((/** @type {any} */ device) => {
     const tr = document.createElement("tr");
-    for (const text of [device.name, new Date(device.paired * 1000).toLocaleDateString()]) {
+    const name = (device.grants ?? []).includes("developer") ? `${device.name} · developer access` : device.name;
+    for (const text of [name, new Date(device.paired * 1000).toLocaleDateString()]) {
       const td = document.createElement("td");
       td.textContent = text;
       tr.append(td);
