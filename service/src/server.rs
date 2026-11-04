@@ -501,8 +501,10 @@ impl App {
             (Some(hash), _) => self.auth.check(&req.session_token(), hash),
             // No password: open, as the Node store is, but only to pages that name this Mac's
             // loopback. A web page elsewhere can point its own name at 127.0.0.1 (DNS
-            // rebinding); its requests then carry that name, not localhost.
-            (None, hosted) => !hosted && req.loopback_host(),
+            // rebinding); its requests then carry that name, not localhost. Nor to another
+            // site's page asking for localhost directly: a download link builds on first fetch,
+            // and an <img> there would start that build.
+            (None, hosted) => !hosted && req.loopback_host() && req.header("sec-fetch-site") != "cross-site",
         }
     }
 
@@ -659,7 +661,15 @@ impl App {
                 // The Node store's reply: what follows `offset` (in characters), for a page that
                 // polls the log as it grows. Logs of either store's builds are in the same folder.
                 let id: u64 = id.parse().ok()?;
-                let text = fs::read_to_string(self.queue.log_path(id)).unwrap_or_default();
+                let bytes = fs::read(self.queue.log_path(id)).unwrap_or_default();
+                // A build may be mid-way through writing a character: leave its first bytes for the
+                // next poll, rather than failing the read and sending the client back to the start.
+                let whole = match std::str::from_utf8(&bytes) {
+                    Ok(_) => bytes.len(),
+                    Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                    Err(_) => bytes.len(),
+                };
+                let text = String::from_utf8_lossy(&bytes[..whole]);
                 let offset: usize = req.query.get("offset").and_then(|o| o.parse().ok()).unwrap_or(0);
                 let total = text.chars().count();
                 let chunk: String = text.chars().skip(offset).collect();

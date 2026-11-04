@@ -76,6 +76,13 @@ async fn open_store_without_password_serves_pages_and_reports_auth() {
         let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("host", host)], None).await;
         assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["signedIn"], false, "{host}");
     }
+    // Nor to another site's page loading from localhost (an <img> at a download link builds).
+    let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("host", "localhost"), ("sec-fetch-site", "cross-site")], None).await;
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["signedIn"], false);
+    let (status, _, _) = send(&f.app, "GET", "/mac/app/latest.app.zip", &[("host", "localhost"), ("sec-fetch-site", "cross-site")], None).await;
+    assert_ne!(status, StatusCode::OK);
+    let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("host", "localhost"), ("sec-fetch-site", "same-origin")], None).await;
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["signedIn"], true);
 }
 
 #[tokio::test]

@@ -30,6 +30,7 @@ mod inject;
 mod developer;
 mod builder;
 mod crash_reports;
+mod scratch;
 mod store;
 mod vm;
 
@@ -252,6 +253,8 @@ async fn main() -> ExitCode {
     if let Some(path) = std::env::var_os("APPARITION_LOG").and_then(|path| path.into_string().ok()).and_then(|path| std::ffi::CString::new(path).ok()) {
         unsafe { apparition_core::apparition_init_logging(path.as_ptr()) };
     }
+    // What a cancelled or killed run left in the temp folder (a .p12's key among it).
+    scratch::sweep();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("devices") => devices().await,
@@ -1231,7 +1234,7 @@ async fn sign_unpacked(options: &Options) -> Result<(), Error> {
     let strip = !options.keep_extensions;
     let signed = if let Some(p12) = &options.p12 {
         // The key is decrypted into a scratch folder, removed again once signed.
-        let scratch = std::env::temp_dir().join(format!("apparition-sign-{}", std::process::id()));
+        let scratch = scratch::folder("sign");
         std::fs::create_dir_all(&scratch)?;
         let result = (|| {
             let password = ask_secret(&format!("Password for {}: ", p12.display()));
@@ -1347,7 +1350,7 @@ async fn install(args: &[String]) -> Result<(), Error> {
     let mut options = parse_install(args)?;
     let device = find_device(options.device.as_deref())?;
     // Signed into a scratch folder, removed afterwards with what it holds (a .p12's key).
-    let scratch = std::env::temp_dir().join(format!("apparition-installer-{}", std::process::id()));
+    let scratch = scratch::folder("installer");
     std::fs::create_dir_all(&scratch)?;
     let result = download_and_install(&mut options, &device, &scratch).await;
     let _ = std::fs::remove_dir_all(&scratch);

@@ -294,7 +294,7 @@ struct WorkDir(PathBuf);
 
 impl WorkDir {
     fn new() -> Result<WorkDir, String> {
-        let dir = std::env::temp_dir().join(format!("apparition-build-{}", random_hex(8)));
+        let dir = crate::scratch::tagged_folder("build", &random_hex(8));
         #[allow(unused_mut)]
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
