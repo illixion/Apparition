@@ -35,7 +35,10 @@
 # copy shifts under it.
 #
 # Signing a release happens on the site: publish.py hashes these files into SHA256SUMS and
-# signs that with a release key. Nothing here holds a key.
+# signs that with a release key. Nothing here holds a key. Before it signs, scripts/audit-release.sh
+# rebuilds the macOS files from the attested commit and requires the same contents, so those are
+# built reproducibly: from one fixed path ($FIXED below), with the toolchain in
+# scripts/release-toolchain, and zipped with fixed dates and order.
 #
 # Needs: Xcode with the visionOS, iOS and tvOS SDKs, xcodegen, rustup targets
 # aarch64-apple-visionos, aarch64-apple-ios, aarch64-apple-tvos,
@@ -48,13 +51,17 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:?usage: package-release.sh <version> [--linux] [--only-app] [--parts LIST] [--allow-dirty]}"
+# The physical path (pwd -P): the macOS files are built only from FIXED, below, and CI reaches it
+# through a symlink.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+VERSION="${1:?usage: package-release.sh <version> [--linux] [--only-app] [--parts LIST] [--allow-dirty] [--into DIR] [--clean]}"
 shift
 LINUX=0
 ONLY_APP=0
 PARTS=""
 ALLOW_DIRTY=0
+INTO=""
+CLEAN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --linux) LINUX=1 ;;
@@ -62,10 +69,22 @@ while [[ $# -gt 0 ]]; do
     --parts) PARTS="${2:?--parts needs a list: app,macos,windows,linux}"; shift ;;
     # For trying the packaging itself; such a build isn't one to publish.
     --allow-dirty) ALLOW_DIRTY=1 ;;
+    # Put the files into DIR, leaving what is already there (the macOS build from FIXED, below).
+    --into) INTO="${2:?--into needs a folder}"; shift ;;
+    # Build the macOS files from nothing: no compiled dependencies kept from an earlier build
+    # (scripts/audit-release.sh).
+    --clean) CLEAN=1 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# The macOS release files are reproducible: the same commit gives the same bytes on any Mac with
+# the toolchain in scripts/release-toolchain, which is how scripts/audit-release.sh checks what CI
+# built before a release is signed. Cargo puts the source folder into every crate's symbol names,
+# so they are always built from this one folder, here and on CI; a checkout elsewhere copies its
+# commit there first (see macos_from_fixed).
+FIXED=/private/tmp/apparition-build/Apparition
 
 # What to build: the IPAs ("app"), the macOS and Windows installers, and with --linux both Linux
 # ones, unless --parts names them.
@@ -105,7 +124,13 @@ BUILD="$(git rev-list --count HEAD)"
 COMMIT="$(git rev-parse --short=8 HEAD)"
 OUT="$ROOT/build/release/$VERSION"
 WORK="$ROOT/build/release/work"
-rm -rf "$OUT" "$WORK"
+if [[ -n "$INTO" ]]; then
+  mkdir -p "$INTO"
+  OUT="$(cd "$INTO" && pwd -P)"
+  rm -rf "$WORK"
+else
+  rm -rf "$OUT" "$WORK"
+fi
 mkdir -p "$OUT" "$WORK"
 echo "==> Apparition $VERSION, build $BUILD ($COMMIT)"
 
@@ -290,11 +315,83 @@ fi
 # is what lets them share one build of the core and its dependencies.
 cd "$ROOT"
 both=(-p apparition-installer -p apparition-desktop --features apparition-desktop/custom-protocol)
-if has macos; then
 
-  echo "==> installer and desktop app for macOS (arm64 + x86_64)"
+# A folder's entries zipped the same way every time: in name order, every file and folder dated to
+# the commit, with no owner or extended attributes (-X), so only names, contents and modes vary.
+STAMP="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)"
+zip_tree() { # <folder> <zip> <entry>...  (each entry taken whole, relative to the folder)
+  local folder="$1" zip="$2"
+  shift 2
+  (cd "$folder" && find "$@" -exec env TZ=UTC touch -h -t "$STAMP" {} + \
+    && find "$@" | LC_ALL=C sort | TZ=UTC zip -qX -@ "$zip")
+}
+
+# This commit's macOS files, built in FIXED and put into OUT. One build at a time uses FIXED; its
+# target/ stays between builds (unless --clean), so a later release rebuilds only what changed.
+macos_from_fixed() {
+  local base lock status=0
+  base="$(dirname "$FIXED")"
+  lock="$base/lock"
+  mkdir -p "$base"
+  if ! mkdir "$lock" 2>/dev/null; then
+    echo "error: another build is using $FIXED (if none is running, remove $lock)" >&2
+    return 1
+  fi
+  [[ -z "$(git status --porcelain)" ]] || echo "warning: the macOS files are built from the commit, without your uncommitted changes" >&2
+  echo "==> macOS files from $FIXED (the same path on every machine, so the same bytes)"
+  if (
+    set -e
+    mkdir -p "$FIXED"
+    [[ -d "$FIXED/.git" ]] || git -C "$FIXED" init -q
+    git -C "$FIXED" fetch -q --no-tags "$ROOT" HEAD
+    git -C "$FIXED" checkout -q --force --detach FETCH_HEAD
+    if [[ "$CLEAN" == 1 ]]; then git -C "$FIXED" clean -q -ffdx; else git -C "$FIXED" clean -q -ffdx -e /target; fi
+    [[ "$(git -C "$FIXED" rev-parse HEAD)" == "$(git rev-parse HEAD)" ]]
+    "$FIXED/scripts/package-release.sh" "$VERSION" --parts macos --into "$OUT"
+  ); then :; else status=$?; fi
+  rmdir "$lock"
+  return "$status"
+}
+
+if has macos && [[ "$ROOT" != "$FIXED" ]]; then
+  macos_from_fixed
+elif has macos; then
+  [[ "$CLEAN" == 1 ]] && rm -rf "$FIXED/target"
+  # Files the build writes get the same modes on every machine.
+  umask 022
+  # The pinned toolchain (scripts/release-toolchain), checked rather than trusted: another Rust,
+  # Xcode or Tauri CLI builds other bytes, and the audit of this release would fail.
+  # shellcheck source=release-toolchain
+  . "$ROOT/scripts/release-toolchain"
+  export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
+  rustc_version="$(rustc --version)"
+  [[ "$rustc_version" == "rustc $RUST_TOOLCHAIN "* ]] \
+    || { echo "error: rustc is $rustc_version, not $RUST_TOOLCHAIN (rustup toolchain install $RUST_TOOLCHAIN)" >&2; exit 1; }
+  xcode_build="$(xcodebuild -version | sed -n 's/^Build version //p')"
+  [[ "$xcode_build" == "$XCODE_BUILD" ]] || {
+    echo "error: this is Xcode build $xcode_build; the macOS release files are built with $XCODE_BUILD (scripts/release-toolchain)." >&2
+    echo "       Install that Xcode beside this one and select it: DEVELOPER_DIR=/Applications/<it>.app/Contents/Developer" >&2
+    exit 1
+  }
+  tauri_cli="$(command -v cargo-tauri || true)"
+  tauri_want="tauri-cli $(sed -n 's/^version=//p' "$ROOT/scripts/install-tauri-cli.sh")"
+  [[ -n "$tauri_cli" && "$("$tauri_cli" tauri --version)" == "$tauri_want" ]] \
+    || { echo "error: the Tauri CLI on PATH isn't $tauri_want (scripts/install-tauri-cli.sh)" >&2; exit 1; }
+  # Paths that differ between machines, out of the binaries; everything else is under FIXED. This
+  # replaces any RUSTFLAGS or CFLAGS from outside, which would change the bytes too.
+  cargo_home="$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd -P)"
+  rustup_home="$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd -P)"
+  export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
+  export CFLAGS="-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$rustup_home=/rustup"
+  export MACOSX_DEPLOYMENT_TARGET=11.0
+  # Tools that stamp a build date take this one instead (the vendored OpenSSL put "built on: <now>"
+  # into the binaries). A constant, not the commit's date: CI restores compiled dependencies from a
+  # cache an earlier commit built, and they must match what a build from nothing gives.
+  export SOURCE_DATE_EPOCH=1767225600 # 2026-01-01
+
+  echo "==> installer and desktop app for macOS (arm64 + x86_64; Rust $RUST_TOOLCHAIN, Xcode $XCODE_BUILD)"
   for target in aarch64-apple-darwin x86_64-apple-darwin; do
-    MACOSX_DEPLOYMENT_TARGET=11.0 cargo build -q --release --target "$target" "${both[@]}"
+    cargo build -q --release --locked --target "$target" "${both[@]}"
   done
   mkdir -p "$WORK/macos"
   xcrun lipo -create -output "$WORK/macos/$bin" \
@@ -312,7 +409,8 @@ if has macos; then
   xcrun lipo -create -output "target/universal-apple-darwin/release/$app_name" \
     target/aarch64-apple-darwin/release/apparition-app target/x86_64-apple-darwin/release/apparition-app
   rm -rf target/universal-apple-darwin/release/bundle
-  (cd desktop && MACOSX_DEPLOYMENT_TARGET=11.0 cargo tauri bundle --target universal-apple-darwin --bundles app)
+  # The CLI checked above, called the way cargo calls it.
+  (cd desktop && "$tauri_cli" tauri bundle --target universal-apple-darwin --bundles app)
   ditto "target/universal-apple-darwin/release/bundle/macos/$app_name.app" "$WORK/macos/$app_name.app"
   # The helper keeps its own signature; the app is sealed again around it (not --deep, which
   # would sign the helper over without its entitlements).
@@ -338,14 +436,14 @@ if has macos; then
   cp "target/aarch64-apple-darwin/release/$helper" "$WORK/vm-guest/$helper"
   codesign -f -s - --entitlements "$ROOT/installer/anisette-helper.entitlements" "$WORK/vm-guest/$helper"
   cp "$ROOT/build/macos-vm/guest-status" "$ROOT/build/macos-vm/guest-bridge" "$ROOT/selfhost/macos-vm/report-status.sh" "$WORK/vm-guest/"
-  (cd "$WORK/vm-guest" && zip -qX "$OUT/Apparition-VMGuest-$VERSION-macos-arm64.zip" apparition "$helper" guest-status guest-bridge report-status.sh)
+  zip_tree "$WORK/vm-guest" "$OUT/Apparition-VMGuest-$VERSION-macos-arm64.zip" apparition "$helper" guest-status guest-bridge report-status.sh
   readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it until you clear the download quarantine. Move $app_name.app to Applications, then run in Terminal: xattr -dr com.apple.quarantine /Applications/$app_name.app (and for the command line, in this folder: xattr -d com.apple.quarantine $bin $helper). The app holds the command line too: run /Applications/$app_name.app/Contents/MacOS/$bin-cli link once to put $bin on your PATH. Or open it once and click Open Anyway in System Settings > Privacy & Security. Don't re-sign it with codesign: that strips the anisette helper's entitlements."
-  (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)
+  zip_tree "$WORK/macos" "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt
 fi
 
 if has windows; then
   echo "==> installer and desktop app for Windows (x86_64)"
-  cargo build -q --release --target x86_64-pc-windows-gnu "${both[@]}"
+  cargo build -q --release --locked --target x86_64-pc-windows-gnu "${both[@]}"
   mkdir -p "$WORK/windows"
   # Windows is case-insensitive: apparition.exe collides with the desktop's Apparition.exe.
   cp "target/x86_64-pc-windows-gnu/release/$bin.exe" "$WORK/windows/$bin-cli.exe"

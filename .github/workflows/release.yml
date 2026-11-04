@@ -5,7 +5,9 @@
 # usual step on the release site (scripts/publish.py add), which hashes the files downloaded from
 # here and signs that list with a release key that never leaves its owner. So an attestation says
 # "GitHub built this from that commit", and the release signature says "and its owner vouches
-# for it".
+# for it". The owner checks before signing: publish.py runs scripts/audit-release.sh, which audits
+# the attested commit's dependencies and rebuilds the macOS files from it on another Mac, and signs
+# nothing unless they come out the same as these.
 #
 # Run it by hand (Actions > Release build > Run workflow) or by pushing a v<version> tag. The
 # version must already be committed in project.yml, installer/Cargo.toml and desktop/Cargo.toml.
@@ -44,7 +46,10 @@ env:
   VERSION: ${{ inputs.version || (github.ref_type == 'tag' && github.ref_name) || '' }}
   # Caches are saved only here, where every release can restore them (see the top).
   SAVE_CACHE: ${{ github.ref == 'refs/heads/main' }}
-  RUST_TOOLCHAIN: "1.97.1"
+# The Rust toolchain and the macOS files' Xcode come from scripts/release-toolchain, which the
+# audit of a release (scripts/audit-release.sh) reads too: it rebuilds the macOS files with them
+# and signs nothing unless it gets CI's bytes. Actions are pinned to commits, not tags, which can
+# be moved; the comment names the tag each was taken from (2026-11-04).
 
 jobs:
   # Tags select matching committed versions; dispatches build the requested parts. Each
@@ -58,7 +63,7 @@ jobs:
       apple: ${{ steps.plan.outputs.apple }}
       linux: ${{ steps.plan.outputs.linux }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: plan
         env:
           PARTS: ${{ inputs.parts }}
@@ -83,14 +88,14 @@ jobs:
     steps:
       # The app builds against two sibling packages by path (project.yml), so they're checked
       # out beside it, the way they sit on a developer's machine.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: Apparition
           fetch-depth: 0 # the build number is the commit count
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: matrix.part == 'app'
         with: { repository: illixion/DebugTrace, path: DebugTrace }
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: matrix.part == 'app'
         with: { repository: illixion/RAVESDK, path: RAVESDK }
       - name: Record the sibling packages' commits
@@ -99,10 +104,33 @@ jobs:
           for repo in DebugTrace RAVESDK; do
             echo "$repo $(git -C "$repo" rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
           done
+      - name: Toolchain pins
+        run: grep -E '^[A-Z_]+=' Apparition/scripts/release-toolchain | tee -a "$GITHUB_ENV"
+      # The macOS files are built from one fixed path, the same on the machine that audits them
+      # (scripts/package-release.sh, FIXED): Cargo puts the source path into every crate's symbols.
+      - name: Move to the fixed build path
+        if: matrix.part == 'macos'
+        run: |
+          mkdir -p /private/tmp/apparition-build
+          mv Apparition /private/tmp/apparition-build/Apparition
+          ln -s /private/tmp/apparition-build/Apparition Apparition
       - name: Choose Xcode
         run: |
-          # 27.0, the release Xcode, not the image's betas.
-          sudo xcode-select -s /Applications/Xcode_27.0.app
+          if [[ "${{ matrix.part }}" == macos ]]; then
+            # Exactly the build scripts/release-toolchain names, which the audit rebuilds with.
+            for app in /Applications/Xcode_*.app; do
+              build="$(DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version | sed -n 's/^Build version //p')"
+              if [[ "$build" == "$XCODE_BUILD" ]]; then sudo xcode-select -s "$app"; break; fi
+            done
+            if [[ "$(xcodebuild -version | sed -n 's/^Build version //p')" != "$XCODE_BUILD" ]]; then
+              echo "::error::this image has no Xcode build $XCODE_BUILD (scripts/release-toolchain)"
+              for app in /Applications/Xcode_*.app; do echo "$app: $(DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version | tr '\n' ' ')"; done
+              exit 1
+            fi
+          else
+            # 27.0, the release Xcode, not the image's betas.
+            sudo xcode-select -s /Applications/Xcode_27.0.app
+          fi
           xcodebuild -version
           xcodebuild -showsdks | grep -E 'xros|iphoneos|appletvos'
       - name: Tools
@@ -118,19 +146,21 @@ jobs:
       # The two workspaces' dependencies (core, and the installer with the desktop app), compiled
       # for every target; Apparition's own crates always build afresh. Kept even when the build
       # fails, so a rerun starts warm.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: |
             Apparition
             Apparition/core
-          key: ${{ matrix.part }}
+          # "-repro": the macOS files' dependencies built with SOURCE_DATE_EPOCH and the path
+          # remapping (package-release.sh), never restored from builds made without them.
+          key: ${{ matrix.part }}-repro
           cache-on-failure: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHE == 'true' }}
       - name: Build
         working-directory: Apparition
         run: scripts/package-release.sh "${{ matrix.version }}" --parts ${{ matrix.part }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: needs.plan.outputs.warm != 'true'
         with:
           name: apple-${{ matrix.part }}
@@ -138,7 +168,7 @@ jobs:
           if-no-files-found: error
       # The IPAs' symbols, in an artifact of their own: the release site takes every file of the
       # release artifact as a release file, and refuses these.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: matrix.part == 'app' && needs.plan.outputs.warm != 'true'
         with:
           name: dsyms
@@ -157,14 +187,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: Apparition
           fetch-depth: 0
       # The desktop image (WebKitGTK, Rust and the Tauri CLI) from the layer cache, rather than
       # built afresh.
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         env:
           # No build record artifact: the attest job wants only the release's own.
           DOCKER_BUILD_RECORD_UPLOAD: false
@@ -176,7 +206,7 @@ jobs:
           cache-from: type=gha,scope=desktop-linux-${{ matrix.arch }}
           cache-to: ${{ env.SAVE_CACHE == 'true' && format('type=gha,mode=max,scope=desktop-linux-{0}', matrix.arch) || '' }}
       # The registries and build output the containers keep (LINUX_CACHE in the script).
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: linux-cache
         with:
           path: ~/linux-cache
@@ -192,12 +222,12 @@ jobs:
           scripts/package-release.sh "${{ matrix.version }}" --parts linux
       # Saved even when the build fails, so a rerun starts warm; once per lock file, as each
       # takes a couple of gigabytes of the repository's 10.
-      - uses: actions/cache/save@v6
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         if: always() && env.SAVE_CACHE == 'true' && steps.linux-cache.outputs.cache-hit != 'true'
         with:
           path: ~/linux-cache
           key: ${{ steps.linux-cache.outputs.cache-primary-key }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: needs.plan.outputs.warm != 'true'
         with:
           name: linux-${{ matrix.arch }}
@@ -215,7 +245,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: files
           # The build jobs' own artifacts, nothing another action uploaded (a Docker build
@@ -230,7 +260,7 @@ jobs:
           find files -mindepth 1 -type d -empty -delete
           cd files && ls -l && sha256sum Apparition-* | tee SHA256SUMS
           { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: contains(format(',{0},', needs.plan.outputs.parts), ',app,')
         with:
           name: dsyms
@@ -241,18 +271,18 @@ jobs:
           set -o pipefail
           cd symbols && ls -l && sha256sum Apparition-* | tee SHA256SUMS
           { echo '```'; cat SHA256SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/attest-build-provenance@v4
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
             files/Apparition-*
             symbols/Apparition-*
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-${{ env.VERSION }}
           # Only the release's own files: publish.py takes every file in the folder as one.
           path: files/Apparition-*
       # The symbols go on the GitHub release beside the IPAs, but not to the site.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: contains(format(',{0},', needs.plan.outputs.parts), ',app,')
         with:
           name: dsyms-${{ env.VERSION }}

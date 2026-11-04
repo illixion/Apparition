@@ -1,0 +1,12 @@
+# The toolchain the macOS release files are built with, read by scripts/package-release.sh, the
+# release workflow and scripts/audit-release.sh. A release is signed only after an audit rebuilt its
+# macOS files on another machine and got the same bytes, so both machines must use exactly these:
+# a different Rust or Xcode build gives different binaries. (The Tauri CLI is pinned, with its
+# hashes, in scripts/install-tauri-cli.sh.)
+#
+# XCODE_BUILD is Xcode's build number (`xcodebuild -version`), not its marketing version: a release
+# candidate and the release share "27.2" but not their build. The workflow selects the
+# /Applications/Xcode_*.app with this build and fails when the image has none; the audit does the
+# same with this Mac's /Applications/Xcode*.app.
+RUST_TOOLCHAIN=1.97.1
+XCODE_BUILD=27B52

@@ -1,0 +1,13 @@
+# RustSec advisories a release may ship with: scripts/audit-release.sh refuses to pass a release
+# with any other. One per line: the advisory, the crate it is about, and why it doesn't reach
+# Apparition or can't be fixed yet. Remove a line once its crate is updated past the advisory, and
+# look at each again when a dependency that pulls it in moves.
+#
+# Checked 2026-11-04 against both lock files (Cargo.lock, core/Cargo.lock).
+RUSTSEC-2023-0071 rsa             Marvin attack, a timing side channel with no fixed version. Apparition uses its private keys only to sign, on the person's own machine, where no one can time it from outside.
+RUSTSEC-2026-0387 crypto-bigint   Timing variation in 0.5.5, which elliptic-curve 0.13 (apple-codesign 0.29) pins; 0.7 is fixed (0.7.10). Its curve operations sign locally, with no remote timing to measure.
+RUSTSEC-2026-0344 ruzstd          A small zstd stream can use a lot of memory. 0.7 is what object 0.36 (apple-codesign 0.29) takes; the core decompresses only packages the person chose to install (package.rs), so the worst is running out of memory, not code running.
+RUSTSEC-2026-0367 zip             zip 2.4 only through apple-codesign 0.29, which never calls ZipArchive::extract, the function these four are about. Apparition's own zip use is zip 9.
+RUSTSEC-2026-0368 zip             As above: ZipArchive::extract, not called.
+RUSTSEC-2026-0369 zip             As above: ZipArchive::extract and ZipStreamReader::extract, not called.
+RUSTSEC-2026-0429 zip             As above: ZipArchive::extract, not called.
