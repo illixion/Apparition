@@ -287,17 +287,43 @@ pub fn snapshot(project: &Path, arguments: Option<&[u8]>, environment: Option<&[
     Ok(result)
 }
 
-/// `stamp`: the short commit the project was at, `-dirty` with uncommitted changes, or empty
-/// for a project outside git.
+/// `stamp`, the build number: `<short commit>[-<packages>][-dirty]`, or empty for a project
+/// outside git.
+///
+/// - `<packages>` is six hex digits naming the commits of the local packages the app built
+///   against (RAVESDK, vergence, ...), so a rebuild for a package change has a build number of its
+///   own and every client (Apparition, AltStore, the Store's page) sees it as an update. A package
+///   is named by its folder, not its path, so a build clone and the checkout stamp alike. An app
+///   with no local packages has no tag.
+/// - `-dirty`: the project or a package had uncommitted changes.
 pub fn stamp(snapshot: &Value, project: &Path) -> Result<String, String> {
     let directory = fs::canonicalize(project).map_err(|e| e.to_string())?;
-    let source = snapshot["sources"].as_array().into_iter().flatten()
+    let sources: Vec<&Value> = snapshot["sources"].as_array().into_iter().flatten().collect();
+    let source = sources.iter().copied()
         .filter(|s| s["path"].as_str().is_some_and(|p| directory.starts_with(p)))
         .max_by_key(|s| s["path"].as_str().map(str::len).unwrap_or(0))
         .ok_or("the source snapshot is missing the project")?;
     let Some(commit) = source["commit"].as_str() else { return Ok(String::new()) };
     let short = git(project, &["rev-parse", "--short", commit]).map(trimmed).ok_or("cannot resolve the captured commit")?;
-    Ok(if source["dirty"].as_bool() == Some(true) { format!("{short}-dirty") } else { short })
+    let packages: Vec<&Value> = sources.iter().copied().filter(|s| s["path"] != source["path"]).collect();
+    let tag = packages_tag(&packages);
+    let dirty = sources.iter().any(|s| s["dirty"].as_bool() == Some(true));
+    Ok(format!("{short}{}{}", tag.map(|t| format!("-{t}")).unwrap_or_default(), if dirty { "-dirty" } else { "" }))
+}
+
+/// Six hex digits over each package's folder name and commit (and its working tree when it isn't
+/// one commit), or None without packages.
+pub fn packages_tag(packages: &[&Value]) -> Option<String> {
+    if packages.is_empty() {
+        return None;
+    }
+    let mut lines: Vec<String> = packages.iter().map(|s| {
+        let name = s["path"].as_str().and_then(|p| Path::new(p).file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let exact = s["commit"].is_string() && s["dirty"].as_bool() != Some(true);
+        format!("{name}\t{}\t{}", s["commit"].as_str().unwrap_or(""), if exact { "" } else { s["workingTreeSha256"].as_str().unwrap_or("") })
+    }).collect();
+    lines.sort();
+    Some(hex_sha256(lines.join("\n").as_bytes())[..6].to_string())
 }
 
 #[cfg(test)]
@@ -351,13 +377,36 @@ mod tests {
         assert_eq!(sources.iter().find(|s| s["kind"] == "git").unwrap()["dirty"], serde_json::json!(false));
         assert_eq!(clean["argumentsSha256"], serde_json::json!(hex_sha256(b"args")));
         let short = trimmed(git(&app, &["rev-parse", "--short", "HEAD"]).unwrap());
-        assert_eq!(stamp(&clean, &app).unwrap(), short);
+        // A package that is no commit makes the build dirty, whatever the app's state.
+        let stamped = stamp(&clean, &app).unwrap();
+        assert!(stamped.starts_with(&format!("{short}-")) && stamped.ends_with("-dirty") && stamped.len() == short.len() + 13, "{stamped}");
         assert_eq!(snapshot(&app, Some(b"args"), None).unwrap()["fingerprint"], clean["fingerprint"], "the same sources give the same fingerprint");
+
+        // Committed, the package is named by its commit: the stamp is clean and changes with it.
+        run(&package, &["init", "-q", "-b", "main"]);
+        run(&package, &["add", "."]);
+        run(&package, &["commit", "-q", "-m", "kit"]);
+        let committed = stamp(&snapshot(&app, Some(b"args"), None).unwrap(), &app).unwrap();
+        let tag = committed.strip_prefix(&format!("{short}-")).unwrap();
+        assert!(tag.len() == 6 && tag.bytes().all(|b| b.is_ascii_hexdigit()), "{committed}");
+        fs::write(package.join("Package.resolved"), "{\"v\":2}").unwrap();
+        run(&package, &["commit", "-q", "-am", "kit 2"]);
+        let moved = stamp(&snapshot(&app, Some(b"args"), None).unwrap(), &app).unwrap();
+        assert!(moved.starts_with(&format!("{short}-")) && moved != committed && !moved.ends_with("-dirty"), "{moved}");
 
         fs::write(app.join("Sources/main.swift"), "print(2)").unwrap();
         let edited = snapshot(&app, Some(b"args"), None).unwrap();
         assert_ne!(edited["fingerprint"], clean["fingerprint"]);
-        assert_eq!(stamp(&edited, &app).unwrap(), format!("{short}-dirty"));
+        assert_eq!(stamp(&edited, &app).unwrap(), format!("{moved}-dirty"));
+    }
+
+    #[test]
+    fn the_package_tag_names_folders_not_paths() {
+        let at = |path: &str, commit: &str| json!({ "path": path, "commit": commit, "dirty": false, "workingTreeSha256": "x" });
+        let (a, b) = (at("/Users/me/Projects/vergence", "abc"), at("/data/build-clones/Hypnos/main/vergence", "abc"));
+        assert_eq!(packages_tag(&[&a]), packages_tag(&[&b]), "a build clone stamps like the checkout");
+        assert_ne!(packages_tag(&[&a]), packages_tag(&[&at("/Users/me/Projects/vergence", "abd")]));
+        assert_eq!(packages_tag(&[]), None);
     }
 
     #[test]

@@ -38,6 +38,7 @@ apparition build: build, sign, keep and install the app of the repo you're in (b
                    [--platform P] [--device NAME] [--set KEY=VALUE]... [--run] [--log] [--log-all]
                    [--mcp | --no-mcp] [--jit] [--inject] [--inject-backend dynamic|apparition]
   apparition build --sign-dylib FILE...     sign Mach-O files with the conf's certificate (a live patch)
+  apparition build --plan [--platform P]    print what the conf resolves to, as JSON (for a Store)
 
 Reads ~/.config/build-signing/global.conf and the repo's (scripts/)build-signing.conf. Signs with
 the conf's .p12 and profile, keeps the build (and its dSYMs) in the build store, installs it over
@@ -173,6 +174,8 @@ struct Options {
     profile: Option<PathBuf>,
     /// `--sign-dylib F...`: sign these Mach-O files and stop.
     sign_dylibs: Vec<PathBuf>,
+    /// `--plan`: print what the conf resolves to for this platform, as JSON, and stop.
+    plan: bool,
 }
 
 fn parse(args: &[String]) -> Result<Option<Options>, String> {
@@ -193,6 +196,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--mcp" => o.mcp = Some(true),
             "--no-mcp" => o.mcp = Some(false),
             "--inject" => o.inject = true,
+            "--plan" => o.plan = true,
             "--inject-backend" => { o.inject_backend = Some(value(&mut args, arg)?); o.inject = true; }
             "--platform" => o.platform = Some(value(&mut args, arg)?),
             "--device" => o.device = Some(value(&mut args, arg)?),
@@ -610,6 +614,21 @@ impl Build {
             for file in std::iter::once(conf.get("DEV_P12_PATH").map(PathBuf::from)).chain(profiles).flatten() {
                 if !file.is_file() { return Err(format!("File not found: {}", file.display())) }
             }
+        }
+        if o.plan {
+            // What a Store needs to build one platform row once and install it on several devices:
+            // rows that resolve alike are one build (the `iPad` alias is the iOS build).
+            let profile = profile_path.as_ref().and_then(|p| fs::read(p).ok());
+            let mut settings = conf.extra_build_settings.clone();
+            settings.extend(o.settings.iter().cloned());
+            let plan = serde_json::json!({
+                "platform": platform, "sdk": sdk, "device": device_name, "project": conf.get("PROJECT_PATH"), "scheme": conf.get("SCHEME_NAME"),
+                "target": target, "bundleId": conf.get("BUILD_BUNDLE_ID"), "settings": settings,
+                "profile": profile_path, "certificate": conf.get("DEV_P12_PATH"),
+                "profileDevices": profile.as_deref().map(profile_devices).unwrap_or_default(),
+            });
+            println!("{plan}");
+            return Ok(());
         }
         // The device, from this computer's pairings: no network yet, and an unpaired name fails
         // before a long build rather than after.
@@ -1069,6 +1088,7 @@ mod tests {
         let o = parse(&args(&["--ipa", "x.ipa", "--no-mcp", "--unsigned"])).unwrap().unwrap();
         assert!(o.sign_only && o.no_deploy && o.unsigned && o.mcp == Some(false));
         assert!(parse(&args(&["--help"])).unwrap().is_none());
+        assert!(parse(&args(&["--plan"])).unwrap().unwrap().plan);
         assert!(parse(&args(&["--distribution"])).unwrap_err().contains("build-and-sign --distribution"));
         let o = parse(&args(&["--profile", "p.mobileprovision", "--sign-dylib", "a.dylib", "b.dylib"])).unwrap().unwrap();
         assert_eq!(o.sign_dylibs, [PathBuf::from("a.dylib"), PathBuf::from("b.dylib")]);
