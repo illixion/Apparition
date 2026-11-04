@@ -59,6 +59,8 @@ struct Inner {
     /// A stable id for this companion (its paired-devices host id), so a device that finds an
     /// address of it on another network can tell it's the same computer.
     id: Mutex<Option<String>>,
+    /// Paired computers can reach this Mac's Apparition Store through the channel.
+    developer: std::sync::atomic::AtomicBool,
     mdns: Mutex<Option<Mdns>>,
     log: Log,
     next: std::sync::atomic::AtomicU64,
@@ -93,6 +95,7 @@ impl Relay {
             id: Mutex::new(None),
             channel: Mutex::new(None),
             pairing: Mutex::new(None),
+            developer: std::sync::atomic::AtomicBool::new(false),
             mdns: Mutex::new(mdns),
             log,
             next: Default::default(),
@@ -183,6 +186,12 @@ impl Relay {
     pub fn anisette(&self) -> Option<u16> {
         *self.inner.anisette.lock().unwrap()
     }
+
+    /// Says in INFO that paired computers can reach this Mac's Apparition Store (builds, deploys,
+    /// the apps' debug servers) through the channel.
+    pub fn set_developer(&self, on: bool) {
+        self.inner.developer.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl Inner {
@@ -239,6 +248,14 @@ async fn serve(inner: Arc<Inner>, mut client: TcpStream, peer: SocketAddr) {
         }
         if let Some(port) = *inner.channel.lock().unwrap() {
             info["anisetteChannel"] = port.into();
+        }
+        // The pairing port whatever is offered: `anisettePairing` above stays for older clients,
+        // which pair only for anisette.
+        if let Some(pairing) = *inner.pairing.lock().unwrap() {
+            info["pairing"] = pairing.into();
+        }
+        if inner.developer.load(std::sync::atomic::Ordering::Relaxed) {
+            info["developer"] = true.into();
         }
         let _ = client.write_all(format!("INFO {info}\n").as_bytes()).await;
         return;

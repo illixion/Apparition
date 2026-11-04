@@ -39,6 +39,9 @@ pub struct Companion {
     _channel_task: Option<AbortOnDrop>,
     channel_enabled: Arc<std::sync::atomic::AtomicBool>,
     paired_path: Arc<std::sync::atomic::AtomicBool>,
+    /// This Mac's Apparition Store, for computers granted `developer`.
+    #[cfg(feature = "desktop")]
+    developer: crate::companion_channel::DeveloperTarget,
     #[cfg(all(feature = "anisette", target_os = "macos"))]
     builtin: tokio::sync::Mutex<Option<crate::anisette::Server>>,
     source: Mutex<Option<AnisetteSource>>,
@@ -70,13 +73,15 @@ impl Companion {
         let channel_enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let paired_path = Arc::new(std::sync::atomic::AtomicBool::new(false));
         #[cfg(feature = "desktop")]
+        let developer: crate::companion_channel::DeveloperTarget = Default::default();
+        #[cfg(feature = "desktop")]
         let channel_task = if channel_port == 0 {
             None
         } else {
             match crate::companion_channel::start(
                 std::net::SocketAddr::from(([0, 0, 0, 0], channel_port)),
                 std::net::SocketAddr::from(([127, 0, 0, 1], anisette_port)),
-                devices.clone(), channel_enabled.clone(), paired_path.clone(),
+                devices.clone(), channel_enabled.clone(), paired_path.clone(), developer.clone(),
             ).await {
                 Ok((_, task)) => Some(AbortOnDrop(task)),
                 Err(error) => {
@@ -96,6 +101,8 @@ impl Companion {
             _channel_task: channel_task,
             channel_enabled,
             paired_path,
+            #[cfg(feature = "desktop")]
+            developer,
             #[cfg(all(feature = "anisette", target_os = "macos"))]
             builtin: Default::default(),
             source: Mutex::new(None),
@@ -120,16 +127,48 @@ impl Companion {
         self.channel_port
     }
 
-    /// Advertises pairing whenever a provider is available; only the built-in HTTP route needs
+    /// Whether paired computers granted `developer` reach this Mac's Apparition Store now.
+    pub fn developer(&self) -> bool {
+        #[cfg(feature = "desktop")]
+        return self.developer.lock().unwrap().is_some();
+        #[cfg(not(feature = "desktop"))]
+        return false;
+    }
+
+    /// Offers this Mac's Apparition Store (on loopback, with the token it accepts from the app)
+    /// to paired computers granted `developer`, or stops (`None`). Pairing is offered while it
+    /// is, even on a Mac that doesn't offer its anisette.
+    #[cfg(feature = "desktop")]
+    pub fn set_developer(&self, route: Option<crate::companion_channel::DeveloperRoute>) {
+        *self.developer.lock().unwrap() = route;
+        self.update_pairing();
+    }
+
+    /// What a device can be granted now.
+    fn offered(&self) -> Vec<String> {
+        let mut offered = Vec::new();
+        if self.anisette().is_some() {
+            offered.extend(["anisette".to_string(), "appleRelay".to_string()]);
+        }
+        if self.developer() {
+            offered.push("developer".to_string());
+        }
+        offered
+    }
+
+    /// Advertises pairing whenever something is offered; only the built-in HTTP route needs
     /// the token path after the encrypted channel has authenticated the device.
     fn update_pairing(&self) {
-        let can_pair = self.anisette().is_some() && self.pairing_port != 0;
+        let offered = self.offered();
+        let can_pair = !offered.is_empty() && self.pairing_port != 0;
         let paired_http_path = self.anisette() == Some(AnisetteSource::Builtin);
         self.devices.accepting.store(can_pair, Ordering::Relaxed);
+        *self.devices.offered.lock().unwrap() = offered.clone();
         self.channel_enabled.store(self.anisette().is_some(), Ordering::Release);
         self.paired_path.store(paired_http_path, Ordering::Release);
+        self.relay.set_developer(self.developer());
         self.relay.set_pairing(can_pair.then_some(self.pairing_port));
-        self.relay.set_channel((self.channel_port != 0 && self.anisette().is_some()).then_some(self.channel_port));
+        self.relay.set_channel((self.channel_port != 0 && !offered.is_empty()).then_some(self.channel_port));
     }
 
     /// Serves the built-in anisette on loopback and offers it through the encrypted channel.
@@ -222,6 +261,8 @@ pub struct PairedDevices {
     next: AtomicU64,
     /// Pairing is offered (the built-in anisette serves paired devices only).
     accepting: AtomicBool,
+    /// What a pairing can grant now (`Companion::offered`).
+    offered: Mutex<Vec<String>>,
     /// Told when a pairing starts waiting: the desktop app brings its window up, the command
     /// line asks in the terminal.
     notify: Mutex<Option<Arc<dyn Fn(u64, &pairing::Request) + Send + Sync>>>,
@@ -245,6 +286,7 @@ impl PairedDevices {
             waiting: Default::default(),
             next: AtomicU64::new(1),
             accepting: AtomicBool::new(false),
+            offered: Mutex::new(Vec::new()),
             notify: Mutex::new(None),
         };
         devices.save();
@@ -337,7 +379,7 @@ impl PairedDevices {
                 name: request.device_name.clone(),
                 token: token.clone(),
                 paired: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-                grants: vec!["anisette".into(), "appleRelay".into()],
+                grants: request.grants.clone(),
             });
         }
         self.save();
@@ -362,8 +404,16 @@ async fn accept_pairings(listener: TcpListener, devices: Arc<PairedDevices>, log
             }
             let host_id = devices.host_id();
             let host_name = crate::relay::machine_name();
-            let addresses = crate::relay::primary_address().map(|ip| vec![ip.to_string()]).unwrap_or_default();
+            // The LAN address, then the tailnet's, so a paired computer still reaches this Mac
+            // from another network.
+            let mut addresses = crate::relay::primary_address().map(|ip| vec![ip.to_string()]).unwrap_or_default();
+            for ip in crate::relay::tailscale_addresses() {
+                if !addresses.contains(&ip.to_string()) {
+                    addresses.push(ip.to_string());
+                }
+            }
             let peer_text = peer.ip().to_string();
+            let offered = devices.offered.lock().unwrap().clone();
             let decide = |request: pairing::Request| {
                 let devices = devices.clone();
                 async move {
@@ -391,7 +441,7 @@ async fn accept_pairings(listener: TcpListener, devices: Arc<PairedDevices>, log
                 &host_id,
                 &host_name,
                 addresses,
-                vec!["anisette".into(), "appleRelay".into()],
+                offered,
                 decide,
             );
             match tokio::time::timeout(PAIRING_WAIT + Duration::from_secs(30), exchange).await {

@@ -251,9 +251,27 @@ pub struct Request {
     /// "123 456": what the device shows too.
     pub code: String,
     pub peer: String,
+    /// What the device is granted if the person allows it: what it asked for, of what this
+    /// companion offers. Shown on the approval prompt.
+    pub grants: Vec<String>,
 }
 
-/// Runs one pairing on `stream`, as the host. `decide` gets the request once the codes are
+/// The grants for a pairing: what the device asked for (`requested`), of what the companion
+/// offers. A device that names nothing (an older one) asked for anisette and the Apple relay.
+pub fn granted(requested: Option<&[String]>, offered: &[String]) -> Vec<String> {
+    let legacy = ["anisette".to_string(), "appleRelay".to_string()];
+    let asked = requested.unwrap_or(&legacy);
+    let mut grants: Vec<String> = Vec::new();
+    for grant in asked {
+        if offered.contains(grant) && !grants.contains(grant) {
+            grants.push(grant.clone());
+        }
+    }
+    grants
+}
+
+/// Runs one pairing on `stream`, as the host. `grants` is what this companion offers; the device
+/// gets the part of it that it asked for. `decide` gets the request once the codes are
 /// known and returns the token to hand over (the person allowed it), or `None` (declined).
 pub async fn serve<S, F, Fut>(
     namespace: Namespace,
@@ -271,9 +289,14 @@ where
     Fut: std::future::Future<Output = Option<String>>,
 {
     let mut buffer = Vec::new();
-    let Message::Commit { headset_id, headset_name, commitment: committed, .. } = next(stream, &mut buffer).await? else {
+    let Message::Commit { headset_id, headset_name, commitment: committed, requested, .. } = next(stream, &mut buffer).await? else {
         bail!("expected the device's commitment");
     };
+    let grants = granted(requested.as_deref(), &grants);
+    if grants.is_empty() {
+        stream.write_all(&Message::Deny {}.framed()).await?;
+        bail!("the device asked for nothing this companion offers");
+    }
     let mine = Exchange::new();
     let hello = Message::MacHello {
         mac_id: host_id.to_string(),
@@ -298,7 +321,7 @@ where
         bail!("the device's reveal didn't match its commitment");
     };
     let name: String = headset_name.chars().filter(|c| !c.is_control()).take(64).collect();
-    let request = Request { device_id: headset_id, device_name: name, code: agreement.display_code(), peer };
+    let request = Request { device_id: headset_id, device_name: name, code: agreement.display_code(), peer, grants: grants.clone() };
     match decide(request).await {
         Some(token) => {
             let grant = Grant {

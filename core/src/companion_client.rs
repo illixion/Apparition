@@ -440,7 +440,7 @@ mod tests {
         let provider_address = provider.local_addr().unwrap();
         let (channel_port, channel) = crate::companion_channel::start(
             "127.0.0.1:0".parse().unwrap(), provider_address, devices.clone(),
-            Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(true)), Default::default(),
         ).await.unwrap();
         let relay = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let relay_port = relay.local_addr().unwrap().port();

@@ -5,6 +5,13 @@
 //! message proves the device ID against the TLS exporter, matching RAVESDK's channel protocol.
 //! Once identified, HTTP requests reach the local anisette v3 service; CONNECT requests
 //! forward opaque Apple TLS. Apple certificates and credentials are handled on the device.
+//!
+//! Requests under `/developer/` go to this Mac's Apparition Store instead (builds, deploys, the
+//! MCP server for the apps' debug servers), for a computer or device holding the `developer`
+//! grant. The Store sees them as the app itself (its host token is added here and whatever
+//! credentials the request carried are dropped), labelled with the paired computer's name.
+//! That is how a Windows or Linux computer, or a Mac elsewhere, drives this Mac: the pairing is
+//! the person's approval, per computer, and unpairing revokes it at once.
 
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -32,6 +39,8 @@ pub(crate) const PROOF_SALT: &[u8] = b"Apparition-Device-Proof-v1";
 pub(crate) const EXPORTER_LABEL: &str = "EXPORTER-Apparition-Anisette-Device-v1";
 pub(crate) const CIPHER: &str = "PSK-AES128-GCM-SHA256";
 const MAX_IDENTIFY: usize = 16 * 1024;
+/// Where `/developer/` requests go.
+pub const DEVELOPER_PREFIX: &str = "/developer";
 const MAX_HTTP_HEADER: usize = 32 * 1024;
 
 #[derive(Deserialize)]
@@ -54,6 +63,16 @@ mod base64_bytes {
     }
 }
 
+/// This Mac's Apparition Store, on loopback, and the token it accepts from the app.
+#[derive(Clone)]
+pub struct DeveloperRoute {
+    pub address: SocketAddr,
+    pub token: String,
+}
+
+/// The Store paired computers reach, while one runs.
+pub type DeveloperTarget = Arc<std::sync::Mutex<Option<DeveloperRoute>>>;
+
 /// Starts the encrypted anisette tunnel listener. The advertised port is supplied by the caller.
 pub async fn start(
     bind: SocketAddr,
@@ -61,6 +80,7 @@ pub async fn start(
     devices: Arc<PairedDevices>,
     enabled: Arc<AtomicBool>,
     paired_path: Arc<AtomicBool>,
+    developer: DeveloperTarget,
 ) -> Result<(u16, tokio::task::JoinHandle<()>), Report> {
     let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls_server())
         .context("couldn't configure the companion TLS listener")?;
@@ -99,10 +119,11 @@ pub async fn start(
             let devices = devices.clone();
             let enabled = enabled.clone();
             let paired_path = paired_path.clone();
+            let developer = developer.clone();
             tokio::spawn(async move {
                 let _busy = crate::stay_awake::busy();
                 if let Err(error) =
-                    handle(stream, acceptor, anisette, devices, enabled, paired_path).await
+                    handle(stream, acceptor, anisette, devices, enabled, paired_path, developer).await
                 {
                     tracing::debug!(peer = %peer, error = %error, "companion channel closed");
                 }
@@ -119,6 +140,7 @@ async fn handle(
     devices: Arc<PairedDevices>,
     enabled: Arc<AtomicBool>,
     paired_path: Arc<AtomicBool>,
+    developer: DeveloperTarget,
 ) -> Result<(), Report> {
     let ssl = openssl::ssl::Ssl::new(acceptor.context())?;
     let mut tls = AsyncSslStream::new(ssl, stream)?;
@@ -126,9 +148,6 @@ async fn handle(
         .await
         .context("TLS-PSK handshake timed out")?
         .context("TLS-PSK handshake failed")?;
-    if !enabled.load(Ordering::Acquire) {
-        bail!("anisette provider is not enabled");
-    }
     let identity = tls
         .ssl()
         .psk_identity()
@@ -161,9 +180,6 @@ async fn handle(
     let token = devices
         .channel_token(&identity)
         .ok_or_else(|| report!("device is no longer paired"))?;
-    if !devices.channel_allows_anisette(&identity) {
-        bail!("device has no anisette grant");
-    }
     let mut binding = [0u8; 32];
     tls.ssl()
         .export_keying_material(&mut binding, EXPORTER_LABEL, Some(&[]))?;
@@ -192,6 +208,36 @@ async fn handle(
     })
     .await
     .context("anisette request header timed out")??;
+    if let Some(rest) = request_path(&header).and_then(developer_path) {
+        if !devices.channel_allows(&identity, "developer") {
+            tls.write_all(&plain_reply(403, "Pair this computer with the Mac again and allow developer access there.")).await?;
+            bail!("device has no developer grant");
+        }
+        let route = developer.lock().unwrap().clone();
+        let Some(route) = route else {
+            tls.write_all(&plain_reply(503, "The Mac's Apparition Store isn't running. Open Apparition on the Mac.")).await?;
+            bail!("no Store to forward developer requests to");
+        };
+        let rest = rest.to_string();
+        let name = devices.list().into_iter().find(|device| device.id == identity).map(|device| device.name).unwrap_or_default();
+        let request = developer_request(&header, &rest, &route, &name)?;
+        let mut target = TcpStream::connect(route.address)
+            .await.context("the Store is unavailable")?;
+        target.write_all(&request).await?;
+        copy_bidirectional(&mut tls, &mut target)
+            .await
+            .context("developer tunnel failed")?;
+        return Ok(());
+    }
+    // Anisette and the Apple relay: only while this Mac offers its anisette, and only to a
+    // device granted it. Refused by closing, as before the developer route existed, which is
+    // how a client tells a Mac not offering anisette from one that answers with an error.
+    if !enabled.load(Ordering::Acquire) {
+        bail!("anisette provider is not enabled");
+    }
+    if !devices.channel_allows_anisette(&identity) {
+        bail!("device has no anisette grant");
+    }
     if header.starts_with(b"CONNECT ") {
         if !devices.channel_allows(&identity, "appleRelay") {
             tls.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n").await?;
@@ -220,6 +266,69 @@ async fn handle(
         .await
         .context("anisette tunnel failed")?;
     Ok(())
+}
+
+/// The path of an HTTP request line.
+fn request_path(header: &[u8]) -> Option<&str> {
+    let end = header.windows(2).position(|window| window == b"\r\n")?;
+    let line = std::str::from_utf8(&header[..end]).ok()?;
+    let mut parts = line.split(' ');
+    let (_method, path, version) = (parts.next()?, parts.next()?, parts.next()?);
+    (parts.next().is_none() && version.starts_with("HTTP/")).then_some(path)
+}
+
+/// What a `/developer` path asks the Store for (`/developer/mcp` is `/mcp`), or `None` for any
+/// other path.
+fn developer_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix(DEVELOPER_PREFIX)?;
+    match rest.as_bytes().first() {
+        None => Some("/"),
+        Some(b'/') => Some(rest),
+        _ => None,
+    }
+}
+
+/// The request as the Store gets it: the path without the prefix, the app's own token in place
+/// of any credentials the computer sent, the computer's name, and one request per connection.
+fn developer_request(header: &[u8], path: &str, route: &DeveloperRoute, computer: &str) -> Result<Vec<u8>, Report> {
+    let text = std::str::from_utf8(header).context("invalid developer request")?;
+    let mut lines = text.split("\r\n");
+    let line = lines.next().unwrap_or_default();
+    let method = line.split(' ').next().unwrap_or_default();
+    if method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) || path.contains(['\r', '\n', ' ']) {
+        bail!("invalid developer request line");
+    }
+    let mut out = format!("{method} {path} HTTP/1.1\r\n");
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, _)) = line.split_once(':') else { bail!("invalid developer request header") };
+        let name = name.trim().to_ascii_lowercase();
+        // Credentials and routing are this end's to set; anything the Store reads as identity
+        // comes from the pairing, never from the computer.
+        if matches!(name.as_str(), "authorization" | "cookie" | "host" | "connection" | "keep-alive" | "upgrade"
+            | "proxy-authorization" | "proxy-connection" | "forwarded" | "x-forwarded-for" | "x-real-ip")
+            || name.starts_with("x-apparition-")
+        {
+            continue;
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    let computer: String = computer.chars().filter(|c| !c.is_control()).take(64).collect();
+    out.push_str(&format!("Host: {}\r\nAuthorization: Bearer {}\r\n", route.address, route.token));
+    if !computer.is_empty() {
+        out.push_str(&format!("X-Apparition-Computer: {computer}\r\n"));
+    }
+    out.push_str("Connection: close\r\n\r\n");
+    Ok(out.into_bytes())
+}
+
+/// A short plain-text HTTP reply, then the channel closes.
+fn plain_reply(status: u16, text: &str) -> Vec<u8> {
+    let reason = match status { 403 => "Forbidden", 503 => "Service Unavailable", _ => "Error" };
+    format!("HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).into_bytes()
 }
 
 /// Only the Apple services used by GrandSlam and developer signing, on standard HTTPS.
@@ -304,6 +413,116 @@ mod tests {
     use openssl::ssl::{SslConnector, SslVerifyMode};
 
     #[test]
+    fn developer_paths_and_requests() {
+        assert_eq!(developer_path("/developer/mcp"), Some("/mcp"));
+        assert_eq!(developer_path("/developer"), Some("/"));
+        assert_eq!(developer_path("/developer/api/service/v1/host?x=1"), Some("/api/service/v1/host?x=1"));
+        assert_eq!(developer_path("/developers/mcp"), None);
+        assert_eq!(developer_path("/v3/client_info"), None);
+        assert_eq!(request_path(b"GET /developer/mcp HTTP/1.1\r\n\r\n"), Some("/developer/mcp"));
+        assert_eq!(request_path(b"GET /a b HTTP/1.1\r\n\r\n"), None);
+        let route = DeveloperRoute { address: "127.0.0.1:9".parse().unwrap(), token: "app-token".into() };
+        let header = b"POST /developer/mcp HTTP/1.1\r\nHost: evil\r\nAuthorization: Bearer stolen\r\nCookie: s=1\r\nX-Apparition-Computer: Mac\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\n";
+        let out = String::from_utf8(developer_request(header, "/mcp", &route, "PC\r\nX: y").unwrap()).unwrap();
+        assert!(out.starts_with("POST /mcp HTTP/1.1\r\n"), "{out}");
+        assert!(out.contains("Authorization: Bearer app-token\r\n") && !out.contains("stolen") && !out.contains("Cookie"));
+        assert!(out.contains("Host: 127.0.0.1:9\r\n") && !out.contains("evil"));
+        assert!(out.contains("X-Apparition-Computer: PCX: y\r\n") && !out.contains("Computer: Mac"));
+        assert!(out.contains("Content-Length: 2\r\n") && out.ends_with("Connection: close\r\n\r\n") && !out.contains("keep-alive"));
+    }
+
+    #[test]
+    fn grants_are_what_was_asked_of_what_is_offered() {
+        let offered: Vec<String> = ["anisette", "appleRelay", "developer"].map(String::from).to_vec();
+        assert_eq!(crate::pairing::granted(None, &offered), ["anisette", "appleRelay"]);
+        assert_eq!(crate::pairing::granted(Some(&["developer".into(), "screen".into(), "developer".into()]), &offered), ["developer"]);
+        assert!(crate::pairing::granted(None, &["developer".to_string()]).is_empty());
+    }
+
+    /// A paired computer on the channel: TLS-PSK, then its identify proof.
+    async fn identified(port: u16, device: &'static str, token: &'static str) -> AsyncSslStream<TcpStream> {
+        let mut builder = SslConnector::builder(SslMethod::tls_client()).unwrap();
+        builder.set_verify(SslVerifyMode::NONE);
+        builder.set_min_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+        builder.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+        builder.set_cipher_list(CIPHER).unwrap();
+        builder.set_psk_client_callback(move |_, _, identity, output| {
+            let id = format!("{CHANNEL_IDENTITY}/{device}\0");
+            identity[..id.len()].copy_from_slice(id.as_bytes());
+            let key = derive(token.as_bytes(), CHANNEL_SALT, b"psk", 32);
+            output[..key.len()].copy_from_slice(&key);
+            Ok(key.len())
+        });
+        let ssl = builder.build().configure().unwrap().into_ssl("localhost").unwrap();
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut tls = AsyncSslStream::new(ssl, stream).unwrap();
+        Pin::new(&mut tls).connect().await.unwrap();
+        let mut binding = [0u8; 32];
+        tls.ssl().export_keying_material(&mut binding, EXPORTER_LABEL, Some(&[])).unwrap();
+        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &derive(token.as_bytes(), PROOF_SALT, b"", 32));
+        use base64::Engine;
+        let proof = base64::engine::general_purpose::STANDARD.encode(ring::hmac::sign(&key, &binding).as_ref());
+        let body = serde_json::to_vec(&serde_json::json!({"deviceID": device, "proof": proof})).unwrap();
+        tls.write_all(&(body.len() as u32).to_le_bytes()).await.unwrap();
+        tls.write_all(&body).await.unwrap();
+        tls
+    }
+
+    async fn reply(tls: &mut AsyncSslStream<TcpStream>) -> String {
+        let mut bytes = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(3), tls.read_to_end(&mut bytes)).await;
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// The Store reached through the channel, with anisette not offered at all (a Mac on macOS
+    /// 27): the grant decides, the app's token replaces the computer's credentials, and a
+    /// computer without the grant, or a Store that isn't running, gets a plain answer.
+    #[tokio::test]
+    async fn developer_requests_reach_the_store_for_granted_computers_only() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("paired-devices.json"), serde_json::to_vec(&serde_json::json!({
+            "devices": [
+                {"id": "pc", "name": "Gaming PC", "token": "pc-token", "paired": 0, "grants": ["developer"]},
+                {"id": "phone", "name": "Phone", "token": "phone-token", "paired": 0, "grants": ["anisette", "appleRelay"]}
+            ]
+        })).unwrap()).unwrap();
+        let devices = Arc::new(PairedDevices::load(root.path()));
+        let store = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target: DeveloperTarget = Default::default();
+        let (port, server) = start("127.0.0.1:0".parse().unwrap(), "127.0.0.1:9".parse().unwrap(), devices,
+            Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)), target.clone()).await.unwrap();
+
+        let mut tls = identified(port, "pc", "pc-token").await;
+        tls.write_all(b"GET /developer/mcp HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        assert!(reply(&mut tls).await.starts_with("HTTP/1.1 503"), "no Store running");
+
+        *target.lock().unwrap() = Some(DeveloperRoute { address: store.local_addr().unwrap(), token: "app-token".into() });
+        let mut tls = identified(port, "pc", "pc-token").await;
+        tls.write_all(b"POST /developer/mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer mine\r\nContent-Length: 2\r\n\r\n{}").await.unwrap();
+        let (mut upstream, _) = tokio::time::timeout(Duration::from_secs(2), store.accept()).await.unwrap().unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"{}") {
+            request.push(upstream.read_u8().await.unwrap());
+        }
+        let request = String::from_utf8(request).unwrap();
+        assert!(request.starts_with("POST /mcp HTTP/1.1\r\n"), "{request}");
+        assert!(request.contains("Authorization: Bearer app-token\r\n") && !request.contains("mine"), "{request}");
+        assert!(request.contains("X-Apparition-Computer: Gaming PC\r\n"), "{request}");
+        upstream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await.unwrap();
+        drop(upstream);
+        assert!(reply(&mut tls).await.ends_with("ok"));
+
+        let mut tls = identified(port, "phone", "phone-token").await;
+        tls.write_all(b"GET /developer/mcp HTTP/1.1\r\n\r\n").await.unwrap();
+        assert!(reply(&mut tls).await.starts_with("HTTP/1.1 403"), "no developer grant");
+        // Anisette isn't offered: the computer's anisette request is closed on, as before.
+        let mut tls = identified(port, "pc", "pc-token").await;
+        tls.write_all(b"GET /v3/client_info HTTP/1.1\r\n\r\n").await.unwrap();
+        assert_eq!(reply(&mut tls).await, "");
+        server.abort();
+    }
+
+    #[test]
     fn connect_restricts_hosts_ports_and_syntax() {
         for host in ["gsa.apple.com", "gsd.apple.com", "idmsa.apple.com", "developerservices2.apple.com"] {
             let request = format!("CONNECT {host}:443 HTTP/1.1\r\n\r\n");
@@ -339,7 +558,7 @@ mod tests {
         let provider = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_addr = provider.local_addr().unwrap();
         let (port, server) = start("127.0.0.1:0".parse().unwrap(), provider_addr, devices,
-            Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(true))).await.unwrap();
+            Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(true)), Default::default()).await.unwrap();
         let provider_task = tokio::spawn(async move {
             let (mut stream, _) = provider.accept().await.unwrap();
             let mut header = Vec::new();
@@ -369,7 +588,7 @@ mod tests {
         let provider = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_addr = provider.local_addr().unwrap();
         let (port, server) = start("127.0.0.1:0".parse().unwrap(), provider_addr, devices,
-            Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(true))).await.unwrap();
+            Arc::new(AtomicBool::new(true)), Arc::new(AtomicBool::new(true)), Default::default()).await.unwrap();
         let client = |valid_proof: bool| async move {
             let mut builder = SslConnector::builder(SslMethod::tls_client()).unwrap();
             builder.set_verify(SslVerifyMode::NONE);
