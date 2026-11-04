@@ -240,6 +240,10 @@ version = "0.4.5"
 dependencies = [
  "apparition-core",
  "apparition-service",
+ "base64 0.22.1",
+ "libc",
+ "plist",
+ "ring",
  "rootcause",
  "rpassword",
  "serde_json",

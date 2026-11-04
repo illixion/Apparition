@@ -59,12 +59,27 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   app paths kept on the app's origin, endpoint and bundle names checked before they name files,
   capped replies and trace inflation, DNS rebinding refused on a password-less store.
 
+- Builds (phase 5, first part): `apparition build` (`installer/src/builder/`), `build-and-sign` in
+  Rust with the same confs (read by `/bin/bash`), flags, `build/` layout, lock and report. It builds
+  with `xcodebuild`, records provenance as `artifacts.js` does (the same tree digests, checked against
+  a `build-and-sign` run of the same commit), stamps bundle IDs and the commit, embeds the DebugTrace
+  credential and ledger record, signs through the core (`sign_offline_keeping`, which keeps the
+  profile's keychain groups as `build-and-sign` does), keeps the build and its dSYMs in the store
+  (manifests read by `artifacts.js` and the service), installs over the core's pairing and launches
+  with `apparition launch` (`--log`, `--mcp` with the session record, `--jit`). It runs as its own
+  process, so a repo's `PRE_BUILD_HOOK` never shares memory with the app's keys; the Store's build
+  queue can start it as Node starts the script. Run for real 2026-11-04: xrTimer built, signed and
+  installed on a Vision Pro (the launch waited on the headset, as `devicectl`'s did). Not yet: Mac
+  apps, `--distribution`, `--sign-dylib` (inject's patch signing), `EXTRA_ENTITLEMENTS_PLIST` and
+  `ASSOCIATED_DOMAINS` (no repo sets them), the Store's queue running it.
+
 Not done:
 - Phase 2 delivery (OTA, AltSource feed, Mac zips, signed links, trace upload from the web page).
 - Phase 3, the rest: `devices` and `deviceApps` in the web state and `/api/refresh-devices` (the Node build service
   still owns `state.json`), installs of the Store's own builds, JIT, uninstall, containers. The service routes below
   and the Mac-side install of sent builds are done.
-- Phase 4 re-sign. Phase 5 builds (`build-and-sign`), queue, `macApps`. Phase 6 desktop wiring,
+- Phase 4 re-sign. Phase 5, the rest: the queue starting `apparition build`, clones per branch,
+  `macApps`, the parts of `build-and-sign` listed above. Phase 6 desktop wiring,
   hiding the feature off macOS, retiring `store/` and the bundled Node host.
 - Unported routes answer 501 and the capabilities list stays empty until a feature works.
 

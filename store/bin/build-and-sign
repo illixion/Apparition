@@ -485,7 +485,8 @@ BUILD_LOCK_HELD=false
 
 build_lock_holder_alive() {
     local pid="$1"
-    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q build-and-sign
+    # `apparition build` (the Rust port) takes the same lock.
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -qE 'build-and-sign|apparition build'
 }
 
 acquire_build_lock() {

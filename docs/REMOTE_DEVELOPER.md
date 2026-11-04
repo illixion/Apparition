@@ -96,6 +96,25 @@ The Store also answers `GET /api/service/v1/devices`, `GET .../devices/<device>/
 `POST .../builds/<id>/install?device=<device>` for the paired computers and agents (the
 `developer` grant), so a kept build can be installed later or on another device.
 
+## Build on the Mac, edit from anywhere
+
+Xcode builds and live patching need the sources on the Mac, and nothing copies them there: the
+project lives on the Mac and the other computer edits it in place. Two ways, both nothing to set up
+in Apparition:
+
+- **VS Code Remote SSH** (or any editor's remote mode) opens the Mac's checkout. Its terminal, and an
+  agent run in it, are on the Mac, so they build there: `apparition build --run` (or
+  `build-and-sign`), and `inject` sees the files being edited.
+- **File sharing**: mount the Mac's projects folder over SMB (System Settings › General › Sharing ›
+  File Sharing) and edit it with anything. Build on the Mac (`ssh mac 'cd ~/Projects/MyApp &&
+  apparition build --run'`), and let an agent here drive the app through `apparition mcp`.
+
+`apparition build` is `build-and-sign` in Rust: the same confs, flags, `build/` folder and report.
+It signs with the conf's certificate and profile through the core's signer (no login keychain),
+keeps the build and its dSYMs in the build store, and installs and launches over Apparition's own
+pairing with the device rather than `devicectl`. A build made elsewhere (xtool) goes through
+`apparition deploy` instead, below.
+
 ## Without a Mac: xtool on Windows or Linux
 
 The Store runs in the Apparition app on Windows and Linux too, so a PC that builds with
@@ -134,11 +153,10 @@ the paired Mac otherwise. What a PC can't do:
   the Mac with an imported certificate is tested with a stand-in only.
 - **The device reaching the Mac away from home** still goes through the Store's HTTPS address and
   password (Developer › Connect), not the channel.
-- **Builds on the Mac over MCP** (`build-and-sign` from an agent elsewhere) need the build port
-  (phase 5).
+- **No build tool over MCP.** An agent elsewhere builds through the Mac's shell (Remote SSH, `ssh`),
+  not through `apparition mcp`.
 - **`inject` patches sources that are on the Mac.** It runs `debugtrace-inject` there, from the
-  app's project root, so an agent on another computer can inject only when the project (or the
-  files it names) lives on the Mac too; edits made on the other computer would need syncing first.
+  app's project root, so the project has to be the Mac's own checkout, edited in place (above).
 - **Older builds aren't attached to over Bonjour.** The Store sends no token to an address that
   only advertises: an app found by Bonjour gets signed requests (`GET /_nonce`, then
   `Authorization: DebugTrace-HMAC`, a proof over the nonce, method, target and body; the token never

@@ -873,6 +873,25 @@ pub fn sign_offline(
     previous_app: Option<&Path>,
     platform: Platform,
 ) -> Result<Value, Report> {
+    sign_offline_keeping(data_dir, app_path, identity_id, chosen, udid, strip_extensions, previous_app, None, platform)
+}
+
+/// `sign_offline`, with `previous` standing for the entitlements the app had before: its
+/// keychain groups are kept when the profile allows them. `apparition build` passes the
+/// profile's own, so a fresh build keeps the groups `build-and-sign` signed it with (a
+/// wildcard profile's `TEAM.*`) and with them the Keychain items its earlier builds saved.
+#[allow(clippy::too_many_arguments)]
+pub fn sign_offline_keeping(
+    data_dir: &Path,
+    app_path: PathBuf,
+    identity_id: &str,
+    chosen: Option<&str>,
+    udid: &str,
+    strip_extensions: bool,
+    previous_app: Option<&Path>,
+    previous: Option<Dictionary>,
+    platform: Platform,
+) -> Result<Value, Report> {
         check_app_platform(&app_path, platform)?;
         let identity = Identity::load(data_dir, identity_id)?;
         if not_after(&identity.certificate) < SystemTime::now() {
@@ -897,7 +916,7 @@ pub fn sign_offline(
         let original = app.main_bundle_id()?;
         // Read before anything is re-signed: what the app asks for, and what it had last time.
         let asked = signed_entitlements(&app.bundle.bundle_dir);
-        let previous = signed_entitlements(previous_app.unwrap_or(&app.bundle.bundle_dir));
+        let previous = previous.or_else(|| signed_entitlements(previous_app.unwrap_or(&app.bundle.bundle_dir)));
 
         let main = match &chosen {
             Some(uuid) => usable

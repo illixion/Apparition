@@ -29,6 +29,7 @@ use rootcause::prelude::*;
 mod xcode;
 mod inject;
 mod developer;
+mod builder;
 
 const USAGE: &str = "\
 Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
@@ -104,6 +105,10 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       What uses up a free account's two certificates and ten App IDs a week, and freeing
       one you choose (after you confirm). Revoking a certificate stops the apps signed with
       it until they are signed again: share Apparition's instead (`signing`, below).
+  apparition build [build-and-sign's flags: --run, --log, --mcp, --jit, --inject, --device, ...]
+      On a Mac, in a repo with a build-signing.conf: build with Xcode, sign with the conf's
+      certificate, keep the build and its dSYMs, install it over this pairing and, with --run,
+      launch it the same way. No devicectl, Node or Homebrew bash. `apparition build --help`.
   apparition xcode register --app PRODUCT.app [--project DIR] [--symbols PRODUCT.app.dSYM]
   apparition xcode configure --spec project.yml --target TARGET
       Register Xcode products or generate an optional handoff scheme on a Mac, preserving
@@ -239,6 +244,7 @@ async fn main() -> ExitCode {
         Some("watches") => watches(&args[1..]).await,
         Some("inject") => inject::run(&args[1..]).await,
         Some("xcode") => xcode::run(&args[1..]).await,
+        Some("build") => builder::run(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("signing") => signing(&args[1..]).await,
         Some("pairing") => pairing(&args[1..]).await,
