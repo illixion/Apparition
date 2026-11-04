@@ -158,7 +158,9 @@ async function performResign({ ipa, bundleId, device, profileFile, buildAndSign,
   const sign = async file => {
     const args = ['--ipa', ipa, '--device', device, '--no-mcp'];
     if (file) args.push('--profile', file);
-    return exec(buildAndSign, args, { cwd, env: { ...env, BUILD_BUNDLE_ID: bundleId }, timeout: 20 * 60 * 1000 });
+    // The script's path, or [command, ...leading arguments] (`apparition build`).
+    const [command, ...leading] = [].concat(buildAndSign);
+    return exec(command, [...leading, ...args], { cwd, env: { ...env, BUILD_BUNDLE_ID: bundleId }, timeout: 20 * 60 * 1000 });
   };
 
   if (dryRun) {

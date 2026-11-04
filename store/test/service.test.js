@@ -358,6 +358,55 @@ test('an install report is recorded by the service from its own records, over th
   assert.deepEqual(state.body.appsOpen, []);
 });
 
+test('with builder "apparition", builds run `apparition build` with the script\'s flags', async () => {
+  const { execFileSync } = require('node:child_process');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'builder-'));
+  const calls = path.join(work, 'calls.log'), cli = path.join(work, 'apparition');
+  // A stand-in CLI: `build` keeps a build and reports it as apparition build does.
+  fs.writeFileSync(cli, `#!/bin/bash
+echo "$*" >> ${JSON.stringify(calls)}
+[[ "$1" == build ]] || exit 0
+id="builder-$(date +%s%N)"; d="$APPARITION_BUILD_DIR/$id"; mkdir -p "$d"; printf 'ipa' > "$d/app.ipa"
+sha=$(shasum -a 256 "$d/app.ipa" | cut -d' ' -f1); mv "$d/app.ipa" "$d/$sha.ipa"
+printf '{"format":"apparition-build/1","buildId":"%s","platform":"visionOS","app":{"bundleId":"com.example.rusty","version":"1.0","build":"abc1234"},"artifact":{"kind":"ipa","sha256":"%s","bytes":3,"file":"%s.ipa"}}' "$id" "$sha" "$sha" > "$d/manifest.json"
+printf '  %-12s %s\\n' "Build ID:" "$id"
+exit 0
+`, { mode: 0o755 });
+  const project = path.join(dir, 'Rusty'); fs.mkdirSync(project);
+  execFileSync('git', ['init', '-b', 'main', project], { stdio: 'ignore' });
+  execFileSync('git', ['-C', project, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '--allow-empty', '-m', 'init'], { stdio: 'ignore' });
+  const configFile = path.join(dir, 'config.json');
+  const config = JSON.parse(fs.readFileSync(configFile));
+  const saved = { builder: config.builder, apparitionCli: config.apparitionCli };
+  Object.assign(config, { builder: 'apparition', apparitionCli: cli });
+  config.repos.push({ name: 'Rusty', path: project, branches: [], platforms: [{ platform: 'visionOS', device: 'fixture-rusty', bundleId: 'com.example.rusty' }] });
+  fs.writeFileSync(configFile + '.next', JSON.stringify(config)); fs.renameSync(configFile + '.next', configFile);
+  const token = await connect();
+  try {
+    for (let attempt = 0; attempt < 30; ++attempt) {
+      if ((await request('/api/service/v1/state', { token })).body.repos.some(r => r.name === 'Rusty')) break;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    const reply = await request('/api/service/v1/build', { method: 'POST', token,
+      body: { repo: 'Rusty', device: 'fixture-rusty', targetPlatform: 'visionOS', branch: 'current', install: 'mac', run: true, mcp: true } });
+    assert.equal(reply.status, 200, JSON.stringify(reply.body));
+    const id = reply.body.jobs[0].id;
+    let job;
+    for (let attempt = 0; attempt < 150 && !job; ++attempt) {
+      job = (await request('/api/service/v1/state', { token })).body.builds.find(j => j.id === id && ['success', 'failed'].includes(j.status));
+      if (!job) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    assert.equal(job?.status, 'success', job?.error);
+    assert.match(job.buildId, /^builder-/);
+    const lines = fs.readFileSync(calls, 'utf8').trim().split('\n').filter(line => line.startsWith('build'));
+    assert.deepEqual(lines, ['build --run --mcp']);
+  } finally {
+    const restored = JSON.parse(fs.readFileSync(configFile));
+    Object.assign(restored, saved);
+    fs.writeFileSync(configFile + '.next', JSON.stringify(restored)); fs.renameSync(configFile + '.next', configFile);
+  }
+});
+
 test('install modes: only `mac` uses the Xcode tunnel, a failed tunnel install still leaves its build, and the device reports its own', async () => {
   const { execFileSync } = require('node:child_process');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'install-modes-'));

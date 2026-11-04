@@ -60,6 +60,14 @@ function apparitionCli() {
   const local = path.join(os.homedir(), '.local/bin/apparition');
   return fs.existsSync(local) ? local : 'apparition';
 }
+// What builds and re-signs: config `builder: "apparition"` runs `apparition build`, the Rust port of
+// build-and-sign (same flags, report, build/ outputs and kept builds; it installs and launches over
+// Apparition's own pairing, never devicectl). Mac apps, which it doesn't build yet, and every job
+// by default use the script (`buildAndSign`). Returns [command, ...leading arguments].
+function builderFor(job) {
+  if (CONFIG.builder === 'apparition' && !job.macApp && job.platform !== 'macOS') return [apparitionCli(), 'build'];
+  return [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
+}
 // build-and-sign installs to `QUIET_DEVICES` through `apparition push` (Apparition's own tunnel)
 // instead of devicectl, so an install doesn't wake a sleeping Apple TV either.
 function quietInstallEnv(cfg) {
@@ -638,7 +646,7 @@ async function executeBuild(job) {
     log('\n');
     gitCache.delete(buildCwd);
 
-    const buildArgs = [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
+    const buildArgs = builderFor(job);
     if (job.noDeploy) buildArgs.push('--no-deploy');
     // Device-side signing owns provisioning, so the Mac only compiles and retains an unsigned IPA.
     if (job.installVia === 'device') buildArgs.push('--unsigned');
@@ -680,7 +688,7 @@ async function executeBuild(job) {
         setImmediate(() => {
           if (job.status === 'cancelled') return settle(reject, new Error('cancelled'));
           if (code === 0) return settle(resolve);
-          settle(reject, new Error(`build-and-sign exited with ${code ?? `signal ${signal}`}`));
+          settle(reject, new Error(`${path.basename(buildArgs[0])}${buildArgs.length > 1 ? ' ' + buildArgs[1] : ''} exited with ${code ?? `signal ${signal}`}`));
         });
       });
     });
@@ -943,7 +951,7 @@ async function executeResign(job) {
     log(`==> Re-signing ${job.bundleId}${kept ? ` (kept build ${job.resign.from})` : ''} for ${job.device} with ${profile.name} [${profile.appId}]\n`);
     const result = await resignTool.performResign({
       ipa: kept?.file, bundleId: job.bundleId, device: job.device, profileFile: profile.file,
-      buildAndSign: CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN, cwd: rc.path,
+      buildAndSign: builderFor(job), cwd: rc.path,
       env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore(), ...quietInstallEnv(CONFIG) },
       dataMode: job.resign.dataMode, dryRun: job.resign.dryRun, exec, log,
       apparition: quietAppsDevices(CONFIG).includes(job.device) ? apparitionCli() : null,

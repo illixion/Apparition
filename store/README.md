@@ -120,6 +120,11 @@ the project to `config.json`, preserves other settings, and makes it available i
   device with the repo's HEAD to show up to date, out of date, dirty, or on another branch.
 - Per-repo behaviour (pre-build hooks, extra build settings, platform aliases) belongs in that
   repo's `build-signing.conf`, never in `server.js`. See `CLAUDE.md` for the architecture.
+- `"builder": "apparition"` in `config.json` builds and re-signs with `apparition build`
+  (`apparitionCli`), build-and-sign ported to Rust: the same confs, flags, report and kept builds,
+  signed through Apparition's signer and installed and launched over its own pairing with the
+  device, never `devicectl` (so every device must be paired with Apparition on this Mac). Mac
+  apps still build with `bin/build-and-sign`, as does everything when `builder` is unset.
 
 ## Branding
 
