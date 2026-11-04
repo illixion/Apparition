@@ -8,8 +8,8 @@
 #
 # A VM's sign-in needs AuthKit's attestation from its host, which only the helper signed with
 # AuthKit's private entitlements gets, and macOS runs that helper only with SIP off and
-# amfi_get_out_of_my_way=1: this sets both (turning SIP off asks for the password of the account
-# Setup Assistant made). That attestation is only valid inside a GUI login session, so `apparition
+# amfi_get_out_of_my_way=1: this sets both (follow any authentication prompts from
+# recoveryOS; macOS 26 requires an owner account too). That attestation is only valid inside a GUI login session, so `apparition
 # relay` (the companion) is installed as a LaunchAgent (Aqua): with automatic login on, the VM
 # offers its anisette to paired devices and computers on port 49160 (pairing 49161, encrypted
 # channel 49162) after a restart with no one at the keyboard. Only for a VM: SIP off is not
@@ -24,15 +24,18 @@
 # Uses only what recoveryOS ships (bash 3.2, curl, ditto, csrutil, nvram). Settings:
 # APPARITION_ZIP (a release zip URL or local path), APPARITION_PORT, APPARITION_FORCE=1 (skip the
 # SIP/NVRAM check in a normal boot, to install the rest).
-set -u
+set -eu
 
 REPO=https://github.com/illixion/Apparition
 PORT=${APPARITION_PORT:-49160}
 LABEL=com.illixion.apparition.anisette
 # Filled in by the host Mac that serves this script (core/src/vm_setup.rs); empty otherwise.
 BASE='@@BASE@@'
+AUTOMATED='@@AUTOMATED@@'
+case "$AUTOMATED" in @@*) AUTOMATED=0 ;; esac
 case "$BASE" in @@*) BASE="" ;; esac
 BOOT_ARG=amfi_get_out_of_my_way=1
+DEFER_AMFI=0
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
@@ -59,12 +62,14 @@ else
       plist="$volume/System/Library/CoreServices/SystemVersion.plist"
       [ -z "$version" ] && [ -f "$plist" ] && version=$(grep -A1 '<key>ProductVersion</key>' "$plist" | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p')
     done
+    # No match is normal while recovery is still mounting the installed volumes.
+    return 0
   }
   find_volumes
   if [ -z "$DATA" ]; then
     # Not mounted yet (recoveryOS mounts it once something asks): mount each APFS volume.
     for device in $(diskutil list | awk '/APFS Volume/ {print $NF}'); do
-      diskutil mount "$device" > /dev/null 2>&1
+      diskutil mount "$device" > /dev/null 2>&1 || true
     done
     find_volumes
   fi
@@ -84,14 +89,18 @@ elif [ "$RECOVERY" = 1 ]; then
     if [ "$VM" = 0 ] && [ "$(ask "This doesn't look like a virtual machine. Turn SIP off anyway? [y/N] ")" != y ]; then
       exit 1
     fi
-    say "Turning SIP off (it asks for the password of the account Setup Assistant made)"
-    csrutil disable < /dev/tty || die "csrutil disable failed. Did Setup Assistant finish? It makes the account this asks for."
+    say "Turning SIP off (follow any recoveryOS authentication prompts)"
+    csrutil disable < /dev/tty || die "csrutil disable failed; see the recoveryOS error above."
   fi
   case "$(nvram boot-args 2>/dev/null)" in
     *"$BOOT_ARG"*) echo "AMFI is already off." ;;
     *) say "Turning AMFI off ($BOOT_ARG)"
        args=$(nvram boot-args 2>/dev/null | sed 's/^boot-args[[:space:]]*//')
-       nvram boot-args="${args:+$args }$BOOT_ARG" || die "nvram failed" ;;
+       if ! nvram boot-args="${args:+$args }$BOOT_ARG"; then
+         [ "$VM" = 1 ] || die "nvram failed"
+         DEFER_AMFI=1
+         echo "Recovery refused the boot argument. A root first-boot job will try it in macOS and restart once."
+       fi ;;
   esac
 elif [ "${APPARITION_FORCE:-}" != 1 ]; then
   csrutil status | grep -q 'disabled' || die "SIP is on. Restart into recoveryOS and run this there."
@@ -138,7 +147,41 @@ else
     chmod 755 "$dest/$name"
   done
 fi
-rm -rf "$work"
+# Leave the temporary directory for recovery diagnostics.
+
+# Some recoveryOS builds refuse boot-args writes even after SIP was disabled.
+# Try from the installed macOS as root, then reboot before the helper is usable.
+# This daemon only configures the boot argument; anisette stays in the Aqua agent.
+if [ "$VM" = 1 ]; then
+  cat > "$dest/enable-amfi.sh" <<'AMFI'
+#!/bin/bash
+set -eu
+# Keep SSH available even while Setup Assistant is unfinished.
+launchctl print system/com.openssh.sshd > /dev/null 2>&1 || launchctl load -w /System/Library/LaunchDaemons/ssh.plist
+csrutil status | grep -q disabled || exit 1
+args=$(nvram boot-args 2>/dev/null | sed 's/^boot-args[[:space:]]*//')
+case "$args" in *amfi_get_out_of_my_way=1*) exit 0 ;; esac
+nvram boot-args="${args:+$args }amfi_get_out_of_my_way=1"
+/sbin/shutdown -r now
+AMFI
+  chown 0:0 "$dest/enable-amfi.sh"
+  chmod 700 "$dest/enable-amfi.sh"
+  mkdir -p "$DATA/Library/LaunchDaemons"
+  daemon="$DATA/Library/LaunchDaemons/com.illixion.apparition.enable-amfi.plist"
+  cat > "$daemon" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.illixion.apparition.enable-amfi</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>/usr/local/apparition/enable-amfi.sh</string></array>
+<key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>/var/log/apparition-enable-amfi.log</string>
+<key>StandardErrorPath</key><string>/var/log/apparition-enable-amfi.log</string>
+</dict></plist>
+PLIST
+  chown 0:0 "$daemon"
+  chmod 644 "$daemon"
+fi
 
 # A LaunchAgent, not a daemon: LimitLoadToSessionType Aqua runs it in the GUI login session, the
 # only place the helper's attestation is valid (a root LaunchDaemon gets -3000076 from Apple). In
@@ -171,7 +214,17 @@ EOF
 chown 0:0 "$agent"
 chmod 644 "$agent"
 
+# A download is not completion: notify the host only after the files and agent exist.
+if [ -n "$BASE" ]; then
+  curl -fsS "$BASE/complete" > /dev/null || die "couldn't confirm setup to the host"
+fi
+
 if [ "$RECOVERY" = 1 ]; then
+  if [ "$AUTOMATED" = 1 ]; then
+    say "Installed. Shutting down so the host can resume with networking disconnected."
+    /sbin/shutdown -h now
+    exit 0
+  fi
   say "Done. With automatic login on, the VM runs Apparition's companion on port $PORT after it restarts."
   echo "Turn automatic login on in System Settings > Users & Groups if you haven't, then restart."
   echo "Then pair your devices and computers with it once (selfhost/macos-vm/README.md, step 6)."
