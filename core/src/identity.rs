@@ -410,11 +410,17 @@ fn iso(time: SystemTime) -> String {
 /// The signer's chain up to its root, from the profile's certificates and the Apple
 /// intermediates bundled with Apparition and isideload.
 fn chain(certificate: &Certificate, profile: &ProvisioningProfile) -> Result<Vec<Certificate>, Report> {
+    chain_with(certificate, profile.certificate_chain_der())
+}
+
+/// The certificates from `certificate` up to Apple's root, from `extra` (a profile's envelope) and
+/// the ones Apparition carries.
+fn chain_with(certificate: &Certificate, extra: &[Vec<u8>]) -> Result<Vec<Certificate>, Report> {
     let mut candidates: Vec<Certificate> = Vec::new();
     let bundled = [cert_identity::APPLE_WWDR_G3_CERTIFICATE_DER, cert_identity::APPLE_ROOT]
         .into_iter()
         .chain(EXTRA_CHAIN.iter().copied());
-    for der in profile.certificate_chain_der().iter().map(Vec::as_slice).chain(bundled) {
+    for der in extra.iter().map(Vec::as_slice).chain(bundled) {
         if let Ok(candidate) = Certificate::from_der(der) {
             candidates.push(candidate);
         }
@@ -1033,6 +1039,33 @@ pub fn sign_code(data_dir: &Path, identity_id: &str, profile_uuid: &str, files: 
         apparition_signer::sign_macho(file, profile.team(), &signer).context(format!("Signing {} failed", file.display()))?;
     }
     Ok(())
+}
+
+/// Signs a Mac app in place with an imported certificate, as `build-and-sign` signs a macOS
+/// build: `entitlements` (the target's .entitlements file) for the app and each of its extensions,
+/// none for frameworks and other code, and no profile, which an app run on its own team's Mac
+/// doesn't need. Returns `{teamId}`.
+pub fn sign_mac_app(data_dir: &Path, identity_id: &str, app: &Path, entitlements: Dictionary) -> Result<Value, Report> {
+    let identity = Identity::load(data_dir, identity_id)?;
+    if not_after(&identity.certificate) < SystemTime::now() {
+        bail!("The certificate expired on {}; import a new one", iso(not_after(&identity.certificate)));
+    }
+    let team = attribute(&identity.certificate.tbs_certificate.subject, ORGANIZATIONAL_UNIT)
+        .ok_or_else(|| report!("The certificate names no team"))?;
+    let signer = Signer::new(identity.key.clone(), identity.certificate.clone(), chain_with(&identity.certificate, &[])?)?;
+    let entitlements = sorted(entitlements);
+    let mut settings = BundleSigningSettings::new(team.clone(), entitlements.clone(), Some(&signer));
+    for folder in ["Contents/PlugIns", "Contents/Extensions"] {
+        let Ok(entries) = std::fs::read_dir(app.join(folder)) else { continue };
+        for entry in entries.filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "appex")) {
+            let info: Option<Dictionary> = plist::from_file(entry.path().join("Contents/Info.plist")).ok();
+            if let Some(id) = info.as_ref().and_then(|i| i.get("CFBundleIdentifier")?.as_string()) {
+                settings.entitlements_by_bundle_id.insert(id.to_string(), entitlements.clone());
+            }
+        }
+    }
+    sign_bundle(app, &settings).context("Signing failed")?;
+    Ok(json!({ "teamId": team }))
 }
 
 /// Experiment (profile reuse): signs the app at `app_path` with `profile` as is, keeping the

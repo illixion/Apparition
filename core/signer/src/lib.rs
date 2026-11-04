@@ -213,7 +213,10 @@ pub fn sign_bundle(path: impl Into<PathBuf>, settings: &BundleSigningSettings<'_
         }
     }
     if let Some(executable) = info.get("CFBundleExecutable").and_then(Value::as_string) {
-        main_executables.push(executable.to_string());
+        // A Mac app's is in Contents/MacOS: without this it was signed as plain code, with no
+        // entitlements, over the app's own.
+        let mac = format!("Contents/MacOS/{executable}");
+        main_executables.push(if root.join(&mac).is_file() { mac } else { executable.to_string() });
     }
     for macho in &contents.machos {
         if !main_executables.contains(macho) {
@@ -429,6 +432,34 @@ mod tests {
         settings.add_path_exclusion(&pattern).unwrap();
         assert!(settings.path_exclusion_pattern_matches(path));
         assert!(!settings.path_exclusion_pattern_matches("Frameworks/lib x/aXbY.o"));
+    }
+
+    /// A Mac app's executable (Contents/MacOS) gets the app's entitlements, not a plain binary's none.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_app_s_executable_carries_its_entitlements() {
+        let root = std::env::temp_dir().join(format!("apparition-signer-mac-{}", std::process::id()));
+        let app = root.join("Test.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(root.join("main.c"), "int main(void) { return 0; }\n").unwrap();
+        let built = std::process::Command::new("cc").arg(root.join("main.c")).arg("-o").arg(app.join("Contents/MacOS/Test"))
+            .status().is_ok_and(|s| s.success());
+        if !built {
+            eprintln!("SKIPPED: no C compiler to make a test executable");
+            return;
+        }
+        let mut info = Dictionary::new();
+        info.insert("CFBundleIdentifier".into(), Value::String("com.example.mac".into()));
+        info.insert("CFBundleExecutable".into(), Value::String("Test".into()));
+        info.insert("CFBundlePackageType".into(), Value::String("APPL".into()));
+        plist::to_file_xml(app.join("Contents/Info.plist"), &Value::Dictionary(info)).unwrap();
+        let mut entitlements = Dictionary::new();
+        entitlements.insert("com.apple.security.app-sandbox".into(), Value::Boolean(false));
+        sign_bundle(&app, &BundleSigningSettings::new("TEAMID", entitlements, None)).unwrap();
+        let binary = std::fs::read(app.join("Contents/MacOS/Test")).unwrap();
+        let needle = b"com.apple.security.app-sandbox";
+        assert!(binary.windows(needle.len()).any(|w| w == needle), "the executable's signature lacks the app's entitlements");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An app carrying an object file (Kodi's CPython ships python.o) signs, the object sealed as a plain file.

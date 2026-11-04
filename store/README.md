@@ -123,8 +123,8 @@ the project to `config.json`, preserves other settings, and makes it available i
 - `"builder": "apparition"` in `config.json` builds and re-signs with `apparition build`
   (`apparitionCli`), build-and-sign ported to Rust: the same confs, flags, report and kept builds,
   signed through Apparition's signer and installed and launched over its own pairing with the
-  device, never `devicectl` (so every device must be paired with Apparition on this Mac). Mac
-  apps still build with `bin/build-and-sign`, as does everything when `builder` is unset.
+  device, never `devicectl` (so every device must be paired with Apparition on this Mac). Unset,
+  everything builds with `bin/build-and-sign`. `--distribution` builds still need the script.
 
 ## Branding
 

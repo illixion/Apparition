@@ -75,7 +75,9 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   on a device yet. A headset that isn't worn holds launches (`devicectl`'s too); the build says so.
   `--sign-dylib` signs a live patch through the core (`sign_code`); with `DEBUGTRACE_BAS="apparition build"`
   (DebugTrace a1cfde5) a patch it signed loaded on the Vision Pro. The Node store runs it for builds
-  and re-signs with `"builder": "apparition"` in `config.json` (off by default). Not yet: Mac apps,
+  and re-signs with `"builder": "apparition"` in `config.json` (off by default). Mac apps build too
+  (`sign_mac_app`: the target's .entitlements, no profile): WebOverlay and Macrobot signed with the
+  same entitlements as `build-and-sign`'s, and the Rust-signed WebOverlay ran. Not yet:
   `--distribution`, `EXTRA_ENTITLEMENTS_PLIST` and `ASSOCIATED_DOMAINS` (no repo sets them).
 
 Not done:

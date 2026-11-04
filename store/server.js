@@ -62,10 +62,10 @@ function apparitionCli() {
 }
 // What builds and re-signs: config `builder: "apparition"` runs `apparition build`, the Rust port of
 // build-and-sign (same flags, report, build/ outputs and kept builds; it installs and launches over
-// Apparition's own pairing, never devicectl). Mac apps, which it doesn't build yet, and every job
-// by default use the script (`buildAndSign`). Returns [command, ...leading arguments].
-function builderFor(job) {
-  if (CONFIG.builder === 'apparition' && !job.macApp && job.platform !== 'macOS') return [apparitionCli(), 'build'];
+// Apparition's own pairing, never devicectl; a Mac app is kept as build/<Name>-macOS.app, as the
+// script keeps it). Unset, jobs use the script (`buildAndSign`). Returns [command, ...leading arguments].
+function builderFor() {
+  if (CONFIG.builder === 'apparition') return [apparitionCli(), 'build'];
   return [CONFIG.buildAndSign || DEFAULT_BUILD_AND_SIGN];
 }
 // build-and-sign installs to `QUIET_DEVICES` through `apparition push` (Apparition's own tunnel)
@@ -646,7 +646,7 @@ async function executeBuild(job) {
     log('\n');
     gitCache.delete(buildCwd);
 
-    const buildArgs = builderFor(job);
+    const buildArgs = builderFor();
     if (job.noDeploy) buildArgs.push('--no-deploy');
     // Device-side signing owns provisioning, so the Mac only compiles and retains an unsigned IPA.
     if (job.installVia === 'device') buildArgs.push('--unsigned');
@@ -951,7 +951,7 @@ async function executeResign(job) {
     log(`==> Re-signing ${job.bundleId}${kept ? ` (kept build ${job.resign.from})` : ''} for ${job.device} with ${profile.name} [${profile.appId}]\n`);
     const result = await resignTool.performResign({
       ipa: kept?.file, bundleId: job.bundleId, device: job.device, profileFile: profile.file,
-      buildAndSign: builderFor(job), cwd: rc.path,
+      buildAndSign: builderFor(), cwd: rc.path,
       env: { ...process.env, PLATFORM: job.platform, APPARITION_BUILD_DIR: buildStore(), ...quietInstallEnv(CONFIG) },
       dataMode: job.resign.dataMode, dryRun: job.resign.dryRun, exec, log,
       apparition: quietAppsDevices(CONFIG).includes(job.device) ? apparitionCli() : null,

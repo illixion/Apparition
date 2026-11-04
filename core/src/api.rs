@@ -28,7 +28,7 @@ pub use crate::launch::Launched;
 pub use crate::{
     Session,
     account::{delete_app_id, list_app_ids, list_certificates, revoke_certificate},
-    identity::{Platform, import_identity, import_profile, list as signing_inventory, sign_offline, sign_offline_keeping, sign_code},
+    identity::{Platform, import_identity, import_profile, list as signing_inventory, sign_offline, sign_offline_keeping, sign_code, sign_mac_app},
     share::{SEALED_EXTENSION, export_apple_id_key, export_apple_id_key_sealed, import_any_signing_file, import_signing_file, sealed_from},
     AnisetteCheck, BUILTIN_ANISETTE, NO_ANISETTE, check_anisette, PAIRED_MAC_ANISETTE, default_anisette, REFUSED_ANDROID_ANISETTE, REFUSED_ANISETTE, SharedCertificate, builtin_anisette_available, is_shared_certificate, native_anisette,
     sign_in, sign_with_apple_id, sign_with_apple_id_as, capability_refusals,

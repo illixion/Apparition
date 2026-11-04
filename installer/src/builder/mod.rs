@@ -8,7 +8,10 @@
 //! `--sign-dylib F...` signs loose Mach-O files with the conf's certificate, which is how `inject`
 //! signs a live patch (`DEBUGTRACE_BAS="apparition build"`).
 //!
-//! Not here yet (`build-and-sign` still does them): Mac apps, `--distribution`, and the conf keys
+//! A Mac app (`PLATFORM=macOS`) is built, signed with its target's .entitlements and kept as
+//! `build/<Name>-macOS.app`, as `build-and-sign` does; it is never installed or launched.
+//!
+//! Not here yet (`build-and-sign` still does them): `--distribution`, and the conf keys
 //! `EXTRA_ENTITLEMENTS_PLIST` and `ASSOCIATED_DOMAINS`, which no repo sets.
 
 mod bundle;
@@ -369,17 +372,30 @@ fn prune_legacy_derived_data(build_dir: &Path) {
     }
 }
 
-/// `xcodebuild -showBuildSettings -json`'s product, entitlements file and project dir for `target`.
-fn locate_product(xcodebuild: &mut Command, target: &str) -> Option<PathBuf> {
+/// What `xcodebuild -showBuildSettings -json` says about `target`'s product.
+struct Product {
+    app: Option<PathBuf>,
+    /// `CODE_SIGN_ENTITLEMENTS`, as written (relative to `project_dir` unless absolute).
+    entitlements: Option<String>,
+    project_dir: Option<PathBuf>,
+}
+
+fn locate_product(xcodebuild: &mut Command, target: &str) -> Option<Product> {
     let output = xcodebuild.stdin(Stdio::null()).stderr(Stdio::null()).output().ok().filter(|o| o.status.success())?;
     let text = String::from_utf8_lossy(&output.stdout);
     let entries: serde_json::Value = serde_json::from_str(&text[text.find('[')?..]).ok()?;
     let entries = entries.as_array()?;
     let chosen = entries.iter().find(|e| e["target"] == target).or(entries.first())?;
     let settings = &chosen["buildSettings"];
-    let dir = settings["BUILT_PRODUCTS_DIR"].as_str()?;
-    let name = settings["FULL_PRODUCT_NAME"].as_str().or(settings["WRAPPER_NAME"].as_str())?;
-    name.ends_with(".app").then(|| Path::new(dir).join(name))
+    let app = settings["BUILT_PRODUCTS_DIR"].as_str()
+        .zip(settings["FULL_PRODUCT_NAME"].as_str().or(settings["WRAPPER_NAME"].as_str()))
+        .filter(|(_, name)| name.ends_with(".app"))
+        .map(|(dir, name)| Path::new(dir).join(name));
+    Some(Product {
+        app,
+        entitlements: settings["CODE_SIGN_ENTITLEMENTS"].as_str().filter(|e| !e.is_empty()).map(String::from),
+        project_dir: settings["PROJECT_DIR"].as_str().filter(|d| !d.is_empty()).map(PathBuf::from),
+    })
 }
 
 fn first_app(dir: &Path) -> Option<PathBuf> {
@@ -520,8 +536,18 @@ impl Build {
         }
         let (mut sign_only, mut no_deploy, mut input_ipa) = (o.sign_only, o.no_deploy, o.ipa.clone());
         let sdk = expected_sdk(&platform);
-        if sdk == Some("macosx") {
-            return Err("apparition build doesn't build Mac apps yet; use build-and-sign for this one".into());
+        let mac = sdk == Some("macosx");
+        if mac {
+            if o.run || o.mcp == Some(true) {
+                return Err("macOS builds produce a .app for manual copying; --run/--log/--mcp are device-only options.".into());
+            }
+            if sign_only || input_ipa.is_some() {
+                return Err("macOS mode builds a fresh .app; --sign-only/--ipa are for mobile IPA files.".into());
+            }
+            if o.unsigned {
+                return Err("--unsigned is only supported for a fresh mobile build kept for device-side signing".into());
+            }
+            no_deploy = true;
         }
         if conf.get("EXTRA_ENTITLEMENTS_PLIST").is_some() || conf.get("ASSOCIATED_DOMAINS").is_some() {
             return Err("this repo's conf sets EXTRA_ENTITLEMENTS_PLIST or ASSOCIATED_DOMAINS, which apparition build doesn't apply yet; use build-and-sign".into());
@@ -544,7 +570,7 @@ impl Build {
             (true, "apparition") => build_dir.join("DerivedData-inject-apparition"),
             _ => return Err("INJECT_BACKEND must be dynamic or apparition".into()),
         };
-        if !sign_only && conf.get("PROJECT_PATH").is_none() {
+        if !sign_only && !mac && conf.get("PROJECT_PATH").is_none() {
             if let Some(found) = find_static_ipa(&root, &build_dir) {
                 if target.is_empty() { target = found.file_stem().unwrap_or_default().to_string_lossy().into_owned(); }
                 input_ipa = Some(found);
@@ -564,7 +590,7 @@ impl Build {
         let mut required: Vec<(&str, bool)> = Vec::new();
         if !o.unsigned {
             required.push(("DEV_P12_PATH", conf.get("DEV_P12_PATH").is_some()));
-            required.push(("DEV_PROFILE_PATH", profile_path.is_some()));
+            if !mac { required.push(("DEV_PROFILE_PATH", profile_path.is_some())) }
         }
         if sign_only {
             required.push(("TARGET_NAME", !target.is_empty()));
@@ -580,7 +606,8 @@ impl Build {
         let appex_profile = conf.get("DEV_APPEX_PROFILE_PATH").map(PathBuf::from);
         let watch_profile = conf.get("DEV_WATCH_PROFILE_PATH").map(PathBuf::from);
         if !o.unsigned {
-            for file in [conf.get("DEV_P12_PATH").map(PathBuf::from), profile_path.clone(), appex_profile.clone(), watch_profile.clone()].into_iter().flatten() {
+            let profiles = if mac { Vec::new() } else { vec![profile_path.clone(), appex_profile.clone(), watch_profile.clone()] };
+            for file in std::iter::once(conf.get("DEV_P12_PATH").map(PathBuf::from)).chain(profiles).flatten() {
                 if !file.is_file() { return Err(format!("File not found: {}", file.display())) }
             }
         }
@@ -601,6 +628,9 @@ impl Build {
         let mut app_path: Option<PathBuf> = None;
         let mut inject_dir: Option<PathBuf> = None;
         let unsigned_ipa = build_dir.join(format!("{target}.ipa"));
+        // A Mac app's copy that is signed and kept (`build/<product>-macOS.app`), and its entitlements.
+        let mut mac_app: Option<PathBuf> = None;
+        let mut mac_entitlements = plist::Dictionary::new();
 
         // Step 1: build.
         if !sign_only {
@@ -661,12 +691,22 @@ impl Build {
             self.show_log = false;
             println!("  Build succeeded.");
 
-            let mut product = locate_product(&mut xcodebuild(&["-showBuildSettings", "-json"]), &target);
+            let settings = locate_product(&mut xcodebuild(&["-showBuildSettings", "-json"]), &target);
+            let mut product = settings.as_ref().and_then(|s| s.app.clone());
             if let Some(path) = product.as_ref().filter(|p| !p.is_dir()) {
                 eprintln!("WARNING: xcodebuild reported a product that is not on disk: {}", path.display());
                 product = None;
             }
-            let products = derived_data.join("Build/Products").join(format!("{}-{}", o.config, sdk.unwrap_or("*")));
+            let products = derived_data.join("Build/Products").join(if mac { o.config.to_string() } else { format!("{}-{}", o.config, sdk.unwrap_or("*")) });
+            if mac {
+                if let Some(file) = settings.as_ref().and_then(|s| s.entitlements.clone()) {
+                    let file = if Path::new(&file).is_absolute() { PathBuf::from(file) }
+                        else { settings.as_ref().and_then(|s| s.project_dir.clone()).unwrap_or_else(|| root.clone()).join(file) };
+                    if !file.is_file() { return Err(format!("Xcode entitlements file not found: {}", file.display())) }
+                    mac_entitlements = plist::Value::from_file(&file).ok().and_then(plist::Value::into_dictionary)
+                        .ok_or_else(|| format!("{} isn't a readable entitlements file", file.display()))?;
+                }
+            }
             let product = product
                 .or_else(|| Some(products.join(format!("{target}.app"))).filter(|p| p.is_dir()))
                 .or_else(|| first_app(&products).inspect(|p| println!("WARNING: {target}.app not found; using {} (product name != TARGET_NAME?)", p.file_name().unwrap_or_default().to_string_lossy())))
@@ -687,17 +727,30 @@ impl Build {
             after = Some(provenance::snapshot(&root, Some(&arguments), Some(&env))?);
             // An earlier build-and-sign embedded the patch runtime in DerivedData's product itself.
             let _ = fs::remove_file(product.join("Frameworks/DebugTraceInject.dylib"));
-            let payload = build_dir.join("Payload");
-            let _ = fs::remove_dir_all(&payload);
-            fs::create_dir_all(&payload).map_err(|e| e.to_string())?;
-            clone_tree(&product, &payload)?;
+            let _ = fs::remove_file(product.join("Contents/Frameworks/DebugTraceInject.dylib"));
+            let packaged = if mac {
+                // Named after the product, not TARGET_NAME (OneirosDesktop builds Oneiros.app).
+                let copy = build_dir.join(format!("{}-macOS.app", product.file_stem().unwrap_or_default().to_string_lossy()));
+                let _ = fs::remove_dir_all(&copy);
+                clone_tree(&product, &copy)?;
+                mac_app = Some(copy.clone());
+                copy
+            } else {
+                let payload = build_dir.join("Payload");
+                let _ = fs::remove_dir_all(&payload);
+                fs::create_dir_all(&payload).map_err(|e| e.to_string())?;
+                clone_tree(&product, &payload)?;
+                payload.join(product.file_name().unwrap_or_default())
+            };
             if let Some(dir) = &inject_dir {
-                let packaged = payload.join(product.file_name().unwrap_or_default());
-                fs::create_dir_all(packaged.join("Frameworks")).map_err(|e| e.to_string())?;
-                run_logged(Command::new(&tool).arg("runtime").arg("--dir").arg(dir).arg("--out").arg(packaged.join("Frameworks/DebugTraceInject.dylib")),
+                let frameworks = if mac { packaged.join("Contents/Frameworks") } else { packaged.join("Frameworks") };
+                fs::create_dir_all(&frameworks).map_err(|e| e.to_string())?;
+                run_logged(Command::new(&tool).arg("runtime").arg("--dir").arg(dir).arg("--out").arg(frameworks.join("DebugTraceInject.dylib")),
                     &log, "building the live-patching runtime")?;
             }
-            zip_payload(&build_dir, &unsigned_ipa, &log)?;
+            if !mac {
+                zip_payload(&build_dir, &unsigned_ipa, &log)?;
+            }
             app_path = Some(product);
         }
 
@@ -708,10 +761,11 @@ impl Build {
             let ipa = input_ipa.clone().unwrap_or_else(|| unsigned_ipa.clone());
             if !ipa.is_file() { return Err(format!("IPA not found at {}", ipa.display())) }
             run_logged(Command::new("/usr/bin/unzip").arg("-qo").arg(&ipa).arg("-d").arg(&unpack), &log, "unzip")?;
-        } else {
+        } else if !mac {
             clone_tree(&build_dir.join("Payload"), &unpack)?;
         }
-        let app = first_app(&unpack.join("Payload")).ok_or("No .app found in IPA")?;
+        // A Mac app is signed where it is kept; a mobile one in the scratch folder, then zipped.
+        let app = match &mac_app { Some(app) => app.clone(), None => first_app(&unpack.join("Payload")).ok_or("No .app found in IPA")? };
         let info_path = bundle::info_path(&app);
         let info = bundle::read_info(&info_path)?;
         let original_bundle_id = bundle::string(&info, "CFBundleIdentifier").unwrap_or_default();
@@ -790,6 +844,15 @@ impl Build {
         let mut signed_count = 0;
         if o.unsigned {
             println!("==> Keeping unsigned IPA for device-side signing");
+        } else if mac {
+            println!("==> Signing...");
+            let signing = work.0.join("signing");
+            let p12 = fs::read(conf.get("DEV_P12_PATH").unwrap_or_default()).map_err(|e| format!("couldn't read the .p12: {e}"))?;
+            let password = conf.get("DEV_P12_PASSWORD").or(conf.get("P12_PASSWORD")).unwrap_or_default().to_string();
+            let identity = api::import_identity(&signing, &p12, password).map_err(|e| format!("No code-signing identity in {} (is the password correct?): {}", conf.get("DEV_P12_PATH").unwrap_or_default(), api::describe(&e)))?;
+            let identity_id = identity["identity"]["id"].as_str().ok_or("the imported certificate has no id")?.to_string();
+            api::sign_mac_app(&signing, &identity_id, &app, mac_entitlements.clone()).map_err(|e| format!("Signing failed: {}", api::describe(&e)))?;
+            signed_count = signed_items(&app);
         } else {
             println!("==> Signing...");
             let signing = work.0.join("signing");
@@ -816,9 +879,12 @@ impl Build {
             signed_count = signed_items(&app);
         }
 
-        // Step 7: repack.
+        // Step 7: repack (a Mac app stays the signed .app).
         let signed_ipa = build_dir.join(format!("{target}-{}.ipa", if o.unsigned { "unsigned" } else { "signed" }));
-        zip_payload(&unpack, &signed_ipa, &log)?;
+        let artifact = match &mac_app {
+            Some(app) => app.clone(),
+            None => { zip_payload(&unpack, &signed_ipa, &log)?; signed_ipa.clone() }
+        };
 
         // Step 8.5: keep the dSYMs and the build before anything is installed.
         let mut symbols = None;
@@ -838,7 +904,7 @@ impl Build {
         }
         let store = conf.get("APPARITION_BUILD_DIR").map(PathBuf::from).unwrap_or_else(|| state.join("apparition/builds"));
         let manifest = keep::publish(keep::Publish {
-            store: &store, app: &app, artifact: &signed_ipa, project: &root, before, after, build_id: &build_id,
+            store: &store, app: &app, artifact: &artifact, project: &root, before, after, build_id: &build_id,
             key_id: credential.as_ref().map(|c| c.key_id.as_str()), platform: &platform, configuration: o.config,
             original_bundle_id: &original_bundle_id, symbols: symbols.as_deref(),
         }).map_err(|e| format!("Build manifest: {e}"))?;
@@ -956,10 +1022,15 @@ impl Build {
         line("Manifest:", &manifest.display().to_string());
         line("Config:", o.config);
         line("Signed:", &format!("{signed_count} items"));
-        line("IPA:", &signed_ipa.display().to_string());
+        if mac {
+            line("App path:", &artifact.display().to_string());
+            line("Next step:", "copy this .app wherever you want");
+        } else {
+            line("IPA:", &signed_ipa.display().to_string());
+        }
         let device_label = device.as_ref().map(|d| d.name.clone()).or(device_name.clone()).unwrap_or_default();
         if installed { line("Status:", &format!("✓ installed on {device_label}")) }
-        else { line("Status:", &format!("not deployed (install with: apparition push '{}' --device <name>)", signed_ipa.display())) }
+        else if !mac { line("Status:", &format!("not deployed (install with: apparition push '{}' --device <name>)", signed_ipa.display())) }
         match launched {
             Launched::None => {}
             Launched::Run => line("Launched:", &format!("✓ running on {device_label}")),
