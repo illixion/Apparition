@@ -368,9 +368,20 @@ elif has macos; then
   [[ "$rustc_version" == "rustc $RUST_TOOLCHAIN "* ]] \
     || { echo "error: rustc is $rustc_version, not $RUST_TOOLCHAIN (rustup toolchain install $RUST_TOOLCHAIN)" >&2; exit 1; }
   xcode_build="$(xcodebuild -version | sed -n 's/^Build version //p')"
+  if [[ "$xcode_build" != "$XCODE_BUILD" && -z "${DEVELOPER_DIR:-}" ]]; then
+    # The selected Xcode isn't the pinned one: use an /Applications/Xcode*.app that is, as the audit does.
+    for app in /Applications/Xcode*.app; do
+      if [[ "$(DEVELOPER_DIR="$app/Contents/Developer" xcodebuild -version 2>/dev/null | sed -n 's/^Build version //p')" == "$XCODE_BUILD" ]]; then
+        export DEVELOPER_DIR="$app/Contents/Developer"
+        xcode_build="$XCODE_BUILD"
+        echo "==> using $app (Xcode build $XCODE_BUILD, scripts/release-toolchain)"
+        break
+      fi
+    done
+  fi
   [[ "$xcode_build" == "$XCODE_BUILD" ]] || {
     echo "error: this is Xcode build $xcode_build; the macOS release files are built with $XCODE_BUILD (scripts/release-toolchain)." >&2
-    echo "       Install that Xcode beside this one and select it: DEVELOPER_DIR=/Applications/<it>.app/Contents/Developer" >&2
+    echo "       Install that Xcode beside this one as /Applications/Xcode-<version>.app, or select it with DEVELOPER_DIR." >&2
     exit 1
   }
   tauri_cli="$(command -v cargo-tauri || true)"

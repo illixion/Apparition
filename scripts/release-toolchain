@@ -9,4 +9,6 @@
 # /Applications/Xcode_*.app with this build and fails when the image has none; the audit does the
 # same with this Mac's /Applications/Xcode*.app.
 RUST_TOOLCHAIN=1.97.1
-XCODE_BUILD=27B52
+# Xcode 27.1, on this Mac and on the xcode-27-arm64 image (which has 27.0, 27.1 and only the 27.2 RC).
+# Comments go on their own lines: the workflow copies these lines into GITHUB_ENV as they are.
+XCODE_BUILD=27A9275
