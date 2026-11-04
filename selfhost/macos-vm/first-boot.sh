@@ -1,9 +1,12 @@
 #!/bin/bash
-# Experimental macOS 26 ownership probe. Runs as root inside the guest, once.
+# The anisette VM's first boot: makes the account (the first user, so macOS gives it a secure token, which csrutil in
+# recoveryOS needs), logs it in automatically, skips Setup Assistant's panes, then shuts down. Root, inside the guest,
+# once; written there from recoveryOS by setup.sh's provision stage.
 set -eu
 STATE=/Library/Application\ Support/ApparitionBootstrap
 exec >> "$STATE/boot.log" 2>&1
-[ ! -e "$STATE/provisioning-v4-finished" ] || exit 0
+# v5: also updates the Preboot volume; a guest that finished v4 runs once more for that (all of it is idempotent).
+[ ! -e "$STATE/provisioning-v5-finished" ] || exit 0
 trap 'printf "failed\n" > "$STATE/result"' ERR
 if [ ! -e "$STATE/finished" ]; then
     # Refuse to alter a guest already provisioned with a real account.
@@ -41,12 +44,12 @@ chown 0:0 /etc/kcpassword
 unset PASSWORD
 /usr/bin/fdesetup status > "$STATE/filevault-status" 2>&1
 /usr/sbin/sysadminctl -autologin status > "$STATE/autologin-status" 2>&1
-# SSH is a management path independent of Finder and Setup Assistant.
-/usr/bin/install -d -o apparition -g staff -m 700 /Users/apparition/.ssh
+# SSH only for development (`apparition vm setup --public-key` hands in a key): the app's appliance has no Remote Login.
 if [ -f "$STATE/authorized_keys" ]; then
+    /usr/bin/install -d -o apparition -g staff -m 700 /Users/apparition/.ssh
     /usr/bin/install -o apparition -g staff -m 600 "$STATE/authorized_keys" /Users/apparition/.ssh/authorized_keys
+    /bin/launchctl load -w /System/Library/LaunchDaemons/ssh.plist
 fi
-/bin/launchctl load -w /System/Library/LaunchDaemons/ssh.plist
 # Suppress per-user upgrade/setup panes as well as the system setup marker.
 PREFS=/Users/apparition/Library/Preferences/com.apple.SetupAssistant
 mkdir -p /Users/apparition/Library/Preferences
@@ -58,8 +61,12 @@ defaults write "$PREFS" LastSeenBuddyBuildVersion -string "$(sw_vers -buildVersi
 chown apparition:staff "$PREFS.plist"
 chmod 600 "$PREFS.plist"
 /usr/bin/touch /var/db/.AppleSetupDone
+# recoveryOS's csrutil authenticates an administrator it finds on the Preboot volume, which macOS copies there lazily:
+# this boot shuts down within seconds, before it would ("no admin users authorized for recovery"). Copied from
+# recoveryOS instead, the account is listed but its password is refused, so it has to happen here.
+/usr/sbin/diskutil apfs updatePreboot / > "$STATE/preboot-update.log" 2>&1
 printf 'provisioned\n' > "$STATE/result"
-/usr/bin/touch "$STATE/provisioning-v4-finished"
+/usr/bin/touch "$STATE/provisioning-v5-finished"
 # Send readiness before shutting down, even if the periodic reporter has not run yet.
 /bin/bash "$STATE/report-status.sh" --once || true
 # loginwindow may have started before account creation; restart once after setup.

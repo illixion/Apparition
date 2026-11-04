@@ -5,7 +5,7 @@ STATE=/Library/Application\ Support/ApparitionBootstrap
 REPORT="$STATE/report-$$.json"
 while :; do
   PROVISIONED=false
-  [ -e "$STATE/provisioning-v4-finished" ] && PROVISIONED=true
+  [ -e "$STATE/provisioning-v5-finished" ] && PROVISIONED=true
   TOKEN=false OWNER=false SIP=false AMFI=false SSH=false RELAY=false ANISETTE=false SETUP=false
   sysadminctl -secureTokenStatus apparition 2>&1 | grep -q 'ENABLED' && TOKEN=true
   GUID=$(dscl . -read /Users/apparition GeneratedUID 2>/dev/null | awk '{print $2}')

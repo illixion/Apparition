@@ -50,6 +50,8 @@ pub mod companion_client;
 pub mod stay_awake;
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 pub mod vm_setup;
+#[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
+pub mod vm;
 #[cfg(feature = "desktop")]
 pub mod relay;
 #[cfg(feature = "desktop")]
@@ -431,7 +433,7 @@ pub async fn check_anisette(requested: &str, data_dir: &std::path::Path) -> Resu
 }
 
 /// The code of the GrandSlam error behind `error` (-22411, -80045...), if one is.
-fn auth_code(error: &Report) -> Option<i64> {
+pub(crate) fn auth_code(error: &Report) -> Option<i64> {
     error.iter_reports().find_map(|cause| match cause.downcast_current_context::<isideload::SideloadError>()? {
         isideload::SideloadError::AuthWithMessage(code, _) => Some(*code),
         _ => None,

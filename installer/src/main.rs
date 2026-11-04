@@ -31,6 +31,7 @@ mod inject;
 mod developer;
 mod builder;
 mod crash_reports;
+mod vm;
 
 const USAGE: &str = "\
 Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
@@ -200,6 +201,14 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       this Mac.
   apparition browse
       List the companions mDNS finds from here, for 10 seconds: a check that multicast works.
+  apparition vm setup [--ipsw <file>] | status | serve | quit | check | remove     (Mac with Apple silicon)
+      The anisette VM, for a Mac on macOS 27, which keeps its own anisette to itself: a macOS 26 VM
+      that exists only for that, the one the app's Companion tab sets up. setup downloads macOS
+      26.6.2 from Apple (or uses a copy already on this Mac, checked against Apple's SHA-256),
+      installs it and prepares it with no questions: about 11 minutes with the image on this Mac,
+      45 with the download. It carries on where it stopped if interrupted. Then sign-ins here use it, and it is saved to disk whenever it is idle
+      or stopped (about 450 MB), resuming in a second. quit saves and stops it; check asks Apple
+      whether it accepts the VM's anisette, without an Apple ID. `apparition vm help` lists the rest.
   apparition vm-setup                           (macOS)
       Set up a macOS VM on this Mac as an anisette companion, with no internet: serves this
       copy and its helper to the VM's recoveryOS and prints the line to type there. Stops by
@@ -274,6 +283,7 @@ async fn main() -> ExitCode {
         }
         Some("link") => link(&args[1..]),
         Some("vm-setup") => vm_setup().await,
+        Some("vm") => vm::run(&args[1..]).await,
         Some("--version" | "-V" | "version") => {
             println!("apparition {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
