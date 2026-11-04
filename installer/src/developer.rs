@@ -285,7 +285,7 @@ mod tests {
 
 /// The whole path on real sockets: a Mac's companion offering its Store, a computer pairing for
 /// developer access, then the agent's MCP messages and a deploy through the encrypted channel.
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod end_to_end {
     use super::*;
     use apparition_service::devices::{App, Device, Devices, Fut, Installed};
@@ -368,7 +368,8 @@ mod end_to_end {
         let message = json!({ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { "name": "deploy", "arguments": { "path": ipa, "device": "ixPhone", "install": false } } });
         let kept = answer(&target, &message.to_string()).await.unwrap();
         let kept: Value = serde_json::from_str(kept["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!((kept["installed"].as_bool(), kept["message"].as_str()), (Some(false), Some("Thing is on the Mac. Open Apparition on ixPhone to install it.")));
+        let expected = format!("Thing is on {}. Open Apparition on ixPhone to install it.", apparition_service::HERE);
+        assert_eq!((kept["installed"].as_bool(), kept["message"].as_str()), (Some(false), Some(expected.as_str())));
         assert_eq!(phone.0.lock().unwrap().len(), 1, "nothing more was installed");
         let id = text["buildId"].as_str().unwrap();
         let manifest: Value = serde_json::from_slice(&std::fs::read(mac.path().join("builds").join(id).join("manifest.json")).unwrap()).unwrap();

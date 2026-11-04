@@ -26,7 +26,7 @@ tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "si
 [target.'cfg(target_os = "macos")'.dependencies]
 apparition-core = { path = "../core", features = ["anisette"] }
 
-[target.'cfg(target_os = "macos")'.dev-dependencies]
+[dev-dependencies]
 # The Store, for the end-to-end test of `mcp` and `deploy` through a paired companion.
 apparition-service = { path = "../service" }
 tempfile = "3"

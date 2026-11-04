@@ -18,9 +18,12 @@ only as the fallback until the Rust service passes the parity checklist, then go
 ## Status (2026-11-04)
 
 Every ported route has a test against the real Node store (or, for the MCP server, the Python
-`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 55 tests,
+`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 56 tests,
 `APPARITION_REQUIRE_NODE=1 cargo test -p apparition-service` (without the variable, the oracle
-tests say SKIPPED when Node doesn't run).
+tests say SKIPPED when Node doesn't run). They pass on macOS, natively on Windows (cross-built
+for `x86_64-pc-windows-gnu`, run with the PC's Node) and on Linux (arm64, in Docker), as does the
+command line's end-to-end test of pairing, the encrypted channel, MCP and deploy on real sockets.
+None of it has been run with a real device or two real computers yet.
 
 **Running now (macOS):** the desktop app runs this service in-process on loopback beside the Node
 build service, and offers it to computers paired for developer access over the companion channel.
