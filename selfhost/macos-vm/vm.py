@@ -24,7 +24,7 @@ RUNNER = ROOT / 'build/macos-vm/vm'
 def control(bundle, operation='status', **values):
     config = json.loads((bundle / 'control.json').read_text())
     with socket.create_connection(('127.0.0.1', config['port']), 2) as sock:
-        sock.settimeout(60 if operation in ('screen','type') else 3)
+        sock.settimeout(60 if operation in ('screen','type','click-text') else 3)
         sock.sendall(json.dumps(dict(token=config['token'], operation=operation, **values)).encode() + b'\n')
         output = b''
         while b'\n' not in output:
@@ -185,72 +185,50 @@ def gateway(bundle):
     raise RuntimeError('No host interface matches the VM lease')
 
 
-def find_text(capture, word, top_only=False, cutoff=0.7):
-    """Best OCR item for `word`, tolerant of misreads like 'Utilf(ies'. Returns (x, y) or None."""
-    import difflib
-    best = None
-    for item in capture.get('items', []):
-        if top_only and item['y'] > 0.1: continue
-        score = difflib.SequenceMatcher(None, ''.join(item['text'].lower().split()), word).ratio()
-        if score >= cutoff and (best is None or score > best[0]): best = (score, item)
-    return (best[1]['x'], best[1]['y']) if best else None
-
-
-def open_terminal(bundle, capture):
-    """Utilities > Terminal with the pointer: modifier chords never reach the guest, plain input does."""
-    menu = find_text(capture, 'utilities', top_only=True)
-    if not menu: return
-    control(bundle,'click',x=str(menu[0]),y=str(menu[1]))
-    time.sleep(1.5)
-    opened = control(bundle,'screen')
-    entry = find_text(opened, 'terminal', cutoff=0.8)
-    if entry:
-        control(bundle,'click',x=str(entry[0]),y=str(entry[1]))
-        time.sleep(3)
+def open_terminal(bundle, attempt):
+    """Utilities > Terminal: the shortcut first, then the menu by its text if the shortcut didn't take."""
+    if attempt < 3:
+        control(bundle,'key',key='cmd+shift+t')
     else:
-        control(bundle,'key',key='escape')
+        if attempt == 3: print('Cmd+Shift+T did not open Terminal; using the Utilities menu.',flush=True)
+        control(bundle,'click-text',text='Utilities',region='menubar')
+        time.sleep(1)
+        control(bundle,'click-text',text='Terminal')
+    time.sleep(3)
 
 
 def recovery_input(bundle, port, completed):
     sent_command = consented = password_sent = False
+    terminal_attempts = 0
     end = time.monotonic() + 900
     print('Driving only this VM window through the runner. Allow its own-window screen capture if macOS asks.',flush=True)
     while time.monotonic() < end and not completed.is_set():
         if not live(bundle):
             return
-        capture = control(bundle,'screen')
-        lower = capture.get('text','').lower()
-        # OCR splits words in the menu bar ("Util ities"); match on a copy without spaces.
-        squashed = ''.join(lower.split())
+        lower = control(bundle,'screen').get('text','').lower()
         if 'language' in lower and 'english' in lower:
             control(bundle,'key',key='return')
-        elif 'options' in lower and 'restart' in lower:
-            # Continue appears below the selected icon. Its position disambiguates
-            # macOS vs Options even if OCR misspells the volume's name.
-            # Options is the last icon: Right twice always lands on it (extra presses are no-ops),
-            # then Return. OCR often can't read the small grey Continue label, so don't wait on it.
+        elif 'options' in lower and 'restart' in lower and 'shut down' in lower:
+            # Startup picker. Options is the last icon, so Right twice always lands on it.
             for _ in range(2):
                 control(bundle,'key',key='right'); time.sleep(0.4)
             control(bundle,'key',key='return')
             time.sleep(10)
-        elif 'timemachine' in squashed or 'macostahoe' in squashed:
-            open_terminal(bundle, capture)
-        elif 'password' in lower and 'apparition' in lower and 'user' in lower and consented and not password_sent:
+        elif 'restore from time machine' in lower and 'disk utility' in lower:
+            open_terminal(bundle, terminal_attempts)
+            terminal_attempts += 1
+        elif 'password for user' in lower and consented and not password_sent:
             # Never print the password or the captured terminal text.
             lines=(bundle/'credentials.txt').read_text().splitlines()
             password=next(line.removeprefix('Password: ') for line in lines if line.startswith('Password: '))
             control(bundle,'type',text=password)
             control(bundle,'key',key='return')
             password_sent=True
-        elif 'allow booting unsigned' in lower and not consented:
+        elif 'booting unsigned' in lower and not consented:
             control(bundle,'type',text='y\n')
             consented=True
         elif 'bash' in lower and not sent_command:
-            host=gateway(bundle)
-            # Shift never reaches the guest, so type only unshifted keys: no ':' (printf makes it
-            # from octal 072), no '&&' (';'), no capital letters (-fs, not -fsS).
-            host_port = f'{host}\\072{port}'
-            command=f"curl -fs `printf '{host_port}'`/setup.sh -o /tmp/s.sh; bash /tmp/s.sh\n"
+            command=f'curl -fsS {gateway(bundle)}:{port}/setup.sh -o /tmp/s.sh && bash /tmp/s.sh\n'
             control(bundle,'type',text=command)
             sent_command=True
         elif 'error:' in lower or 'incorrect password' in lower or 'unknown user' in lower:
@@ -336,13 +314,15 @@ def main():
         if name == 'setup':
             p.add_argument('--manual-recovery',action='store_true',help='Use the keyboard yourself instead of own-window automation')
             p.add_argument('--companion', type=lambda p: Path(p).expanduser().resolve(), required=True)
-    for name in ['status','run','recovery','shutdown','network','key','type','click','screen','force-stop','credentials']:
+    for name in ['status','run','recovery','shutdown','network','key','type','click','click-text','screen','force-stop','credentials']:
         p=commands.add_parser(name)
         p.add_argument('bundle', type=lambda p: Path(p).expanduser().resolve())
         if name in ['network','run']:
             p.add_argument('--network',choices=['off','on'],default='off',required=name=='network')
         if name == 'click':
             p.add_argument('x'); p.add_argument('y')
+        if name == 'click-text':
+            p.add_argument('text'); p.add_argument('--region',choices=['all','menubar'],default='all')
         if name in ['key','type']:
             p.add_argument('value', help='key chord, or path to a UTF-8 text file (never logged)')
         if name == 'recovery':
@@ -362,6 +342,7 @@ def main():
     elif args.command == 'network': print(json.dumps(control(args.bundle,'network-'+args.network)))
     elif args.command == 'screen': print(json.dumps(control(args.bundle,'screen'),indent=2))
     elif args.command == 'click': control(args.bundle,'click',x=args.x,y=args.y)
+    elif args.command == 'click-text': print(json.dumps(control(args.bundle,'click-text',text=args.text,region=args.region)))
     elif args.command == 'key': control(args.bundle,'key',key=args.value)
     elif args.command == 'type': control(args.bundle,'type',text=Path(args.value).read_text())
     elif args.command == 'credentials': print((args.bundle/'credentials.txt').read_text(),end='')

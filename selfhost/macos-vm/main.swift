@@ -21,7 +21,7 @@ struct Bundle_ {
 }
 
 func makeConfig(_ b: Bundle_, hardwareModel: VZMacHardwareModel, machineID: VZMacMachineIdentifier,
-                aux: VZMacAuxiliaryStorage, network: Bool = false, usbKeyboard: Bool = false) throws -> VZVirtualMachineConfiguration {
+                aux: VZMacAuxiliaryStorage, network: Bool = false) throws -> VZVirtualMachineConfiguration {
     let c = VZVirtualMachineConfiguration()
     let platform = VZMacPlatformConfiguration()
     platform.hardwareModel = hardwareModel
@@ -54,8 +54,7 @@ func makeConfig(_ b: Bundle_, hardwareModel: VZMacHardwareModel, machineID: VZMa
     gfx.displays = [VZMacGraphicsDisplayConfiguration(widthInPixels: 1920, heightInPixels: 1200, pixelsPerInch: 144)]
     c.graphicsDevices = [gfx]
 
-    // recoveryOS only gets modifier chords (Cmd+Shift+T) from a USB keyboard; the installed guest keeps the Mac one.
-    c.keyboards = [usbKeyboard ? VZUSBKeyboardConfiguration() : VZMacKeyboardConfiguration()]
+    c.keyboards = [VZMacKeyboardConfiguration()]
     c.pointingDevices = [VZMacTrackpadConfiguration()]
 
     let audio = VZVirtioSoundDeviceConfiguration()
@@ -99,13 +98,13 @@ func create(ipsw: URL, dir: URL, diskGB: Int) async throws {
     print("CREATED \(dir.path)")
 }
 
-func configuration(_ dir: URL, network: Bool = false, usbKeyboard: Bool = false) throws -> VZVirtualMachineConfiguration {
+func configuration(_ dir: URL, network: Bool = false) throws -> VZVirtualMachineConfiguration {
     let b = Bundle_(dir: dir)
     guard let hw = VZMacHardwareModel(dataRepresentation: try Data(contentsOf: b.hwModel)),
           let mid = VZMacMachineIdentifier(dataRepresentation: try Data(contentsOf: b.machineID))
     else { fail("bad bundle") }
     return try makeConfig(b, hardwareModel: hw, machineID: mid,
-                          aux: VZMacAuxiliaryStorage(url: b.aux), network: network, usbKeyboard: usbKeyboard)
+                          aux: VZMacAuxiliaryStorage(url: b.aux), network: network)
 }
 
 @MainActor func install(ipsw: URL, dir: URL) async throws {
@@ -260,58 +259,26 @@ final class ControlServer {
     }
     func send(code: UInt16, flags: NSEvent.ModifierFlags) throws {
         guard let view, let window = view.window, vm.state == .running else { throw InputError.invalid }
-        let modifiers: [(NSEvent.ModifierFlags, UInt16)] = [(.control,59),(.option,58),(.shift,56),(.command,55)]
-        var active: NSEvent.ModifierFlags = []
+        // Each modifier: its generic flag, its left-hand key code, and the device-dependent bit
+        // (NX_DEVICEL*KEYMASK). VZ decides whether a flagsChanged event is a press or a release by
+        // testing only the device bit, so without it every modifier press reaches the guest as a release.
+        let modifiers: [(NSEvent.ModifierFlags, UInt16, UInt)] = [(.control, 59, 0x1), (.option, 58, 0x20),
+                                                                  (.shift, 56, 0x2), (.command, 55, 0x8)]
+        var active: UInt = 0
         func event(_ type: NSEvent.EventType, _ key: UInt16) -> NSEvent {
-            // flagsChanged can't be made with NSEvent.keyEvent; build it from a CGEvent so the
-            // type and modifier state are real.
-            if type == .flagsChanged || type == .keyDown || type == .keyUp,
-               let cg = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(key), keyDown: type != .keyUp) {
-                var cgFlags = CGEventFlags()
-                if active.contains(.command) { cgFlags.insert(.maskCommand) }
-                if active.contains(.shift) { cgFlags.insert(.maskShift) }
-                if active.contains(.control) { cgFlags.insert(.maskControl) }
-                if active.contains(.option) { cgFlags.insert(.maskAlternate) }
-                cg.flags = cgFlags
-                if type == .flagsChanged { cg.type = .flagsChanged }
-                if let ns = NSEvent(cgEvent: cg) { return ns }
-            }
-            return NSEvent.keyEvent(with: type, location: .zero, modifierFlags: active,
+            NSEvent.keyEvent(with: type, location: .zero, modifierFlags: NSEvent.ModifierFlags(rawValue: active),
                              timestamp: ProcessInfo.processInfo.systemUptime,
                              windowNumber: window.windowNumber, context: nil, characters: "",
                              charactersIgnoringModifiers: "", isARepeat: false, keyCode: key)!
         }
-        if !flags.isEmpty {
-            // Real events through the app's own queue: the view tracks modifier state from
-            // these, whereas calling flagsChanged on it directly leaves the guest without it.
-            let pid = ProcessInfo.processInfo.processIdentifier
-            func post(_ key: UInt16, down: Bool, _ mask: CGEventFlags, modifier: Bool = false) {
-                guard let cg = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(key), keyDown: down) else { return }
-                cg.flags = mask
-                if modifier { cg.type = .flagsChanged }
-                cg.postToPid(pid)
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            var mask = CGEventFlags()
-            let table: [(NSEvent.ModifierFlags, UInt16, CGEventFlags)] = [(.control,59,.maskControl),(.option,58,.maskAlternate),(.shift,56,.maskShift),(.command,55,.maskCommand)]
-            for (flag, key, bit) in table where flags.contains(flag) { mask.insert(bit); post(key, down: true, mask, modifier: true) }
-            post(code, down: true, mask)
-            Thread.sleep(forTimeInterval: 0.05)
-            post(code, down: false, mask)
-            for (flag, key, bit) in table.reversed() where flags.contains(flag) { mask.remove(bit); post(key, down: false, mask, modifier: true) }
-            return
-        }
-        for (flag, key) in modifiers where flags.contains(flag) {
-            active.insert(flag)
+        for (flag, key, device) in modifiers where flags.contains(flag) {
+            active |= flag.rawValue | device
             view.flagsChanged(with: event(.flagsChanged, key))
-            Thread.sleep(forTimeInterval: 0.05)
         }
         view.keyDown(with: event(.keyDown, code))
-        Thread.sleep(forTimeInterval: 0.08)
         view.keyUp(with: event(.keyUp, code))
-        Thread.sleep(forTimeInterval: 0.05)
-        for (flag, key) in modifiers.reversed() where flags.contains(flag) {
-            active.remove(flag)
+        for (flag, key, device) in modifiers.reversed() where flags.contains(flag) {
+            active &= ~(flag.rawValue | device)
             view.flagsChanged(with: event(.flagsChanged, key))
         }
     }
@@ -336,42 +303,79 @@ final class ControlServer {
         let out = (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
         connection.send(content: out + Data([10]), completion: .contentProcessed { _ in connection.cancel() })
     }
-    @MainActor func screen(recognize: Bool) async throws -> [String: Any] {
+    struct Word { let text: String; let box: CGRect }  // box: fractions of the window, origin top-left
+
+    /// Vision text recognition, one entry per word. `.accurate` costs ~0.1 s a frame but keeps
+    /// adjacent menu titles apart and reads small grey labels that `.fast` merges or drops.
+    nonisolated static func recognize(_ image: CGImage) throws -> [(line: String, words: [Word])] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.recognitionLanguages = ["en-US"]
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return (request.results ?? []).compactMap { observation in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            let line = candidate.string
+            var words: [Word] = []
+            line.enumerateSubstrings(in: line.startIndex..., options: .byWords) { word, range, _, _ in
+                guard let word, let r = try? candidate.boundingBox(for: range)?.boundingBox else { return }
+                words.append(Word(text: word, box: CGRect(x: r.minX, y: 1 - r.maxY, width: r.width, height: r.height)))
+            }
+            return (line, words)
+        }
+    }
+
+    /// Find `text` (one or more words, case-insensitive) on screen and click its centre.
+    @MainActor func clickText(_ text: String, menuBarOnly: Bool) async throws -> [String: Any] {
+        guard let number = view?.window?.windowNumber else { throw InputError.invalid }
+        let image = try await capture(number)
+        let words = try await Task.detached(priority: .userInitiated) { try Self.recognize(image) }.value
+            .flatMap { $0.words }.filter { !menuBarOnly || $0.box.midY < 0.08 }
+        let wanted = text.lowercased().split(separator: " ").map(String.init)
+        guard !wanted.isEmpty else { throw InputError.invalid }
+        for start in words.indices where start + wanted.count <= words.count {
+            let run = Array(words[start..<start + wanted.count])
+            guard zip(run, wanted).allSatisfy({ $0.text.lowercased() == $1 }) else { continue }
+            let box = run.dropFirst().reduce(run[0].box) { $0.union($1.box) }
+            try click(x: box.midX, y: box.midY)
+            return ["ok": true, "x": box.midX, "y": box.midY]
+        }
+        return ["ok": false, "error": "text not on screen: \(text)"]
+    }
+
+    /// This VM window only, at 2x, via ScreenCaptureKit.
+    @MainActor func capture(_ number: Int) async throws -> CGImage {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-        guard let number = view?.window?.windowNumber,
-              let window = content.windows.first(where: { $0.windowID == CGWindowID(number) && $0.owningApplication?.processID == getpid() }) else { throw InputError.invalid }
-        let filter = SCContentFilter(desktopIndependentWindow: window)
+        guard let window = content.windows.first(where: { $0.windowID == CGWindowID(number) && $0.owningApplication?.processID == getpid() })
+        else { throw InputError.invalid }
+        // Capture at the display's real scale: asking a 1x display for 2x draws the window into the
+        // top-left quarter, which throws off every position. Then upscale 1x frames for OCR.
+        let scale = view?.window?.backingScaleFactor ?? 2
         let settings = SCStreamConfiguration()
-        settings.width = Int(window.frame.width) * 2
-        settings.height = Int(window.frame.height) * 2
+        settings.width = Int(window.frame.width * scale)
+        settings.height = Int(window.frame.height * scale)
         settings.showsCursor = false
-        let cg = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: settings)
-        let image = NSBitmapImageRep(cgImage: cg)
+        let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: settings)
+        guard scale < 2 else { return image }
+        let width = Int(window.frame.width * 2), height = Int(window.frame.height * 2)
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage() ?? image
+    }
+
+    @MainActor func screen(recognize: Bool) async throws -> [String: Any] {
+        guard let number = view?.window?.windowNumber else { throw InputError.invalid }
+        let cg = try await capture(number)
         let path = file.deletingLastPathComponent().appendingPathComponent("screen.png")
-        guard let png = image.representation(using: .png, properties: [:]) else { throw InputError.invalid }
+        guard let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { throw InputError.invalid }
         try png.write(to: path, options: .atomic)
         if !recognize { return ["ok": true, "path": path.path] }
-        let text = try await Task.detached(priority: .userInitiated) {
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .fast
-            request.recognitionLanguages = ["en-US"]
-            request.usesLanguageCorrection = false
-            try VNImageRequestHandler(cgImage: cg).perform([request])
-            let results = request.results ?? []
-            let text = results.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-            let column = results.first(where: { $0.topCandidates(1).first?.string.lowercased() == "continue" })?.boundingBox.midX
-            // Positions as fractions of the captured window, origin top-left, so click can use them as is.
-            let items: [[String: Any]] = results.compactMap { observation in
-                guard let string = observation.topCandidates(1).first?.string else { return nil }
-                let box = observation.boundingBox
-                return ["text": string, "x": Double(box.midX), "y": Double(1 - box.midY),
-                        "w": Double(box.width), "h": Double(box.height)]
-            }
-            return (text, column.map(Double.init), items)
-        }.value
-        var result: [String: Any] = ["ok": true, "path": path.path, "text": text.0, "items": text.2]
-        if let column = text.1 { result["continueX"] = column }
-        return result
+        let lines = try await Task.detached(priority: .userInitiated) { try Self.recognize(cg) }.value
+        return ["ok": true, "path": path.path, "text": lines.map { $0.line }.joined(separator: "\n"),
+                "items": lines.flatMap { $0.words }.map { ["text": $0.text, "x": $0.box.midX, "y": $0.box.midY,
+                                                         "w": $0.box.width, "h": $0.box.height] }]
     }
 
     func receive(_ connection: NWConnection, data: Data) {
@@ -403,6 +407,14 @@ final class ControlServer {
                 case "key":
                     guard let key = request["key"] else { throw InputError.invalid }
                     try self.key(key)
+                case "click-text":
+                    guard let text = request["text"] else { throw InputError.invalid }
+                    Task { @MainActor in
+                        let reply = (try? await self.clickText(text, menuBarOnly: request["region"] == "menubar"))
+                            ?? ["ok": false, "error": "Own-window capture failed; allow Screen Recording for the runner if requested."]
+                        self.respond(connection, reply)
+                    }
+                    return
                 case "click":
                     guard let x = request["x"].flatMap(Double.init), let y = request["y"].flatMap(Double.init) else { throw InputError.invalid }
                     try self.click(x: x, y: y)
@@ -435,7 +447,7 @@ final class ControlServer {
     let lock = open(dir.appendingPathComponent(".lock").path, O_RDWR | O_CREAT, 0o600)
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { fail("bundle is already in use") }
     defer { close(lock) }
-    let config = try configuration(dir, network: network, usbKeyboard: recovery)
+    let config = try configuration(dir, network: network)
     let bootID = dir.appendingPathComponent("guest-status/boot-id")
     try UUID().uuidString.write(to: bootID, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: bootID.path)
