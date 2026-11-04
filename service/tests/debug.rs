@@ -126,7 +126,7 @@ async fn apps_are_recognised_by_tag_or_key_id_and_never_show_a_token() {
     assert_eq!(stranger["reason"], "built on another Mac, or before per-build tokens: not in this Mac's key ledger");
     let old = apps.iter().find(|a| a["id"] == "build2").unwrap();
     assert_eq!(old["attachable"], false);
-    assert_eq!(old["reason"], "no command token for this build in the key ledger");
+    assert_eq!(old["reason"], "this build has no command token; rebuild it with build-and-sign");
 }
 
 #[tokio::test]
