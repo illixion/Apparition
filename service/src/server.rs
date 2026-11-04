@@ -5,7 +5,7 @@
 use crate::{
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
-    artifacts,
+    artifacts, crashlogs,
     state::{State as StoreState, hostname},
     traces,
 };
@@ -331,6 +331,10 @@ impl App {
         }
     }
 
+    fn crash_logs(&self) -> crashlogs::CrashLogs {
+        crashlogs::CrashLogs::new(self.settings.data_dir.join("crashlogs"))
+    }
+
     fn traces_dir(&self) -> PathBuf {
         self.settings.data_dir.join("traces")
     }
@@ -351,6 +355,9 @@ impl App {
         match traces::receive(&req.body, &up) {
             Ok((status, meta)) => {
                 if status == 201 {
+                    // a crash log pulled before this trace arrived
+                    let metas: Vec<Value> = traces::list(&self.traces_dir()).into_iter().take(100).collect();
+                    self.crash_logs().link(&crashlogs::crash_refs(&self.traces_dir(), &metas));
                     eprintln!("trace {} from {} ({} bytes)", meta["id"].as_str().unwrap_or(""), meta["app"]["bundleId"].as_str().unwrap_or(""), req.body.len());
                 }
                 json_reply(status, json!({ "ok": true, "trace": meta }))
@@ -384,6 +391,22 @@ impl App {
                 res = with_header(res, "content-disposition", &format!("attachment; filename=\"{name}\""));
                 res = with_header(res, "cache-control", "no-store");
                 Some(with_header(res, "x-content-type-options", "nosniff"))
+            }
+            ["api", "crashlogs"] if get => {
+                let logs = self.crash_logs();
+                Some(json_reply(200, json!({ "crashLogs": logs.list(), "pull": logs.status() })))
+            }
+            ["api", "crashlogs", "refresh"] if req.method == Method::POST => Some(json_reply(200, json!({ "ok": false, "disabled": true }))),
+            ["api", "crashlogs", id, which @ ("ips" | "symbolicated")] if get && (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-') => {
+                let logs = self.crash_logs();
+                let unknown = || json_reply(404, json!({ "error": "unknown crash log" }));
+                let entry = logs.get(id).unwrap_or(Value::Null);
+                let Some(rel) = entry[if *which == "ips" { "file" } else { "symbolicated" }].as_str() else { return Some(unknown()) };
+                let Some(file) = logs.resolve(rel).filter(|f| f.is_file()) else { return Some(unknown()) };
+                let Ok(bytes) = fs::read(file) else { return Some(unknown()) };
+                // As text, never HTML: the content came from a device.
+                let res = with_header(reply(200, "text/plain; charset=utf-8", bytes), "x-content-type-options", "nosniff");
+                Some(with_header(res, "content-security-policy", "default-src 'none'"))
             }
             ["api", "traces"] if get => Some(json_reply(200, json!({ "traces": traces::list(&traces) }))),
             ["api", "traces", file] if get && file.strip_suffix(".zip").is_some_and(is_id) => {
@@ -651,6 +674,8 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
     Some(match (req.method.as_str(), suffix) {
         ("GET", "" | "/capabilities") => json_reply(200, capabilities()),
         ("GET", "/state") => app.state_response(),
+        ("GET", "/crashlogs") => app.api(req, "/api/crashlogs").unwrap_or_else(unknown),
+        ("GET", s) if s.starts_with("/crashlogs/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         ("GET", "/artifacts") => app.api(req, "/api/artifacts").unwrap_or_else(unknown),
         ("GET", s) if s.starts_with("/artifacts/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         ("GET", "/traces") => app.api(req, "/api/traces").unwrap_or_else(unknown),

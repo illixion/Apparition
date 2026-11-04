@@ -93,7 +93,7 @@ async fn password_login_sets_a_session_that_the_gate_accepts() {
     let cookie = cookie_of(&headers);
     let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("cookie", &cookie)], None).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({ "required": true, "signedIn": true }));
-    let (status, ..) = send(&f.app, "GET", "/api/crashlogs", &[("cookie", &cookie)], None).await;
+    let (status, ..) = send(&f.app, "GET", "/api/resign/options", &[("cookie", &cookie)], None).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "signed in reaches the (unported) route");
     let (_, headers, _) = send(&f.app, "GET", "/login?next=/builds", &[("cookie", &cookie)], None).await;
     assert_eq!(header(&headers, "location"), Some("/builds"));
@@ -181,7 +181,7 @@ async fn the_service_api_wants_a_bearer_and_only_the_host_reaches_host_routes() 
     let token = serde_json::from_str::<Value>(&body).unwrap()["token"].as_str().unwrap().to_string();
     let bearer = format!("Bearer {token}");
     let device = [("authorization", &*bearer)];
-    let (status, ..) = send(&f.app, "GET", "/api/service/v1/crashlogs", &device, None).await;
+    let (status, ..) = send(&f.app, "GET", "/api/service/v1/resign/options", &device, None).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     let (status, _, body) = send(&f.app, "GET", "/api/service/v1/state", &device, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
