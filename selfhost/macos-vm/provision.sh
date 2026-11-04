@@ -40,7 +40,13 @@ import plistlib,sys
 print(plistlib.load(open(sys.argv[1],'rb'))['system-entities'][0]['dev-entry'])
 PY
 )
-trap 'hdiutil detach "$DEVICE" >/dev/null' EXIT
+# Detach, then remove the staged copy of the password and its folder (exact files, nothing recursive).
+cleanup() {
+  hdiutil detach "$DEVICE" >/dev/null
+  rm -f "$STAGE/password" "$STAGE/attached.plist"
+  rmdir "$STAGE/mounts" "$STAGE" 2>/dev/null || true
+}
+trap cleanup EXIT
 DATA=$(/usr/bin/python3 - "$STAGE/attached.plist" <<'PY'
 import pathlib,plistlib,sys
 for e in plistlib.load(open(sys.argv[1],'rb'))['system-entities']:
@@ -57,6 +63,9 @@ install -o root -g wheel -m 600 "$2" "$DEST/authorized_keys"
 install -o root -g wheel -m 700 "$SOURCE/first-boot.sh" "$DEST/first-boot.sh"
 install -o root -g wheel -m 700 "$SOURCE/report-status.sh" "$DEST/report-status.sh"
 install -o root -g wheel -m 755 "$SOURCE/../../build/macos-vm/guest-status" "$DEST/guest-status"
+# Trim the desktop services the appliance doesn't need (launchd override files, so it must happen before the
+# account's first login). SSH stays enabled for this development flow.
+APPARITION_KEEP_SSH=1 /bin/bash "$SOURCE/appliance-trim.sh" "$DATA"
 # Set the marker before loginwindow starts, not concurrently with Setup Assistant.
 touch "$DATA/private/var/db/.AppleSetupDone"
 chown 0:0 "$DATA/private/var/db/.AppleSetupDone"

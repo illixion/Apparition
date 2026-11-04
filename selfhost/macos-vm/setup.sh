@@ -149,21 +149,39 @@ else
 fi
 # Leave the temporary directory for recovery diagnostics.
 
+# A VM that only exists to run the companion doesn't need its desktop services, and a trimmed macOS 26 runs in
+# 1.5 GiB without swapping (stock needs 2 GiB and swaps), which matters on an 8 GB Mac. APPARITION_TRIM=0 skips it.
+if [ "$VM" = 1 ] && [ "${APPARITION_TRIM:-1}" != 0 ]; then
+  say "Trimming the VM down to what the companion needs (APPARITION_TRIM=0 skips this)"
+  mkdir -p "$work/trim"
+  trim_ok=1
+  for name in appliance-trim.sh appliance-disabled-user.txt appliance-disabled-system.txt; do
+    if [ -n "$BASE" ]; then url="$BASE/$name"; else url="https://raw.githubusercontent.com/illixion/Apparition/main/selfhost/macos-vm/$name"; fi
+    curl -fsSL -o "$work/trim/$name" "$url" || { trim_ok=0; break; }
+  done
+  # Only the automated development flow keeps SSH; nobody else should get Remote Login switched on.
+  if [ "$trim_ok" = 1 ] && APPARITION_KEEP_SSH=$([ "$AUTOMATED" = 1 ] && echo 1) bash "$work/trim/appliance-trim.sh" "$DATA"; then :
+  else echo "The trim didn't apply; the VM works without it, just with more memory use."; fi
+fi
+
 # Some recoveryOS builds refuse boot-args writes even after SIP was disabled.
 # Try from the installed macOS as root, then reboot before the helper is usable.
 # This daemon only configures the boot argument; anisette stays in the Aqua agent.
 if [ "$VM" = 1 ]; then
-  cat > "$dest/enable-amfi.sh" <<'AMFI'
-#!/bin/bash
-set -eu
-# Keep SSH available even while Setup Assistant is unfinished.
-launchctl print system/com.openssh.sshd > /dev/null 2>&1 || launchctl load -w /System/Library/LaunchDaemons/ssh.plist
+  {
+    printf '%s\n' '#!/bin/bash' 'set -eu'
+    if [ "$AUTOMATED" = 1 ]; then
+      # Development only: the automated flow keeps Remote Login on for diagnostics. Nobody else gets it.
+      printf '%s\n' 'launchctl print system/com.openssh.sshd > /dev/null 2>&1 || launchctl load -w /System/Library/LaunchDaemons/ssh.plist'
+    fi
+    cat <<'AMFI'
 csrutil status | grep -q disabled || exit 1
 args=$(nvram boot-args 2>/dev/null | sed 's/^boot-args[[:space:]]*//')
 case "$args" in *amfi_get_out_of_my_way=1*) exit 0 ;; esac
 nvram boot-args="${args:+$args }amfi_get_out_of_my_way=1"
 /sbin/shutdown -r now
 AMFI
+  } > "$dest/enable-amfi.sh"
   chown 0:0 "$dest/enable-amfi.sh"
   chmod 700 "$dest/enable-amfi.sh"
   mkdir -p "$DATA/Library/LaunchDaemons"

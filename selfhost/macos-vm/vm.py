@@ -71,7 +71,7 @@ def ensure_runner():
         subprocess.run(['bash', str(HERE / 'build.sh')], check=True)
 
 
-def start(bundle, recovery=False, network=False):
+def start(bundle, recovery=False, network=False, background=False):
     existing = live(bundle)
     if existing:
         raise RuntimeError('VM is already running; use shutdown before changing boot mode')
@@ -83,6 +83,8 @@ def start(bundle, recovery=False, network=False):
     command = [str(RUNNER), 'setup' if recovery else 'run', str(bundle)]
     if not recovery:
         command += ['--network=on' if network else '--network=off']
+    if background:
+        command += ['--background']  # accessory app, window behind the others: never takes the keyboard
     process = subprocess.Popen(command, stdout=log, stderr=log, start_new_session=True)
     log.close()
     def ready():
@@ -132,7 +134,8 @@ def state(bundle):
 
 def payload_hash():
     digest=hashlib.sha256()
-    for path in [HERE/'provision.sh', HERE/'first-boot.sh', HERE/'report-status.sh', RUNNER.parent/'guest-status']:
+    for path in [HERE/'provision.sh', HERE/'first-boot.sh', HERE/'report-status.sh', HERE/'appliance-trim.sh',
+                 HERE/'appliance-disabled-user.txt', HERE/'appliance-disabled-system.txt', RUNNER.parent/'guest-status']:
         digest.update(path.read_bytes())
     return digest.hexdigest()
 
@@ -256,7 +259,7 @@ def recover(args, resume=False):
     reader=threading.Thread(target=output,daemon=True)
     reader.start()
     try:
-        if not resume: start(args.bundle, recovery=True)
+        if not resume: start(args.bundle, recovery=True, background=not args.manual_recovery)
         port=wait_for(lambda: ports[0] if ports else None,15,'setup server address')
         if args.manual_recovery:
             print('Select Options, language, then open Terminal (Cmd+Shift+T). Run the curl line above.',flush=True)
@@ -281,13 +284,13 @@ def setup(args):
         recover(args, resume=True)
     current = report(args.bundle)
     if not current and not live(args.bundle):
-        start(args.bundle)
+        start(args.bundle, background=True)
     owner = wait_for(lambda: (v if v and v.get('token') and v.get('owner') and v.get('provisioned') else None)
                      if (v := report(args.bundle)) else None, 300, 'the first account and volume owner')
     if not owner.get('sipDisabled'):
         recover(args)
     if not live(args.bundle):
-        start(args.bundle)
+        start(args.bundle, background=True)
     # First normal boot may set AMFI and reboot; use current-boot guest signals.
     def gui_ready():
         value = report(args.bundle)

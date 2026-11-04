@@ -8,7 +8,7 @@
 //! its signature carries the entitlements, so it must never be re-signed.
 //!
 //! There is no token: anything on the network that can reach the port could fetch the same two
-//! files that are in every release. The server stops by itself once both have been sent, or after
+//! files that are in every release. The server stops by itself once the guest confirms setup completed, or after
 //! [`TIMEOUT`], so it listens only while someone is setting a VM up.
 
 use std::net::Ipv4Addr;
@@ -23,6 +23,11 @@ use tokio::sync::watch;
 /// The script the VM runs.
 pub const SCRIPT: &str = include_str!("../../selfhost/macos-vm/setup.sh");
 
+/// The appliance trim the script fetches beside itself (selfhost/macos-vm/appliance-trim.sh and its two lists).
+pub const TRIM_SCRIPT: &str = include_str!("../../selfhost/macos-vm/appliance-trim.sh");
+pub const TRIM_USER: &str = include_str!("../../selfhost/macos-vm/appliance-disabled-user.txt");
+pub const TRIM_SYSTEM: &str = include_str!("../../selfhost/macos-vm/appliance-disabled-system.txt");
+
 /// The port the person types. Short, fixed, and away from the companion's 49160-49162.
 pub const PORT: u16 = 4949;
 
@@ -35,7 +40,7 @@ pub struct Progress {
     pub script: bool,
     pub program: bool,
     pub helper: bool,
-    /// Both files are sent: the VM is installing them.
+    /// The guest confirmed that installation and LaunchAgent creation succeeded.
     pub done: bool,
     /// Nobody finished in [`TIMEOUT`].
     pub timed_out: bool,
@@ -85,7 +90,7 @@ pub async fn serve(program: PathBuf, helper: PathBuf) -> Result<Session, Report>
                     let tx = tx.clone();
                     tokio::spawn(async move { handle(stream, &files, &tx).await });
                 }
-                // Both files out: give the last response a moment, then stop listening.
+                // Guest confirmed installation: let the response finish, then stop listening.
                 _ = async {
                     loop {
                         if tx.borrow().done { break; }
@@ -116,11 +121,17 @@ async fn handle(mut stream: TcpStream, files: &(Vec<u8>, Vec<u8>), tx: &watch::S
         .filter(|h| h.chars().all(|c| c.is_ascii_alphanumeric() || ".:-[]".contains(c)));
     let (body, kind): (Vec<u8>, u8) = match path {
         "/" | "/setup.sh" => match host {
-            Some(host) => (SCRIPT.replace("@@BASE@@", &format!("http://{host}")).into_bytes(), 0),
+            Some(host) => (SCRIPT.replace("@@BASE@@", &format!("http://{host}"))
+                .replace("@@AUTOMATED@@", if std::env::var("APPARITION_VM_AUTOMATED").as_deref() == Ok("1") { "1" } else { "0" })
+                .into_bytes(), 0),
             None => return,
         },
+        "/appliance-trim.sh" => (TRIM_SCRIPT.as_bytes().to_vec(), 4),
+        "/appliance-disabled-user.txt" => (TRIM_USER.as_bytes().to_vec(), 4),
+        "/appliance-disabled-system.txt" => (TRIM_SYSTEM.as_bytes().to_vec(), 4),
         "/apparition" => (files.0.clone(), 1),
         "/apparition-anisette-helper" => (files.1.clone(), 2),
+        "/complete" if tx.borrow().program && tx.borrow().helper => (b"OK\n".to_vec(), 3),
         _ => {
             let _ = stream.write_all(b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
             return;
@@ -137,9 +148,10 @@ async fn handle(mut stream: TcpStream, files: &(Vec<u8>, Vec<u8>), tx: &watch::S
         match kind {
             0 => p.script = true,
             1 => p.program = true,
-            _ => p.helper = true,
+            2 => p.helper = true,
+            3 => p.done = true,
+            _ => {}
         }
-        p.done = p.program && p.helper;
     });
 }
 
@@ -166,9 +178,16 @@ mod tests {
         assert!(script.contains("http://10.0.0.5:"), "base is the address the VM used");
         assert!(!script.contains("@@BASE@@"));
         assert!(get(session.port, "/nope").await.starts_with(b"HTTP/1.0 404"));
+        // The trim travels with the script, and serving it is not progress.
+        assert!(get(session.port, "/appliance-trim.sh").await.ends_with(TRIM_SCRIPT.as_bytes()));
+        assert!(get(session.port, "/appliance-disabled-user.txt").await.ends_with(TRIM_USER.as_bytes()));
+        assert!(!session.progress.borrow().program && !session.progress.borrow().done);
         assert!(get(session.port, "/apparition").await.ends_with(b"program"));
         assert!(!session.progress.borrow().done);
         assert!(get(session.port, "/apparition-anisette-helper").await.ends_with(b"helper"));
+        session.progress.changed().await.ok();
+        assert!(!session.progress.borrow().done, "downloads do not prove installation");
+        assert!(get(session.port, "/complete").await.ends_with(b"OK\n"));
         session.progress.changed().await.ok();
         assert!(session.progress.borrow().done);
         std::fs::remove_file(dir.join("a")).unwrap();

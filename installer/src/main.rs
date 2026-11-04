@@ -357,7 +357,7 @@ async fn vm_setup() -> Result<(), Error> {
         if now.helper && !shown.helper { println!("The VM fetched the helper."); }
         shown = now;
         if now.done {
-            println!("Done: the VM has everything. Let it restart, then pair (selfhost/macos-vm/README.md, step 6).");
+            println!("Done: the VM confirmed installation. Let it restart, then pair (selfhost/macos-vm/README.md, step 6).");
             return Ok(());
         }
         if now.timed_out {

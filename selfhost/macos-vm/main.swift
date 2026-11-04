@@ -20,8 +20,50 @@ struct Bundle_ {
     var machineID: URL { dir.appendingPathComponent("machine-identifier") }
 }
 
+/// How big one VM is, kept in the bundle's config.json so it stays the same between boots. The
+/// APPARITION_VM_MEMORY_MB / _CPUS / _DISPLAY=WxH / _PPI environment variables override it, for experiments.
+struct VMSettings: Codable {
+    var memoryMB: Int
+    var cpus: Int
+    var displayWidth: Int
+    var displayHeight: Int
+    var ppi: Int
+    var audio: Bool
+
+    /// The appliance needs 1.5 GiB: macOS 26 doesn't boot in 1.25 GiB, and once its desktop services are trimmed
+    /// (appliance-trim.sh) 1.5 GiB runs with no swap. A Mac with 8 GB gets that floor, one with more gets headroom.
+    static func defaults() -> VMSettings {
+        let small = ProcessInfo.processInfo.physicalMemory <= 9 << 30
+        return VMSettings(memoryMB: small ? 1536 : 2048, cpus: 2, displayWidth: 1920, displayHeight: 1200, ppi: 144, audio: true)
+    }
+
+    static func url(_ b: Bundle_) -> URL { b.dir.appendingPathComponent("config.json") }
+
+    static func load(_ b: Bundle_) -> VMSettings {
+        var settings = defaults()
+        if let data = try? Data(contentsOf: url(b)) {
+            guard let saved = try? JSONDecoder().decode(VMSettings.self, from: data) else { fail("unreadable \(url(b).path)") }
+            settings = saved
+        }
+        let env = ProcessInfo.processInfo.environment
+        if let value = env["APPARITION_VM_MEMORY_MB"].flatMap(Int.init) { settings.memoryMB = value }
+        if let value = env["APPARITION_VM_CPUS"].flatMap(Int.init) { settings.cpus = value }
+        if let value = env["APPARITION_VM_PPI"].flatMap(Int.init) { settings.ppi = value }
+        if let size = env["APPARITION_VM_DISPLAY"]?.split(separator: "x").compactMap({ Int($0) }), size.count == 2 {
+            settings.displayWidth = size[0]; settings.displayHeight = size[1]
+        }
+        return settings
+    }
+
+    func save(_ b: Bundle_) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(self).write(to: Self.url(b), options: .atomic)
+    }
+}
+
 func makeConfig(_ b: Bundle_, hardwareModel: VZMacHardwareModel, machineID: VZMacMachineIdentifier,
-                aux: VZMacAuxiliaryStorage, network: Bool = false) throws -> VZVirtualMachineConfiguration {
+                aux: VZMacAuxiliaryStorage, network: Bool = false, settings: VMSettings) throws -> VZVirtualMachineConfiguration {
     let c = VZVirtualMachineConfiguration()
     let platform = VZMacPlatformConfiguration()
     platform.hardwareModel = hardwareModel
@@ -32,8 +74,9 @@ func makeConfig(_ b: Bundle_, hardwareModel: VZMacHardwareModel, machineID: VZMa
     try FileManager.default.createDirectory(at: statusDirectory, withIntermediateDirectories: true)
     c.socketDevices = [VZVirtioSocketDeviceConfiguration()]
     c.bootLoader = VZMacOSBootLoader()
-    c.cpuCount = max(2, min(4, ProcessInfo.processInfo.processorCount / 2))
-    c.memorySize = 8 * 1024 * 1024 * 1024
+    c.cpuCount = max(settings.cpus, VZVirtualMachineConfiguration.minimumAllowedCPUCount)
+    c.memorySize = UInt64(settings.memoryMB) << 20
+    print("config: \(c.cpuCount) cpus, \(c.memorySize >> 20) MiB")
 
     let disk = try VZDiskImageStorageDeviceAttachment(url: b.disk, readOnly: false)
     c.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: disk)]
@@ -51,17 +94,20 @@ func makeConfig(_ b: Bundle_, hardwareModel: VZMacHardwareModel, machineID: VZMa
     c.networkDevices = [net]
 
     let gfx = VZMacGraphicsDeviceConfiguration()
-    gfx.displays = [VZMacGraphicsDisplayConfiguration(widthInPixels: 1920, heightInPixels: 1200, pixelsPerInch: 144)]
+    gfx.displays = [VZMacGraphicsDisplayConfiguration(widthInPixels: settings.displayWidth, heightInPixels: settings.displayHeight,
+                                                      pixelsPerInch: settings.ppi)]
     c.graphicsDevices = [gfx]
 
     c.keyboards = [VZMacKeyboardConfiguration()]
     c.pointingDevices = [VZMacTrackpadConfiguration()]
 
-    let audio = VZVirtioSoundDeviceConfiguration()
-    let out = VZVirtioSoundDeviceOutputStreamConfiguration()
-    out.sink = VZHostAudioOutputStreamSink()
-    audio.streams = [out]
-    c.audioDevices = [audio]
+    if settings.audio {
+        let audio = VZVirtioSoundDeviceConfiguration()
+        let out = VZVirtioSoundDeviceOutputStreamConfiguration()
+        out.sink = VZHostAudioOutputStreamSink()
+        audio.streams = [out]
+        c.audioDevices = [audio]
+    }
 
     try c.validate()
     return c
@@ -94,17 +140,21 @@ func create(ipsw: URL, dir: URL, diskGB: Int) async throws {
     close(fd)
 
     let aux = try VZMacAuxiliaryStorage(creatingStorageAt: b.aux, hardwareModel: hw, options: [.allowOverwrite])
-    _ = try makeConfig(b, hardwareModel: hw, machineID: mid, aux: aux)
+    let settings = VMSettings.defaults()
+    try settings.save(b)
+    _ = try makeConfig(b, hardwareModel: hw, machineID: mid, aux: aux, settings: settings)
     print("CREATED \(dir.path)")
 }
 
-func configuration(_ dir: URL, network: Bool = false) throws -> VZVirtualMachineConfiguration {
+func configuration(_ dir: URL, network: Bool = false, minimumMemoryMB: Int = 0) throws -> VZVirtualMachineConfiguration {
     let b = Bundle_(dir: dir)
+    var settings = VMSettings.load(b)
+    settings.memoryMB = max(settings.memoryMB, minimumMemoryMB)
     guard let hw = VZMacHardwareModel(dataRepresentation: try Data(contentsOf: b.hwModel)),
           let mid = VZMacMachineIdentifier(dataRepresentation: try Data(contentsOf: b.machineID))
     else { fail("bad bundle") }
     return try makeConfig(b, hardwareModel: hw, machineID: mid,
-                          aux: VZMacAuxiliaryStorage(url: b.aux), network: network)
+                          aux: VZMacAuxiliaryStorage(url: b.aux), network: network, settings: settings)
 }
 
 @MainActor func install(ipsw: URL, dir: URL) async throws {
@@ -118,7 +168,8 @@ func configuration(_ dir: URL, network: Bool = false) throws -> VZVirtualMachine
     let lock = open(dir.appendingPathComponent(".lock").path, O_RDWR | O_CREAT, 0o600)
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { fail("bundle is already in use") }
     defer { close(lock) }
-    let config = try configuration(dir)
+    // Restoring the OS is the one heavy step: give it 4 GiB, whatever the finished appliance uses.
+    let config = try configuration(dir, minimumMemoryMB: 4096)
 
     let vm = VZVirtualMachine(configuration: config)
     let installer = VZMacOSInstaller(virtualMachine: vm, restoringFromImageAt: ipsw)
@@ -443,11 +494,15 @@ final class ControlServer {
     }
 }
 
-@MainActor func run(dir: URL, network: Bool, recovery: Bool) throws {
+/// `background`: an automated run. It is an accessory app (no Dock icon, never active) whose window stays behind
+/// the others, so a setup that takes minutes does not steal the keyboard from whoever is at the Mac.
+@MainActor func run(dir: URL, network: Bool, recovery: Bool, background: Bool = false) throws {
     let lock = open(dir.appendingPathComponent(".lock").path, O_RDWR | O_CREAT, 0o600)
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { fail("bundle is already in use") }
     defer { close(lock) }
-    let config = try configuration(dir, network: network)
+    // recoveryOS runs from a RAM disk and shows a black screen forever in 2 GiB (and in 1.5), so recovery gets the same
+    // 4 GiB as the install; the appliance itself only needs its small size.
+    let config = try configuration(dir, network: network, minimumMemoryMB: recovery ? 4096 : 0)
     let bootID = dir.appendingPathComponent("guest-status/boot-id")
     try UUID().uuidString.write(to: bootID, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: bootID.path)
@@ -462,21 +517,26 @@ final class ControlServer {
     (vm.socketDevices.first as? VZVirtioSocketDevice)?.setSocketListener(statusListener, forPort: 3939)
 
     let app = NSApplication.shared
-    app.setActivationPolicy(.regular)
+    app.setActivationPolicy(background ? .accessory : .regular)
     app.delegate = delegate
     let view = VZVirtualMachineView()
     view.virtualMachine = vm
     control.view = view
     view.capturesSystemKeys = true
-    view.automaticallyReconfiguresDisplay = true
+    // A fixed display (APPARITION_VM_DISPLAY) keeps its size; otherwise the guest display follows the window.
+    view.automaticallyReconfiguresDisplay = ProcessInfo.processInfo.environment["APPARITION_VM_DISPLAY"] == nil
     let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
                        styleMask: [.titled, .closable, .resizable, .miniaturizable],
                        backing: .buffered, defer: false)
     win.title = recovery ? "Apparition — Recovery" : "Apparition macOS 26"
     win.contentView = view
     win.makeFirstResponder(view)
-    win.makeKeyAndOrderFront(nil)
-    app.activate(ignoringOtherApps: true)
+    if background {
+        win.orderBack(nil)
+    } else {
+        win.makeKeyAndOrderFront(nil)
+        app.activate(ignoringOtherApps: true)
+    }
     let options = VZMacOSVirtualMachineStartOptions()
     options.startUpFromMacOSRecovery = recovery
     vm.start(options: options) { error in
@@ -492,7 +552,7 @@ final class ControlServer {
 umask(0o077)
 setvbuf(stdout, nil, _IOLBF, 0)
 let args = CommandLine.arguments
-let usage = "usage: vm create <ipsw> <new-bundle> [diskGB] | install <ipsw> <bundle> | run <bundle> --network=off|on | setup <bundle>"
+let usage = "usage: vm create <ipsw> <new-bundle> [diskGB] | install <ipsw> <bundle> | run <bundle> --network=off|on [--background] | setup <bundle> [--background]"
 guard args.count >= 3 else { fail(usage) }
 switch args[1] {
 case "create", "install":
@@ -512,10 +572,12 @@ case "create", "install":
     RunLoop.main.run()
 case "run", "setup":
     let recovery = args[1] == "setup"
-    guard recovery ? args.count == 3 : (args.count == 4 && ["--network=off", "--network=on"].contains(args[3])) else { fail(usage) }
+    let background = args.last == "--background"
+    let rest = Array(args.dropFirst(2).dropLast(background ? 1 : 0))  // bundle [--network=...]
+    guard recovery ? rest.count == 1 : (rest.count == 2 && ["--network=off", "--network=on"].contains(rest[1])) else { fail(usage) }
     // Recovery needs NAT to fetch the setup script. Setup Assistant must use network=off.
     try MainActor.assumeIsolated {
-        try run(dir: URL(fileURLWithPath: args[2]), network: recovery || args[3] == "--network=on", recovery: recovery)
+        try run(dir: URL(fileURLWithPath: rest[0]), network: recovery || rest[1] == "--network=on", recovery: recovery, background: background)
     }
 default: fail(usage)
 }
