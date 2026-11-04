@@ -1,8 +1,8 @@
 # Developer UI
 
 The desktop Developer tab and Apparition Store share the project list in
-`store/public/shared/projects.js` and `projects.css`. Freshness comes from
-`store/public/freshness.js`. Edit those sources for project cards, target
+`service/public/shared/projects.js` and `projects.css`. Freshness comes from
+`service/public/freshness.js`. Edit those sources for project cards, target
 selection, branches, deploy flags, search, sorting, and request feedback.
 
 `desktop/build.rs` copies these assets into the ignored `desktop/ui/shared/`

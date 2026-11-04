@@ -1,0 +1,263 @@
+{
+ "installs": {
+  "iPhone": {
+   "com.x.app": {
+    "repo": "App",
+    "commit": "abc",
+    "at": 1
+   }
+  }
+ },
+ "deviceApps": {},
+ "devices": {
+  "fetchedAt": 1793805475043,
+  "list": [
+   {
+    "name": "Test Phone",
+    "model": "iPhone 15 Pro Max",
+    "state": "connected",
+    "udid": "00000000-0000000000000001",
+    "platform": "iOS"
+   }
+  ]
+ },
+ "builds": [
+  {
+   "id": 1,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 2,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 3,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 4,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 5,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 6,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 7,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 8,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 9,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 10,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 11,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 12,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 13,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 14,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 15,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 16,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 17,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 18,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 19,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 20,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 21,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 22,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 23,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 24,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 25,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 26,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 27,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 28,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 29,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 30,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 31,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 32,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 33,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 34,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 35,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 36,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 37,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 38,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 39,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 40,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 41,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 42,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 43,
+   "repo": "App",
+   "status": "done"
+  },
+  {
+   "id": 44,
+   "repo": "App",
+   "status": "failed",
+   "error": "server restarted during build"
+  },
+  {
+   "id": 45,
+   "repo": "App",
+   "status": "failed",
+   "error": "server restarted during build"
+  }
+ ],
+ "nextBuildId": 46,
+ "ota": {
+  "com.x.app|iOS": {
+   "slug": "app",
+   "size": 7
+  }
+ },
+ "futureKey": [
+  1
+ ]
+}

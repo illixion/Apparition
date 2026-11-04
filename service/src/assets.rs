@@ -1,16 +1,16 @@
-//! The web UI (`store/public`) compiled in, so the service serves its pages with no checkout of
-//! `store/` on the Mac. One copy of the files: the Node store reads the same directory.
+//! The web UI (`service/public`) compiled in, so the service serves its pages with no folder
+//! on the Mac. One copy of the files: the desktop build copies a few of them.
 
 pub const FILES: [(&str, &[u8]); 9] = [
-    ("apple-touch-icon.png", include_bytes!("../../store/public/apple-touch-icon.png")),
-    ("favicon.ico", include_bytes!("../../store/public/favicon.ico")),
-    ("favicon.svg", include_bytes!("../../store/public/favicon.svg")),
-    ("freshness.js", include_bytes!("../../store/public/freshness.js")),
-    ("index.html", include_bytes!("../../store/public/index.html")),
-    ("login.html", include_bytes!("../../store/public/login.html")),
-    ("mask-icon.svg", include_bytes!("../../store/public/mask-icon.svg")),
-    ("shared/projects.css", include_bytes!("../../store/public/shared/projects.css")),
-    ("shared/projects.js", include_bytes!("../../store/public/shared/projects.js")),
+    ("apple-touch-icon.png", include_bytes!("../public/apple-touch-icon.png")),
+    ("favicon.ico", include_bytes!("../public/favicon.ico")),
+    ("favicon.svg", include_bytes!("../public/favicon.svg")),
+    ("freshness.js", include_bytes!("../public/freshness.js")),
+    ("index.html", include_bytes!("../public/index.html")),
+    ("login.html", include_bytes!("../public/login.html")),
+    ("mask-icon.svg", include_bytes!("../public/mask-icon.svg")),
+    ("shared/projects.css", include_bytes!("../public/shared/projects.css")),
+    ("shared/projects.js", include_bytes!("../public/shared/projects.js")),
 ];
 
 pub fn get(rel: &str) -> Option<&'static [u8]> {
@@ -20,8 +20,8 @@ pub fn get(rel: &str) -> Option<&'static [u8]> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn every_file_in_store_public_is_embedded_and_identical() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../store/public");
+    fn every_file_in_public_is_embedded_and_identical() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("public");
         let mut on_disk = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
@@ -30,7 +30,7 @@ mod tests {
                 if path.is_dir() { stack.push(path) } else { on_disk.push(path) }
             }
         }
-        assert_eq!(on_disk.len(), super::FILES.len(), "a file was added to or removed from store/public: update assets.rs");
+        assert_eq!(on_disk.len(), super::FILES.len(), "a file was added to or removed from service/public: update assets.rs");
         for path in on_disk {
             // As a URL names it, with '/' on every OS.
             let rel = path.strip_prefix(&root).unwrap().components().map(|c| c.as_os_str().to_str().unwrap()).collect::<Vec<_>>().join("/");

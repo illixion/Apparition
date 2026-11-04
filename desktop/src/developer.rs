@@ -8,21 +8,20 @@
 //! - Agents here run `apparition mcp`, which reads the port and token from `developer.json` in
 //!   the Store's folder (readable only by this user, gone when the app quits).
 //!
-//! On a Mac the Node build service (`host.rs`) still runs Xcode builds beside it until those are
-//! ported (docs/RUST_STORE.md); both read the same config and data. On Windows and Linux there is
-//! no Xcode: builds come from xtool (or a Mac) as IPAs, through `apparition deploy`.
+//! On a Mac it also builds with Xcode (`apparition build`, queued by the Store). On Windows and
+//! Linux there is no Xcode: builds come from xtool (or a Mac) as IPAs, through `apparition deploy`.
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use apparition_core::companion_channel::DeveloperRoute;
 use serde_json::json;
 use tauri::Manager;
 
-static ROUTE: OnceLock<DeveloperRoute> = OnceLock::new();
+static ROUTE: Mutex<Option<DeveloperRoute>> = Mutex::new(None);
 
 /// The running Store, once it is up.
 pub fn route() -> Option<DeveloperRoute> {
-    ROUTE.get().cloned()
+    ROUTE.lock().unwrap().clone()
 }
 
 fn handoff_path() -> std::path::PathBuf {
@@ -33,7 +32,7 @@ fn handoff_path() -> std::path::PathBuf {
 pub fn setup(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        match start().await {
+        match app.state::<crate::host::ServiceHost>().start().await {
             Ok(route) => {
                 let companion = app.state::<std::sync::Arc<crate::companion::CompanionState>>().inner().clone();
                 companion.offer_developer(route).await;
@@ -43,11 +42,13 @@ pub fn setup(app: &tauri::AppHandle) {
     });
 }
 
-async fn start() -> Result<DeveloperRoute, String> {
-    let (config, _) = crate::host::ensure_config()?;
+/// Starts the Store on config.json's port; the second value stops it.
+pub async fn start_store() -> Result<(DeveloperRoute, Box<dyn FnOnce() + Send>), String> {
+    let (config, port) = crate::host::ensure_config()?;
     let dir = crate::host::support_dir();
     let token = crate::host::token()?;
     let mut settings = apparition_service::server::Settings::new(config, dir.join("data"), dir.join("public"));
+    settings.port = Some(port);
     // The web UI compiled into the app, not a folder.
     settings.public_dir = None;
     settings.host_token = Some(token.clone());
@@ -55,13 +56,17 @@ async fn start() -> Result<DeveloperRoute, String> {
     // The devices this computer is paired with: sent builds can be installed from here.
     settings.devices = Some(std::sync::Arc::new(crate::store_devices::CoreDevices::new()));
     let (address, task) = apparition_service::server::serve_loopback(settings).await.map_err(|e| e.to_string())?;
-    // Runs for the app's life.
-    std::mem::forget(task);
     let route = DeveloperRoute { address, token };
     write_handoff(&route)?;
-    let _ = ROUTE.set(route.clone());
+    *ROUTE.lock().unwrap() = Some(route.clone());
     eprintln!("Apparition Store at http://{address} (MCP at /mcp)");
-    Ok(route)
+    Ok((route, Box::new(move || task.abort())))
+}
+
+/// The Store was stopped: agents here and paired computers can't reach it any more.
+pub fn store_stopped() {
+    *ROUTE.lock().unwrap() = None;
+    let _ = std::fs::remove_file(handoff_path());
 }
 
 /// Where `apparition mcp` on this computer finds the Store.
@@ -83,5 +88,5 @@ fn write_handoff(route: &DeveloperRoute) -> Result<(), String> {
 
 /// The app is quitting: agents here can't reach the Store any more.
 pub fn shutdown() {
-    let _ = std::fs::remove_file(handoff_path());
+    store_stopped();
 }

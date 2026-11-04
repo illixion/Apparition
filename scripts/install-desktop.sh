@@ -121,7 +121,6 @@ if cmp -s "$MACOS_DIR/$CLI-cli" "$MACOS_DIR/$APP_NAME"; then
   echo "✗ $CLI-cli is the app's own binary (a case clash in target/release); run cargo build -p apparition-installer --release and try again." >&2
   exit 1
 fi
-scripts/bundle-service.sh "$STAGE/$APP_NAME.app"
 
 echo "▶ Signing (app and command line: $SIGN_IDENTITY; helper: ad-hoc with its entitlements)…"
 codesign -f -s - --entitlements installer/anisette-helper.entitlements "$MACOS_DIR/$HELPER"

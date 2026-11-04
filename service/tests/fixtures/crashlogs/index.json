@@ -1,0 +1,58 @@
+{
+ "entries": [
+  {
+   "id": "aaaaaaaa11",
+   "device": "AVP",
+   "bundleId": "com.x.app",
+   "appName": "App",
+   "version": "1.0",
+   "build": "7",
+   "os": "visionOS 26",
+   "exception": "EXC_BREAKPOINT SIGTRAP",
+   "pid": 11,
+   "capturedAt": 2000,
+   "pulledAt": 2005,
+   "file": "AVP/a-aaaaaaaa.ips",
+   "symbolicated": "AVP/a-aaaaaaaa.txt",
+   "traceId": null
+  },
+  {
+   "id": "bbbbbbbb22",
+   "device": "AVP",
+   "bundleId": "com.x.app",
+   "appName": "App",
+   "version": "1.0",
+   "build": "7",
+   "os": "visionOS 26",
+   "exception": "EXC_BREAKPOINT SIGTRAP",
+   "pid": 22,
+   "capturedAt": 3000,
+   "pulledAt": 3005,
+   "file": "AVP/b-bbbbbbbb.ips",
+   "symbolicated": null,
+   "traceId": null
+  },
+  {
+   "id": "cccccccc33",
+   "device": "AVP",
+   "bundleId": "com.x.app",
+   "appName": "App",
+   "version": "1.0",
+   "build": "7",
+   "os": "visionOS 26",
+   "exception": "EXC_BREAKPOINT SIGTRAP",
+   "pid": 33,
+   "capturedAt": 1000,
+   "pulledAt": 1005,
+   "file": "AVP/c-cccccccc.ips",
+   "symbolicated": "AVP/c-cccccccc.txt",
+   "traceId": null
+  }
+ ],
+ "pull": {
+  "AVP": {
+   "since": 5,
+   "error": null
+  }
+ }
+}

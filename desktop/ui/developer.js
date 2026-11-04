@@ -687,8 +687,8 @@ export class DeveloperView {
     this.hostCheck(false);
   }
 
-  // This Mac's own build service (desktop/src/host.rs): the app runs it, so there is nothing to
-  // install, start or sign in to. Another Mac's service is the alternative.
+  // This Mac's own build service (desktop/src/host.rs): the app runs it in its own process, so there
+  // is nothing to install, start or sign in to. Another Mac's service is the alternative.
   hostSection() {
     const card = element('section', 'dev-card dev-host');
     card.append(element('h2', 'small', 'Build service on this Mac'));
@@ -711,9 +711,9 @@ export class DeveloperView {
     this.remoteForm.hidden = !!usable || this.connected;
     this.intro.hidden = !!usable || this.connected;
     if (!usable) return;
-    this.hostProblem.hidden = !status.error && !!status.node;
-    this.hostProblem.textContent = !status.node ? 'The build service needs Node.js 18 or later on this Mac: brew install node, or nodejs.org.' : status.error || '';
-    if (auto && !this.connected && status.node) this.startLocal();
+    this.hostProblem.hidden = !status.error;
+    this.hostProblem.textContent = status.error || '';
+    if (auto && !this.connected) this.startLocal();
   }
   async startLocal() {
     this.hostStart.disabled = true;

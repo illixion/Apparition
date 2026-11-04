@@ -156,10 +156,7 @@ linux_build() {
   [[ "$arch" == arm64 ]] && platform=linux/arm64
   [[ "$arch" == x86_64 ]] && host="${LINUX_X86_64_HOST:-}"
   mkdir -p "$src/scripts" "$out"
-  rsync -a --exclude target "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" "$ROOT/core" "$ROOT/installer" "$ROOT/desktop" "$ROOT/release-signers" "$src/"
-  # The desktop embeds the same project UI the Store serves.
-  mkdir -p "$src/store"
-  rsync -a "$ROOT/store/public" "$src/store/"
+  rsync -a --exclude target "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" "$ROOT/core" "$ROOT/installer" "$ROOT/desktop" "$ROOT/service" "$ROOT/release-signers" "$src/"
   cp "$ROOT/scripts/desktop-linux.Dockerfile" "$ROOT/scripts/install-tauri-cli.sh" "$src/scripts/"
   # Where the source is on the machine that builds, and how to run a command there.
   local dir="$src"
@@ -325,8 +322,6 @@ if has macos; then
   # executable is `Apparition`, which a case-insensitive volume would merge with it.
   cp "$WORK/macos/$bin" "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
   codesign -f -s - "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
-  # The Apparition Store build service the app runs on a Mac (Developer › This Mac).
-  "$ROOT/scripts/bundle-service.sh" "$WORK/macos/$app_name.app"
   codesign -f -s - "$WORK/macos/$app_name.app"
   readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it until you clear the download quarantine. Move $app_name.app to Applications, then run in Terminal: xattr -dr com.apple.quarantine /Applications/$app_name.app (and for the command line, in this folder: xattr -d com.apple.quarantine $bin $helper). The app holds the command line too: run /Applications/$app_name.app/Contents/MacOS/$bin-cli link once to put $bin on your PATH. Or open it once and click Open Anyway in System Settings > Privacy & Security. Don't re-sign it with codesign: that strips the anisette helper's entitlements."
   (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)

@@ -1,20 +1,12 @@
-//! `GET /api/state` from the Rust service against the same answer from the real Node store,
-//! started on an identical config, state file and git checkout. Skipped without `node` or `git`.
-
+//! `GET /api/state` from the Rust service against what the Node store answered for the same config,
+//! state file and git checkout, captured when it was removed (see `NODE_STATE` below), and against
+//! a `state.json` as the Node store wrote it (`tests/fixtures/node-state/`). Skipped without `git`.
 
 use apparition_service::server::{Settings, router};
 use axum::{body::Body, http::Request};
 use serde_json::{Value, json};
-use std::{io::{Read, Write}, net::TcpStream, path::Path, process::{Child, Command, Stdio}, time::{Duration, Instant}};
+use std::{path::Path, process::{Command, Stdio}};
 use tower::ServiceExt;
-
-struct Kill(Child);
-impl Drop for Kill {
-    fn drop(&mut self) {
-        let _ = self.0.kill(); // the Node store this test started: its own pid
-        let _ = self.0.wait();
-    }
-}
 
 fn have(tool: &str) -> bool {
     Command::new(tool).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok()
@@ -22,23 +14,13 @@ fn have(tool: &str) -> bool {
 
 fn git(dir: &Path, args: &[&str]) {
     let ok = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t")
-        .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success();
+        .env("GIT_AUTHOR_DATE", "2026-11-01T10:00:00Z").env("GIT_COMMITTER_DATE", "2026-11-01T10:00:00Z").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap().success();
     assert!(ok, "git {args:?}");
 }
 
-fn http_get(port: u16, path: &str) -> Option<String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok()?;
-    write!(stream, "GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").ok()?;
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).ok()?;
-    let (head, body) = raw.split_once("\r\n\r\n")?;
-    head.contains(" 200 ").then(|| body.to_string())
-}
-
 #[tokio::test]
-async fn state_matches_the_node_store() {
-    if !have("node") || !have("git") {
+async fn state_matches_what_the_node_store_answered() {
+    if !have("git") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -77,31 +59,69 @@ async fn state_matches_the_node_store() {
     assert_eq!(res.status(), 200);
     let ours: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 22).await.unwrap()).unwrap();
 
-    let store = Path::new(env!("CARGO_MANIFEST_DIR")).join("../store");
-    let _node = Kill(Command::new("node").arg("server.js").current_dir(&store)
-        .env("STORE_CONFIG", dir.path().join("config.json")).env("STORE_DATA", dir.path().join("data"))
-        .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
-    let start = Instant::now();
-    let theirs = loop {
-        if let Some(body) = http_get(port, "/api/state") {
-            break serde_json::from_str::<Value>(&body).unwrap();
-        }
-        assert!(start.elapsed() < Duration::from_secs(20), "the Node store did not start");
-        std::thread::sleep(Duration::from_millis(200));
-    };
-
-    // `now` and `host` are the clock and machine; `devices`, `deviceApps` and `debugApps` come from
-    // devicectl and Bonjour on the Node side, which the Rust service does not have yet.
-    let fields = |v: &Value| -> Vec<String> { let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect(); k.sort(); k };
-    assert_eq!(fields(&ours), fields(&theirs), "the same set of fields");
-    for key in ["repos", "ledgerOnly", "installs", "ota", "builds", "running", "queued", "authRequired", "appsOpen", "host"] {
-        assert_eq!(ours[key], theirs[key], "field {key}");
+    // What the Node store answered on this exact setup (store/server.js `GET /api/state`, run on the
+    // same config, state file and a git checkout with the commit dates pinned above), captured at
+    // removal time, minus `now` (the clock), `host` (the machine) and `devices`, which Node filled
+    // from devicectl. The commit `f2ce1c2` is deterministic: fixed tree, message, author and dates.
+    let mut builds = vec![
+        json!({ "id": 45, "repo": "App", "status": "failed", "error": "server restarted during build" }),
+        json!({ "id": 44, "repo": "App", "status": "failed", "error": "server restarted during build" }),
+    ];
+    builds.extend((6..=43).rev().map(|id| json!({ "id": id, "repo": "App", "status": "done" })));
+    let expected = json!({
+        "repos": [{
+            "name": "App", "branches": ["main", "dev"],
+            "platforms": [{ "platform": "iOS", "bundleId": "com.x.app", "device": "iPhone" }],
+            "deviceBranches": { "iPhone": "dev" },
+            "deployDefaults": { "launch": true, "mcp": false, "jit": false, "buildDebug": false, "inject": false },
+            "macApps": [],
+            "git": { "branch": "main", "commit": "f2ce1c2", "subject": "First", "commitTime": null, "dirty": true },
+        }],
+        "deviceApps": {}, "ledgerOnly": ["Apple TV"],
+        "installs": { "iPhone": { "com.x.app": { "repo": "App", "commit": "abc", "at": 1 } } },
+        "appsOpen": [], "ota": { "com.x.app|iOS": { "slug": "app", "size": 7 } },
+        "debugApps": { "apps": [], "error": null }, "authRequired": false,
+        "builds": builds, "running": [], "queued": [],
+    });
+    let mut got = ours.clone();
+    let fields = got.as_object_mut().unwrap();
+    for gone in ["now", "host", "devices"] {
+        assert!(fields.contains_key(gone), "{gone}");
+        fields.remove(gone);
     }
-    let repo = &ours["repos"][0];
-    assert_eq!(repo["deployDefaults"], json!({ "launch": true, "mcp": false, "jit": false, "buildDebug": false, "inject": false }));
-    assert_eq!(repo["git"]["subject"], "First\tcommit".split('\t').next().unwrap(), "git log is split on tabs");
-    assert_eq!(repo["git"]["dirty"], true);
+    let names = |v: &Value| -> Vec<String> { let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect(); k.sort(); k };
+    assert_eq!(names(&got), names(&expected), "the same set of fields as Node");
+    for key in names(&expected) {
+        assert_eq!(got[&key], expected[&key], "field {key}");
+    }
+    assert_eq!(ours["devices"], Value::Null, "no device list until the first refresh");
     assert_eq!(ours["builds"].as_array().unwrap().len(), 40);
     assert_eq!(ours["builds"][0]["status"], "failed", "mid-flight builds are failed on start");
-    assert_eq!(ours["ledgerOnly"], json!(["Apple TV"]));
+}
+
+/// A `state.json` exactly as the Node store left it after running (one-space indent, the device
+/// cache, a field this build does not know), with the device names anonymised.
+#[tokio::test]
+async fn a_state_file_written_by_the_node_store_is_served_as_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.json"), json!({ "port": 1, "repos": [{ "name": "App", "path": dir.path(), "branches": ["main"], "platforms": [{ "platform": "iOS", "bundleId": "com.x.app", "device": "iPhone" }] }] }).to_string()).unwrap();
+    std::fs::create_dir(dir.path().join("data")).unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/node-state/state.json");
+    std::fs::copy(&fixture, dir.path().join("data/state.json")).unwrap();
+    let node: Value = serde_json::from_slice(&std::fs::read(&fixture).unwrap()).unwrap();
+
+    let app = router(Settings { host_token: None, key_dir: dir.path().join("keys"), browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])), ..Settings::new(dir.path().join("config.json"), dir.path().join("data"), dir.path().join("none")) }).unwrap();
+    let res = app.oneshot(Request::builder().uri("/api/state").header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(res.status(), 200);
+    let ours: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 22).await.unwrap()).unwrap();
+    for key in ["installs", "ota", "devices", "deviceApps"] {
+        assert_eq!(ours[key], node[key], "{key} as Node wrote it");
+    }
+    // 45 builds were stored (the last two failed by the Node restart); the bundle shows the newest 40.
+    assert_eq!(node["builds"].as_array().unwrap().len(), 45);
+    let shown: Vec<u64> = ours["builds"].as_array().unwrap().iter().map(|b| b["id"].as_u64().unwrap()).collect();
+    assert_eq!(shown, (6..=45).rev().collect::<Vec<u64>>());
+    assert_eq!(ours["builds"][0]["error"], "server restarted during build");
+    assert!(ours["running"].as_array().unwrap().is_empty() && ours["queued"].as_array().unwrap().is_empty());
+    assert_eq!(node["nextBuildId"], 46);
 }

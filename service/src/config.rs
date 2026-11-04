@@ -111,8 +111,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_the_example_config_the_node_store_ships() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../store/config.example.json");
+    fn reads_the_example_config_the_store_ships() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.json");
         let config = Config::load(&path).unwrap();
         assert_eq!(config.port, Some(8484));
         assert_eq!(config.bundle_prefix, ["com.example"]);

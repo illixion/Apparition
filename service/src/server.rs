@@ -1,6 +1,6 @@
 //! The HTTP front of the service: the web gate, login, static files and the bearer API that
-//! native clients and the hosting app use. It mirrors the dispatch order of `store/server.js`
-//! so the two answer the same way while both exist. Routes not ported yet answer 501.
+//! native clients and the hosting app use. Its dispatch order is the Store's contract: the hosted
+//! app token and loopback rules first, then signed links, then the session.
 
 use crate::{
     altsource::{self, AltSource},
@@ -35,7 +35,6 @@ use std::{
 use futures_util::StreamExt;
 use subtle::ConstantTimeEq;
 
-const NOT_YET: &str = "Not available in the Rust service yet.";
 const WEB_UI_OFF: &str = "The web UI is off. Turn it on in Apparition: Developer › Devices & signing › Web UI and other devices.";
 const PUBLIC_FILES: [&str; 6] = ["/login.html", "/favicon.svg", "/favicon.ico", "/apple-touch-icon.png", "/mask-icon.svg", "/branding/icon"];
 const SERVICE_PREFIX: &str = "/api/service/v1";
@@ -59,6 +58,9 @@ pub struct Settings {
     pub client_name: String,
     /// The devices this Mac reaches through its own pairings; the hosting app supplies them.
     pub devices: Option<Arc<dyn devices::Devices>>,
+    /// The loopback port to listen on (config.json's `port`, 8484 by default: what apps upload
+    /// traces to and what `tailscale serve` points at). Another free port when it is taken.
+    pub port: Option<u16>,
 }
 
 impl Settings {
@@ -72,6 +74,7 @@ impl Settings {
             browser: Arc::new(Arc::new(debug::Mdns::default())),
             client_name: format!("Apparition Store page on {}", host.split('.').next().unwrap_or("")),
             devices: None,
+            port: None,
         }
     }
 }
@@ -123,8 +126,18 @@ fn defer(route: Deferred) -> Response {
 /// Serves the Store on a free loopback port, on the current tokio runtime, until the task is
 /// dropped or aborted. Other computers reach it only through the companion channel.
 pub async fn serve_loopback(settings: Settings) -> std::io::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+    let wanted = settings.port;
     let app = router(settings)?;
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let listener = match wanted {
+        Some(port) => match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                eprintln!("port {port} is taken ({e}); the Store listens on another one");
+                tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?
+            }
+        },
+        None => tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?,
+    };
     let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, app).await {
@@ -1207,9 +1220,6 @@ fn dispatch(app: &App, req: &Req) -> Response {
     }
     if let Some(res) = app.api(req, &req.path) {
         return res;
-    }
-    if req.path.starts_with("/api/") {
-        return json_reply(501, json!({ "error": NOT_YET }));
     }
     json_reply(404, json!({ "error": "not found" }))
 }

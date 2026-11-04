@@ -137,11 +137,6 @@ fn installation(app: &AppHandle) -> Result<Installation, Report> {
     }
     #[cfg(target_os = "linux")]
     {
-        if Path::new("/.flatpak-info").exists() {
-            return Ok(Installation::Unsupported(
-                "The Flatpak prototype has no update repository. Install a new prototype bundle manually.",
-            ));
-        }
         if app.env().appimage.is_some() {
             return Ok(Installation::AppImage(executable.canonicalize()?));
         }

@@ -1,0 +1,38 @@
+{
+ "id": "11111111-2222-3333-4444-555555555555",
+ "receivedAt": 1793805415738,
+ "bytes": 937,
+ "via": "app",
+ "uploader": null,
+ "createdAt": "2026-11-04T10:00:00Z",
+ "session": "s1",
+ "note": null,
+ "app": {
+  "bundleId": "com.x.app",
+  "build": "42",
+  "name": "My App"
+ },
+ "device": {
+  "name": "Vision Pro"
+ },
+ "build": {
+  "keyId": "key1",
+  "buildId": "key1",
+  "repo": "App",
+  "branch": "main",
+  "platform": "iOS",
+  "configuration": null,
+  "installedTo": "iPhone",
+  "builtAt": 5
+ },
+ "files": [
+  {
+   "path": "logs/app.log",
+   "bytes": 360
+  },
+  {
+   "path": "data.bin",
+   "bytes": 100
+  }
+ ]
+}

@@ -1,8 +1,8 @@
-//! A build sent from another computer: kept so that the Node store (what the devices' Apparition
-//! talks to today) lists, describes and serves it exactly like one built on this Mac.
-
-
-mod common;
+//! A build sent from another computer: kept so that it is listed, described and served exactly
+//! like one built on this Mac. The expected list entry, manifest and download headers are what the
+//! old Node store (`store/lib/artifacts.js`) read back from the very build this test uploads,
+//! captured when it was removed. The upload is the same bytes each run, so its SHA-256 is pinned
+//! too; only the generated build id and timestamp vary.
 
 use apparition_service::server::{Settings, router};
 use axum::{Router, body::Body, http::Request};
@@ -44,13 +44,11 @@ async fn deploy(app: &Router, bearer: &str, query: &str, body: Vec<u8>, computer
 }
 
 #[tokio::test]
-async fn an_uploaded_ipa_is_kept_as_a_build_the_node_store_serves() {
+async fn an_uploaded_ipa_is_kept_as_a_build_the_devices_apparition_can_read() {
     let work = tempfile::tempdir().unwrap();
-    let port = common::free_port();
-    for dir in ["rust", "node"] {
-        std::fs::create_dir_all(work.path().join(dir).join("data")).unwrap();
-        std::fs::write(work.path().join(dir).join("config.json"), json!({ "port": port, "buildManifestDir": "../builds", "repos": [] }).to_string()).unwrap();
-    }
+    let dir = "rust";
+    std::fs::create_dir_all(work.path().join(dir).join("data")).unwrap();
+    std::fs::write(work.path().join(dir).join("config.json"), json!({ "port": 1, "buildManifestDir": "../builds", "repos": [] }).to_string()).unwrap();
     let rust = work.path().join("rust");
     let app = router(Settings { host_token: Some(HOST.into()), key_dir: rust.join("k"), browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])),
         ..Settings::new(rust.join("config.json"), rust.join("data"), rust.join("p")) }).unwrap();
@@ -79,14 +77,44 @@ async fn an_uploaded_ipa_is_kept_as_a_build_the_node_store_serves() {
     let builds: Vec<_> = std::fs::read_dir(work.path().join("builds")).unwrap().flatten().map(|e| e.file_name().into_string().unwrap()).collect();
     assert_eq!(builds, [id.clone()], "refused uploads leave nothing behind");
 
-    let manifest = |res: (u16, String)| -> Value { assert_eq!(res.0, 200, "{}", res.1); serde_json::from_str(&res.1).unwrap() };
-    let Some(node) = common::NodeStore::start(&work.path().join("node/config.json"), &work.path().join("node/data"), port, &[]) else { return };
-    let listed = manifest(node.get("/api/artifacts"));
-    assert_eq!(listed["builds"][0]["buildId"], id.as_str());
-    assert_eq!(listed["builds"][0]["app"]["bundleId"], "com.example.thing");
-    let kept = manifest(node.get(&format!("/api/artifacts/{id}/manifest")));
-    assert_eq!(kept["origin"], json!({ "kind": "upload", "computer": "Gaming PC", "file": "Thing.ipa", "device": "ixVision" }));
-    assert_eq!(kept["app"]["version"], "1.2");
-    let (status, body) = node.get(&format!("/api/artifacts/{id}/download"));
-    assert_eq!((status, body.len()), (200, String::from_utf8_lossy(&good).len()));
+    // With a host token the web UI is off, so read it back through a service on the same data
+    // and build store, as the Store's own page would.
+    let reader = router(Settings { host_token: None, key_dir: rust.join("k"), browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])),
+        ..Settings::new(rust.join("config.json"), rust.join("data"), rust.join("p")) }).unwrap();
+    let get = |uri: String| { let app = reader.clone(); async move {
+        let res = app.oneshot(Request::builder().uri(uri).header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
+        (res.status().as_u16(), res.headers().clone(), axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec())
+    } };
+    const SHA: &str = "2d384e7853a37d31088ef68366b300646073c66e16ce3c4d025d08868973eb7e";
+    let app_info = json!({ "bundleId": "com.example.thing", "originalBundleId": "com.example.thing", "name": "Spatial Thing", "bundleName": "Thing.app", "minOSVersion": "26.0", "version": "1.2", "build": "42" });
+    let artifact = json!({ "sha256": SHA, "bytes": 502, "kind": "ipa", "file": format!("{SHA}.ipa") });
+    let origin = json!({ "kind": "upload", "computer": "Gaming PC", "file": "Thing.ipa", "device": "ixVision" });
+    // Ids and timestamps vary per run: put this run's into the captured shape.
+    let created = |v: &Value| v["createdAt"].clone();
+
+    let (status, _, body) = get("/api/artifacts".into()).await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let listed: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(listed["builds"].as_array().unwrap().len(), 1);
+    let entry = &listed["builds"][0];
+    assert_eq!(entry["buildId"], id.as_str());
+    assert_eq!(serde_json::to_string(entry).unwrap(), serde_json::to_string(&json!({
+        "buildId": id, "createdAt": created(entry), "project": null, "platform": "visionOS", "configuration": null,
+        "app": app_info, "artifact": artifact, "origin": origin, "source": null,
+    })).unwrap(), "the list entry, key order included, as Node read it back");
+
+    let (status, _, body) = get(format!("/api/artifacts/{id}/manifest")).await;
+    assert_eq!(status, 200);
+    let kept: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(serde_json::to_string(&kept).unwrap(), serde_json::to_string(&json!({
+        "format": "apparition-build/1", "buildId": id, "keyId": null, "createdAt": created(&kept), "project": null, "platform": "visionOS", "configuration": null,
+        "app": app_info, "artifact": artifact, "binaries": {}, "symbols": null, "source": null, "origin": origin,
+    })).unwrap(), "the manifest, as Node read it back");
+    assert!(created(&kept).as_str().is_some_and(|t| t.ends_with('Z')));
+
+    let (status, headers, body) = get(format!("/api/artifacts/{id}/download")).await;
+    assert_eq!((status, body.len()), (200, good.len()));
+    assert_eq!(good.len(), 502);
+    assert_eq!(headers["content-type"], "application/octet-stream");
+    assert_eq!(headers["content-disposition"], format!("attachment; filename=\"{SHA}.ipa\""));
 }

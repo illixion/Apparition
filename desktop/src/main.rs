@@ -113,7 +113,6 @@ fn main() {
             }
             companion::setup(app.handle(), companion_state)?;
             updater::setup(app.handle());
-            host::setup(app.handle());
             developer::setup(app.handle());
             // Started at login: straight to the tray.
             if std::env::args().any(|arg| arg == companion::HIDDEN) {
