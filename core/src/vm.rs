@@ -22,9 +22,9 @@
 //! - **Keeping it**: a VM that is set up is never made again, and nothing after setup reads the restore image (setup
 //!   removes the cache's copy). A saved state that can't be resumed (a new runner, a host macOS update) is dropped
 //!   for one cold boot. The guest's own updates are off (the trim), so it stays on the macOS it was verified with,
-//!   and a new [`RESTORE_IMAGE`] pin applies only to VMs made after it. A newer app's programs for the guest go in
-//!   while it runs ([`push`]): signed with the VM's own key and checked by the guest before it installs them
-//!   (vm_update.rs), in seconds, with no cold boot. What only recoveryOS can change (launchd jobs, the trim, the
+//!   and a new [`RESTORE_IMAGE`] pin applies only to VMs made after it. A newer release's programs for the guest go
+//!   in while it runs ([`push`]): the app fetches them from the release site and the guest checks the release's
+//!   signature itself before it installs them (vm_update.rs), in seconds, with no cold boot. What only recoveryOS can change (launchd jobs, the trim, the
 //!   update channel itself) goes in with [`update`] from the VM's own recoveryOS, when [`GUEST_VERSION`] says so.
 
 use std::path::{Path, PathBuf};
@@ -67,12 +67,12 @@ pub const RESTORE_IMAGE: RestoreImage = RestoreImage {
 };
 
 /// What recoveryOS put into the guest: the launchd jobs, the trim, the update channel (setup.sh). The programs
-/// themselves don't need a bump: a changed one reaches a running VM signed ([`push`], vm_update.rs). Bump this when
+/// themselves don't need a bump: each release's reach a running VM ([`push`], vm_update.rs). Bump this when
 /// a change to what only recoveryOS can write has to reach VMs set up before it: the app then runs [`update`] on
 /// those, which takes a few minutes and needs no restore image, instead of anyone making the VM again. VMs from
 /// before the bundle recorded it (`guest-version`) have version 1.
 ///
-/// 2: the update channel (guest-bridge's vsock 6972, `apparition vm guest-apply`, the VM's update key).
+/// 2: the update channel (guest-bridge's vsock 6972, `apparition vm guest-apply`).
 pub const GUEST_VERSION: u32 = 2;
 
 fn guest_version(bundle: &Path) -> u32 {
@@ -89,29 +89,23 @@ fn pushable(bundle: &Path) -> bool {
     bundle.join("ready").exists() && !outdated(bundle)
 }
 
-/// The programs this app hands the guest, by their names in vm_update.rs's list.
-fn guest_programs(tools: &Tools) -> Result<Vec<(String, Vec<u8>)>, Report> {
-    let read = |path: &Path| std::fs::read(path).context(format!("reading {}", path.display()));
-    Ok(vec![
-        ("apparition".into(), read(&tools.program)?),
-        ("apparition-anisette-helper".into(), read(&tools.helper)?),
-        ("report-status.sh".into(), crate::vm_setup::REPORT_STATUS.as_bytes().to_vec()),
-        ("guest-status".into(), read(&tools.guest_status)?),
-        ("guest-bridge".into(), read(&tools.guest_bridge)?),
-    ])
+/// The app version whose programs the VM has, as the bundle recorded it (`guest-release`): set up or updated from
+/// recoveryOS by that version, or handed its release's programs ([`push`]).
+fn guest_release(bundle: &Path) -> Option<String> {
+    std::fs::read_to_string(bundle.join("guest-release")).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
 
-/// This app's programs' identity (vm_update::digest), worked out once per process: they don't change under it.
-fn programs_digest() -> Option<String> {
-    static DIGEST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    DIGEST.get_or_init(|| Tools::find().ok().and_then(|tools| guest_programs(&tools).ok()).map(|p| crate::vm_update::digest(&p))).clone()
+fn record_release(bundle: &Path, version: &str) -> Result<(), Report> {
+    if !version.is_empty() {
+        std::fs::write(bundle.join("guest-release"), format!("{version}\n"))?;
+    }
+    Ok(())
 }
 
-/// A VM whose programs aren't this app's (by what the bundle recorded it was given, `guest-programs`), and that can
-/// take them while it runs: [`push`] hands them over.
-pub fn stale(bundle: &Path) -> bool {
-    pushable(bundle)
-        && programs_digest().is_some_and(|digest| std::fs::read_to_string(bundle.join("guest-programs")).map(|t| t.trim().to_string()).ok() != Some(digest))
+/// A VM with an older app version's programs than `version` (this app's), which can take that release's while it
+/// runs: [`push`] fetches and hands them over.
+pub fn stale(bundle: &Path, version: &str) -> bool {
+    pushable(bundle) && guest_release(bundle).is_none_or(|had| crate::release::is_newer(version, &had))
 }
 
 /// Where the app keeps its VM.
@@ -500,8 +494,8 @@ pub struct Status {
     pub outdated: bool,
     /// An [`update`] runs.
     pub updating: bool,
-    /// This app's programs differ from the VM's, which can take them while it runs ([`push`], seconds).
-    pub stale: bool,
+    /// The app version whose programs the VM has (`guest-release`), when the bundle recorded one.
+    pub guest_release: Option<String>,
     pub live: Option<Live>,
     pub guest: Option<GuestReport>,
     /// The pinned restore image is in the cache, checked.
@@ -523,7 +517,7 @@ pub async fn status(bundle: &Path) -> Status {
         suspended: saved_state(bundle).exists(),
         outdated: outdated(bundle),
         updating: updating(bundle),
-        stale: stale(bundle),
+        guest_release: guest_release(bundle),
         live: live(bundle).await,
         guest: report(bundle),
         image_cached: stamped(&cached, &RESTORE_IMAGE),
@@ -761,8 +755,11 @@ pub struct SetupOptions {
     pub public_key: Option<PathBuf>,
     /// Keep the cache's copy of the restore image once the VM is set up (for building VMs again and again).
     pub keep_image: bool,
-    /// [`update`]: from the VM's recoveryOS even when it could take the programs while it runs.
+    /// [`update`]: from the VM's recoveryOS even when it could take the programs while it runs (a build of one's
+    /// own, which no release has the programs of).
     pub recovery: bool,
+    /// The app's version (its `CARGO_PKG_VERSION`): whose release's programs the VM is to have.
+    pub version: String,
 }
 
 /// Sets the VM up, or carries on from wherever an earlier run stopped, and ends with it saved: the next start
@@ -770,7 +767,7 @@ pub struct SetupOptions {
 pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Report> {
     let bundle = options.bundle.as_path();
     if bundle.join("ready").exists() {
-        if outdated(bundle) || stale(bundle) {
+        if outdated(bundle) || stale(bundle, &options.version) {
             return update(options, say).await;
         }
         tell(say, "ready", "The anisette VM is set up", Some(1.0));
@@ -847,7 +844,7 @@ pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Repor
     }
     // The setup stage put this app's programs in (all of them: it puts the vsock ones in again too).
     std::fs::write(bundle.join("guest-version"), GUEST_VERSION.to_string())?;
-    std::fs::write(bundle.join("guest-programs"), crate::vm_update::digest(&guest_programs(&tools)?))?;
+    record_release(bundle, &options.version)?;
     std::fs::write(bundle.join("ready"), "")?;
     let url = serve(bundle).await;
     let url = match url {
@@ -869,8 +866,8 @@ pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Repor
     Ok(url)
 }
 
-/// Puts this app's programs into a VM that is set up. One that can take them while it runs gets them that way
-/// ([`push`]); one an older app set up ([`GUEST_VERSION`]), or any with `options.recovery`, gets setup.sh's setup
+/// Puts this app's programs into a VM that is set up. One that can take them while it runs gets this version's
+/// release's that way ([`push`]); one an older app set up ([`GUEST_VERSION`]), or any with `options.recovery`, gets setup.sh's setup
 /// stage again, from the VM's own recoveryOS (SIP is off already, so nothing asks for the account's password), one
 /// cold boot, and the VM saved again. Neither needs a restore image, and the VM, its account and its anisette
 /// provisioning stay as they are. A run that stops partway leaves the programs the VM had or the new ones (both
@@ -882,7 +879,7 @@ pub async fn update(options: &SetupOptions, say: Say<'_>) -> Result<String, Repo
         bail!("The anisette VM isn't set up yet");
     }
     if pushable(bundle) && !options.recovery {
-        return push(bundle, say).await;
+        return push(bundle, &options.version, say).await;
     }
     let tools = Tools::find()?;
     tools.verify_helper()?;
@@ -904,7 +901,7 @@ pub async fn update(options: &SetupOptions, say: Say<'_>) -> Result<String, Repo
         tell(say, "save", "Saving the VM", None);
         quit(bundle).await?;
         std::fs::write(bundle.join("guest-version"), GUEST_VERSION.to_string())?;
-        std::fs::write(bundle.join("guest-programs"), crate::vm_update::digest(&guest_programs(&tools)?))?;
+        record_release(bundle, &options.version)?;
     }
     let url = serve(bundle).await?;
     tell(say, "check", "Checking the VM's anisette with Apple", None);
@@ -913,25 +910,32 @@ pub async fn update(options: &SetupOptions, say: Say<'_>) -> Result<String, Repo
     Ok(url)
 }
 
-/// Hands this app's programs to the running VM, signed with its update key (vm_update.rs): the guest checks the
-/// signature and every file before it replaces anything, then restarts what it replaced, so the VM keeps serving
-/// (a request meanwhile waits a second or so). A suspended VM is resumed for it. Ends with Apple accepting the
-/// anisette, like setup. Returns the anisette front door.
-pub async fn push(bundle: &Path, say: Say<'_>) -> Result<String, Report> {
+/// Hands release `version`'s programs for the VM to it while it runs: fetched from the release site and checked
+/// here like any release, then carried to the guest, which checks the release's signature again against the signers
+/// compiled into its own `apparition` before it replaces anything, and restarts what it replaced (vm_update.rs). The
+/// VM keeps serving (a request meanwhile waits a second or so); a suspended one is resumed for it. Ends with Apple
+/// accepting the anisette, like setup. A version with no published programs for the VM (a build of one's own) is an
+/// error that says what to do instead. Returns the anisette front door.
+pub async fn push(bundle: &Path, version: &str, say: Say<'_>) -> Result<String, Report> {
     static PUSHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _one = PUSHING.lock().await;
     if !pushable(bundle) {
         bail!("The anisette VM can't take programs while it runs yet; apparition vm update puts them in from its recoveryOS");
     }
-    let tools = Tools::find()?;
-    tools.verify_helper()?;
-    let programs = guest_programs(&tools)?;
-    let digest = crate::vm_update::digest(&programs);
-    let key = crate::vm_update::signing_key(bundle)?;
-    let sequence = crate::vm_update::next_sequence(bundle)?;
-    let package = crate::vm_update::package(&programs, sequence, &key)?;
+    if version.is_empty() {
+        bail!("No app version to fetch the VM's programs for");
+    }
+    tell(say, "update", format!("Fetching Apparition {version}'s programs for the VM"), None);
+    let dir = cache_dir().join("vm-guest");
+    let site = std::env::var("APPARITION_RELEASE_SITE").unwrap_or_else(|_| crate::release::SITE.to_string());
+    let Some((zip, sums, signature)) = crate::release::vm_guest(&site, version, &dir).await? else {
+        bail!("Apparition {version} has no published programs for the VM (a build of your own?): apparition vm update --recovery puts this build's in from the VM's recoveryOS");
+    };
+    let name = crate::release::vm_guest_name(version);
+    let package = crate::vm_update::package(&sums, &signature, &name, &std::fs::read(&zip)?);
+    let _ = std::fs::remove_file(&zip);
     let url = serve(bundle).await?;
-    tell(say, "update", "Handing this app's programs to the VM, signed: it keeps running", None);
+    tell(say, "update", "Handing them to the VM, which checks the release's signature itself and keeps running", None);
     let file = bundle.join("guest-update");
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -940,15 +944,12 @@ pub async fn push(bundle: &Path, say: Say<'_>) -> Result<String, Report> {
     }
     let reply = control(bundle, "update", &[], Duration::from_secs(300)).await;
     let _ = std::fs::remove_file(&file);
-    let reply = reply.map_err(|error| {
-        report!("{} (if the VM's update key was lost, apparition vm update --recovery puts it in again)", error.format_current_context())
-    })?;
-    let replaced = crate::vm_update::parse_reply(reply["reply"].as_str().unwrap_or_default())?;
-    std::fs::write(bundle.join("guest-programs"), digest)?;
+    let (took, replaced) = crate::vm_update::parse_reply(reply?["reply"].as_str().unwrap_or_default())?;
+    record_release(bundle, &took)?;
     tell(say, "update", if replaced.is_empty() { "The VM had these programs already".to_string() } else { format!("The VM replaced {}", replaced.join(", ")) }, None);
     tell(say, "check", "Checking the VM's anisette with Apple", None);
     check_with_apple(&url).await?;
-    tell(say, "ready", "The VM's programs are up to date", Some(1.0));
+    tell(say, "ready", format!("The VM has Apparition {took}'s programs"), Some(1.0));
     Ok(url)
 }
 
@@ -1092,7 +1093,6 @@ async fn recover(bundle: &Path, tools: &Tools, visit: &Visit, password: &str, op
         password: password.to_string(),
         guest_status: std::fs::read(&tools.guest_status).context(format!("reading {}", tools.guest_status.display()))?,
         guest_bridge: std::fs::read(&tools.guest_bridge).context(format!("reading {}", tools.guest_bridge.display()))?,
-        update_key: crate::vm_update::public_key_line(&crate::vm_update::signing_key(bundle)?).into_bytes(),
         authorized_keys: match &options.public_key {
             Some(path) => Some(std::fs::read(path).context(format!("reading {}", path.display()))?),
             None => None,

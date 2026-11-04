@@ -330,6 +330,15 @@ if has macos; then
   cp "$ROOT/build/macos-vm/guest-bridge" "$WORK/macos/$app_name.app/Contents/MacOS/apparition-vm-guest-bridge"
   codesign -f -s - --entitlements "$ROOT/selfhost/macos-vm/runner.entitlements" "$WORK/macos/$app_name.app/Contents/MacOS/apparition-vm"
   codesign -f -s - "$WORK/macos/$app_name.app"
+  # The anisette VM's programs on their own (core/src/vm_update.rs): what the app hands a VM that is set up, which
+  # checks this release's signature itself before it installs them. arm64 only, like the VM; the helper gets its
+  # entitlements in its own signature, as in the app.
+  mkdir -p "$WORK/vm-guest"
+  cp "target/aarch64-apple-darwin/release/$bin" "$WORK/vm-guest/apparition"
+  cp "target/aarch64-apple-darwin/release/$helper" "$WORK/vm-guest/$helper"
+  codesign -f -s - --entitlements "$ROOT/installer/anisette-helper.entitlements" "$WORK/vm-guest/$helper"
+  cp "$ROOT/build/macos-vm/guest-status" "$ROOT/build/macos-vm/guest-bridge" "$ROOT/selfhost/macos-vm/report-status.sh" "$WORK/vm-guest/"
+  (cd "$WORK/vm-guest" && zip -qX "$OUT/Apparition-VMGuest-$VERSION-macos-arm64.zip" apparition "$helper" guest-status guest-bridge report-status.sh)
   readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it until you clear the download quarantine. Move $app_name.app to Applications, then run in Terminal: xattr -dr com.apple.quarantine /Applications/$app_name.app (and for the command line, in this folder: xattr -d com.apple.quarantine $bin $helper). The app holds the command line too: run /Applications/$app_name.app/Contents/MacOS/$bin-cli link once to put $bin on your PATH. Or open it once and click Open Anyway in System Settings > Privacy & Security. Don't re-sign it with codesign: that strips the anisette helper's entitlements."
   (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)
 fi

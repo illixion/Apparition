@@ -66,7 +66,7 @@ pub struct Release {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Asset {
     pub name: String,
-    /// "app" (the IPA) or "installer".
+    /// "app" (the IPA), "installer" or "vm-guest" (the anisette VM's programs, vm_update.rs).
     pub kind: String,
     /// "visionos", "macos-universal", "windows-x86_64", "linux-x86_64", ...
     pub platform: String,
@@ -190,6 +190,33 @@ async fn verify_remote(site: &reqwest::Url, client: &reqwest::Client, release: R
     let sums = fetch(client, site.join(&release.sums)?.as_str()).await?;
     let signature = fetch(client, site.join(&release.signature)?.as_str()).await?;
     verify_release(release, &sums, &String::from_utf8_lossy(&signature), signers)
+}
+
+/// The signed file name of the anisette VM's programs in release `version` (vm_update.rs).
+pub fn vm_guest_name(version: &str) -> String {
+    format!("Apparition-VMGuest-{version}-macos-arm64.zip")
+}
+
+/// The compiled-in release signers, which the anisette VM's `apparition` checks the programs it is handed against.
+pub fn signers() -> &'static str {
+    SIGNERS
+}
+
+/// The anisette VM's programs from release `version` exactly, downloaded into `dir` and checked, with the signed
+/// manifest and its signature as the site serves them: the guest checks them again itself (vm_update.rs). None when
+/// that release isn't published or has no programs for the VM (a build of one's own).
+pub async fn vm_guest(site: &str, version: &str, dir: &Path) -> Result<Option<(PathBuf, Vec<u8>, String)>, Report> {
+    let (site, client, index) = index(site).await?;
+    let name = vm_guest_name(version);
+    let Some(release) = index.releases.iter().find(|r| r.version == version && r.assets.iter().any(|a| a.name == name)) else {
+        return Ok(None);
+    };
+    let sums = fetch(&client, site.join(&release.sums)?.as_str()).await?;
+    let signature = String::from_utf8_lossy(&fetch(&client, site.join(&release.signature)?.as_str()).await?).into_owned();
+    let verified = verify_release(release.clone(), &sums, &signature, SIGNERS)?;
+    let asset = verified.release.assets.iter().find(|a| a.name == name).expect("found above").clone();
+    let file = download(&verified, &asset, dir, |_, _| {}).await?;
+    Ok(Some((file, sums, signature)))
 }
 
 /// Latest desktop installer of this exact format, not necessarily the latest phone-app

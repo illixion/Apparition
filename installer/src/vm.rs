@@ -8,6 +8,10 @@ pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--keep-imag
        apparition vm screen | key <chord> | type <file> | click-text <text> [--menubar] | suspend | resume | network on|off   (for looking into a setup)
        every command takes --bundle <dir> (default ~/Library/Application Support/Apparition/anisette.vm)";
 
+/// Whose release's programs the VM is to have.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub async fn run(args: &[String]) -> Result<(), Report> {
     use apparition_core::api::vm;
@@ -34,14 +38,14 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
     };
     match rest.as_slice() {
         ["setup"] => {
-            let options = vm::SetupOptions { bundle, ipsw, public_key, keep_image, recovery: false };
+            let options = vm::SetupOptions { bundle, ipsw, public_key, keep_image, recovery: false, version: VERSION.into() };
             let url = vm::setup(&options, &say).await?;
             println!("The anisette VM is set up and saved: its anisette is at {url}, and it resumes in a second when asked.");
             println!("Sign-ins here use it when this Mac has no anisette of its own; the app's companion offers it to devices.");
         }
         // Also when its programs are current: putting the same ones in again is how a damaged copy is mended.
         ["update"] => {
-            let url = vm::update(&vm::SetupOptions { bundle, public_key, recovery, ..Default::default() }, &say).await?;
+            let url = vm::update(&vm::SetupOptions { bundle, public_key, recovery, version: VERSION.into(), ..Default::default() }, &say).await?;
             println!("The anisette VM has this app's programs: its anisette is at {url}.");
         }
         // Inside the VM, as root, run by guest-bridge for the app's update (core/src/vm_update.rs); not for people.
@@ -51,7 +55,7 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
-                println!("{}", describe(&status));
+                println!("{}", describe(&status, vm::stale(&bundle, VERSION)));
             }
         }
         ["serve"] => println!("{}", vm::serve(&bundle).await?),
@@ -92,7 +96,7 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn describe(status: &apparition_core::api::vm::Status) -> String {
+fn describe(status: &apparition_core::api::vm::Status, stale: bool) -> String {
     let mut lines = vec![format!("Bundle: {}", status.bundle.display())];
     let state = if let Some(why) = &status.unsupported {
         format!("Can't run here: {why}")
@@ -113,8 +117,11 @@ fn describe(status: &apparition_core::api::vm::Status) -> String {
     lines.push(state);
     if status.outdated && !status.updating {
         lines.push("Set up by an older app: apparition vm update puts this app's programs in from its recoveryOS (a few minutes)".to_string());
-    } else if status.stale {
-        lines.push("Its programs differ from this app's: apparition vm update hands them over while it runs (seconds)".to_string());
+    } else if stale {
+        lines.push(format!(
+            "It has {}'s programs: apparition vm update hands it Apparition {VERSION}'s from the release while it runs (seconds)",
+            status.guest_release.as_deref().map_or("an earlier version".to_string(), |v| format!("Apparition {v}"))
+        ));
     }
     lines.push(format!("Disk: {:.1} GB", status.disk_bytes as f64 / 1e9));
     lines.push(format!("{}: {}", status.image, if status.image_cached { "in the cache" } else { "not in the cache" }));

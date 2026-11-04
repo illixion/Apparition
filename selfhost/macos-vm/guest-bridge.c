@@ -7,9 +7,9 @@
 // vsock 6971 sets the clock: the runner sends "<unix seconds>.<microseconds>\n" right after it resumes a suspended VM,
 // whose clock otherwise stands still for as long as it was suspended. Anisette carries the client's time.
 //
-// vsock 6972 takes an update of the guest's programs from the app: the installed `apparition vm guest-apply` runs as
-// root with the connection as its input and output, checks the package's signature against the VM's own update key
-// (put in from recoveryOS) and every file against it, and only then replaces them (core/src/vm_update.rs).
+// vsock 6972 takes a release's programs for the guest from the app: the installed `apparition vm guest-apply` runs as
+// root with the connection as its input and output, checks the release's signature against the release signers
+// compiled into it and every file against that, and only then replaces them (core/src/vm_update.rs).
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>

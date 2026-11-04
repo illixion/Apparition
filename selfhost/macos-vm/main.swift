@@ -887,7 +887,7 @@ final class ControlServer {
                     }
                     return
                 case "update":
-                    // The app's signed update of the guest's programs (core/src/vm_update.rs), which it wrote into the
+                    // A release's programs for the guest, with its signed manifest (core/src/vm_update.rs), which the app wrote into the
                     // bundle as guest-update: carried to guest-bridge on vsock 6972, which checks and installs it, and
                     // answered with the guest's reply line. The guest checks the signature; this only carries it.
                     let package = self.dir.appendingPathComponent("guest-update")

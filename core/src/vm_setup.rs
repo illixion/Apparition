@@ -79,8 +79,6 @@ pub struct Appliance {
     /// guest-status and guest-bridge, built for the guest (selfhost/macos-vm/build.sh).
     pub guest_status: Vec<u8>,
     pub guest_bridge: Vec<u8>,
-    /// The public half of the VM's update key (vm_update.rs): what the guest checks updates the app hands it against.
-    pub update_key: Vec<u8>,
     /// Development only: an SSH key to authorize, which keeps Remote Login on in the guest.
     pub authorized_keys: Option<Vec<u8>>,
 }
@@ -202,7 +200,6 @@ async fn handle(mut stream: TcpStream, files: &Files, tx: &watch::Sender<Progres
         ("/report-status.sh", Some(_)) => (REPORT_STATUS.as_bytes().to_vec(), 4),
         ("/guest-status", Some(a)) => (a.guest_status.clone(), 4),
         ("/guest-bridge", Some(a)) => (a.guest_bridge.clone(), 4),
-        ("/update-key.pub", Some(a)) => (a.update_key.clone(), 4),
         ("/authorized_keys", Some(Appliance { authorized_keys: Some(keys), .. })) => (keys.clone(), 4),
         // The provision stage confirms without the program: it comes in the setup stage.
         ("/complete", Some(_)) => (b"OK\n".to_vec(), 3),
@@ -379,7 +376,6 @@ mod tests {
             password: "secret".into(),
             guest_status: b"status-binary".to_vec(),
             guest_bridge: b"bridge-binary".to_vec(),
-            update_key: b"public-key\n".to_vec(),
             authorized_keys: None,
         };
         let mut session = serve_appliance(dir.path().join("a"), dir.path().join("h"), appliance).await.unwrap();
@@ -393,7 +389,6 @@ mod tests {
         assert!(String::from_utf8(get(session.port, "/0123456789abcdef/setup.sh").await).unwrap().contains("STAGE='setup'"));
         assert!(get(session.port, "/0123456789abcdef/password").await.ends_with(b"\r\n\r\nsecret"));
         assert!(get(session.port, "/0123456789abcdef/guest-bridge").await.ends_with(b"bridge-binary"));
-        assert!(get(session.port, "/0123456789abcdef/update-key.pub").await.ends_with(b"\r\n\r\npublic-key\n"));
         assert!(get(session.port, "/0123456789abcdef/first-boot.sh").await.ends_with(FIRST_BOOT.as_bytes()));
         assert!(get(session.port, "/0123456789abcdef/authorized_keys").await.starts_with(b"HTTP/1.0 404"), "no key, no file");
         // The provision stage confirms before the program has been fetched (it comes in the setup stage).

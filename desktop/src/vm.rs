@@ -34,6 +34,9 @@ mod mac {
         push: bool,
     }
 
+    /// Whose release's programs the VM is to have.
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+
     static JOB: Mutex<Job> = Mutex::new(Job { task: None, last: None, error: None, update: false, push: false });
 
     fn running() -> bool {
@@ -53,7 +56,7 @@ mod mac {
             "ready": status.ready,
             "suspended": status.suspended,
             "outdated": status.outdated,
-            "stale": status.stale,
+            "stale": vm::stale(&bundle, VERSION),
             // The update runs while the VM keeps serving.
             "handingOver": busy && job.push,
             // Also one a terminal's `apparition vm update` runs.
@@ -79,11 +82,11 @@ mod mac {
         // vm::setup runs the update itself on a VM that is set up with older programs: from its recoveryOS when an
         // older app set it up, otherwise handed to it while it runs.
         let bundle = vm::default_bundle();
-        job.push = !vm::outdated(&bundle) && vm::stale(&bundle);
+        job.push = !vm::outdated(&bundle) && vm::stale(&bundle, VERSION);
         job.update = vm::outdated(&bundle) || job.push;
         let update = job.update;
         job.task = Some(tauri::async_runtime::spawn(async move {
-            let options = vm::SetupOptions { bundle: vm::default_bundle(), ipsw: ipsw.map(Into::into), ..Default::default() };
+            let options = vm::SetupOptions { bundle: vm::default_bundle(), ipsw: ipsw.map(Into::into), version: VERSION.into(), ..Default::default() };
             let emitter = app.clone();
             let say = move |progress: vm::Progress| {
                 let _ = emitter.emit("vm-progress", &progress);
@@ -101,13 +104,14 @@ mod mac {
         Ok(())
     }
 
-    /// At launch: a VM with other programs than this app's gets this app's, in the background, so a new app version
-    /// never means making the VM again: handed to it signed while it runs (seconds), or, for a VM an older app set
-    /// up, once from its own recoveryOS (a few minutes, no download). A failure shows in the Companion tab, whose
+    /// At launch: a VM with an older version's programs gets this version's, in the background, so a new app version
+    /// never means making the VM again: its release's, fetched and handed to it while it runs (seconds; the VM checks
+    /// the release's signature itself), or, for a VM an older app set up, once from its own recoveryOS (a few
+    /// minutes, no download). A failure shows in the Companion tab, whose
     /// button tries again.
     pub fn update_if_outdated(app: &AppHandle) {
         let bundle = vm::default_bundle();
-        if (vm::outdated(&bundle) || vm::stale(&bundle)) && !running() {
+        if (vm::outdated(&bundle) || vm::stale(&bundle, VERSION)) && !running() {
             let _ = setup(app.clone(), None);
         }
     }

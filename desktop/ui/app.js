@@ -1737,7 +1737,7 @@ const VM_PREVIEWS = {
   "vm-outdated": { supported: true, exists: true, installed: true, ready: true, outdated: true, settingUp: false, imageCached: false, diskBytes: 27e9, suspended: true },
   "vm-stale": { supported: true, exists: true, installed: true, ready: true, stale: true, settingUp: false, imageCached: false, diskBytes: 27e9, suspended: true },
   "vm-handing-over": { supported: true, exists: true, installed: true, ready: true, stale: true, updating: true, handingOver: true, settingUp: true, imageCached: false, diskBytes: 27e9, suspended: false, serving: true, phase: "running",
-    progress: { step: "update", text: "Handing this app's programs to the VM, signed: it keeps running", fraction: null } },
+    progress: { step: "update", text: "Handing them to the VM, which checks the release's signature itself and keeps running", fraction: null } },
   "vm-updating": { supported: true, exists: true, installed: true, ready: true, outdated: true, updating: true, settingUp: true, imageCached: false, diskBytes: 27e9,
     progress: { step: "update", text: "recoveryOS is putting this app's programs into the VM", fraction: null } },
 };
@@ -1788,11 +1788,11 @@ function drawVm() {
   const disk = vm.diskBytes ? ` It takes ${(vm.diskBytes / 1e9).toFixed(1)} GB of disk.` : "";
   const text = vmNote?.text
     ?? (vm.error && !busy ? vm.error
-      : busy ? (vm.handingOver ? "Handing this version's programs to the VM, signed. It keeps running, so sign-ins keep working."
+      : busy ? (vm.handingOver ? "Fetching this version's programs for the VM from its release. The VM checks the release's signature itself and keeps running, so sign-ins keep working."
         : vm.updating ? "The VM, its account and its anisette stay as they are. Until this is done (a few minutes), sign-ins can't use it." : "")
       : vm.updating ? "Its programs are being updated from a terminal (apparition vm update)."
       : vm.outdated ? "This version of Apparition has newer programs for the VM. Updating them takes a few minutes from the VM's own recoveryOS, with no download, and keeps the VM as it is."
-      : vm.stale ? "This version of Apparition has other programs for the VM. It takes them in seconds while it runs."
+      : vm.stale ? "This version of Apparition has newer programs for the VM. It takes them from the release in seconds, while it runs."
       : vm.ready ? (vm.serving && vm.phase === "running"
           ? `Running. It is saved to disk and stopped after a few idle minutes.${disk}`
           : `Saved to disk, using no memory. It wakes in about a second when a device signs in.${disk}`)

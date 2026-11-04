@@ -1,39 +1,44 @@
-//! Signed updates of the anisette VM's programs, handed by the app to the running guest: no recoveryOS, no cold boot,
-//! and the VM keeps serving (each program it replaces restarts in about a second).
+//! Updates of the anisette VM's programs from Apparition's own signed releases, handed by the app to the running
+//! guest: no recoveryOS, no cold boot, and the VM keeps serving (each program it replaces restarts in about a second).
 //!
-//! - **Who signs**: each VM has its own Ed25519 key, made by the host and kept in the bundle (`update-key`, mode 600).
-//!   Its public half goes into the guest from recoveryOS, with everything else setup.sh puts there
-//!   (`/Library/Application Support/ApparitionBootstrap/update-key.pub`, root only), so only the app that set the VM
-//!   up can update it, and nothing later can change which key that is without recoveryOS.
-//! - **What it can change**: only the programs in [`PROGRAMS`], each to its fixed place. Launchd jobs, the trim, SIP
-//!   and the account stay as recoveryOS left them (a change to those is a `GUEST_VERSION` bump, vm.rs).
-//! - **No going back**: each package carries a sequence number the guest must not have seen (`update-sequence`), so an
-//!   older package, sent again, is refused.
+//! - **What it takes**: a release's `Apparition-VMGuest-<version>-macos-arm64.zip` (scripts/package-release.sh),
+//!   built and attested on GitHub Actions like the rest of the release, with that release's `SHA256SUMS` and its
+//!   SSHSIG signature, exactly as the release site publishes them. The app only fetches and carries them.
+//! - **Who checks**: the guest's own installed `apparition`, against the release signers compiled into it
+//!   (release-signers), the same check the app makes of its own updates. Nothing on the host can sign a package, so
+//!   a tampered app can't put its own programs into the VM; only a release can.
+//! - **What it can change**: only the programs in [`PROGRAMS`], each to its fixed place, and the release has to hold
+//!   all of them. Launchd jobs, the trim, SIP and the account stay as recoveryOS left them (a change to those is a
+//!   `GUEST_VERSION` bump, vm.rs).
+//! - **No going back**: the guest records the release it took (`release-version`) and refuses an older one. The
+//!   version is signed: it is in the file name `SHA256SUMS` lists.
 //! - **The way in**: the runner (selfhost/macos-vm/main.swift, control operation `update`) carries the package over
 //!   vsock 6972, which only this VM's own device reaches, to guest-bridge, which runs the installed
 //!   `apparition vm guest-apply` as root with the connection as its input and output ([`guest_apply`]).
 //!
-//! The package: a line `APPARITION-GUEST-UPDATE 1`, the manifest as one line of JSON, the Ed25519 signature of
-//! [`CONTEXT`] followed by the manifest's bytes as one line of hex, then each file's bytes in the manifest's order.
-//! Everything is read, checked against its size and SHA-256 and written beside its destination before anything is
-//! replaced; a file that is already the same is left alone (and its job isn't restarted).
+//! A build of one's own isn't a release, so it has none of this: `apparition vm update --recovery` puts its programs
+//! in from the VM's recoveryOS instead.
+//!
+//! The package: a line `APPARITION-GUEST-RELEASE 1`, then three parts, each a line `<size> <name>` and that many
+//! bytes: `SHA256SUMS`, `SHA256SUMS.sig` and the release's zip. Every program is unpacked and written beside its
+//! destination before anything is replaced; one that is already the same is left alone (and its job isn't restarted).
 
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rootcause::prelude::*;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::release;
 
 /// The guest's vsock port for updates (guest-bridge.c).
 pub const PORT: u32 = 6972;
-const MAGIC: &str = "APPARITION-GUEST-UPDATE 1";
-/// Signed before the manifest, so the key's signature can't be taken for anything else.
-pub const CONTEXT: &[u8] = b"apparition guest update v1\0";
-/// What one package may hold, all files together.
-const MAX_TOTAL: u64 = 1 << 30;
-const MAX_LINE: usize = 64 << 10;
+const MAGIC: &str = "APPARITION-GUEST-RELEASE 1";
+const MAX_LINE: usize = 1024;
+const MAX_SUMS: u64 = 64 << 10;
+const MAX_SIGNATURE: u64 = 16 << 10;
+/// The zip, and what it unpacks to, all files together.
+const MAX_PROGRAMS: u64 = 512 << 20;
 
 /// Where a program goes in the guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +60,7 @@ pub enum Job {
     Bridge,
 }
 
-/// The programs an update may replace: name, place, mode, the job that runs it.
+/// The programs an update replaces, all of them in every release: name, place, mode, the job that runs it.
 pub const PROGRAMS: &[(&str, Place, u32, Job)] = &[
     ("apparition", Place::Program, 0o755, Job::Anisette),
     ("apparition-anisette-helper", Place::Program, 0o755, Job::Anisette),
@@ -68,106 +73,33 @@ fn program(name: &str) -> Option<&'static (&'static str, Place, u32, Job)> {
     PROGRAMS.iter().find(|(known, ..)| *known == name)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Entry {
-    pub name: String,
-    pub size: u64,
-    pub sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Manifest {
-    pub format: u32,
-    /// Higher than any package the guest took before.
-    pub sequence: u64,
-    pub files: Vec<Entry>,
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn unhex(text: &str) -> Option<Vec<u8>> {
-    let text = text.trim();
-    if text.len() % 2 != 0 {
-        return None;
-    }
-    (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
-}
-
 fn sha256(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // MARK: The host's half
 
-/// The program set's identity: what the bundle records as the guest's (`guest-programs`), to tell whether this app's
-/// programs differ from the ones the VM has.
-pub fn digest(programs: &[(String, Vec<u8>)]) -> String {
-    let mut lines: Vec<String> = programs.iter().map(|(name, bytes)| format!("{name} {}\n", sha256(bytes))).collect();
-    lines.sort();
-    sha256(lines.concat().as_bytes())
-}
-
-/// The VM's update key, made on first use: 32 random bytes as hex, mode 600, in the bundle.
-pub fn signing_key(bundle: &Path) -> Result<SigningKey, Report> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = bundle.join("update-key");
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        let seed: [u8; 32] = unhex(&text).and_then(|b| b.try_into().ok()).ok_or_else(|| report!("{} isn't a key", path.display()))?;
-        return Ok(SigningKey::from_bytes(&seed));
-    }
-    let mut seed = [0u8; 32];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut seed).map_err(|_| report!("no random numbers"))?;
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).context("writing the VM's update key")?;
-    file.write_all(format!("{}\n", hex(&seed)).as_bytes())?;
-    Ok(SigningKey::from_bytes(&seed))
-}
-
-/// The public half, as the guest keeps it (one line of hex).
-pub fn public_key_line(key: &SigningKey) -> String {
-    format!("{}\n", hex(key.verifying_key().as_bytes()))
-}
-
-/// The next sequence number for this bundle's VM, recorded before the package is sent: a package that never arrived
-/// only skips a number.
-pub fn next_sequence(bundle: &Path) -> Result<u64, Report> {
-    let path = bundle.join("update-sequence");
-    let last = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0);
-    let next = last + 1;
-    std::fs::write(&path, format!("{next}\n")).context("recording the update's sequence number")?;
-    Ok(next)
-}
-
-/// A signed package of `programs` (names from [`PROGRAMS`]).
-pub fn package(programs: &[(String, Vec<u8>)], sequence: u64, key: &SigningKey) -> Result<Vec<u8>, Report> {
-    let mut files = Vec::new();
-    for (name, bytes) in programs {
-        if program(name).is_none() {
-            bail!("{name} isn't one of the guest's programs");
-        }
-        files.push(Entry { name: name.clone(), size: bytes.len() as u64, sha256: sha256(bytes) });
-    }
-    let manifest = serde_json::to_vec(&Manifest { format: 1, sequence, files })?;
-    let signature = key.sign(&[CONTEXT, &manifest].concat());
-    let mut out = Vec::with_capacity(programs.iter().map(|(_, b)| b.len()).sum::<usize>() + manifest.len() + 256);
-    out.extend_from_slice(MAGIC.as_bytes());
-    out.push(b'\n');
-    out.extend_from_slice(&manifest);
-    out.push(b'\n');
-    out.extend_from_slice(hex(&signature.to_bytes()).as_bytes());
-    out.push(b'\n');
-    for (_, bytes) in programs {
+/// The package for the guest: the release's signed manifest, its signature and the VM's programs, as published.
+pub fn package(sums: &[u8], signature: &str, name: &str, zip: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(zip.len() + sums.len() + signature.len() + 128);
+    out.extend_from_slice(format!("{MAGIC}\n").as_bytes());
+    for (part, bytes) in [("SHA256SUMS", sums), ("SHA256SUMS.sig", signature.as_bytes()), (name, zip)] {
+        out.extend_from_slice(format!("{} {part}\n", bytes.len()).as_bytes());
         out.extend_from_slice(bytes);
     }
-    Ok(out)
+    out
 }
 
-/// What the guest answered: the programs it replaced (none when it had them all already).
-pub fn parse_reply(reply: &str) -> Result<Vec<String>, Report> {
+/// What the guest answered: the release it now has and the programs it replaced (none when it had them all).
+pub fn parse_reply(reply: &str) -> Result<(String, Vec<String>), Report> {
     let line = reply.lines().next().unwrap_or_default();
-    match line.strip_prefix("ok") {
-        Some(rest) => Ok(rest.split([' ', ',']).filter(|n| !n.is_empty()).map(str::to_string).collect()),
+    match line.strip_prefix("ok ") {
+        Some(rest) => {
+            let mut words = rest.split(' ');
+            let version = words.next().unwrap_or_default().to_string();
+            let replaced = words.next().unwrap_or_default().split(',').filter(|n| !n.is_empty()).map(str::to_string).collect();
+            Ok((version, replaced))
+        }
         None if line.is_empty() => bail!("The VM closed the connection without answering the update"),
         None => bail!("The VM refused the update: {}", line.strip_prefix("error ").unwrap_or(line)),
     }
@@ -208,100 +140,117 @@ fn read_line(input: &mut impl BufRead) -> Result<String, Report> {
     String::from_utf8(line).map_err(|_| report!("the update isn't text where it should be"))
 }
 
-/// Reads, checks and installs one package from `input`. Returns the programs it replaced.
-pub fn apply(input: &mut impl BufRead, layout: &Layout) -> Result<Vec<String>, Report> {
+/// One part: its `<size> <name>` line, then its bytes.
+fn read_part(input: &mut impl BufRead, limit: u64) -> Result<(String, Vec<u8>), Report> {
+    let line = read_line(input)?;
+    let (size, name) = line.split_once(' ').ok_or_else(|| report!("the update's parts are malformed"))?;
+    let size: u64 = size.parse().map_err(|_| report!("the update's parts are malformed"))?;
+    if size > limit {
+        bail!("{name} in the update is too large");
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    input.take(size).read_to_end(&mut bytes).context("reading the update")?;
+    if bytes.len() as u64 != size {
+        bail!("the update ended in the middle of {name}");
+    }
+    Ok((name.to_string(), bytes))
+}
+
+/// Reads, checks and installs one package from `input`, trusting releases signed by `signers` only. Returns the
+/// release's version and the programs it replaced.
+pub fn apply(input: &mut impl BufRead, layout: &Layout, signers: &str) -> Result<(String, Vec<String>), Report> {
     if read_line(input)? != MAGIC {
         bail!("not an update package");
     }
-    let manifest_line = read_line(input)?;
-    let signature = unhex(&read_line(input)?).and_then(|b| <[u8; 64]>::try_from(b).ok()).ok_or_else(|| report!("the update's signature is malformed"))?;
-    let key_path = layout.bootstrap.join("update-key.pub");
-    let key = std::fs::read_to_string(&key_path)
-        .ok()
-        .and_then(|text| unhex(&text))
-        .and_then(|b| <[u8; 32]>::try_from(b).ok())
-        .and_then(|b| VerifyingKey::from_bytes(&b).ok())
-        .ok_or_else(|| report!("this VM has no update key (an update from its recoveryOS puts it in)"))?;
-    key.verify_strict(&[CONTEXT, manifest_line.as_bytes()].concat(), &Signature::from_bytes(&signature))
-        .map_err(|_| report!("the update isn't signed by this VM's app"))?;
-    let manifest: Manifest = serde_json::from_str(&manifest_line).context("reading the update's manifest")?;
-    if manifest.format != 1 {
-        bail!("the update's format ({}) is newer than this VM knows", manifest.format);
+    let (_, sums) = read_part(input, MAX_SUMS)?;
+    let (_, signature) = read_part(input, MAX_SIGNATURE)?;
+    let (name, zip) = read_part(input, MAX_PROGRAMS)?;
+    release::verify_sshsig(&sums, &String::from_utf8_lossy(&signature), release::NAMESPACE, signers)
+        .map_err(|error| report!("the update isn't a signed Apparition release: {}", error.format_current_context()))?;
+    let listed = release::parse_sums(&String::from_utf8_lossy(&sums))?;
+    // The version comes from the signed name, never from anything unsigned.
+    let version = name
+        .strip_prefix("Apparition-VMGuest-")
+        .and_then(|rest| rest.strip_suffix("-macos-arm64.zip"))
+        .filter(|v| !v.is_empty() && v.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())))
+        .ok_or_else(|| report!("{name} isn't the VM's programs from a release"))?
+        .to_string();
+    if release::vm_guest_name(&version) != name {
+        bail!("{name} isn't the VM's programs from a release");
     }
-    let sequence_path = layout.bootstrap.join("update-sequence");
-    let seen = std::fs::read_to_string(&sequence_path).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0);
-    if manifest.sequence <= seen {
-        bail!("the update is no newer than the last one this VM took ({} after {seen})", manifest.sequence);
+    match listed.get(&name) {
+        Some(hash) if hash.eq_ignore_ascii_case(&sha256(&zip)) => {}
+        Some(_) => bail!("{name} doesn't match the release's signed manifest"),
+        None => bail!("the release's signed manifest doesn't list {name}"),
     }
-    let mut total = 0u64;
-    for (i, entry) in manifest.files.iter().enumerate() {
-        if program(&entry.name).is_none() {
-            bail!("{} isn't one of the programs an update may replace", entry.name);
-        }
-        if manifest.files[..i].iter().any(|other| other.name == entry.name) {
-            bail!("{} is in the update twice", entry.name);
-        }
-        total = total.saturating_add(entry.size);
-    }
-    if total > MAX_TOTAL {
-        bail!("the update is too large");
+    let version_path = layout.bootstrap.join("release-version");
+    if let Some(had) = std::fs::read_to_string(&version_path).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+        && release::is_newer(&had, &version)
+    {
+        bail!("the VM has Apparition {had}'s programs, newer than {version}'s");
     }
 
-    // Everything beside its destination first, checked; nothing is replaced until all of it is.
+    // Unpacked and checked whole before anything is written.
+    let mut archive = zip::ZipArchive::new(Cursor::new(&zip)).map_err(|_| report!("{name} isn't a zip"))?;
+    let mut files: Vec<(&'static (&'static str, Place, u32, Job), Vec<u8>)> = Vec::new();
+    let mut total = 0u64;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|_| report!("{name} is damaged"))?;
+        let entry_name = entry.name().map_err(|_| report!("{name} is damaged"))?.to_string();
+        let known = program(&entry_name).filter(|_| entry.is_file()).ok_or_else(|| report!("{entry_name} isn't one of the programs an update may replace"))?;
+        if files.iter().any(|(p, _)| p.0 == known.0) {
+            bail!("{entry_name} is in the update twice");
+        }
+        let mut bytes = Vec::new();
+        (&mut entry).take(MAX_PROGRAMS - total + 1).read_to_end(&mut bytes).map_err(|_| report!("{name} is damaged"))?;
+        total += bytes.len() as u64;
+        if total > MAX_PROGRAMS {
+            bail!("{name} unpacks to too much");
+        }
+        files.push((known, bytes));
+    }
+    if let Some((missing, ..)) = PROGRAMS.iter().find(|(p, ..)| !files.iter().any(|(f, _)| f.0 == *p)) {
+        bail!("the release's programs for the VM lack {missing}");
+    }
+
+    // Everything beside its destination first; nothing is replaced until all of it is written.
     let mut staged: Vec<(PathBuf, PathBuf, &str)> = Vec::new();
     let clean = |staged: &[(PathBuf, PathBuf, &str)]| staged.iter().for_each(|(from, ..)| drop(std::fs::remove_file(from)));
-    for entry in &manifest.files {
-        let &(name, place, mode, _) = program(&entry.name).expect("checked");
-        let dir = layout.dir(place);
-        let target = dir.join(name);
-        let incoming = dir.join(format!(".{name}.incoming"));
-        let result = (|| -> Result<(), Report> {
+    for ((program_name, place, mode, _), bytes) in &files {
+        let dir = layout.dir(*place);
+        let target = dir.join(program_name);
+        let same = std::fs::read(&target).is_ok_and(|had| had == *bytes);
+        let incoming = dir.join(format!(".{program_name}.incoming"));
+        if same {
+            continue;
+        }
+        let written = (|| -> Result<(), Report> {
             use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
             std::fs::create_dir_all(dir)?;
             let _ = std::fs::remove_file(&incoming);
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&incoming).context(format!("writing {}", incoming.display()))?;
-            let mut digest = Sha256::new();
-            let mut left = entry.size;
-            let mut buffer = vec![0u8; 1 << 20];
-            while left > 0 {
-                let n = input.read(&mut buffer[..left.min(1 << 20) as usize]).context("reading the update")?;
-                if n == 0 {
-                    bail!("the update ended in the middle of {name}");
-                }
-                digest.update(&buffer[..n]);
-                file.write_all(&buffer[..n])?;
-                left -= n as u64;
-            }
-            if hex(&digest.finalize()) != entry.sha256 {
-                bail!("{name} doesn't match the update's manifest");
-            }
+            file.write_all(bytes)?;
             file.sync_all()?;
-            std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(mode))?;
+            std::fs::set_permissions(&incoming, std::fs::Permissions::from_mode(*mode))?;
             Ok(())
         })();
-        staged.push((incoming, target, name));
-        if let Err(error) = result {
+        staged.push((incoming, target, program_name));
+        if let Err(error) = written {
             clean(&staged);
             return Err(error);
         }
     }
-
     let mut replaced = Vec::new();
-    for (incoming, target, name) in &staged {
-        let same = std::fs::read(target).is_ok_and(|bytes| manifest.files.iter().any(|e| e.name == *name && e.sha256 == sha256(&bytes)));
-        if same {
-            let _ = std::fs::remove_file(incoming);
-            continue;
-        }
+    for (incoming, target, program_name) in &staged {
         // A rename: a program that is running keeps the file it started from.
         if let Err(error) = std::fs::rename(incoming, target) {
             clean(&staged);
             return Err(report!("installing {}: {error}", target.display()));
         }
-        replaced.push(name.to_string());
+        replaced.push(program_name.to_string());
     }
-    std::fs::write(&sequence_path, format!("{}\n", manifest.sequence)).context("recording the update's sequence number")?;
-    Ok(replaced)
+    std::fs::write(&version_path, format!("{version}\n")).context("recording the release")?;
+    Ok((version, replaced))
 }
 
 /// The jobs to restart for `replaced`, in order: the bridge last, since this update runs under it.
@@ -313,7 +262,7 @@ pub fn jobs(replaced: &[String]) -> Vec<Job> {
 }
 
 /// `apparition vm guest-apply`, as root in the guest, run by guest-bridge for a connection on vsock 6972 (standard
-/// input and output). Answers `ok <replaced...>` or `error <why>`, then restarts what it replaced.
+/// input and output). Answers `ok <version> <replaced,...>` or `error <why>`, then restarts what it replaced.
 pub fn guest_apply() -> Result<(), Report> {
     let layout = Layout::guest();
     // One at a time, and a host that stops sending can't hold the lock for good.
@@ -327,9 +276,9 @@ pub fn guest_apply() -> Result<(), Report> {
         }
     }
     let mut input = std::io::stdin().lock();
-    let result = apply(&mut input, &layout);
+    let result = apply(&mut input, &layout, release::signers());
     let reply = match &result {
-        Ok(replaced) => format!("ok {}\n", replaced.join(",")),
+        Ok((version, replaced)) => format!("ok {version} {}\n", replaced.join(",")),
         Err(error) => format!("error {}\n", error.format_current_context().to_string().replace('\n', " ")),
     };
     let mut out = std::io::stdout().lock();
@@ -338,7 +287,7 @@ pub fn guest_apply() -> Result<(), Report> {
     // The host reads to the end: tell it this is the end, before restarting anything.
     unsafe { libc::shutdown(1, libc::SHUT_WR) };
     drop(lock);
-    let replaced = result?;
+    let (_, replaced) = result?;
     let console = std::fs::metadata("/dev/console").map(|m| std::os::unix::fs::MetadataExt::uid(&m)).unwrap_or(501);
     for job in jobs(&replaced) {
         let target = match job {
@@ -354,108 +303,141 @@ pub fn guest_apply() -> Result<(), Report> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
-    fn programs(version: &str) -> Vec<(String, Vec<u8>)> {
-        PROGRAMS.iter().map(|(name, ..)| (name.to_string(), format!("{name} {version}").into_bytes())).collect()
+    /// A throwaway release signer: ssh-keygen's key and its allowed-signers line, or None without ssh-keygen.
+    struct Signer {
+        dir: tempfile::TempDir,
+        signers: String,
     }
 
-    fn guest(key: &SigningKey) -> (tempfile::TempDir, Layout) {
+    impl Signer {
+        fn new() -> Option<Signer> {
+            let dir = tempfile::tempdir().unwrap();
+            let key = dir.path().join("key");
+            let made = Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "test@signer", "-f"]).arg(&key).status().ok()?;
+            assert!(made.success());
+            let public = std::fs::read_to_string(dir.path().join("key.pub")).unwrap();
+            Some(Signer { signers: format!("releases@apparition.illixion.com {public}"), dir })
+        }
+
+        fn sign(&self, sums: &[u8]) -> String {
+            let file = self.dir.path().join("SHA256SUMS");
+            std::fs::write(&file, sums).unwrap();
+            let _ = std::fs::remove_file(self.dir.path().join("SHA256SUMS.sig"));
+            let ok = Command::new("ssh-keygen").args(["-Y", "sign", "-q", "-n", release::NAMESPACE, "-f"]).arg(self.dir.path().join("key")).arg(&file).status().unwrap();
+            assert!(ok.success());
+            std::fs::read_to_string(self.dir.path().join("SHA256SUMS.sig")).unwrap()
+        }
+
+        /// Release `version`'s package of `files` (name, contents), signed.
+        fn release(&self, version: &str, files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+            let zip = zip_of(files);
+            let name = release::vm_guest_name(version);
+            let sums = format!("{}  {name}\n{}  Apparition-Installer-{version}-macos-universal.zip\n", sha256(&zip), "ab".repeat(32));
+            package(sums.as_bytes(), &self.sign(sums.as_bytes()), &name, &zip)
+        }
+    }
+
+    fn zip_of(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn programs(version: &str) -> Vec<(&'static str, Vec<u8>)> {
+        PROGRAMS.iter().map(|(name, ..)| (*name, format!("{name} {version}").into_bytes())).collect()
+    }
+
+    fn guest() -> (tempfile::TempDir, Layout) {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout { programs: dir.path().join("programs"), bootstrap: dir.path().join("bootstrap") };
         std::fs::create_dir_all(&layout.bootstrap).unwrap();
-        std::fs::write(layout.bootstrap.join("update-key.pub"), public_key_line(key)).unwrap();
         (dir, layout)
     }
 
-    fn apply_bytes(bytes: &[u8], layout: &Layout) -> Result<Vec<String>, Report> {
-        apply(&mut std::io::Cursor::new(bytes), layout)
+    fn apply_bytes(bytes: &[u8], layout: &Layout, signer: &Signer) -> Result<(String, Vec<String>), Report> {
+        apply(&mut Cursor::new(bytes), layout, &signer.signers)
     }
 
     #[test]
-    fn installs_what_changed_and_refuses_going_back() {
-        let key = SigningKey::from_bytes(&[7; 32]);
-        let (_dir, layout) = guest(&key);
-        let first = package(&programs("1"), 1, &key).unwrap();
-        let mut replaced = apply_bytes(&first, &layout).unwrap();
-        replaced.sort();
-        assert_eq!(replaced.len(), PROGRAMS.len());
+    fn installs_a_releases_programs_and_refuses_an_older_release() {
+        let Some(signer) = Signer::new() else { return eprintln!("no ssh-keygen; skipped") };
+        let (_dir, layout) = guest();
+        let (version, replaced) = apply_bytes(&signer.release("1.2.0", &programs("1")), &layout, &signer).unwrap();
+        assert_eq!((version.as_str(), replaced.len()), ("1.2.0", PROGRAMS.len()));
         assert_eq!(std::fs::read(layout.programs.join("apparition")).unwrap(), b"apparition 1");
         assert_eq!(std::fs::read(layout.bootstrap.join("guest-bridge")).unwrap(), b"guest-bridge 1");
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(std::fs::metadata(layout.bootstrap.join("report-status.sh")).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::read_to_string(layout.bootstrap.join("release-version")).unwrap(), "1.2.0\n");
 
-        // Only the changed one is replaced, and only its job restarts.
-        let mut second = programs("1");
-        second[0].1 = b"apparition 2".to_vec();
-        let replaced = apply_bytes(&package(&second, 2, &key).unwrap(), &layout).unwrap();
+        // Only what changed is replaced, and only its job restarts.
+        let mut next = programs("1");
+        next[0].1 = b"apparition 2".to_vec();
+        let (_, replaced) = apply_bytes(&signer.release("1.10.0", &next), &layout, &signer).unwrap();
         assert_eq!(replaced, ["apparition"]);
         assert_eq!(jobs(&replaced), [Job::Anisette]);
         assert!(!layout.programs.join(".apparition.incoming").exists());
 
-        // The first package again (an older one), or the same number again: refused, nothing touched.
-        assert!(apply_bytes(&first, &layout).unwrap_err().to_string().contains("no newer"));
-        assert!(apply_bytes(&package(&programs("3"), 2, &key).unwrap(), &layout).is_err());
+        // The same release again changes nothing; an older one is refused.
+        assert!(apply_bytes(&signer.release("1.10.0", &next), &layout, &signer).unwrap().1.is_empty());
+        let error = apply_bytes(&signer.release("1.9.0", &programs("old")), &layout, &signer).unwrap_err();
+        assert!(error.to_string().contains("newer than"), "{error}");
         assert_eq!(std::fs::read(layout.programs.join("apparition")).unwrap(), b"apparition 2");
     }
 
     #[test]
-    fn refuses_another_key_a_changed_manifest_or_a_changed_file() {
-        let key = SigningKey::from_bytes(&[7; 32]);
-        let (_dir, layout) = guest(&key);
-        let other = SigningKey::from_bytes(&[8; 32]);
-        assert!(apply_bytes(&package(&programs("1"), 1, &other).unwrap(), &layout).unwrap_err().to_string().contains("signed"));
+    fn refuses_anything_a_release_signer_did_not_sign() {
+        let Some(signer) = Signer::new() else { return eprintln!("no ssh-keygen; skipped") };
+        let Some(other) = Signer::new() else { return };
+        let (_dir, layout) = guest();
+        // Another key.
+        assert!(apply_bytes(&other.release("1.2.0", &programs("1")), &layout, &signer).unwrap_err().to_string().contains("signed"));
 
-        let good = package(&programs("1"), 5, &key).unwrap();
-        let text = String::from_utf8_lossy(&good).replacen("\"sequence\":5", "\"sequence\":6", 1).into_bytes();
-        assert!(apply_bytes(&text, &layout).unwrap_err().to_string().contains("signed"));
+        // The zip changed after signing: its hash no longer matches the signed manifest.
+        let good = signer.release("1.2.0", &programs("1"));
+        let mut changed = good.clone();
+        let last = changed.len() - 30;
+        changed[last] ^= 1;
+        assert!(apply_bytes(&changed, &layout, &signer).is_err());
 
-        // A body byte flipped: the manifest's hash catches it, and nothing is installed.
-        let mut flipped = good.clone();
-        let last = flipped.len() - 1;
-        flipped[last] ^= 1;
-        assert!(apply_bytes(&flipped, &layout).unwrap_err().to_string().contains("doesn't match"));
-        assert!(!layout.programs.join("apparition").exists());
-        assert!(std::fs::read_dir(&layout.bootstrap).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".incoming")));
+        // The manifest changed after signing.
+        let text = String::from_utf8_lossy(&good).replacen("1.2.0-macos-arm64", "9.2.0-macos-arm64", 1).into_bytes();
+        assert!(apply_bytes(&text, &layout, &signer).is_err());
 
         // Cut short.
-        assert!(apply_bytes(&good[..good.len() - 3], &layout).is_err());
+        assert!(apply_bytes(&good[..good.len() - 3], &layout, &signer).is_err());
+
+        // Signed, but another release file (the desktop installer) offered as the VM's programs.
+        let zip = zip_of(&programs("1"));
+        let installer = "Apparition-Installer-1.2.0-macos-universal.zip";
+        let sums = format!("{}  {installer}\n", sha256(&zip));
+        let bytes = package(sums.as_bytes(), &signer.sign(sums.as_bytes()), installer, &zip);
+        assert!(apply_bytes(&bytes, &layout, &signer).unwrap_err().to_string().contains("isn't the VM's programs"));
+        assert!(!layout.programs.join("apparition").exists(), "nothing was installed");
+    }
+
+    #[test]
+    fn refuses_a_release_with_other_files_or_missing_ones() {
+        let Some(signer) = Signer::new() else { return eprintln!("no ssh-keygen; skipped") };
+        let (_dir, layout) = guest();
+        let mut extra = programs("1");
+        extra.push(("../../etc/sudoers", b"x".to_vec()));
+        assert!(apply_bytes(&signer.release("1.2.0", &extra), &layout, &signer).unwrap_err().to_string().contains("isn't one of"));
+        let missing = programs("1")[..4].to_vec();
+        assert!(apply_bytes(&signer.release("1.2.0", &missing), &layout, &signer).unwrap_err().to_string().contains("lack guest-bridge"));
         assert!(!layout.programs.join("apparition").exists());
-
-        // No key in the guest at all.
-        std::fs::remove_file(layout.bootstrap.join("update-key.pub")).unwrap();
-        assert!(apply_bytes(&good, &layout).unwrap_err().to_string().contains("no update key"));
     }
 
     #[test]
-    fn refuses_names_outside_the_list() {
-        let key = SigningKey::from_bytes(&[7; 32]);
-        assert!(package(&[("../../etc/sudoers".into(), b"x".to_vec())], 1, &key).is_err());
-        // Signed by the right key but naming something else: still refused by the guest.
-        let (_dir, layout) = guest(&key);
-        let manifest = serde_json::to_vec(&Manifest { format: 1, sequence: 1, files: vec![Entry { name: "sudoers".into(), size: 1, sha256: sha256(b"x") }] }).unwrap();
-        let signature = key.sign(&[CONTEXT, &manifest].concat());
-        let bytes = [MAGIC.as_bytes(), b"\n", &manifest, b"\n", hex(&signature.to_bytes()).as_bytes(), b"\nx"].concat();
-        assert!(apply_bytes(&bytes, &layout).unwrap_err().to_string().contains("isn't one of"));
-    }
-
-    #[test]
-    fn keys_sequences_digests_and_replies() {
-        let dir = tempfile::tempdir().unwrap();
-        let key = signing_key(dir.path()).unwrap();
-        assert_eq!(signing_key(dir.path()).unwrap().to_bytes(), key.to_bytes(), "made once, then kept");
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(dir.path().join("update-key")).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(public_key_line(&key).trim().len(), 64);
-        assert_eq!((next_sequence(dir.path()).unwrap(), next_sequence(dir.path()).unwrap()), (1, 2));
-
-        let mut reordered = programs("1");
-        reordered.reverse();
-        assert_eq!(digest(&programs("1")), digest(&reordered));
-        assert_ne!(digest(&programs("1")), digest(&programs("2")));
-
-        assert_eq!(parse_reply("ok apparition,guest-bridge\n").unwrap(), ["apparition", "guest-bridge"]);
-        assert!(parse_reply("ok \n").unwrap().is_empty());
-        assert!(parse_reply("error the update isn't signed by this VM's app\n").unwrap_err().to_string().contains("refused"));
+    fn replies_and_jobs() {
+        assert_eq!(parse_reply("ok 1.2.0 apparition,guest-bridge\n").unwrap(), ("1.2.0".to_string(), vec!["apparition".to_string(), "guest-bridge".to_string()]));
+        assert!(parse_reply("ok 1.2.0 \n").unwrap().1.is_empty());
+        assert!(parse_reply("error the update isn't a signed Apparition release\n").unwrap_err().to_string().contains("refused"));
         assert!(parse_reply("").is_err());
         assert_eq!(jobs(&["guest-bridge".into(), "report-status.sh".into(), "apparition".into()]), [Job::Status, Job::Anisette, Job::Bridge]);
     }

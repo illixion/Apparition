@@ -43,11 +43,11 @@ Windows PC; the VM sits behind the companion as its anisette source (see "Reachi
 - `apparition vm update` on the set-up VM with no restore image on the Mac: 152 s. The guest's programs matched
   the build byte for byte afterwards, and the next start resumed in 1.2 s with Apple accepting the anisette. The
   automatic run at app launch (once `GUEST_VERSION` is bumped) is the same code; it hasn't been run from the app.
-- Signed updates while the VM runs (2026-11-04): after the one-time recoveryOS update to `GUEST_VERSION` 2 (121 s),
-  a rebuilt `guest-bridge` and `guest-status` went in in 2 s and a different `apparition` in 5 s, each replaced
-  program's job restarted (the bridge last), the replaced bridge and `apparition` applied the next update
-  themselves, and Apple accepted the anisette after each. The app's launch-time hand-off is the same code; it
-  hasn't been run from the app.
+- Release updates while the VM runs (2026-11-04), against a local release site. A copy of the app built to also
+  trust a throwaway test key went in from recoveryOS. A release signed by that key, holding the real build's
+  programs, then went in in 2 s, and Apple accepted the anisette. The VM's new `apparition`, which trusts only the
+  real release keys, refused the same package again. Not yet run: a real published release (the next one is the
+  first with `Apparition-VMGuest-*`), and the app's launch-time hand-off, which is the same code.
 
 Not verified: a real account signing in through a VM-hosted companion end to end; a device pairing with a
 companion that offers the VM; the Companion tab's VM group in the running app (built, not yet clicked through);
@@ -144,8 +144,10 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
 5a. **Never made again** (2026-11-04). A set-up VM outlives everything that would otherwise mean rebuilding it
    (selfhost/macos-vm/README.md, "Keeping it"). A saved state that can't be resumed costs one cold boot. The
    guest's updates are off. A new image pin applies only to new VMs. A newer app's guest programs reach the
-   running VM signed with its own key (core/src/vm_update.rs): the app hands them over at launch, in seconds, and
-   the guest checks the signature, the sequence number and every file before it replaces anything. What only
+   running VM from the release itself (core/src/vm_update.rs): the app fetches its version's
+   `Apparition-VMGuest-*` zip with the signed `SHA256SUMS` at launch and hands them over, and the guest checks the
+   release signature (with the keys compiled into its own `apparition`), the version and every file before it
+   replaces anything, in seconds. What only
    recoveryOS can write goes in with `apparition vm update` from the VM's own recoveryOS, with no image, when
    `GUEST_VERSION` is above the bundle's `guest-version` (at launch too, and in `setup`).
 6. **Hardening** (ongoing). 24-hour soak, host sleep and wake, VPN on and off, a crash at every step then
