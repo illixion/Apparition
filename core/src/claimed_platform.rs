@@ -84,11 +84,14 @@ impl Claim {
             return Claim::of(Served::Android);
         }
         match (text("client_info"), text("user_agent")) {
-            (Some(client_info), Some(user_agent)) => Claim {
-                served: if client_info.contains("<Android") { Served::Android } else if client_info.contains("<Windows;") { Served::Windows } else { Served::Mac },
-                client_info: client_info.to_string(),
-                user_agent: user_agent.to_string(),
-            },
+            (Some(client_info), Some(user_agent)) => {
+                let served = if client_info.contains("<Android") { Served::Android } else if client_info.contains("<Windows;") { Served::Windows } else { Served::Mac };
+                Claim {
+                    served,
+                    client_info: if served == Served::Mac { MAC_CLIENT_INFO.to_string() } else { client_info.to_string() },
+                    user_agent: user_agent.to_string(),
+                }
+            }
             _ => Claim::of(Served::Android),
         }
     }
@@ -181,7 +184,8 @@ mod tests {
         let reply = json!({ "client_info": NATIVE_C, "user_agent": "akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0" });
         let claim = Claim::from_reply(&reply, Some("anisette-v3-server (native-c 0.2.0)"));
         assert_eq!(claim.served, Served::Mac);
-        assert_eq!((claim.client_info.as_str(), claim.user_agent.as_str()), (NATIVE_C, "akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0"));
+        // The stale 10.12 client info is replaced by the current Mac's; the server's user agent stays.
+        assert_eq!((claim.client_info.as_str(), claim.user_agent.as_str()), (MAC_CLIENT_INFO, "akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0"));
         let android = Claim::from_reply(&json!({ "client_info": "<Pixel 7> <Android;14;x> <…>", "user_agent": "akd/1.0" }), None);
         assert_eq!(android.served, Served::Android);
     }
