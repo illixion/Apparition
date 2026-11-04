@@ -137,6 +137,12 @@ The **Developer** tab, on the Mac and on devices, builds your own Xcode projects
 Mac. **[docs/DEVELOPER.md](docs/DEVELOPER.md)** explains how the pieces fit, how to set them up
 and what each part of the screen does; this section is the reference.
 
+**From Windows, Linux or another Mac**, pair that computer with your Mac for developer access
+(`apparition mac pair <address>`): its agents get the Mac's MCP server with `apparition mcp`, and
+builds made there (xtool, Xcode) go to your devices with `apparition deploy <app.ipa>`, over the
+companion's encrypted channel at home or over Tailscale. See
+**[docs/REMOTE_DEVELOPER.md](docs/REMOTE_DEVELOPER.md)**.
+
 **On a Mac, Apparition runs the service itself.** The app carries Apparition Store
 (`Contents/Resources/service`, put there by `scripts/bundle-service.sh` from the sibling
 checkout's HEAD) and starts it at launch on the Mac's Node.js 18+, as its child
@@ -628,6 +634,9 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Companion tab), offering this Mac's anisette to paired devices and computers on a Mac that gives it. |
 | `anisette pair <address>`, `status`, `forget` | Pair this computer with a Mac running the companion, for its anisette; say which anisette sign-ins use; forget the pairing. See [Anisette](#anisette). |
 | `anisette serve` | Serve this Mac's own anisette on loopback, for other programs on this Mac. |
+| `mac pair <address>`, `status`, `forget` | Pair this computer with your build Mac: developer access to its Apparition Store and, where it offers it, its anisette, with one approval there. See [docs/REMOTE_DEVELOPER.md](docs/REMOTE_DEVELOPER.md). |
+| `deploy <app.ipa> [--device <name>]` | Send an app built here (xtool, Xcode) to the paired Mac; the device's Apparition installs it. |
+| `mcp` | An MCP server on stdio for agents here: the debug servers of the apps the Mac sees, plus `deploy`. |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
 | `link` | Puts `apparition` on your `PATH` (above). |
 

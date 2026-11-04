@@ -16,7 +16,14 @@ only as the fallback until the Rust service passes the parity checklist, then go
 ## Status (2026-11-04)
 
 Every ported route has a test against the real Node store (or, for the MCP server, the Python
-`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 42 tests, `cargo test -p apparition-service`.
+`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 47 tests,
+`APPARITION_REQUIRE_NODE=1 cargo test -p apparition-service` (without the variable, the oracle
+tests say SKIPPED when Node doesn't run).
+
+**Running now (macOS):** the desktop app runs this service in-process on loopback beside the Node
+build service, and offers it to computers paired for developer access over the companion channel.
+`apparition mcp` and `apparition deploy` drive it from Windows, Linux or another Mac:
+`docs/REMOTE_DEVELOPER.md`. Builds, device installs and the web pages still come from Node.
 
 Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
 - Auth, byte-compatible with `lib/auth.js`: password hash, `sessions.json`, `data/secret`, signed links.
@@ -30,11 +37,16 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   The Python tool could not make LAN connections; this runs where the Local Network permission is.
 - MCP server at `POST /mcp` (bearer, same as the service API): `apps`, `help`, `call`, `trace`,
   `panel`, with the Python tool's schemas, forgiving arguments, reply spilling and panel validation.
+- Deploys from other computers: `POST /api/service/v1/deploy` keeps an IPA as a build the device's
+  Apparition installs (Developer › Sent from your computers). The stdio entry is `apparition mcp`,
+  a bridge to the running app's `/mcp` (loopback on the Mac, the companion channel elsewhere), so
+  the Local Network permission stays with the app.
+- Hardened before going remote (2026-11-04 review): no token for a copyable advertisement,
+  app paths kept on the app's origin, endpoint and bundle names checked before they name files,
+  capped replies and trace inflation, DNS rebinding refused on a password-less store.
 
 Not done:
 - `inject` over MCP (answers that it is not here yet; it wraps the external `debugtrace-inject` tool).
-- A stdio entry for agents on the Mac itself. It must be a thin bridge to the running app's `/mcp`,
-  because a bare binary has no Local Network permission; do it with the desktop wiring (phase 6).
 - Phase 2 delivery (OTA, AltSource feed, Mac zips, signed links, trace upload from the web page).
 - Phase 3 devices through the core (replaces devicectl): `devices`, `deviceApps`, installs, JIT.
 - Phase 4 re-sign. Phase 5 builds (`build-and-sign`), queue, `macApps`. Phase 6 desktop wiring,
