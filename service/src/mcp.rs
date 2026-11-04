@@ -269,7 +269,7 @@ impl Mcp {
             if found.is_empty() {
                 // Bonjour can omit a live service; an explicitly named target falls back to its
                 // private launch record, and `verified` authenticates before any endpoint runs.
-                let recorded: Vec<Session> = self.debug.recorded_sessions().into_iter().filter(|x| {
+                let recorded: Vec<Session> = self.debug.recorded_sessions().await.into_iter().filter(|x| {
                     s(x, "device").unwrap_or("").to_lowercase() == device && keys(x).contains(&wanted)
                         && s(x, "token").is_some_and(|t| !t.is_empty()) && s(x, "url").is_some_and(|u| !u.is_empty())
                 }).collect();
@@ -335,10 +335,19 @@ impl Mcp {
         Ok(session)
     }
 
-    fn save_file(&self, session: &Session, relative: &str, data: &[u8]) -> Result<String, ToolError> {
+    /// Saves under the project's `build/debugtrace`. `relative` is built from names the app
+    /// chose (an endpoint, a trace's file name), so it must stay a plain relative path.
+    async fn save_file(&self, session: &Session, relative: &str, data: &[u8]) -> Result<String, ToolError> {
+        let plain = !relative.is_empty() && !relative.starts_with('/') && !relative.contains('\\')
+            && relative.split('/').all(|part| !part.is_empty() && part != "." && part != ".." && !part.starts_with('.'));
+        if !plain {
+            return Err(err(format!("refusing to save the app's reply as {relative}")));
+        }
         let root = s(session, "projectRoot").filter(|r| !r.is_empty()).map(PathBuf::from).unwrap_or_else(|| self.downloads.clone());
         let path = root.join("build/debugtrace").join(relative);
-        std::fs::create_dir_all(path.parent().unwrap()).and_then(|_| std::fs::write(&path, data)).map_err(|e| err(format!("could not save {}: {e}", path.display())))?;
+        let parent = path.parent().map(PathBuf::from).unwrap_or_default();
+        let saved = async { tokio::fs::create_dir_all(&parent).await?; tokio::fs::write(&path, data).await };
+        saved.await.map_err(|e| err(format!("could not save {}: {e}", path.display())))?;
         Ok(path.display().to_string())
     }
 
@@ -360,32 +369,37 @@ impl Mcp {
             Some(Value::String(_)) => return Err(err_hint("`endpoint` is required", "call `help` to list the app's endpoints")),
             Some(_) => return Err(err_hint("`endpoint` must be a string", "call `help` to list the app's endpoints")),
         };
+        if !crate::debug::valid_endpoint(&endpoint) {
+            return Err(err_hint(format!("`{endpoint}` isn't an endpoint name"), "call `help` to list the app's endpoints"));
+        }
         let arguments = args.get("arguments").filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
         let (status, content_type, raw) = self.request(&session, Some(json!({ "name": endpoint, "arguments": arguments })), "/_call").await?;
         if content_type.starts_with("application/json") {
             if status < 400 && raw.len() > MAX_INLINE_REPLY {
-                return self.spilled_reply(&session, &endpoint, &raw);
+                return self.spilled_reply(&session, &endpoint, &raw).await;
             }
             return Ok(text_result(String::from_utf8_lossy(&raw).into_owned(), status >= 400));
         }
         if content_type.starts_with("image/") {
             return Ok(json!({ "content": [{ "type": "image", "data": STANDARD.encode(&raw), "mimeType": content_type.split(';').next().unwrap_or("") }] }));
         }
-        let extension = content_type.rsplit('/').next().unwrap_or("").split(';').next().filter(|e| !e.is_empty()).unwrap_or("bin").to_string();
-        let path = self.save_file(&session, &format!("{endpoint}.{extension}"), &raw)?;
+        let extension = content_type.rsplit('/').next().unwrap_or("").split(';').next().map(str::trim)
+            .filter(|e| !e.is_empty() && e.len() <= 8 && e.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
+            .unwrap_or("bin").to_string();
+        let path = self.save_file(&session, &format!("{endpoint}.{extension}"), &raw).await?;
         Ok(text_result(json!({ "ok": true, "endpoint": endpoint, "savedTo": path, "contentType": content_type, "bytes": raw.len() }), false))
     }
 
     /// A reply too big for a tool result: the whole of it goes to a file, and the answer says
     /// where, what it held, and the newest lines.
-    fn spilled_reply(&self, session: &Session, endpoint: &str, raw: &[u8]) -> Result<Value, ToolError> {
+    async fn spilled_reply(&self, session: &Session, endpoint: &str, raw: &[u8]) -> Result<Value, ToolError> {
         let stamp = stamp();
         let reply: Value = serde_json::from_slice(raw).unwrap_or(Value::Null);
         let data = reply.get("data");
         if let Some(entries) = data.and_then(|d| d["entries"].as_array()).filter(|e| e.iter().all(Value::is_string)) {
             // `_logs` in lines format: one line per entry, so it greps as a log.
             let lines: Vec<&str> = entries.iter().filter_map(Value::as_str).collect();
-            let path = self.save_file(session, &format!("{endpoint}-{stamp}.log"), (lines.join("\n") + "\n").as_bytes())?;
+            let path = self.save_file(session, &format!("{endpoint}-{stamp}.log"), (lines.join("\n") + "\n").as_bytes()).await?;
             let mut summary = json!({ "ok": true, "endpoint": endpoint, "savedTo": path, "bytes": raw.len(),
                 "note": format!("{} lines, too many to return inline: the whole reply is in savedTo, one entry per line. The newest {} follow.", lines.len(), lines.len().min(SPILL_TAIL_LINES)),
                 "hint": "grep the file, or narrow the call: excludeCategory for the chatty categories in `categories`, or category/contains/level" });
@@ -395,7 +409,7 @@ impl Mcp {
             summary["newest"] = json!(lines[lines.len().saturating_sub(SPILL_TAIL_LINES)..]);
             return Ok(text_result(summary, false));
         }
-        let path = self.save_file(session, &format!("{endpoint}-{stamp}.json"), raw)?;
+        let path = self.save_file(session, &format!("{endpoint}-{stamp}.json"), raw).await?;
         let mut keys: Option<Vec<String>> = data.and_then(Value::as_object).map(|o| o.keys().cloned().collect());
         if let Some(k) = keys.as_mut() { k.sort(); }
         Ok(text_result(json!({ "ok": true, "endpoint": endpoint, "savedTo": path, "bytes": raw.len(),
@@ -423,7 +437,7 @@ impl Mcp {
         if filename.contains(['/', '\\']) || filename.starts_with('.') {
             return Err(err("the app named its trace file with a path; not saving it"));
         }
-        let path = self.save_file(&session, &format!("traces/{filename}"), &archive)?;
+        let path = self.save_file(&session, &format!("traces/{filename}"), &archive).await?;
         let files: Vec<&str> = data["files"].as_array().into_iter().flatten().filter_map(|f| f["path"].as_str()).collect();
         Ok(text_result(json!({ "savedTo": path, "traceId": data["traceId"], "signed": data["signed"], "bytes": archive.len(), "files": files }), false))
     }
@@ -442,20 +456,25 @@ impl Mcp {
 
     async fn tool_panel(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
         let bundle = self.panel_bundle(args.get("app").and_then(Value::as_str)).await?;
+        if !crate::debug::valid_bundle_id(&bundle) {
+            return Err(err(format!("the app's bundle id {bundle:?} can't name a panel folder")));
+        }
         let dir = self.debug.panels_root().join(&bundle);
         let remove = args.get("remove").and_then(Value::as_bool).unwrap_or(false);
         let controls = args.get("controls").filter(|c| !c.is_null());
         if controls.is_none() && !remove {
-            let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
-            files.sort();
-            let panels: Vec<Value> = files.iter().filter_map(|f| serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()).collect();
+            let read = dir.clone();
+            let panels: Vec<Value> = tokio::task::spawn_blocking(move || {
+                let mut files: Vec<PathBuf> = std::fs::read_dir(&read).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
+                files.sort();
+                files.iter().filter_map(|f| serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()).collect()
+            }).await.unwrap_or_default();
             return Ok(text_result(json!({ "bundleId": bundle, "panels": panels, "hint": "pass `name` and `controls` to create one; tunables already get an automatic panel" }), false));
         }
         let name = args.get("name").and_then(Value::as_str).filter(|n| valid_panel_name(n)).ok_or_else(|| err("`name` must be lowercase letters, digits and dashes (e.g. hdr-tuning)"))?;
         let path = dir.join(format!("{name}.json"));
         if remove {
-            let existed = path.exists();
-            if existed { let _ = std::fs::remove_file(&path); }
+            let existed = tokio::fs::remove_file(&path).await.is_ok();
             return Ok(text_result(json!({ "ok": true, "removed": existed, "bundleId": bundle, "name": name }), false));
         }
         let controls = controls.and_then(Value::as_array).filter(|c| !c.is_empty()).ok_or_else(|| err("`controls` must be a non-empty array"))?;
@@ -468,9 +487,14 @@ impl Mcp {
         if let Some(note) = args.get("note").and_then(Value::as_str).filter(|n| !n.is_empty()) {
             panel["note"] = json!(note);
         }
-        std::fs::create_dir_all(&dir).map_err(|e| err(e.to_string()))?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(&panel).unwrap()).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| err(e.to_string()))?;
+        let tmp = path.with_extension(format!("json.tmp-{}", crate::auth::new_token()));
+        let text = serde_json::to_string_pretty(&panel).unwrap_or_default();
+        let written = async {
+            tokio::fs::create_dir_all(&dir).await?;
+            tokio::fs::write(&tmp, text).await?;
+            tokio::fs::rename(&tmp, &path).await
+        };
+        written.await.map_err(|e| err(e.to_string()))?;
         Ok(text_result(json!({ "ok": true, "bundleId": bundle, "name": name, "controls": controls.len(), "path": path.display().to_string(),
             "hint": "the user opens it in the Apparition Store: Debug › the app › Panels (it refreshes on its own)" }), false))
     }

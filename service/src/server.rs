@@ -126,7 +126,7 @@ struct Req {
     path: String,
     query: HashMap<String, String>,
     headers: HeaderMap,
-    body: Vec<u8>,
+    body: axum::body::Bytes,
 }
 
 impl Req {
@@ -142,6 +142,15 @@ impl Req {
     }
     fn json_body(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
+    }
+    /// The request names this Mac's loopback as its host.
+    fn loopback_host(&self) -> bool {
+        let host = self.header("host");
+        let name = match host.strip_prefix('[') {
+            Some(rest) => rest.split(']').next().unwrap_or(""),
+            None => host.rsplit_once(':').map_or(host, |(name, port)| if port.bytes().all(|b| b.is_ascii_digit()) { name } else { host }),
+        }.to_ascii_lowercase();
+        matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1") || name.ends_with(".localhost")
     }
     /// A non-GET with a foreign `Origin` is refused (SameSite=Strict already keeps cookies off).
     fn cross_site(&self) -> bool {
@@ -169,8 +178,9 @@ fn percent_decode_with(s: &str, plus_is_space: bool) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'%' if i + 2 < bytes.len() => {
-                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    out.push(v);
+                let hex = |b: u8| (b as char).to_digit(16);
+                if let (Some(high), Some(low)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                    out.push((high * 16 + low) as u8);
                     i += 3;
                     continue;
                 }
@@ -193,7 +203,7 @@ fn percent_decode_with(s: &str, plus_is_space: bool) -> String {
 fn reply(status: u16, content_type: &str, body: impl Into<Body>) -> Response {
     let mut res = Response::new(body.into());
     *res.status_mut() = StatusCode::from_u16(status).unwrap();
-    res.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_str(content_type).unwrap());
+    res.headers_mut().insert(header::CONTENT_TYPE, header_value(content_type));
     res
 }
 
@@ -205,14 +215,26 @@ fn text(status: u16, message: &str) -> Response {
     reply(status, "text/plain; charset=utf-8", message.to_string())
 }
 
+/// A header value as it goes on the wire: anything outside visible ASCII percent-encoded, so a
+/// non-ASCII `next` or file name can't fail the response.
+fn header_value(value: &str) -> HeaderValue {
+    HeaderValue::from_str(value).unwrap_or_else(|_| {
+        let mut out = String::with_capacity(value.len());
+        for b in value.bytes() {
+            if (0x20..0x7f).contains(&b) { out.push(b as char) } else { out.push_str(&format!("%{b:02X}")) }
+        }
+        HeaderValue::from_str(&out).unwrap_or_else(|_| HeaderValue::from_static(""))
+    })
+}
+
 fn with_header(mut res: Response, name: &'static str, value: &str) -> Response {
-    res.headers_mut().append(name, HeaderValue::from_str(value).unwrap());
+    res.headers_mut().append(name, header_value(value));
     res
 }
 
 fn redirect(location: &str) -> Response {
     let mut res = reply(302, "text/plain", "");
-    res.headers_mut().insert(header::LOCATION, HeaderValue::from_str(location).unwrap());
+    res.headers_mut().insert(header::LOCATION, header_value(location));
     res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     res
 }
@@ -277,7 +299,10 @@ impl App {
         let config = self.config();
         match (&config.password_hash, self.hosted()) {
             (Some(hash), _) => self.auth.check(&req.session_token(), hash),
-            (None, hosted) => !hosted,
+            // No password: open, as the Node store is, but only to pages that name this Mac's
+            // loopback. A web page elsewhere can point its own name at 127.0.0.1 (DNS
+            // rebinding); its requests then carry that name, not localhost.
+            (None, hosted) => !hosted && req.loopback_host(),
         }
     }
 
@@ -359,7 +384,7 @@ impl App {
         let mut value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         let object = value.as_object_mut().ok_or("config.json is not an object")?;
         change(object);
-        let tmp = path.with_extension(format!("json.tmp-{}", std::process::id()));
+        let tmp = path.with_extension(format!("json.tmp-{}-{}", std::process::id(), crate::auth::new_token()));
         {
             use std::{io::Write, os::unix::fs::OpenOptionsExt};
             let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
@@ -429,11 +454,7 @@ impl App {
                     ("panels", &Method::GET) => Some(defer(Deferred::Panels(id))),
                     ("call", &Method::POST) => {
                         let body = req.json_body();
-                        let ok = body.get("endpoint").and_then(Value::as_str).is_some_and(|e| {
-                            let e = e.strip_prefix('_').unwrap_or(e);
-                            let mut c = e.chars();
-                            e.len() <= 48 && c.next().is_some_and(|f| f.is_ascii_alphabetic()) && c.all(|x| x.is_ascii_alphanumeric())
-                        });
+                        let ok = body.get("endpoint").and_then(Value::as_str).is_some_and(debug::valid_endpoint);
                         if !ok {
                             return Some(json_reply(400, json!({ "ok": false, "error": { "message": "body must be {\"endpoint\": \"<name>\", \"arguments\": {...}}" } })));
                         }
@@ -596,14 +617,17 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let upload = parts.method == Method::POST && parts.uri.path() == "/api/traces";
     let limit = if upload { traces::MAX_UPLOAD } else { 1_000_000 };
     let body = match to_bytes(body, limit).await {
-        Ok(b) => b.to_vec(),
+        Ok(b) => b,
         Err(_) if upload => return json_reply(413, json!({ "error": format!("trace is larger than {} MB", traces::MAX_UPLOAD >> 20) })),
-        Err(_) => Vec::new(),
+        Err(_) => return json_reply(413, json!({ "error": "request body is too large" })),
     };
     let query = parts.uri.query().unwrap_or("").split('&').filter(|p| !p.is_empty()).map(|p| {
         let (k, v) = p.split_once('=').unwrap_or((p, ""));
         (percent_decode(k), percent_decode(v))
     }).collect();
+    // Uploads are verified in memory (up to the inflated cap each): a few at a time.
+    static UPLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let _upload = if upload { UPLOADS.acquire().await.ok() } else { None };
     let req = Req { method: parts.method, path: parts.uri.path().to_string(), query, headers: parts.headers, body };
     // blocking work (scrypt, file reads) stays off the async threads
     let dispatcher = app.clone();

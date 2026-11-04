@@ -18,6 +18,9 @@ use std::{
 
 pub const MAX_UPLOAD: usize = 64 * 1024 * 1024;
 const MAX_FILES: usize = 512;
+/// The most a trace's files may inflate to, together: each is capped at its listed size, and
+/// this caps the sum, so a small zip can't fill memory.
+pub const MAX_INFLATED: usize = 256 * 1024 * 1024;
 const KEEP: usize = 300;
 
 #[derive(Debug, PartialEq)]
@@ -230,6 +233,7 @@ pub fn verify(buf: &[u8], key_dir: &Path) -> Result<Verified, TraceError> {
     let listed = manifest.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut expected: HashSet<String> = ["manifest.json".to_string(), "manifest.sig".to_string()].into();
     let mut files = Vec::new();
+    let mut inflated = 0usize;
     for f in &listed {
         let path = f.get("path").and_then(Value::as_str).unwrap_or("");
         if !safe_trace_path(path) || expected.contains(path) {
@@ -237,6 +241,10 @@ pub fn verify(buf: &[u8], key_dir: &Path) -> Result<Verified, TraceError> {
         }
         expected.insert(path.to_string());
         let entry = by_name.get(path).ok_or_else(|| TraceError::new(400, format!("manifest lists {path}, the zip lacks it")))?;
+        inflated = inflated.saturating_add(entry.usize);
+        if inflated > MAX_INFLATED {
+            return Err(TraceError::new(413, format!("the trace's files come to more than {} MB", MAX_INFLATED >> 20)));
+        }
         let bytes = f.get("bytes").and_then(Value::as_u64);
         let data = zip_read(buf, entry, bytes)?;
         let sha: String = digest::digest(&digest::SHA256, &data).as_ref().iter().map(|b| format!("{b:02x}")).collect();

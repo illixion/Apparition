@@ -72,7 +72,7 @@ async fn rig(services: bool) -> Rig {
 }
 
 async fn rpc(app: &Router, message: Value) -> (u16, Value) {
-    let res = app.clone().oneshot(Request::builder().method("POST").uri("/mcp").header("host", "x").header("authorization", format!("Bearer {HOST}"))
+    let res = app.clone().oneshot(Request::builder().method("POST").uri("/mcp").header("host", "localhost").header("authorization", format!("Bearer {HOST}"))
         .header("content-type", "application/json").body(Body::from(message.to_string())).unwrap()).await.unwrap();
     let status = res.status().as_u16();
     let bytes = axum::body::to_bytes(res.into_body(), 1 << 22).await.unwrap();
@@ -107,11 +107,11 @@ async fn the_protocol_basics_and_the_bearer() {
     assert_eq!(v["error"]["message"], "batches are not supported");
 
     for (auth, expect) in [(None, 401), (Some("Bearer wrong"), 401)] {
-        let mut b = Request::builder().method("POST").uri("/mcp").header("host", "x");
+        let mut b = Request::builder().method("POST").uri("/mcp").header("host", "localhost");
         if let Some(a) = auth { b = b.header("authorization", a); }
         assert_eq!(r.app.clone().oneshot(b.body(Body::from("{}")).unwrap()).await.unwrap().status(), expect);
     }
-    let res = r.app.clone().oneshot(Request::builder().uri("/mcp").header("host", "x").header("authorization", format!("Bearer {HOST}")).body(Body::empty()).unwrap()).await.unwrap();
+    let res = r.app.clone().oneshot(Request::builder().uri("/mcp").header("host", "localhost").header("authorization", format!("Bearer {HOST}")).body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 405);
 }
 
@@ -208,7 +208,7 @@ async fn panels_are_written_listed_and_removed() {
     let v: Value = serde_json::from_str(&text_of(&ok)).unwrap();
     assert_eq!((v["ok"].clone(), v["controls"].clone(), v["bundleId"].clone()), (json!(true), json!(2), json!("com.x.app")));
     // the Debug routes see what the tool wrote
-    let res = r.app.clone().oneshot(Request::builder().uri("/api/debug/build1/panels").header("host", "x").header("authorization", format!("Bearer {HOST}")).body(Body::empty()).unwrap()).await.unwrap();
+    let res = r.app.clone().oneshot(Request::builder().uri("/api/debug/build1/panels").header("host", "localhost").header("authorization", format!("Bearer {HOST}")).body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 404, "the page routes are behind the web UI, which a hosted store keeps off");
     let listed: Value = serde_json::from_str(&text_of(&tool(&r.app, "panel", json!({})).await)).unwrap();
     assert_eq!(listed["panels"][0]["name"], "hdr-tuning");
@@ -252,4 +252,17 @@ async fn panel_validation_says_what_the_python_tool_says() {
         assert_eq!((text_of(&ours), ours["isError"] == true), (python["text"].as_str().unwrap().to_string(), python["err"].as_bool().unwrap()), "{args}");
     }
     let _: &Path = r.dir.path();
+}
+
+/// Endpoint names become file names when a reply is saved, so the MCP tool takes only real
+/// endpoint names, as the web route does.
+#[tokio::test]
+async fn an_endpoint_name_cannot_leave_the_project() {
+    let r = rig(true).await;
+    for endpoint in ["../../../Library/LaunchAgents/x", "_file/../../x", "a b"] {
+        let result = tool(&r.app, "call", json!({ "app": "com.x.app", "endpoint": endpoint })).await;
+        assert_eq!(result["isError"], true, "{endpoint}: {result}");
+        assert!(text_of(&result).contains("isn't an endpoint name"), "{result}");
+    }
+    assert!(!r.calls.lock().unwrap().iter().any(|c| c["name"].as_str().is_some_and(|n| n.contains('/'))));
 }

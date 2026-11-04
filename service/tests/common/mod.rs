@@ -20,10 +20,21 @@ pub fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Whether Node runs here. Without it the oracle tests can't compare, so they say they skipped
+/// (and fail instead when `APPARITION_REQUIRE_NODE` is set, so a check can't pass by skipping).
+pub fn node_available() -> bool {
+    let ok = Command::new("node").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if !ok {
+        assert!(std::env::var_os("APPARITION_REQUIRE_NODE").is_none(), "node doesn't run here, and APPARITION_REQUIRE_NODE is set");
+        eprintln!("SKIPPED: node doesn't run here, so this test didn't compare against the Node store");
+    }
+    ok
+}
+
 impl NodeStore {
     /// Starts `store/server.js` on `config`/`data` (the config's `port` must be `port`).
     pub fn start(config: &Path, data: &Path, port: u16, env: &[(&str, &Path)]) -> Option<NodeStore> {
-        if Command::new("node").arg("--version").stdout(Stdio::null()).status().is_err() {
+        if !node_available() {
             return None;
         }
         let store = Path::new(env!("CARGO_MANIFEST_DIR")).join("../store");

@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "macos")]
 
+mod common;
 use apparition_service::server::{Settings, router};
 use axum::{Router, body::Body, http::Request};
 use ring::{digest, rand::SystemRandom, signature::{Ed25519KeyPair, KeyPair}};
@@ -79,14 +80,14 @@ fn http_post(port: u16, path: &str, body: &[u8]) -> Option<(u16, String)> {
 }
 
 async fn rust_post(app: &Router, body: Vec<u8>) -> (u16, Value) {
-    let res = app.clone().oneshot(Request::builder().method("POST").uri("/api/traces").header("host", "x").body(Body::from(body)).unwrap()).await.unwrap();
+    let res = app.clone().oneshot(Request::builder().method("POST").uri("/api/traces").header("host", "localhost").body(Body::from(body)).unwrap()).await.unwrap();
     let status = res.status().as_u16();
     (status, serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap())
 }
 
 #[tokio::test]
 async fn the_rust_verifier_agrees_with_the_node_store_on_good_and_bad_archives() {
-    if Command::new("node").arg("--version").stdout(Stdio::null()).status().is_err() {
+    if !common::node_available() {
         return;
     }
     let rng = SystemRandom::new();
@@ -164,7 +165,7 @@ async fn the_rust_verifier_agrees_with_the_node_store_on_good_and_bad_archives()
 
     // What was stored reads back, and the list and files routes work.
     let get = |uri: String| { let app = app.clone(); async move {
-        let res = app.oneshot(Request::builder().uri(&uri).header("host", "x").body(Body::empty()).unwrap()).await.unwrap();
+        let res = app.oneshot(Request::builder().uri(&uri).header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
         (res.status().as_u16(), res.headers().clone(), axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec())
     } };
     let (status, _, body) = get("/api/traces".into()).await;
@@ -180,7 +181,7 @@ async fn the_rust_verifier_agrees_with_the_node_store_on_good_and_bad_archives()
     }
     let (status, headers, _) = get(format!("/api/traces/{TRACE_ID}.zip")).await;
     assert_eq!((status, headers["content-disposition"].to_str().unwrap()), (200, "attachment; filename=\"My-App-trace-11111111.zip\""));
-    let res = app.clone().oneshot(Request::builder().method("POST").uri(format!("/api/traces/{TRACE_ID}/delete")).header("host", "x").body(Body::empty()).unwrap()).await.unwrap();
+    let res = app.clone().oneshot(Request::builder().method("POST").uri(format!("/api/traces/{TRACE_ID}/delete")).header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(get(format!("/api/traces/{TRACE_ID}.zip")).await.0, 404);
 }

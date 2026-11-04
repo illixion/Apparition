@@ -54,7 +54,7 @@ async fn artifacts_match_the_node_store() {
 
     for uri in ["/api/artifacts", "/api/artifacts/newest/manifest", "/api/artifacts/older-1/manifest", "/api/artifacts/wrong-id/manifest",
         "/api/artifacts/short-file/manifest", "/api/artifacts/bad-kind/manifest", "/api/artifacts/missing/manifest", "/api/artifacts/newest/download"] {
-        let res = app.clone().oneshot(Request::builder().uri(uri).header("host", "x").body(Body::empty()).unwrap()).await.unwrap();
+        let res = app.clone().oneshot(Request::builder().uri(uri).header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
         let rs = res.status().as_u16();
         let headers = res.headers().clone();
         let body = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
@@ -69,7 +69,7 @@ async fn artifacts_match_the_node_store() {
             assert_eq!(r, n, "{uri}");
         }
     }
-    let res = app.clone().oneshot(Request::builder().uri("/api/artifacts/..%2fx/manifest").header("host", "x").body(Body::empty()).unwrap()).await.unwrap();
+    let res = app.clone().oneshot(Request::builder().uri("/api/artifacts/..%2fx/manifest").header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
     assert_ne!(res.status(), 200, "a traversal id is never served (404 on Node, 501 here until every route is ported)");
     let list: Value = serde_json::from_str(&node.get("/api/artifacts").1).unwrap();
     let ids: Vec<&str> = list["builds"].as_array().unwrap().iter().map(|b| b["buildId"].as_str().unwrap()).collect();

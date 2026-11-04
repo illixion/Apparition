@@ -35,7 +35,10 @@ fn fixture(config: Value, hosted: bool) -> Fixture {
 }
 
 async fn send(app: &Router, method: &str, uri: &str, headers: &[(&str, &str)], body: Option<Value>) -> (StatusCode, Vec<(String, String)>, String) {
-    let mut builder = Request::builder().method(method).uri(uri).header("host", "store.test");
+    let mut builder = Request::builder().method(method).uri(uri);
+    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+        builder = builder.header("host", "localhost:8484");
+    }
     for (k, v) in headers {
         builder = builder.header(*k, *v);
     }
@@ -64,6 +67,16 @@ async fn open_store_without_password_serves_pages_and_reports_auth() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, "<title>Apparition Store</title><b>Apparition Store</b>");
     assert_eq!(header(&headers, "cache-control"), Some("no-store"));
+    // Open only to pages naming this Mac's loopback: a site that points its own name at
+    // 127.0.0.1 (DNS rebinding) is not signed in.
+    for host in ["127.0.0.1:8484", "[::1]:8484", "localhost"] {
+        let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("host", host)], None).await;
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["signedIn"], true, "{host}");
+    }
+    for host in ["evil.example:8484", "mac.local", "localhost.evil.example", "127.0.0.1.nip.io"] {
+        let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("host", host)], None).await;
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["signedIn"], false, "{host}");
+    }
 }
 
 #[tokio::test]
@@ -109,7 +122,7 @@ async fn cross_site_writes_are_refused() {
     let f = fixture(json!({}), false);
     let (status, ..) = send(&f.app, "POST", "/api/logout", &[("origin", "https://evil.test")], None).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, ..) = send(&f.app, "POST", "/api/logout", &[("origin", "http://store.test")], None).await;
+    let (status, ..) = send(&f.app, "POST", "/api/logout", &[("origin", "http://localhost:8484")], None).await;
     assert_eq!(status, StatusCode::OK);
 }
 

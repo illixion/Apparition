@@ -96,7 +96,7 @@ async fn rig(console_record: bool) -> Rig {
 }
 
 async fn send(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
-    let mut req = Request::builder().method(method).uri(uri).header("host", "x");
+    let mut req = Request::builder().method(method).uri(uri).header("host", "localhost");
     let body = match body { Some(b) => { req = req.header("content-type", "application/json"); Body::from(b.to_string()) } None => Body::empty() };
     let res = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
     let status = res.status();
@@ -152,7 +152,7 @@ async fn a_call_reaches_the_app_with_the_ledger_token_and_the_client_name() {
     let (status, _, body) = send(&r.app, "POST", "/api/debug/ghost/call", Some(json!({ "endpoint": "_info" }))).await;
     assert_eq!((status.as_u16(), json_of(&body)["error"]["message"].as_str().unwrap().contains("no longer running")), (404, true));
     let (status, _, body) = send(&r.app, "POST", "/api/debug/build2/call", Some(json!({ "endpoint": "_info" }))).await;
-    assert_eq!((status.as_u16(), json_of(&body)["error"]["message"].as_str()), (403, Some("no command token for this build in the key ledger")));
+    assert_eq!((status.as_u16(), json_of(&body)["error"]["message"].as_str()), (403, Some("this build has no command token; rebuild it with build-and-sign")));
 }
 
 #[tokio::test]
@@ -200,7 +200,7 @@ async fn a_launch_record_with_a_dead_console_is_revived_by_its_advertisement() {
 #[tokio::test]
 async fn the_log_stream_sends_a_backlog_then_new_lines() {
     let r = rig(false).await;
-    let res = r.app.clone().oneshot(Request::builder().uri("/api/debug/build1/logs?level=info&contains=hi").header("host", "x").body(Body::empty()).unwrap()).await.unwrap();
+    let res = r.app.clone().oneshot(Request::builder().uri("/api/debug/build1/logs?level=info&contains=hi").header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/event-stream");
     let mut stream = res.into_body().into_data_stream();
@@ -216,4 +216,45 @@ async fn the_log_stream_sends_a_backlog_then_new_lines() {
     assert_eq!(log_call.2["arguments"]["level"], "info");
     assert_eq!(log_call.2["arguments"]["contains"], "hi");
     assert_eq!(send(&r.app, "GET", "/api/debug/build1/logs?level=loud", None).await.0, 400);
+}
+
+/// Someone else on the network copies a build's advertisement: its key id alone (what older
+/// builds advertised, and what the apps list shows), or its whole tag while the app runs. Either
+/// way no token leaves this Mac.
+#[tokio::test]
+async fn a_copied_advertisement_is_never_sent_the_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let hits = Arc::new(Mutex::new(0usize));
+    let counter = hits.clone();
+    let thief = Router::new().fallback(move || { let counter = counter.clone(); async move { *counter.lock().unwrap() += 1; "stolen" } });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, thief).await.unwrap() });
+    let keys = dir.path().join("state/keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    std::fs::write(keys.join("build1.json"), json!({ "keyId": "build1", "commandToken": TOKEN, "bundleId": "com.x.app", "device": "Vision Pro" }).to_string()).unwrap();
+    std::fs::write(dir.path().join("config.json"), "{}").unwrap();
+    let txt = |pairs: &[(&str, &str)]| -> HashMap<String, String> { pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+    let tag = advertisement_tag(TOKEN, "n1");
+    for (services, reason) in [
+        (vec![Service { instance: "000".into(), host: "127.0.0.1".into(), port, txt: txt(&[("keyId", "build1")]) }], "advertises only its key id"),
+        (vec![
+            Service { instance: "real".into(), host: "127.0.0.1".into(), port: 1, txt: txt(&[("n", "n1"), ("t", &tag)]) },
+            Service { instance: "000".into(), host: "127.0.0.1".into(), port, txt: txt(&[("n", "n1"), ("t", &tag)]) },
+        ], "more than one server"),
+    ] {
+        let app = router(Settings {
+            key_dir: keys.clone(), debug_state_dir: dir.path().join("state"), browser: Arc::new(Fixed(services)), client_name: "Test".into(),
+            ..Settings::new(dir.path().join("config.json"), dir.path().join("data"), dir.path().join("p"))
+        }).unwrap();
+        let (_, _, body) = send(&app, "GET", "/api/debug/apps", None).await;
+        let apps = json_of(&body);
+        let apps = apps["apps"].as_array().unwrap();
+        assert!(!apps.is_empty() && apps.iter().all(|a| a["attachable"] == false && a["reason"].as_str().unwrap().contains(reason)), "{apps:?}");
+        let (status, _, _) = send(&app, "POST", "/api/debug/build1/call", Some(json!({ "endpoint": "_info" }))).await;
+        assert_eq!(status, 403);
+        let (status, _, _) = send(&app, "GET", "/api/debug/build1/help", None).await;
+        assert_eq!(status, 403);
+    }
+    assert_eq!(*hits.lock().unwrap(), 0, "the copy was contacted");
 }

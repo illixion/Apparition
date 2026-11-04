@@ -53,7 +53,7 @@ async fn crash_logs_match_the_node_store() {
 
     for uri in ["/api/crashlogs", "/api/crashlogs/aaaaaaaa11/ips", "/api/crashlogs/aaaaaaaa11/symbolicated", "/api/crashlogs/bbbbbbbb22/symbolicated",
         "/api/crashlogs/cccccccc33/ips", "/api/crashlogs/deadbeef/ips", "/api/crashlogs/aaaaaaaa11/other"] {
-        let res = app.clone().oneshot(Request::builder().uri(uri).header("host", "x").body(Body::empty()).unwrap()).await.unwrap();
+        let res = app.clone().oneshot(Request::builder().uri(uri).header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
         let rs = res.status().as_u16();
         let ctype = res.headers().get("content-type").map(|v| v.to_str().unwrap().to_string());
         let body = String::from_utf8(axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();

@@ -26,6 +26,22 @@ const DISCOVERY_TTL: Duration = Duration::from_secs(5);
 /// One call may wait for the person at the device to answer "Allow debug access?" (DebugTrace
 /// gives up after 60 s), and `_profile` then samples for up to 10 s.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(90);
+/// The most of an app's reply read into memory (a trace, a screenshot, a big `_logs`).
+pub const MAX_REPLY: usize = 64 << 20;
+
+/// An endpoint name as DebugTrace registers them: a letter then letters and digits, optionally
+/// behind one `_` (the built-in ones). It names files too, so nothing else gets through.
+pub fn valid_endpoint(name: &str) -> bool {
+    let e = name.strip_prefix('_').unwrap_or(name);
+    let mut c = e.chars();
+    e.len() <= 48 && c.next().is_some_and(|f| f.is_ascii_alphabetic()) && c.all(|x| x.is_ascii_alphanumeric())
+}
+
+/// A bundle identifier safe to use as a directory name.
+pub fn valid_bundle_id(bundle: &str) -> bool {
+    !bundle.is_empty() && bundle.len() <= 200 && !bundle.starts_with('.') && !bundle.contains("..")
+        && bundle.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+}
 
 /// A session as the Python tool keeps it: a loose record, because launch records carry fields
 /// this module only passes along.
@@ -184,16 +200,18 @@ impl Debug {
         ids.iter().filter_map(|id| self.ledger_record(id)).filter(|r| r["commandToken"].as_str().is_some_and(|t| !t.is_empty())).collect()
     }
 
-    /// The ledger record behind an advertisement. Current builds are matched by their tag;
-    /// builds from before it still name their `keyId`.
-    fn recognise(&self, txt: &HashMap<String, String>, records: &[Value]) -> Option<Value> {
+    /// The ledger record behind an advertisement, and whether it was matched by its tag. Current
+    /// builds are matched by their tag; builds from before it still name their `keyId`, which
+    /// anyone on the network can copy into an advertisement of their own, so those are named
+    /// but never sent a token.
+    fn recognise(&self, txt: &HashMap<String, String>, records: &[Value]) -> Option<(Value, bool)> {
         if let (Some(nonce), Some(tag)) = (txt.get("n").filter(|n| !n.is_empty()), txt.get("t").filter(|t| !t.is_empty())) {
             return records.iter().find(|r| {
                 let expected = advertisement_tag(r["commandToken"].as_str().unwrap_or(""), nonce);
                 { use subtle::ConstantTimeEq; expected.len() == tag.len() && bool::from(expected.as_bytes().ct_eq(tag.as_bytes())) }
-            }).cloned();
+            }).cloned().map(|r| (r, true));
         }
-        self.ledger_record(txt.get("keyId")?)
+        self.ledger_record(txt.get("keyId")?).map(|r| (r, false))
     }
 
     /// Where to reach an advertised server: the device's tailnet name when that answers (its name
@@ -216,12 +234,12 @@ impl Debug {
         let records = if services.is_empty() { Vec::new() } else { self.ledger_records() };
         let mut sessions = Vec::new();
         for service in services {
-            let record = self.recognise(&service.txt, &records).unwrap_or(Value::Null);
+            let (record, tagged) = self.recognise(&service.txt, &records).unwrap_or((Value::Null, false));
             let rec = |k: &str| record.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
             let txt = |k: &str| service.txt.get(k).filter(|s| !s.is_empty()).cloned();
             let device = rec("device").unwrap_or_else(|| service.host.trim_end_matches(".local").to_string());
             let project = rec("project").and_then(|p| Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()));
-            let has_token = rec("commandToken").is_some();
+            let has_token = tagged && rec("commandToken").is_some();
             let mut s = Session::new();
             s.insert("appName".into(), json!(txt("name").or(project).or(rec("bundleId")).unwrap_or_else(|| "An unrecognised app".into())));
             s.insert("bundleId".into(), json!(rec("bundleId").or(txt("bundleId"))));
@@ -241,11 +259,29 @@ impl Debug {
                 s.insert("attachable".into(), json!(false));
                 s.insert("reason".into(), json!(if record.is_null() {
                     "built on another Mac, or before per-build tokens: not in this Mac's key ledger"
+                } else if rec("commandToken").is_some() {
+                    "this build advertises only its key id, which anything on the network can copy; rebuild it with build-and-sign to attach"
                 } else {
                     "this build has no command token; rebuild it with build-and-sign"
                 }));
             }
             sessions.push(s);
+        }
+        // An advertisement's tag can be copied too, while the app runs or after it stopped: two
+        // servers claiming one build means one of them is not it, so neither gets the token.
+        let mut claims: HashMap<String, usize> = HashMap::new();
+        for s in &sessions {
+            if s.get("attachable").and_then(Value::as_bool) == Some(true) {
+                *claims.entry(str_of(s, "keyId").unwrap_or("").to_string()).or_default() += 1;
+            }
+        }
+        for s in &mut sessions {
+            let key = str_of(s, "keyId").unwrap_or("").to_string();
+            if claims.get(&key).is_some_and(|n| *n > 1) {
+                s.remove("token");
+                s.insert("attachable".into(), json!(false));
+                s.insert("reason".into(), json!("more than one server on the network claims this build, so none of them is sent its token; quit the other copy, or check what else advertises it"));
+            }
         }
         sessions
     }
@@ -260,8 +296,8 @@ impl Debug {
         *self.cache.lock().await = None;
     }
 
-    pub fn recorded_sessions(&self) -> Vec<Session> {
-        self.session_records()
+    pub async fn recorded_sessions(&self) -> Vec<Session> {
+        self.session_records().await
     }
 
     pub fn panels_root(&self) -> &Path {
@@ -283,8 +319,7 @@ impl Debug {
     /// One request to a session's app with its own token, as an agent sees it.
     pub async fn app_request(&self, s: &Session, post: Option<Value>, path: &str, timeout: Duration) -> Result<Reply, String> {
         let token = self.session_token(s).unwrap_or_default();
-        self.request(s, &token, post, path, timeout).await.map_err(|e| {
-            let reason = if e.is_timeout() { "timed out".to_string() } else { e.to_string() };
+        self.request(s, &token, post, path, timeout).await.map_err(|reason| {
             format!("{} did not answer at {}: {reason}", str_of(s, "appName").unwrap_or("The app"), str_of(s, "url").unwrap_or(""))
         })
     }
@@ -292,8 +327,15 @@ impl Debug {
     /// A launch record is live while the process streaming the app's log runs. A shell can reap
     /// that process while the app keeps serving, so a record without one is kept and only
     /// revived when Bonjour shows the same build.
-    fn session_records(&self) -> Vec<Session> {
-        let Ok(names) = std::fs::read_dir(&self.sessions_dir) else { return Vec::new() };
+    async fn session_records(&self) -> Vec<Session> {
+        // `ps` per record: off the async threads.
+        let dir = self.sessions_dir.clone();
+        tokio::task::spawn_blocking(move || read_session_records(&dir)).await.unwrap_or_default()
+    }
+}
+
+fn read_session_records(dir: &Path) -> Vec<Session> {
+        let Ok(names) = std::fs::read_dir(dir) else { return Vec::new() };
         let mut names: Vec<PathBuf> = names.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
         names.sort();
         names.into_iter().filter_map(|path| {
@@ -304,12 +346,13 @@ impl Debug {
             }
             Some(session)
         }).collect()
-    }
+}
 
+impl Debug {
     /// Live console records plus Bonjour finds, recovering a dead console's metadata only when
     /// the exact recorded build (bundle, device and key id) is still advertising.
     pub async fn all_sessions(&self) -> Vec<Session> {
-        let records = self.session_records();
+        let records = self.session_records().await;
         let (inactive, mut sessions): (Vec<Session>, Vec<Session>) = records.into_iter().partition(|s| s.contains_key("_consoleEnded"));
         let seen: Vec<(Option<String>, String)> = sessions.iter().map(|s| (str_of(s, "bundleId").map(String::from), port_of(str_of(s, "url").unwrap_or("")).to_string())).collect();
         for found in self.recent_discoveries().await {
@@ -360,7 +403,7 @@ impl Debug {
         if s.get("consoleLog").is_some_and(|c| !c.is_null() && c.as_str() != Some("")) {
             app["consoleLog"] = json!(true);
         }
-        if !usable {
+        if !usable || s.get("attachable").and_then(Value::as_bool) == Some(false) {
             app["reason"] = json!(str_of(s, "reason").filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| if key_id.is_some() {
                 "no command token for this build in the key ledger".into()
             } else {
@@ -394,33 +437,45 @@ impl Debug {
 
     async fn find(&self, id: &str) -> Result<(Session, String), Reply> {
         let sessions = self.all_sessions().await;
-        let app = sessions.into_iter().find(|s| str_of(s, "keyId") == Some(id))
-            .ok_or_else(|| Reply::error(404, "that app is no longer running, or is not on this network"))?;
+        let mut matching = sessions.into_iter().filter(|s| str_of(s, "keyId") == Some(id));
+        let app = matching.next().ok_or_else(|| Reply::error(404, "that app is no longer running, or is not on this network"))?;
+        if app.get("attachable").and_then(Value::as_bool) == Some(false) {
+            return Err(Reply::error(403, str_of(&app, "reason").unwrap_or("this Mac can't attach to that app")));
+        }
         let token = self.token(id).ok_or_else(|| Reply::error(403, "no command token for this build in the key ledger"))?;
         Ok((app, token))
     }
 
     /// One request to the app.
-    async fn request(&self, app: &Session, token: &str, post: Option<Value>, path: &str, timeout: Duration) -> Result<Reply, reqwest::Error> {
-        let base = str_of(app, "url").unwrap_or("").trim_end_matches('/');
-        let mut req = self.http.request(if post.is_some() { reqwest::Method::POST } else { reqwest::Method::GET }, format!("{base}{path}"))
+    async fn request(&self, app: &Session, token: &str, post: Option<Value>, path: &str, timeout: Duration) -> Result<Reply, String> {
+        let url = app_url(str_of(app, "url").unwrap_or(""), path)?;
+        let mut req = self.http.request(if post.is_some() { reqwest::Method::POST } else { reqwest::Method::GET }, url)
             .timeout(timeout)
             // Named in the app's "Allow debug access?" prompt.
             .header("Authorization", format!("Bearer {token}")).header("Accept", "application/json").header("X-DebugTrace-Client", &self.client_name);
         if let Some(body) = post {
             req = req.json(&body);
         }
-        let res = req.send().await?;
+        let mut res = req.send().await.map_err(describe)?;
         let status = res.status().as_u16();
         let content_type = res.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-        let raw = res.bytes().await?.to_vec();
+        if res.content_length().is_some_and(|n| n > MAX_REPLY as u64) {
+            return Err(format!("the reply is larger than {} MB", MAX_REPLY >> 20));
+        }
+        let mut raw = Vec::new();
+        while let Some(chunk) = res.chunk().await.map_err(describe)? {
+            if raw.len() + chunk.len() > MAX_REPLY {
+                return Err(format!("the reply is larger than {} MB", MAX_REPLY >> 20));
+            }
+            raw.extend_from_slice(&chunk);
+        }
         let body = content_type.contains("json").then(|| serde_json::from_slice(&raw).ok()).flatten();
         Ok(Reply { status, body, raw, content_type })
     }
 
-    fn unreachable(&self, app: &Session, e: &reqwest::Error) -> Reply {
+    fn unreachable(&self, app: &Session, e: &str) -> Reply {
         let name = str_of(app, "appName").unwrap_or("The app");
-        let timeout = e.is_timeout();
+        let timeout = e == TIMED_OUT;
         Reply {
             status: if timeout { 504 } else { 502 },
             body: Some(json!({ "ok": false, "error": {
@@ -579,4 +634,39 @@ fn pid_is_console_streamer(pid: Option<i64>) -> bool {
     std::process::Command::new("ps").args(["-p", &pid.to_string(), "-o", "command="]).output()
         .map(|o| { let c = String::from_utf8_lossy(&o.stdout); c.contains("devicectl") || c.contains("apparition launch") })
         .unwrap_or(false)
+}
+
+const TIMED_OUT: &str = "timed out";
+
+fn describe(e: reqwest::Error) -> String {
+    if e.is_timeout() { TIMED_OUT.to_string() } else { e.to_string() }
+}
+
+/// `path` on the app's server, refusing anything that would leave it: the path comes from the
+/// app's own replies (a trace's `download`), and `http://host:port@evil/` would send the token
+/// elsewhere.
+fn app_url(base: &str, path: &str) -> Result<reqwest::Url, String> {
+    let base = reqwest::Url::parse(base).map_err(|_| format!("the app's address {base} isn't a URL"))?;
+    if !path.starts_with('/') || path.starts_with("//") || path.contains('\\') {
+        return Err(format!("refusing the app's path {path}"));
+    }
+    let url = base.join(path).map_err(|_| format!("refusing the app's path {path}"))?;
+    if url.origin() != base.origin() || !url.username().is_empty() || url.password().is_some() {
+        return Err(format!("refusing the app's path {path}"));
+    }
+    Ok(url)
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::app_url;
+
+    #[test]
+    fn app_paths_stay_on_the_app() {
+        assert_eq!(app_url("http://10.0.0.5:8080", "/_call").unwrap().as_str(), "http://10.0.0.5:8080/_call");
+        assert_eq!(app_url("http://10.0.0.5:8080/", "/_trace/download?id=a").unwrap().as_str(), "http://10.0.0.5:8080/_trace/download?id=a");
+        for path in ["@evil.com/t.zip", "//evil.com/t.zip", "/\\evil.com", "http://evil.com/", ""] {
+            assert!(app_url("http://10.0.0.5:8080", path).is_err(), "{path}");
+        }
+    }
 }

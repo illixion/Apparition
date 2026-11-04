@@ -8,6 +8,10 @@
 use serde_json::{Value, json};
 use std::{fs, path::{Path, PathBuf}};
 
+/// Held across each read-modify-write of the index in this process, so two requests can't lose
+/// each other's change. (`bin/crash-reports` writes it too, rarely and from a person's command.)
+static INDEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct CrashLogs {
     dir: PathBuf,
 }
@@ -103,7 +107,8 @@ impl CrashLogs {
     }
 
     fn save(&self, index: &Value) {
-        let tmp = self.dir.join("index.json.tmp");
+        // Unique per write: two saves never share a temporary file.
+        let tmp = self.dir.join(format!("index.json.tmp-{}-{}", std::process::id(), crate::auth::new_token()));
         if fs::create_dir_all(&self.dir).is_ok() && fs::write(&tmp, serde_json::to_string_pretty(index).unwrap_or_default()).is_ok() {
             let _ = fs::rename(tmp, self.index_path());
         }
@@ -112,6 +117,7 @@ impl CrashLogs {
     /// The index with entries whose `.ips` was moved away dropped: removing the files is the
     /// whole cleanup, and their symbolicated text goes with them.
     fn current(&self) -> Value {
+        let _held = INDEX.lock().unwrap_or_else(|e| e.into_inner());
         let mut index = self.read_index();
         let entries = index["entries"].as_array().cloned().unwrap_or_default();
         let (kept, gone): (Vec<Value>, Vec<Value>) = entries.into_iter().partition(|e| e["file"].as_str().is_some_and(|f| self.dir.join(f).exists()));
@@ -152,6 +158,7 @@ impl CrashLogs {
     /// within the ref's tolerance, the same moment. Run again when a trace arrives, since either
     /// side can come first.
     pub fn link(&self, refs: &[Ref]) -> usize {
+        let _held = INDEX.lock().unwrap_or_else(|e| e.into_inner());
         let mut index = self.read_index();
         let mut linked = 0;
         if let Some(entries) = index["entries"].as_array_mut() {

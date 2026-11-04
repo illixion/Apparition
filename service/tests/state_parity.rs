@@ -74,7 +74,7 @@ async fn state_matches_the_node_store() {
     std::fs::write(dir.path().join("data/state.json"), state.to_string()).unwrap();
 
     let app = router(Settings { host_token: None, key_dir: dir.path().join("keys"), browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])), ..Settings::new(dir.path().join("config.json"), dir.path().join("data"), dir.path().join("none")) }).unwrap();
-    let res = app.oneshot(Request::builder().uri("/api/state").header("host", "x").body(Body::empty()).unwrap()).await.unwrap();
+    let res = app.oneshot(Request::builder().uri("/api/state").header("host", "localhost").body(Body::empty()).unwrap()).await.unwrap();
     assert_eq!(res.status(), 200);
     let ours: Value = serde_json::from_slice(&axum::body::to_bytes(res.into_body(), 1 << 22).await.unwrap()).unwrap();
 

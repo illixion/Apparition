@@ -125,7 +125,7 @@ pub fn system_ms() -> u64 {
 
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path.with_extension("tmp");
+    let tmp = path.with_extension(format!("tmp-{}", new_token()));
     let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
     file.write_all(bytes)?;
     fs::rename(tmp, path)
@@ -168,7 +168,7 @@ impl Auth {
     /// comes from 127.0.0.1.
     pub fn login(&self, password: &str, password_hash: &str, user: Option<&str>) -> Login {
         let now = (self.clock)();
-        let mut throttle = self.throttle.lock().unwrap();
+        let mut throttle = self.throttle.lock_ignoring_poison();
         if now < throttle.locked_until {
             let secs = (throttle.locked_until - now).div_ceil(1000);
             return Login::Refused { status: 429, error: format!("too many wrong passwords; try again in {secs} s") };
@@ -185,7 +185,7 @@ impl Auth {
         throttle.failures.clear();
         drop(throttle);
         let token = URL_SAFE_NO_PAD.encode(random(32));
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.lock_ignoring_poison();
         let cutoff = now.saturating_sub(SESSION_DAYS * DAY_MS);
         sessions.retain(|_, s| s.last_seen >= cutoff);
         let mut extra = Map::new();
@@ -215,7 +215,7 @@ impl Auth {
             self.save(&sessions);
             return false;
         }
-        if now - session.last_seen > 3_600_000 {
+        if now.saturating_sub(session.last_seen) > 3_600_000 {
             session.last_seen = now;
             self.save(&sessions);
         }
