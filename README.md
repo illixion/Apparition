@@ -18,7 +18,20 @@ Apple ID work needs it.
 
 ## Requirements
 
-**A Mac you own.** Signing apps with a free Apple ID needs a Mac: Apple gives the developer
+**Apparition works best with a Mac you own**, at home or reached over Tailscale. The Mac does
+two jobs that nothing else can, and everything else works without one:
+
+| What | Needs | Without a Mac |
+|---|---|---|
+| Signing with a free Apple ID | A Mac's anisette: your Mac, a macOS VM on it, or a server backed by a Mac | A paid account's certificate and profile, which need no sign-in |
+| Building your own apps with Xcode, and live patching (`inject`) | A Mac with Xcode | [xtool](https://github.com/xtool-org/xtool) builds on Linux, and on Windows through WSL |
+| Installing, refreshing, JIT, the companion | Nothing in particular | Any computer (macOS, Windows, Linux), or the device itself with LocalDevVPN |
+
+With a Mac, the rest of your work can happen on it or on a Windows or Linux PC: the PC pairs with
+the Mac, its agents drive your apps' debug servers through the Mac, and its builds go to your
+devices through it ([remote development](docs/REMOTE_DEVELOPER.md)).
+
+**Signing with a free Apple ID needs a Mac.** Apple gives the developer
 access that signing needs only to a sign-in with a Mac's anisette, so Apparition gets it from
 macOS on your own Mac, as Xcode does. That Mac is either
 
@@ -28,9 +41,18 @@ macOS on your own Mac, as Xcode does. That Mac is either
 
 Windows and Linux computers, and devices away from home, pair with that Mac for it over an
 encrypted channel. Apparition doesn't provide anisette, and doesn't run Apple code made for other
-platforms to stand in for a Mac. Without a Mac, only a paid developer account's own certificate
-and profile sign apps (they need no sign-in). The Apple ID is yours too: use a spare one for
-sideloading if you can.
+platforms to stand in for a Mac. An anisette server you give by address works only when a Mac is
+behind it: Apple refuses developer access to any other (`-80046`), so a public anisette server
+won't sign apps. Without a Mac, only a paid developer account's own certificate and profile sign
+apps (they need no sign-in). The Apple ID is yours too: use a spare one for sideloading if you
+can.
+
+**JIT needs no particular computer.** Apparition on the device is the app's debugger. It only
+needs a way back to the device's own services, which the device won't connect to directly: a
+companion on any computer (macOS, Windows or Linux) bounces that connection back, or LocalDevVPN
+on iPhone, iPad and Vision Pro does it with no computer (it takes the device's only VPN slot, so
+not alongside Tailscale). Apple TV has no VPN app, so it uses a companion. A computer is needed
+once, to install Apparition.
 
 ## What it does
 
