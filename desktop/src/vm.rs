@@ -28,9 +28,11 @@ mod mac {
         task: Option<tauri::async_runtime::JoinHandle<()>>,
         last: Option<vm::Progress>,
         error: Option<String>,
+        /// The job puts newer programs into a VM that is set up, rather than setting one up.
+        update: bool,
     }
 
-    static JOB: Mutex<Job> = Mutex::new(Job { task: None, last: None, error: None });
+    static JOB: Mutex<Job> = Mutex::new(Job { task: None, last: None, error: None, update: false });
 
     fn running() -> bool {
         JOB.lock().unwrap().task.as_ref().is_some_and(|task| !task.inner().is_finished())
@@ -40,6 +42,7 @@ mod mac {
         let bundle = vm::default_bundle();
         let status = vm::status(&bundle).await;
         let job = JOB.lock().unwrap();
+        let busy = job.task.as_ref().is_some_and(|task| !task.inner().is_finished());
         json!({
             "supported": status.unsupported.is_none(),
             "unsupported": status.unsupported,
@@ -47,9 +50,12 @@ mod mac {
             "installed": status.installed,
             "ready": status.ready,
             "suspended": status.suspended,
+            "outdated": status.outdated,
+            // Also one a terminal's `apparition vm update` runs.
+            "updating": status.updating || (busy && job.update),
             "phase": status.live.as_ref().map(|live| if live.recovery { "recovery".to_string() } else { live.phase.clone() }),
             "serving": status.live.as_ref().is_some_and(|live| live.anisette.is_some()),
-            "settingUp": job.task.as_ref().is_some_and(|task| !task.inner().is_finished()),
+            "settingUp": busy,
             "progress": job.last,
             "error": job.error,
             "diskBytes": status.disk_bytes,
@@ -65,6 +71,9 @@ mod mac {
         }
         job.last = None;
         job.error = None;
+        // vm::setup runs the update itself on a VM that is set up with older programs.
+        job.update = vm::outdated(&vm::default_bundle());
+        let update = job.update;
         job.task = Some(tauri::async_runtime::spawn(async move {
             let options = vm::SetupOptions { bundle: vm::default_bundle(), ipsw: ipsw.map(Into::into), ..Default::default() };
             let emitter = app.clone();
@@ -75,13 +84,22 @@ mod mac {
             let result = vm::setup(&options, &say).await;
             let error = result.as_ref().err().map(|error| apparition_core::api::describe(error));
             JOB.lock().unwrap().error = error.clone();
-            if result.is_ok() {
+            if result.is_ok() && !update {
                 // Set up from the Companion tab: offer it to paired devices, unless something else is offered.
                 app.state::<Arc<CompanionState>>().use_vm_if_off().await;
             }
-            let _ = app.emit("vm-finished", json!({ "ok": error.is_none(), "error": error }));
+            let _ = app.emit("vm-finished", json!({ "ok": error.is_none(), "error": error, "update": update }));
         }));
         Ok(())
+    }
+
+    /// At launch: a VM set up by an older app gets this app's programs, in the background (a few minutes from its
+    /// own recoveryOS, no download), so a new app version never means making the VM again. A failure shows in the
+    /// Companion tab, whose button tries again.
+    pub fn update_if_outdated(app: &AppHandle) {
+        if vm::outdated(&vm::default_bundle()) && !running() {
+            let _ = setup(app.clone(), None);
+        }
     }
 
     pub fn cancel() {
@@ -118,7 +136,7 @@ mod mac {
             runtime.block_on(async move {
                 let bundle = vm::default_bundle();
                 let Some(live) = vm::live(&bundle).await else { return };
-                if live.anisette.is_some() || setting_up {
+                if (live.anisette.is_some() || setting_up) && !vm::updated_elsewhere(&bundle) {
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(30), vm::quit(&bundle)).await;
                 }
             });
@@ -175,6 +193,14 @@ pub async fn vm_remove(app: AppHandle) -> Result<Value, Failure> {
         let _ = app;
         Err("The anisette VM needs a Mac with Apple silicon.".into())
     }
+}
+
+/// From the app's start: updates the programs of a VM an older app set up.
+pub fn update_if_outdated(app: &AppHandle) {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    mac::update_if_outdated(app);
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    let _ = app;
 }
 
 /// From the app's exit: saves the VM it runs.

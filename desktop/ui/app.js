@@ -1606,11 +1606,17 @@ function buildCompanion() {
   const vmRemove = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-remove"));
   let removeArmed = 0;
   vmRemove.addEventListener("click", async () => {
+    // Setup removes the restore image, so a new VM is the 20 GB download again (or a copy you have).
+    const download = state.vm && !state.vm.imageCached ? " Setting one up again downloads macOS again (20 GB)." : "";
     if (!removeArmed) {
       vmRemove.textContent = "Move it to the Trash";
+      vmNote = { text: `Nothing needs this VM to be made again: removing it only gives back its disk space.${download}` };
+      drawVm();
       removeArmed = window.setTimeout(() => {
         removeArmed = 0;
         vmRemove.textContent = "Remove…";
+        vmNote = null;
+        drawVm();
       }, 5000);
       return;
     }
@@ -1620,7 +1626,7 @@ function buildCompanion() {
     try {
       state.vm = await invoke("vm_remove");
       state.vmAnisette = false;
-      vmNote = { text: "The anisette VM is in the Trash. Empty it to get the disk space back." };
+      vmNote = { text: `The anisette VM is in the Trash. Empty it to get the disk space back.${download}` };
     } catch (error) {
       vmNote = { text: messageOf(error), kind: "error" };
     }
@@ -1631,7 +1637,9 @@ function buildCompanion() {
     drawVm();
   });
   listen("vm-finished", (/** @type {any} */ e) => {
-    vmNote = e.payload.ok ? { text: "The anisette VM is set up, and the companion offers it to paired devices.", kind: "good" } : null;
+    vmNote = !e.payload.ok ? null
+      : e.payload.update ? { text: "The VM has this version's programs, and Apple accepts its anisette.", kind: "good" }
+      : { text: "The anisette VM is set up, and the companion offers it to paired devices.", kind: "good" };
     refreshCompanion();
   });
   // A macOS VM in recoveryOS can't paste: show the short line to type, and what it has fetched.
@@ -1726,6 +1734,9 @@ const VM_PREVIEWS = {
     progress: { step: "install", text: "Installing macOS in the VM", fraction: 0.42 } },
   "vm-error": { supported: true, exists: true, installed: true, ready: false, settingUp: false, imageCached: true, diskBytes: 23e9,
     error: "recoveryOS's csrutil didn't accept the VM's account; ~/Library/Application Support/Apparition/anisette.vm/screen.png has its screen. Run setup again to retry." },
+  "vm-outdated": { supported: true, exists: true, installed: true, ready: true, outdated: true, settingUp: false, imageCached: false, diskBytes: 27e9, suspended: true },
+  "vm-updating": { supported: true, exists: true, installed: true, ready: true, outdated: true, updating: true, settingUp: true, imageCached: false, diskBytes: 27e9,
+    progress: { step: "update", text: "recoveryOS is putting this app's programs into the VM", fraction: null } },
 };
 /** @type {any} */
 let previewVm = null;
@@ -1753,7 +1764,8 @@ function drawVm() {
     bar.style.width = known ? `${Math.round(progress.fraction * 100)}%` : "";
   }
   const pill = $(companionPanel, "vm-pill");
-  const [label, kind] = busy ? ["Setting up", "info"]
+  const [label, kind] = vm.updating ? ["Updating", "info"]
+    : busy ? ["Setting up", "info"]
     : vm.ready ? (vm.serving && vm.phase === "running" ? ["Running", "good"] : ["Saved", "good"])
     : vm.exists ? ["Not finished", "warn"]
     : ["", ""];
@@ -1763,8 +1775,9 @@ function drawVm() {
   $(companionPanel, "vm-intro").hidden = vm.ready;
   $(companionPanel, "vm-memory-note").hidden = vm.ready || busy;
   const run = $(companionPanel, "vm-setup-run");
-  run.hidden = busy || vm.ready;
-  run.textContent = vm.exists ? "Finish setting it up" : "Set up the anisette VM";
+  // A VM set up by an older app gets this one's programs (the app starts that itself at launch; this retries it).
+  run.hidden = busy || vm.updating || (vm.ready && !vm.outdated);
+  run.textContent = vm.outdated ? "Update the VM's programs" : vm.exists ? "Finish setting it up" : "Set up the anisette VM";
   $(companionPanel, "vm-pick").hidden = busy || vm.ready || vm.installed || vm.imageCached;
   $(companionPanel, "vm-cancel").hidden = !busy;
   $(companionPanel, "vm-check").hidden = busy || !vm.ready;
@@ -1772,10 +1785,13 @@ function drawVm() {
   const disk = vm.diskBytes ? ` It takes ${(vm.diskBytes / 1e9).toFixed(1)} GB of disk.` : "";
   const text = vmNote?.text
     ?? (vm.error && !busy ? vm.error
+      : busy ? (vm.updating ? "The VM, its account and its anisette stay as they are. Until this is done (a few minutes), sign-ins can't use it." : "")
+      : vm.updating ? "Its programs are being updated from a terminal (apparition vm update)."
+      : vm.outdated ? "This version of Apparition has newer programs for the VM. Updating them takes a few minutes from the VM's own recoveryOS, with no download, and keeps the VM as it is."
       : vm.ready ? (vm.serving && vm.phase === "running"
           ? `Running. It is saved to disk and stopped after a few idle minutes.${disk}`
           : `Saved to disk, using no memory. It wakes in about a second when a device signs in.${disk}`)
-      : !busy && vm.exists ? "Setup stopped partway; it carries on from where it was." : "");
+      : vm.exists ? "Setup stopped partway; it carries on from where it was." : "");
   const kindOf = vmNote?.kind ?? (vm.error && !busy ? "error" : "");
   setStatus($(companionPanel, "vm-status"), text, kindOf);
 }

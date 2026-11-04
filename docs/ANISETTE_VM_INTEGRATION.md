@@ -40,6 +40,9 @@ Windows PC; the VM sits behind the companion as its anisette source (see "Reachi
   guest. The companion's VM backend serves isideload's own client (provisioning, headers, the guest's client info).
 - Every way of stopping the runner saves the VM (the logout/shutdown quit event, SIGTERM, SIGINT, `quit`), and the
   next start resumes it in 1.0 s with Apple accepting the anisette.
+- `apparition vm update` on the set-up VM with no restore image on the Mac: 152 s. The guest's programs matched
+  the build byte for byte afterwards, and the next start resumed in 1.2 s with Apple accepting the anisette. The
+  automatic run at app launch (once `GUEST_VERSION` is bumped) is the same code; it hasn't been run from the app.
 
 Not verified: a real account signing in through a VM-hosted companion end to end; a device pairing with a
 companion that offers the VM; the Companion tab's VM group in the running app (built, not yet clicked through);
@@ -133,6 +136,11 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
    excluded from Time Machine, the image in `~/Library/Caches`. The cache's copy of the image is removed once the VM is
    set up (the person's own copy stays). Not done: a preflight for free disk (the app says what it needs; the copy
    fails when the disk does), and clicking it through in the running app.
+5a. **Never made again** (2026-11-04). A set-up VM outlives everything that would otherwise mean rebuilding it
+   (selfhost/macos-vm/README.md, "Keeping it"). A saved state that can't be resumed costs one cold boot. The
+   guest's updates are off. A new image pin applies only to new VMs. A newer app's guest programs go in with
+   `apparition vm update`, which runs the setup stage again from the VM's own recoveryOS with no image. It runs on
+   its own at launch when `GUEST_VERSION` is above the bundle's `guest-version`, and `setup` runs it too.
 6. **Hardening** (ongoing). 24-hour soak, host sleep and wake, VPN on and off, a crash at every step then
    resume, a full disk, an unclean stop, the guest build changing under an update, uninstall. Docs.
 

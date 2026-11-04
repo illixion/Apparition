@@ -33,7 +33,8 @@ LABEL=com.illixion.apparition.anisette
 BASE='@@BASE@@'
 # 1: the host drives this recoveryOS (no questions; shut down when done so it can go on).
 AUTOMATED='@@AUTOMATED@@'
-# provision: the Apparition app's anisette VM, before its first boot (core/src/vm.rs); setup: everything else.
+# provision: the Apparition app's anisette VM, before its first boot (core/src/vm.rs); setup: everything else, which
+# for the app's VM is also how a newer app puts its programs into a VM that is set up (`apparition vm update`).
 STAGE='@@STAGE@@'
 # 1: the anisette VM the Apparition app runs. Its anisette agent is already in place (the provision stage), so the
 # companion's relay, which a VM used on its own needs, isn't installed.
@@ -89,67 +90,48 @@ fi
 major=${version%%.*}
 say "Setting up $([ "$RECOVERY" = 1 ] && echo "the macOS $version on $DATA" || echo "this Mac (macOS $version)")"
 
-# ------------------------------------------------------------------ first boot (the app's anisette VM)
-# Run once, in recoveryOS, right after the install and before macOS has ever booted: what makes the first boot create
-# the account (with a secure token, which csrutil needs later), log it in automatically and skip Setup Assistant, plus
-# the daemons the host talks to over vsock. Recovery is the only place root can write the guest's disk without asking
-# the person at the Mac for an administrator password. The password comes from the host, under the session's token.
-if [ "$STAGE" = provision ]; then
-  [ "$RECOVERY" = 1 ] && [ -n "$BASE" ] || die "this stage runs in recoveryOS, served by the Mac that runs the VM"
-  say "Writing the first-boot setup"
-  state="$DATA/Library/Application Support/ApparitionBootstrap"
-  stage=$(mktemp -d /tmp/apparition-provision.XXXXXX)
-  mkdir -p "$state"
+# ------------------------------------------------------------------ the app's anisette VM: its own programs
+bootstrap="/Library/Application Support/ApparitionBootstrap"
+plist() { # path label keep-alive program [arguments...]: a root-owned launchd job
+  local path=$1 label=$2 keep=$3; shift 3
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+      '<plist version="1.0"><dict>' "<key>Label</key><string>$label</string>" '<key>ProgramArguments</key><array>'
+    for argument in "$@"; do printf '<string>%s</string>\n' "$argument"; done
+    printf '%s\n' '</array>' '<key>RunAtLoad</key><true/>'
+    if [ "$keep" = 1 ]; then printf '%s\n' '<key>KeepAlive</key><true/>'; fi
+    case "$path" in
+      */LaunchAgents/*)
+        # In the Aqua session, the only place the helper's attestation is valid. The companion it runs comes in the
+        # next recoveryOS stage; until then launchd retries every 30 seconds.
+        printf '%s\n' '<key>LimitLoadToSessionType</key><string>Aqua</string>' '<key>ThrottleInterval</key><integer>30</integer>' \
+          "<key>StandardOutPath</key><string>/tmp/$label.log</string>" "<key>StandardErrorPath</key><string>/tmp/$label.log</string>" ;;
+      *) printf '%s\n' "<key>StandardErrorPath</key><string>/var/log/$label.log</string>" ;;
+    esac
+    printf '%s\n' '</dict></plist>'
+  } > "$path"
+  chown 0:0 "$path"
+  chmod 644 "$path"
+}
+# The programs the host talks to over vsock and their launchd jobs, from the host. The provision stage puts them in,
+# and every setup stage after it puts the host's current ones in again: `apparition vm update` runs one, so a VM that
+# is set up takes a newer app's programs from its own recoveryOS rather than being made again. Everything is
+# downloaded before anything is replaced, so a visit that stops partway leaves the programs that were there.
+appliance_programs() { # name:mode...
+  local state="$DATA$bootstrap" stage entry
+  stage=$(mktemp -d /tmp/apparition-appliance.XXXXXX)
+  for entry in "$@"; do
+    curl -fsS -o "$stage/${entry%%:*}" "$BASE/${entry%%:*}" || die "couldn't download ${entry%%:*} from the host"
+  done
+  mkdir -p "$state" "$DATA/Library/LaunchDaemons" "$DATA/Library/LaunchAgents"
   chown 0:0 "$state"
   chmod 700 "$state"
-  fetch() { # name mode
-    curl -fsS -o "$stage/$1" "$BASE/$1" || die "couldn't download $1 from the host"
-    ditto "$stage/$1" "$state/$1"
-    chown 0:0 "$state/$1"
-    chmod "$2" "$state/$1"
-  }
-  fetch password 600
-  fetch first-boot.sh 700
-  fetch report-status.sh 700
-  fetch guest-status 755
-  fetch guest-bridge 755
-  if [ "$KEEP_SSH" = 1 ]; then fetch authorized_keys 600; fi
-  # The trim only writes launchd's override files, so it has to come before the account's first login.
-  for name in appliance-trim.sh appliance-disabled-user.txt appliance-disabled-system.txt; do
-    curl -fsS -o "$stage/$name" "$BASE/$name" || die "couldn't download $name from the host"
+  for entry in "$@"; do
+    ditto "$stage/${entry%%:*}" "$state/${entry%%:*}"
+    chown 0:0 "$state/${entry%%:*}"
+    chmod "${entry##*:}" "$state/${entry%%:*}"
   done
-  APPARITION_KEEP_SSH=$([ "$KEEP_SSH" = 1 ] && echo 1) bash "$stage/appliance-trim.sh" "$DATA"
-  # Set before loginwindow starts, so Setup Assistant never runs.
-  touch "$DATA/private/var/db/.AppleSetupDone"
-  chown 0:0 "$DATA/private/var/db/.AppleSetupDone"
-  chmod 644 "$DATA/private/var/db/.AppleSetupDone"
-  mkdir -p "$DATA/Library/LaunchDaemons" "$DATA/Library/LaunchAgents"
-  plist() { # path label keep-alive program [arguments...]: a root-owned launchd job
-    local path=$1 label=$2 keep=$3; shift 3
-    {
-      printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
-        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
-        '<plist version="1.0"><dict>' "<key>Label</key><string>$label</string>" '<key>ProgramArguments</key><array>'
-      for argument in "$@"; do printf '<string>%s</string>\n' "$argument"; done
-      printf '%s\n' '</array>' '<key>RunAtLoad</key><true/>'
-      if [ "$keep" = 1 ]; then printf '%s\n' '<key>KeepAlive</key><true/>'; fi
-      case "$path" in
-        */LaunchAgents/*)
-          # In the Aqua session, the only place the helper's attestation is valid. The companion it runs comes in the
-          # next recoveryOS stage; until then launchd retries every 30 seconds.
-          printf '%s\n' '<key>LimitLoadToSessionType</key><string>Aqua</string>' '<key>ThrottleInterval</key><integer>30</integer>' \
-            "<key>StandardOutPath</key><string>/tmp/$label.log</string>" "<key>StandardErrorPath</key><string>/tmp/$label.log</string>" ;;
-        *) printf '%s\n' "<key>StandardErrorPath</key><string>/var/log/$label.log</string>" ;;
-      esac
-      printf '%s\n' '</dict></plist>'
-    } > "$path"
-    chown 0:0 "$path"
-    chmod 644 "$path"
-  }
-  bootstrap="/Library/Application Support/ApparitionBootstrap"
-  # Makes the account on the first boot, then shuts the VM down (first-boot.sh).
-  plist "$DATA/Library/LaunchDaemons/com.illixion.apparition.bootstrap.plist" com.illixion.apparition.bootstrap 0 \
-    /bin/bash "$bootstrap/first-boot.sh"
   # Setup state for the host, over vsock: never credentials or anisette headers (report-status.sh).
   plist "$DATA/Library/LaunchDaemons/com.illixion.apparition.vm-status.plist" com.illixion.apparition.vm-status 1 \
     /bin/bash "$bootstrap/report-status.sh"
@@ -159,6 +141,33 @@ if [ "$STAGE" = provision ]; then
     "$bootstrap/guest-bridge"
   plist "$DATA/Library/LaunchAgents/com.illixion.apparition.vm-anisette.plist" com.illixion.apparition.vm-anisette 1 \
     /usr/local/apparition/apparition anisette serve --port 6970
+}
+
+# ------------------------------------------------------------------ first boot (the app's anisette VM)
+# Run once, in recoveryOS, right after the install and before macOS has ever booted: what makes the first boot create
+# the account (with a secure token, which csrutil needs later), log it in automatically and skip Setup Assistant, plus
+# the daemons the host talks to over vsock. Recovery is the only place root can write the guest's disk without asking
+# the person at the Mac for an administrator password. The password comes from the host, under the session's token.
+if [ "$STAGE" = provision ]; then
+  [ "$RECOVERY" = 1 ] && [ -n "$BASE" ] || die "this stage runs in recoveryOS, served by the Mac that runs the VM"
+  say "Writing the first-boot setup"
+  stage=$(mktemp -d /tmp/apparition-provision.XXXXXX)
+  programs="password:600 first-boot.sh:700 report-status.sh:700 guest-status:755 guest-bridge:755"
+  if [ "$KEEP_SSH" = 1 ]; then programs="$programs authorized_keys:600"; fi
+  # shellcheck disable=SC2086 # one word per file
+  appliance_programs $programs
+  # The trim only writes launchd's override files, so it has to come before the account's first login.
+  for name in appliance-trim.sh appliance-disabled-user.txt appliance-disabled-system.txt; do
+    curl -fsS -o "$stage/$name" "$BASE/$name" || die "couldn't download $name from the host"
+  done
+  APPARITION_KEEP_SSH=$([ "$KEEP_SSH" = 1 ] && echo 1) bash "$stage/appliance-trim.sh" "$DATA"
+  # Set before loginwindow starts, so Setup Assistant never runs.
+  touch "$DATA/private/var/db/.AppleSetupDone"
+  chown 0:0 "$DATA/private/var/db/.AppleSetupDone"
+  chmod 644 "$DATA/private/var/db/.AppleSetupDone"
+  # Makes the account on the first boot, then shuts the VM down (first-boot.sh).
+  plist "$DATA/Library/LaunchDaemons/com.illixion.apparition.bootstrap.plist" com.illixion.apparition.bootstrap 0 \
+    /bin/bash "$bootstrap/first-boot.sh"
   curl -fsS "$BASE/complete" > /dev/null || die "couldn't confirm the first-boot setup to the host"
   say "First boot prepared. Shutting down so the host can boot it."
   /sbin/shutdown -h now
@@ -198,15 +207,21 @@ elif [ "${APPARITION_FORCE:-}" != 1 ]; then
 fi
 
 # ------------------------------------------------------------------ Apparition
+if [ "$APPLIANCE" = 1 ] && [ -n "$BASE" ]; then
+  say "Installing the programs the host talks to"
+  appliance_programs report-status.sh:700 guest-status:755 guest-bridge:755
+fi
 say "Installing apparition and its anisette helper"
 dest="$DATA/usr/local/apparition"
 mkdir -p "$dest"
 work=$(mktemp -d /tmp/apparition.XXXXXX)
 if [ -n "$BASE" ]; then
-  # The host Mac's own build, one file each. The helper is kept as sent: its signature carries
-  # the entitlements, so never re-sign it.
+  # The host Mac's own build, one file each, both downloaded before either is replaced. The helper is kept as
+  # sent: its signature carries the entitlements, so never re-sign it.
   for name in apparition apparition-anisette-helper; do
     curl -fL --progress-bar -o "$work/$name" "$BASE/$name" || die "couldn't download $BASE/$name"
+  done
+  for name in apparition apparition-anisette-helper; do
     ditto "$work/$name" "$dest/$name"
     chown 0:0 "$dest/$name"
     chmod 755 "$dest/$name"

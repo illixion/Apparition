@@ -323,8 +323,12 @@ struct RunnerError: LocalizedError {
             try FileManager.default.removeItem(at: savedState)
             try await vm.resume()
         } catch {
+            // A state this runner or this macOS can't resume (a new runner's devices, a host update): one cold boot,
+            // and the VM goes on as before. A machine that restored and then failed to resume is stopped first, so
+            // the boot is the only one with the disk.
             print("RESTORE FAILED: \(error.localizedDescription); booting instead")
             try? FileManager.default.removeItem(at: savedState)
+            if vm.canStop { try? await vm.stop() }
             if self.vm === vm { self.vm = nil; view?.virtualMachine = nil }
             return false
         }

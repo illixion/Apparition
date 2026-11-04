@@ -19,6 +19,11 @@
 //!   suspends the VM after a few idle minutes; the next request resumes it in about a second. Setup ends by saving
 //!   the VM, and every way the runner stops saves it again (quit, logout, shutdown, sleep), so the one-minute cold
 //!   boot happens once, during setup. Only a crash or a power cut costs another.
+//! - **Keeping it**: a VM that is set up is never made again, and nothing after setup reads the restore image (setup
+//!   removes the cache's copy). A saved state that can't be resumed (a new runner, a host macOS update) is dropped
+//!   for one cold boot. The guest's own updates are off (the trim), so it stays on the macOS it was verified with,
+//!   and a new [`RESTORE_IMAGE`] pin applies only to VMs made after it. A newer app's programs for the guest go in
+//!   with [`update`] (when [`GUEST_VERSION`] says so), from the VM's own recoveryOS, keeping the VM as it is.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -58,6 +63,22 @@ pub const RESTORE_IMAGE: RestoreImage = RestoreImage {
     sha256: "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95",
     url: "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw",
 };
+
+/// The programs this app puts into the guest: `apparition` and its helper (its `anisette serve`), guest-bridge,
+/// guest-status, report-status.sh and their launchd jobs (setup.sh). A VM keeps the ones it was set up with, so bump
+/// this when a change to them has to reach VMs set up before it: the app then runs [`update`] on those, which takes
+/// a few minutes and needs no restore image, instead of anyone making the VM again. VMs from before the bundle
+/// recorded it (`guest-version`) have version 1.
+pub const GUEST_VERSION: u32 = 1;
+
+fn guest_version(bundle: &Path) -> u32 {
+    std::fs::read_to_string(bundle.join("guest-version")).ok().and_then(|text| text.trim().parse().ok()).unwrap_or(1)
+}
+
+/// A VM set up with older programs than this app's: [`update`] (or [`setup`], which runs it then) puts the new ones in.
+pub fn outdated(bundle: &Path) -> bool {
+    bundle.join("ready").exists() && guest_version(bundle) < GUEST_VERSION
+}
 
 /// Where the app keeps its VM.
 pub fn default_bundle() -> PathBuf {
@@ -406,6 +427,9 @@ pub async fn serve(bundle: &Path) -> Result<String, Report> {
     if !bundle.join("ready").exists() {
         bail!("The anisette VM isn't set up yet");
     }
+    if updating(bundle) {
+        bail!("The anisette VM's programs are being updated (a few minutes); try again when that's done");
+    }
     let live = match live(bundle).await {
         Some(live) => live,
         None => start(bundle, &Tools::runner()?, Mode::Serve).await?,
@@ -438,6 +462,10 @@ pub struct Status {
     pub ready: bool,
     /// Saved to disk, not running: the next request resumes it.
     pub suspended: bool,
+    /// Set up with older programs than this app's ([`GUEST_VERSION`]): [`update`] puts the new ones in.
+    pub outdated: bool,
+    /// An [`update`] runs.
+    pub updating: bool,
     pub live: Option<Live>,
     pub guest: Option<GuestReport>,
     /// The pinned restore image is in the cache, checked.
@@ -457,6 +485,8 @@ pub async fn status(bundle: &Path) -> Status {
         installed: bundle.join("installed").exists(),
         ready: bundle.join("ready").exists(),
         suspended: saved_state(bundle).exists(),
+        outdated: outdated(bundle),
+        updating: updating(bundle),
         live: live(bundle).await,
         guest: report(bundle),
         image_cached: stamped(&cached, &RESTORE_IMAGE),
@@ -700,12 +730,15 @@ pub struct SetupOptions {
 /// resumes it. Returns the anisette front door.
 pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Report> {
     let bundle = options.bundle.as_path();
-    let tools = Tools::find()?;
-    tools.verify_helper()?;
     if bundle.join("ready").exists() {
+        if outdated(bundle) {
+            return update(options, say).await;
+        }
         tell(say, "ready", "The anisette VM is set up", Some(1.0));
         return serve(bundle).await;
     }
+    let tools = Tools::find()?;
+    tools.verify_helper()?;
     if !bundle.join("installed").exists() {
         let ipsw = restore_image(options.ipsw.as_deref(), say).await?;
         if !bundle.exists() {
@@ -736,7 +769,7 @@ pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Repor
     if !bundle.join("prepared").exists() {
         shutdown(bundle).await?;
         tell(say, "provision", "Writing the VM's first boot from its recoveryOS", None);
-        recover(bundle, &tools, "provision", &password, options, say).await?;
+        recover(bundle, &tools, &PROVISION, &password, options, say).await?;
         std::fs::write(bundle.join("prepared"), "recovery\n")?;
     }
     if report(bundle).is_none() && live(bundle).await.is_none() {
@@ -749,7 +782,7 @@ pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Repor
     .await?;
     if !owner.sip_disabled {
         tell(say, "recovery", "Turning SIP off and installing Apparition in the VM, from its recoveryOS", None);
-        recover(bundle, &tools, "setup", &password, options, say).await?;
+        recover(bundle, &tools, &SETUP, &password, options, say).await?;
     }
     if live(bundle).await.is_none() {
         start(bundle, &tools.runner, Mode::Run { network: false }).await?;
@@ -773,6 +806,8 @@ pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Repor
     if !saved_state(bundle).exists() {
         bail!("The VM didn't save; its log: {}", bundle.join("logs/boot.log").display());
     }
+    // The setup stage put this app's programs in (all of them: it puts the vsock ones in again too).
+    std::fs::write(bundle.join("guest-version"), GUEST_VERSION.to_string())?;
     std::fs::write(bundle.join("ready"), "")?;
     let url = serve(bundle).await;
     let url = match url {
@@ -792,6 +827,82 @@ pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Repor
     }
     tell(say, "ready", "The anisette VM is set up", Some(1.0));
     Ok(url)
+}
+
+/// Puts this app's programs into a VM that is set up ([`GUEST_VERSION`]): setup.sh's setup stage again, from the
+/// VM's own recoveryOS (SIP is off already, so nothing asks for the account's password), one cold boot, and the VM
+/// saved again. It needs no restore image, and the VM, its account and its anisette provisioning stay as they are.
+/// A run that stops partway leaves the programs the VM had or the new ones (setup.sh downloads everything before it
+/// replaces anything), the VM serves with either, and running it again finishes it. Returns the anisette front door.
+pub async fn update(options: &SetupOptions, say: Say<'_>) -> Result<String, Report> {
+    let bundle = options.bundle.as_path();
+    if !bundle.join("ready").exists() {
+        bail!("The anisette VM isn't set up yet");
+    }
+    let tools = Tools::find()?;
+    tools.verify_helper()?;
+    let password = credentials(bundle)?;
+    {
+        // Until the VM is saved again: a request meanwhile would start it in the middle of this.
+        let _updating = Updating::begin(bundle)?;
+        tell(say, "update", "Updating the VM's programs from its recoveryOS: a few minutes, and the VM stays as it is", None);
+        recover(bundle, &tools, &UPDATE, &password, options, say).await?;
+        tell(say, "boot", "Starting macOS in the VM with the new programs", None);
+        start(bundle, &tools.runner, Mode::Serve).await?;
+        wait_for(Duration::from_secs(300), "the VM's anisette agent", || async move {
+            if live(bundle).await.is_none() {
+                bail!("The VM stopped while starting; its log: {}", bundle.join("logs/serve.log").display());
+            }
+            Ok(report(bundle).filter(|r| r.amfi_active && r.console_uid == 501 && r.anisette).map(|_| ()))
+        })
+        .await?;
+        tell(say, "save", "Saving the VM", None);
+        quit(bundle).await?;
+        std::fs::write(bundle.join("guest-version"), GUEST_VERSION.to_string())?;
+    }
+    let url = serve(bundle).await?;
+    tell(say, "check", "Checking the VM's anisette with Apple", None);
+    check_with_apple(&url).await?;
+    tell(say, "ready", "The VM's programs are up to date", Some(1.0));
+    Ok(url)
+}
+
+/// An update under way, by the process whose id `updating` holds: [`serve`] waits it out rather than start the VM in
+/// the middle of it. A marker left by a process that is gone counts for nothing, so a crash can't keep the VM shut.
+struct Updating<'a>(&'a Path);
+
+impl<'a> Updating<'a> {
+    fn begin(bundle: &'a Path) -> Result<Self, Report> {
+        if updating(bundle) {
+            bail!("The anisette VM is being updated already");
+        }
+        std::fs::write(bundle.join("updating"), std::process::id().to_string())?;
+        Ok(Self(bundle))
+    }
+}
+
+impl Drop for Updating<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0.join("updating"));
+    }
+}
+
+fn updating(bundle: &Path) -> bool {
+    updater(bundle).is_some()
+}
+
+/// The process updating the VM, if one is.
+fn updater(bundle: &Path) -> Option<u32> {
+    let pid = std::fs::read_to_string(bundle.join("updating")).ok()?.trim().parse::<i32>().ok().filter(|pid| *pid > 0)?;
+    // Signal 0 only asks whether the process exists (EPERM: it does, as someone else's).
+    let alive = unsafe { libc::kill(pid, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    alive.then_some(pid as u32)
+}
+
+/// Another process (a terminal's `apparition vm update`) is updating the VM: leave its runner alone, since the update
+/// drives it through recoveryOS and a boot.
+pub fn updated_elsewhere(bundle: &Path) -> bool {
+    updater(bundle).is_some_and(|pid| pid != std::process::id())
 }
 
 /// Removes the cache's copy of `image` (with its stamp and any partial download). A VM that is set up never reads it
@@ -868,10 +979,24 @@ fn token() -> Result<String, Report> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// One visit to the VM's recoveryOS: `stage` is setup.sh's (provision before the first boot; setup to turn SIP off
-/// and install Apparition), served by this process under a fresh token and typed into recoveryOS's Terminal by
-/// reading the VM's window. Returns once the guest confirmed the stage and shut down.
-async fn recover(bundle: &Path, tools: &Tools, stage: &str, password: &str, options: &SetupOptions, say: Say<'_>) -> Result<(), Report> {
+/// One recoveryOS visit: setup.sh's stage, and what the progress line says while it runs.
+struct Visit {
+    stage: &'static str,
+    step: &'static str,
+    doing: &'static str,
+}
+
+/// Before the first boot.
+const PROVISION: Visit = Visit { stage: "provision", step: "provision", doing: "recoveryOS is writing the first boot" };
+/// SIP off, and Apparition installed.
+const SETUP: Visit = Visit { stage: "setup", step: "recovery", doing: "recoveryOS is turning SIP off and installing Apparition" };
+/// The same stage again on a VM that is set up: its SIP is off already, so it only puts the programs in.
+const UPDATE: Visit = Visit { stage: "setup", step: "update", doing: "recoveryOS is putting this app's programs into the VM" };
+
+/// One visit to the VM's recoveryOS for `visit`'s stage of setup.sh, served by this process under a fresh token and
+/// typed into recoveryOS's Terminal by reading the VM's window. Returns once the guest confirmed the stage and shut
+/// down.
+async fn recover(bundle: &Path, tools: &Tools, visit: &Visit, password: &str, options: &SetupOptions, say: Say<'_>) -> Result<(), Report> {
     shutdown(bundle).await?;
     let token = token()?;
     let appliance = crate::vm_setup::Appliance {
@@ -886,7 +1011,7 @@ async fn recover(bundle: &Path, tools: &Tools, stage: &str, password: &str, opti
     };
     let session = crate::vm_setup::serve_appliance(tools.program.clone(), tools.helper.clone(), appliance).await?;
     start(bundle, &tools.runner, Mode::Recovery).await?;
-    let driven = drive_recovery(bundle, stage, &token, session.port, &session.progress, password, say).await;
+    let driven = drive_recovery(bundle, visit, &token, session.port, &session.progress, password, say).await;
     if let Err(error) = driven {
         let _ = force_stop(bundle).await;
         return Err(error);
@@ -901,14 +1026,14 @@ async fn recover(bundle: &Path, tools: &Tools, stage: &str, password: &str, opti
 /// (the runner's own window, through its control socket). Never prints the password or what the screen shows.
 async fn drive_recovery(
     bundle: &Path,
-    stage: &str,
+    visit: &Visit,
     token: &str,
     port: u16,
     progress: &tokio::sync::watch::Receiver<crate::vm_setup::Progress>,
     password: &str,
     say: Say<'_>,
 ) -> Result<(), Report> {
-    let step = if stage == "provision" { "provision" } else { "recovery" };
+    let (stage, step) = (visit.stage, visit.step);
     let (mut sent, mut consented, mut password_sent, mut terminal_attempts) = (false, false, false, 0);
     let deadline = Instant::now() + Duration::from_secs(15 * 60);
     while Instant::now() < deadline {
@@ -962,7 +1087,7 @@ async fn drive_recovery(
             let line = format!("curl -fsS {host}:{port}/{token}/{stage}.sh -o /tmp/s.sh && bash /tmp/s.sh\n");
             type_slowly(bundle, &line).await?;
             sent = true;
-            tell(say, step, if stage == "provision" { "recoveryOS is writing the first boot" } else { "recoveryOS is turning SIP off and installing Apparition" }, None);
+            tell(say, step, visit.doing, None);
         } else if has(&["no admin users authorized"]) || has(&["failed to authenticate"]) || has(&["authentication failure"]) {
             bail!("recoveryOS's csrutil didn't accept the VM's account; {} has its screen. Run setup again to retry.", bundle.join("screen.png").display());
         } else if has(&["error:"]) || has(&["incorrect password"]) || has(&["unknown user"]) {
@@ -1162,5 +1287,58 @@ mod tests {
         assert_eq!(first.len(), 24);
         assert_eq!(credentials(dir.path()).unwrap(), first);
         assert_eq!(std::fs::metadata(dir.path().join("credentials.txt")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn a_vm_set_up_before_versions_has_version_one_and_only_a_set_up_one_is_outdated() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path();
+        assert_eq!(guest_version(bundle), 1);
+        std::fs::write(bundle.join("guest-version"), "0\n").unwrap();
+        assert!(!outdated(bundle), "a VM that isn't set up is set up, not updated");
+        std::fs::write(bundle.join("ready"), "").unwrap();
+        assert!(outdated(bundle));
+        std::fs::write(bundle.join("guest-version"), GUEST_VERSION.to_string()).unwrap();
+        assert!(!outdated(bundle));
+        std::fs::remove_file(bundle.join("guest-version")).unwrap();
+        assert_eq!(outdated(bundle), GUEST_VERSION > 1);
+    }
+
+    #[test]
+    fn an_update_holds_the_vm_until_it_ends_and_a_dead_ones_marker_counts_for_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path();
+        assert!(!updating(bundle));
+        {
+            let _update = Updating::begin(bundle).unwrap();
+            assert!(updating(bundle));
+            assert!(!updated_elsewhere(bundle), "this process's own update");
+            assert!(Updating::begin(bundle).is_err(), "one update at a time");
+        }
+        // Another process that is alive: launchd always is.
+        std::fs::write(bundle.join("updating"), "1").unwrap();
+        assert!(updated_elsewhere(bundle));
+        std::fs::remove_file(bundle.join("updating")).unwrap();
+        assert!(!updating(bundle));
+        assert!(!bundle.join("updating").exists());
+        // A process that is gone (a child that has exited and been waited for), and a marker that isn't a pid.
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        std::fs::write(bundle.join("updating"), gone.to_string()).unwrap();
+        assert!(!updating(bundle));
+        std::fs::write(bundle.join("updating"), "nonsense").unwrap();
+        assert!(!updating(bundle));
+        assert!(Updating::begin(bundle).is_ok());
+    }
+
+    #[tokio::test]
+    async fn serving_waits_out_an_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path();
+        std::fs::write(bundle.join("ready"), "").unwrap();
+        let _update = Updating::begin(bundle).unwrap();
+        let error = serve(bundle).await.unwrap_err();
+        assert!(format!("{error}").contains("being updated"), "{error}");
     }
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rootcause::prelude::*;
 
-pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--keep-image] [--public-key <file>] | status [--json] | serve | quit | shutdown | force-stop | check | image [--ipsw <file>] | remove
+pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--keep-image] [--public-key <file>] | update | status [--json] | serve | quit | shutdown | force-stop | check | image [--ipsw <file>] | remove
        apparition vm screen | key <chord> | type <file> | click-text <text> [--menubar] | suspend | resume | network on|off   (for looking into a setup)
        every command takes --bundle <dir> (default ~/Library/Application Support/Apparition/anisette.vm)";
 
@@ -37,6 +37,11 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
             let url = vm::setup(&options, &say).await?;
             println!("The anisette VM is set up and saved: its anisette is at {url}, and it resumes in a second when asked.");
             println!("Sign-ins here use it when this Mac has no anisette of its own; the app's companion offers it to devices.");
+        }
+        // Also when its programs are current: putting the same ones in again is how a damaged copy is mended.
+        ["update"] => {
+            let url = vm::update(&vm::SetupOptions { bundle, public_key, ..Default::default() }, &say).await?;
+            println!("The anisette VM has this app's programs and is saved again: its anisette is at {url}.");
         }
         ["status"] => {
             let status = vm::status(&bundle).await;
@@ -92,6 +97,8 @@ fn describe(status: &apparition_core::api::vm::Status) -> String {
         "Not set up (apparition vm setup)".to_string()
     } else if !status.ready {
         format!("Setting up, or stopped partway (apparition vm setup carries on){}", if status.installed { "; macOS is installed" } else { "" })
+    } else if status.updating {
+        "Its programs are being updated".to_string()
     } else {
         match &status.live {
             Some(live) if live.recovery => "In recoveryOS".to_string(),
@@ -101,6 +108,9 @@ fn describe(status: &apparition_core::api::vm::Status) -> String {
         }
     };
     lines.push(state);
+    if status.outdated && !status.updating {
+        lines.push("Its programs are older than this app's: apparition vm update puts the new ones in (a few minutes)".to_string());
+    }
     lines.push(format!("Disk: {:.1} GB", status.disk_bytes as f64 / 1e9));
     lines.push(format!("{}: {}", status.image, if status.image_cached { "in the cache" } else { "not in the cache" }));
     lines.join("\n")
