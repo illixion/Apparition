@@ -20,7 +20,6 @@ Desktop-only artifact, report, patch, and re-sign controls attach through the
 browser handlers. Connection setup, signing, Activity and Reports remain in their
 respective shells; this extraction unifies the project workflow, not every page.
 
-Run `node --test desktop/test/*.test.mjs` for native bridge/controller checks and
-`node --test store/test/project-ui.test.js store/test/freshness.test.js` for the
-shared request and freshness behavior. Check both shells in a browser after
+Run `node --test desktop/test/*.test.mjs desktop/test/*.test.cjs` for the native bridge,
+controller, shared request and freshness checks (Node is a development tool here only). Check both shells in a browser after
 changing shared layout or events.

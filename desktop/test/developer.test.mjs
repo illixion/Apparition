@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-const {ProjectList, targetKey} = createRequire(import.meta.url)('../../store/public/shared/projects.js');
+const {ProjectList, targetKey} = createRequire(import.meta.url)('../../service/public/shared/projects.js');
 import { DeveloperView, jobKind } from '../ui/developer.js';
 
 // The readiness checklist asks the app about this computer on its own; tests of other calls skip those.
@@ -325,7 +325,7 @@ test('queueing a build follows its log in Activity without asking the service tw
   assert.equal(view.viewKey(), 'job:9|log');
 });
 
-test('Apparition Store is introduced once connected, with its GitHub link', async () => {
+test('Apparition Store is introduced once connected, with a link to its docs', async () => {
   const calls = [];
   const view = new DeveloperView(new Node('main'), async (command, args) => {
     calls.push([command, args]);
@@ -336,7 +336,7 @@ test('Apparition Store is introduced once connected, with its GitHub link', asyn
   await view.signIn(); view.show(false);
   assert.match(view.about.textContent, /About Apparition Store/);
   assert.ok(view.panes.setup.children.includes(view.about));
-  await view.about.all().find(n => n.tagName === 'button' && n.textContent === 'Apparition Store on GitHub').listeners.click();
+  await view.about.all().find(n => n.tagName === 'button' && n.textContent === 'Apparition Store docs').listeners.click();
   assert.deepEqual(calls.at(-1), ['open_developer_link', { which: 'store' }]);
   assert.match(view.connected_label.textContent, /Apparition Store at http:\/\/localhost:8484\//);
 });
