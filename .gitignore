@@ -11,3 +11,6 @@ installer/target/
 
 # Generated from store/public by desktop/build.rs
 /desktop/ui/shared/
+
+# Python bytecode from running the scripts/*.py helpers
+__pycache__/
