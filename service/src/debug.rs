@@ -176,7 +176,10 @@ impl Debug {
             client_name,
             cache: tokio::sync::Mutex::new(None),
             last: Mutex::default(),
-            http: reqwest::Client::builder().build().expect("http client"),
+            http: {
+                let _ = rustls::crypto::ring::default_provider().install_default();
+                reqwest::Client::builder().build().expect("http client")
+            },
         }
     }
 

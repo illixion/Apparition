@@ -5,7 +5,7 @@
 use crate::{
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
-    artifacts, crashlogs,
+    artifacts, crashlogs, deploy,
     debug::{self, Debug},
     mcp::Mcp,
     state::{State as StoreState, hostname},
@@ -102,6 +102,20 @@ fn defer(route: Deferred) -> Response {
     let mut res = Response::new(Body::empty());
     res.extensions_mut().insert(route);
     res
+}
+
+/// Serves the Store on a free loopback port, on the current tokio runtime, until the task is
+/// dropped or aborted. Other computers reach it only through the companion channel.
+pub async fn serve_loopback(settings: Settings) -> std::io::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+    let app = router(settings)?;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, app).await {
+            eprintln!("the Store stopped: {error}");
+        }
+    });
+    Ok((address, task))
 }
 
 pub fn router(settings: Settings) -> std::io::Result<Router> {
@@ -608,12 +622,53 @@ fn capabilities() -> Value {
         "capabilities": [], "authentication": "password-session" })
 }
 
+/// Where another computer sends a build to install (`deploy.rs`).
+pub const DEPLOY_PATH: &str = "/api/service/v1/deploy";
+
+/// `POST /api/service/v1/deploy?file=<name>&device=<name>` with the IPA as the body, streamed to
+/// disk: the bearer of the service API, then a kept build the device's Apparition installs.
+async fn deploy_route(app: &Arc<App>, parts: axum::http::request::Parts, body: Body) -> Response {
+    let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let bearer = header("authorization").strip_prefix("Bearer ").unwrap_or("").to_string();
+    let config = app.config();
+    let is_host = matches!(&app.settings.host_token, Some(h) if constant_eq(&bearer, h));
+    let session = !bearer.is_empty() && config.password_hash.as_deref().is_some_and(|h| app.auth.check(&bearer, h));
+    if !is_host && !session {
+        return json_reply(401, json!({ "error": "Connect to the build service again." }));
+    }
+    let query: HashMap<String, String> = parts.uri.query().unwrap_or("").split('&').filter(|p| !p.is_empty()).map(|p| {
+        let (k, v) = p.split_once('=').unwrap_or((p, ""));
+        (percent_decode(k), percent_decode(v))
+    }).collect();
+    // The computer's name comes from the companion channel, which sets it with the app's token.
+    let computer = if is_host { Some(header("x-apparition-computer")).filter(|c| !c.is_empty()) } else { None };
+    let origin = deploy::Origin { computer, file: query.get("file").cloned(), device: query.get("device").cloned().filter(|d| !d.is_empty()) };
+    match deploy::receive(&app.build_store(), body, origin).await {
+        Ok(manifest) => {
+            let name = manifest.pointer("/app/name").and_then(Value::as_str).or_else(|| manifest.pointer("/app/bundleId").and_then(Value::as_str)).unwrap_or("The app").to_string();
+            let device = manifest.pointer("/origin/device").and_then(Value::as_str).map(String::from);
+            let message = match device {
+                Some(device) => format!("{name} is on the Mac. Open Apparition on {device} to install it."),
+                None => format!("{name} is on the Mac. Open Apparition on the device to install it."),
+            };
+            eprintln!("deploy {} {} from {}", manifest["buildId"].as_str().unwrap_or(""), manifest.pointer("/app/bundleId").and_then(Value::as_str).unwrap_or(""),
+                manifest.pointer("/origin/computer").and_then(Value::as_str).unwrap_or("this Mac"));
+            json_reply(201, json!({ "ok": true, "buildId": manifest["buildId"], "app": manifest["app"], "platform": manifest["platform"],
+                "install": { "via": "device", "message": message } }))
+        }
+        Err(deploy::Refused { status, error }) => json_reply(status, json!({ "ok": false, "error": error })),
+    }
+}
+
 fn constant_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && bool::from(a.as_bytes().ct_eq(b.as_bytes()))
 }
 
 async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
+    if parts.method == Method::POST && parts.uri.path() == DEPLOY_PATH {
+        return deploy_route(&app, parts, body).await;
+    }
     let upload = parts.method == Method::POST && parts.uri.path() == "/api/traces";
     let limit = if upload { traces::MAX_UPLOAD } else { 1_000_000 };
     let body = match to_bytes(body, limit).await {
