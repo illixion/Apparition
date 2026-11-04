@@ -245,6 +245,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "apparition-service"
+version = "0.4.5"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "apparition-signer"
 version = "0.1.0"
 dependencies = [

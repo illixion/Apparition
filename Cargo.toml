@@ -6,7 +6,7 @@
 # core/ stays a workspace of its own: scripts/build-core.sh builds it alone for the headset,
 # iPhone and Apple TV, with its own lock file and target directory.
 [workspace]
-members = ["installer", "desktop"]
+members = ["installer", "desktop", "service"]
 exclude = ["core", "build"]
 resolver = "3"
 

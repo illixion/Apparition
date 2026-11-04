@@ -1,0 +1,12 @@
+[package]
+name = "apparition-service"
+version = "0.4.5"
+edition = "2024"
+license = "MIT"
+description = "Apparition Store in Rust: the build, delivery and device service the desktop app runs in its own process"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
