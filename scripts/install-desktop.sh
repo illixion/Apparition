@@ -91,11 +91,19 @@ echo "▶ Building the app and command line (release, $(uname -m))…"
 run cargo build --release -p apparition-installer -p apparition-desktop \
   --features apparition-desktop/custom-protocol || fail
 
-# tauri bundle looks for the binary under tauri.conf.json's mainBinaryName, not the cargo name.
+# tauri bundle looks for the binary under tauri.conf.json's mainBinaryName, not the cargo name. On a
+# case-insensitive volume (the default) target/release/Apparition IS target/release/apparition, the command
+# line: set the command line aside first, and remove the shared name after bundling, so the next cargo build
+# links the command line again instead of keeping the app's binary under its name.
+CLI_COPY="$ROOT/build/install-desktop-cli"
+rm -rf "$CLI_COPY"
+mkdir -p "$CLI_COPY"
+cp "target/release/$CLI" "$CLI_COPY/$CLI"
 cp target/release/apparition-app "target/release/$APP_NAME"
 rm -rf target/release/bundle/macos
 echo "▶ Bundling $APP_NAME.app…"
 (cd desktop && run cargo tauri bundle --bundles app) || fail
+rm -f "target/release/$APP_NAME"
 
 BUNDLED="$ROOT/target/release/bundle/macos/$APP_NAME.app"
 [[ -d "$BUNDLED" ]] || { echo "✗ Bundled app not found at: $BUNDLED" >&2; exit 1; }
@@ -107,7 +115,12 @@ mkdir -p "$STAGE"
 ditto "$BUNDLED" "$STAGE/$APP_NAME.app"
 MACOS_DIR="$STAGE/$APP_NAME.app/Contents/MacOS"
 cp "target/release/$HELPER" "$MACOS_DIR/$HELPER"
-cp "target/release/$CLI" "$MACOS_DIR/$CLI-cli"
+cp "$CLI_COPY/$CLI" "$MACOS_DIR/$CLI-cli"
+# It must be the command line, not the app: `apparition-cli link` puts it on PATH, and the anisette VM runs it.
+if cmp -s "$MACOS_DIR/$CLI-cli" "$MACOS_DIR/$APP_NAME"; then
+  echo "✗ $CLI-cli is the app's own binary (a case clash in target/release); run cargo build -p apparition-installer --release and try again." >&2
+  exit 1
+fi
 scripts/bundle-service.sh "$STAGE/$APP_NAME.app"
 
 echo "▶ Signing (app and command line: $SIGN_IDENTITY; helper: ad-hoc with its entitlements)…"
