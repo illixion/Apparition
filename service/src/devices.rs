@@ -52,6 +52,11 @@ pub trait Devices: Send + Sync {
     /// imported on this computer when one covers the device, and sends it as it is when none does and
     /// it is already signed for the device. The error says what to do next.
     fn install(&self, device: String, ipa: PathBuf) -> Fut<'_, Installed>;
+    /// Installs `ipa` on `device` exactly as it is signed: a build the Store made and signed for
+    /// that device's profile (its keychain groups stay as built).
+    fn install_signed(&self, device: String, ipa: PathBuf) -> Fut<'_, Installed> {
+        self.install(device, ipa)
+    }
 }
 
 /// The device a request names: by UDID, else by name ignoring case.

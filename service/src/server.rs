@@ -8,6 +8,7 @@ use crate::{
     artifacts, crashlogs, deploy, devices,
     debug::{self, Debug},
     mcp::Mcp,
+    queue::{self, Queue},
     state::{State as StoreState, hostname},
     traces,
 };
@@ -84,6 +85,7 @@ pub struct App {
     state: StoreState,
     debug: Arc<Debug>,
     mcp: Mcp,
+    queue: Arc<Queue>,
     config: Mutex<(Option<SystemTime>, Arc<Config>)>,
     host_sessions: Mutex<HashSet<String>>,
     host_codes: Mutex<HashMap<String, u64>>,
@@ -99,6 +101,8 @@ enum Deferred {
     Panels(String),
     Logs(String, String, Option<String>),
     Mcp(Value),
+    /// Ask the devices what they have installed, then plan.
+    UpdatesCheck,
 }
 
 fn defer(route: Deferred) -> Response {
@@ -125,17 +129,54 @@ pub fn router(settings: Settings) -> std::io::Result<Router> {
     let auth = Auth::open(&settings.data_dir)?;
     let state = StoreState::load(&settings.data_dir);
     let debug = Arc::new(Debug::new(settings.key_dir.clone(), &settings.debug_state_dir, settings.browser.clone(), settings.client_name.clone()));
+    let max = Config::load(&settings.config_path).map(|c| queue::max_builds(&c)).unwrap_or(2);
+    let queue = Arc::new(Queue::open(&settings.data_dir, max));
     let app = Arc::new(App {
         settings,
         auth,
         state,
+        queue,
         mcp: Mcp::new(debug.clone()),
         debug,
         config: Mutex::new((None, Arc::new(Config::default()))),
         host_sessions: Mutex::default(),
         host_codes: Mutex::default(),
     });
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(automatic_updates(Arc::downgrade(&app)));
+    }
     Ok(Router::new().fallback(handle).with_state(app))
+}
+
+/// The automatic mode (config `autoUpdate.enabled`): once a minute, builds and installs what is
+/// behind once its sources have settled; asks the devices what they have every 15 minutes. Also
+/// clears build clones unused for a week, hourly, whether the mode is on or not.
+async fn automatic_updates(app: std::sync::Weak<App>) {
+    let (mut asked, mut reaped) = (0u64, 0u64);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        let Some(app) = app.upgrade() else { return };
+        let ctx = app.queue_context();
+        let now = system_ms();
+        if now - reaped > 3_600_000 {
+            reaped = now;
+            let (q, c) = (app.queue.clone(), ctx.clone());
+            let _ = tokio::task::spawn_blocking(move || q.reap(&c)).await;
+        }
+        let (enabled, settle) = queue::auto_settings(&ctx.config);
+        if !enabled {
+            continue;
+        }
+        if now - asked > 15 * 60_000 {
+            asked = now;
+            app.queue.refresh_inventory(&ctx).await;
+        }
+        let (q, c) = (app.queue.clone(), ctx.clone());
+        let started = tokio::task::spawn_blocking(move || q.auto_tick(&c, settle)).await.unwrap_or_default();
+        for job in started {
+            eprintln!("automatic update: {} for {} ({})", job.repo, job.devices.join(", "), job.why.join("; "));
+        }
+    }
 }
 
 struct Req {
@@ -421,6 +462,70 @@ impl App {
         }
     }
 
+    fn queue_context(&self) -> queue::Context {
+        let config = self.config();
+        queue::Context {
+            cli: queue::cli(&config), build_store: self.build_store(), devices: self.settings.devices.clone(),
+            node_state: self.settings.data_dir.join("state.json"), config,
+        }
+    }
+
+    /// `/api/updates*` and `/api/builds/<id>/{log,cancel}`.
+    fn updates_api(&self, req: &Req, segments: &[&str]) -> Option<Response> {
+        let (get, post) = (req.method == Method::GET, req.method == Method::POST);
+        match segments {
+            ["api", "updates"] if get => Some(json_reply(200, self.queue.report(&self.queue_context()))),
+            ["api", "updates", "check"] if post => Some(defer(Deferred::UpdatesCheck)),
+            ["api", "updates", "run"] if post => {
+                let ctx = self.queue_context();
+                let body = req.json_body();
+                let only: Option<Vec<String>> = body.get("only").and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect());
+                let rows: Vec<_> = self.queue.plan(&ctx).into_iter()
+                    .filter(|r| only.as_ref().is_none_or(|o| o.contains(&format!("{}|{}", r.device, r.bundle_id)))).collect();
+                let groups = self.queue.groups(&ctx, &rows);
+                let jobs = self.queue.enqueue(&ctx, groups, false);
+                Some(json_reply(200, json!({ "ok": true, "jobs": jobs })))
+            }
+            ["api", "updates", "auto"] if post => {
+                let body = req.json_body();
+                let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
+                    return Some(json_reply(400, json!({ "error": "Send enabled, and settleMinutes if you change it." })));
+                };
+                let settle = body.get("settleMinutes").and_then(Value::as_u64);
+                let saved = self.update_config(|c| {
+                    let auto = c.entry("autoUpdate").or_insert_with(|| json!({}));
+                    if !auto.is_object() { *auto = json!({}); }
+                    auto["enabled"] = Value::Bool(enabled);
+                    if let Some(minutes) = settle { auto["settleMinutes"] = json!(minutes.min(24 * 60)); }
+                });
+                Some(match saved {
+                    Ok(()) => json_reply(200, json!({ "ok": true, "auto": { "enabled": enabled, "settleMinutes": queue::auto_settings(&self.config()).1 } })),
+                    Err(_) => json_reply(500, json!({ "error": "Could not change the setting." })),
+                })
+            }
+            ["api", "builds", id, "log"] if get => {
+                let id: u64 = id.parse().ok()?;
+                let text = fs::read_to_string(self.queue.log_path(id)).ok();
+                Some(match text {
+                    Some(text) => json_reply(200, json!({ "log": text, "status": self.queue.job(id).map(|j| j.status) })),
+                    None => json_reply(404, json!({ "error": "no log for that build" })),
+                })
+            }
+            ["api", "builds", id, "cancel"] if post => {
+                let id: u64 = id.parse().ok()?;
+                if id < queue::FIRST_ID {
+                    return None;
+                }
+                Some(match self.queue.cancel(id) {
+                    Some(job) => json_reply(200, json!({ "ok": true, "job": job })),
+                    None => json_reply(404, json!({ "error": "unknown build" })),
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn crash_logs(&self) -> crashlogs::CrashLogs {
         crashlogs::CrashLogs::new(self.settings.data_dir.join("crashlogs"))
     }
@@ -462,6 +567,9 @@ impl App {
         let is_id = |s: &str| s.len() == 36 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-');
         let get = req.method == Method::GET;
         let traces = self.traces_dir();
+        if let Some(res) = self.updates_api(req, &segments) {
+            return Some(res);
+        }
         match segments.as_slice() {
             ["api", "debug", "apps"] if get => Some(defer(Deferred::Apps)),
             ["api", "debug", id, action @ ("help" | "call" | "logs" | "panels")] if !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) => {
@@ -568,6 +676,16 @@ impl App {
 
     fn state_response(&self) -> Response {
         let mut bundle = self.state.bundle(&self.config(), system_ms(), &hostname());
+        // The queue's own builds beside the Node store's, newest first.
+        let jobs = self.queue.jobs();
+        let ids = |status: &str| jobs.iter().filter(|j| j.status == status).map(|j| json!(j.id)).collect::<Vec<_>>();
+        bundle["running"] = Value::Array(ids("running"));
+        bundle["queued"] = Value::Array(ids("queued"));
+        let mut builds: Vec<Value> = jobs.iter().map(|j| serde_json::to_value(j).unwrap_or(Value::Null)).collect();
+        builds.extend(bundle["builds"].as_array().cloned().unwrap_or_default());
+        builds.sort_by_key(|b| std::cmp::Reverse(b["queuedAt"].as_u64().unwrap_or(0)));
+        builds.truncate(40);
+        bundle["builds"] = Value::Array(builds);
         // The last discovery; a fresh one runs in the background, so this never waits on Bonjour.
         bundle["debugApps"] = self.debug.cached_apps();
         self.debug.refresh_in_background();
@@ -821,6 +939,13 @@ async fn run_debug(app: &Arc<App>, route: Deferred) -> Response {
             reply_of(app.debug.call(&id, body["endpoint"].as_str().unwrap_or(""), args).await)
         }
         Deferred::Panels(id) => reply_of(app.debug.panels(&id).await),
+        Deferred::UpdatesCheck => {
+            let ctx = app.queue_context();
+            app.queue.refresh_inventory(&ctx).await;
+            let (queue, c) = (app.queue.clone(), ctx);
+            let report = tokio::task::spawn_blocking(move || queue.report(&c)).await.unwrap_or(Value::Null);
+            json_reply(200, report)
+        }
         Deferred::Mcp(message) => {
             if message.is_array() {
                 return json_reply(200, json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "batches are not supported" } }));
@@ -1011,6 +1136,11 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
         ("GET", "/artifacts") => app.api(req, "/api/artifacts").unwrap_or_else(unknown),
         ("GET", s) if s.starts_with("/artifacts/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         ("GET", "/traces") => app.api(req, "/api/traces").unwrap_or_else(unknown),
+        ("GET", "/updates") => app.api(req, "/api/updates").unwrap_or_else(unknown),
+        ("POST", "/updates/run" | "/updates/check" | "/updates/auto") => app.api(req, &format!("/api{suffix}")).unwrap_or_else(unknown),
+        ("GET", s) if s.starts_with("/builds/") && s.ends_with("/log") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
+        ("POST", s) if s.starts_with("/builds/") && s.ends_with("/cancel") => app.api(req, &format!("/api{s}"))
+            .unwrap_or_else(|| json_reply(501, json!({ "error": NOT_YET }))),
         ("GET", s) if s.starts_with("/traces/") && s.contains("/files/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         (_, "/host" | "/host/web-ui" | "/host/web-link") if !is_host => unknown(),
         ("GET", "/host") => json_reply(200, app.host_status()),

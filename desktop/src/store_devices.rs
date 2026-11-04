@@ -98,15 +98,26 @@ impl Devices for CoreDevices {
             let _turn = self.one_at_a_time.lock().await;
             let device = self.device(&udid)?;
             let (store, signing) = (self.store.clone(), self.signing_dir());
-            off_thread(move || block_on(install_on(store, signing, device, ipa))).await
+            off_thread(move || block_on(install_on(store, signing, device, ipa, true))).await
+        })
+    }
+
+    fn install_signed(&self, udid: String, ipa: PathBuf) -> Fut<'_, Installed> {
+        Box::pin(async move {
+            let _turn = self.one_at_a_time.lock().await;
+            let device = self.device(&udid)?;
+            let (store, signing) = (self.store.clone(), self.signing_dir());
+            off_thread(move || block_on(install_on(store, signing, device, ipa, false))).await
         })
     }
 }
 
-async fn install_on(store: DeviceStore, signing: PathBuf, device: api::PairedDevice, ipa: PathBuf) -> Result<Installed, String> {
+/// `resign`: sign it here first when an imported certificate covers the device; otherwise it
+/// goes as it is.
+async fn install_on(store: DeviceStore, signing: PathBuf, device: api::PairedDevice, ipa: PathBuf, resign: bool) -> Result<Installed, String> {
     let platform = device.platform();
     let bundle_id = apparition_core::install_plan::inspect(&ipa).map_err(|e| format!("the build isn't an app: {e}"))?.id;
-    let choice = usable_identity(&signing, &ipa, &device.udid, platform);
+    let choice = if resign { usable_identity(&signing, &ipa, &device.udid, platform) } else { None };
     let mut tunnel = store.connect_verified(&device).await.map_err(|e| format!("{} didn't answer: {e}", device.name))?;
     // An update of an app that is open waits in installd, so only an update stops waiting after 20 s.
     let existing = tunnel.installed_app(&bundle_id).await.map_err(|e| e.to_string())?.is_some();

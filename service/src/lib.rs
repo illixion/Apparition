@@ -10,6 +10,7 @@
 pub mod artifacts;
 pub mod assets;
 pub mod auth;
+pub mod clones;
 pub mod config;
 pub mod crashlogs;
 pub mod debug;
@@ -18,8 +19,10 @@ pub mod devices;
 pub mod git;
 pub mod install_mode;
 pub mod mcp;
+pub mod queue;
 pub mod state;
 pub mod traces;
+pub mod updates;
 pub mod server;
 
 /// What replies to other computers call the computer this Store runs on.
