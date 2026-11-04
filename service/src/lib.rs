@@ -7,6 +7,7 @@
 #![cfg(target_os = "macos")]
 
 pub mod artifacts;
+pub mod assets;
 pub mod auth;
 pub mod config;
 pub mod crashlogs;

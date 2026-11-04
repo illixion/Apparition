@@ -201,3 +201,21 @@ async fn the_service_api_wants_a_bearer_and_only_the_host_reaches_host_routes() 
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["protocol"], "apparition-service");
     let _: PathBuf = f.dir.path().to_path_buf();
 }
+
+#[tokio::test]
+async fn without_a_directory_the_compiled_in_ui_is_served() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.json"), "{}").unwrap();
+    let app = router(Settings {
+        public_dir: None,
+        browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])),
+        ..Settings::new(dir.path().join("config.json"), dir.path().join("data"), dir.path().join("unused"))
+    }).unwrap();
+    let (status, headers, body) = send(&app, "GET", "/", &[], None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("<title>Apparition Store</title>") && !body.contains("{{BRAND_"), "brand placeholders are filled");
+    assert_eq!(header(&headers, "cache-control"), Some("no-store"));
+    let (status, headers, _) = send(&app, "GET", "/shared/projects.js", &[], None).await;
+    assert_eq!((status, header(&headers, "content-type")), (StatusCode::OK, Some("text/javascript")));
+    assert_eq!(send(&app, "GET", "/shared/nope.js", &[], None).await.0, StatusCode::NOT_FOUND);
+}

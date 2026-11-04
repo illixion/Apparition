@@ -44,8 +44,9 @@ const SERVICE_ROUTES: [(&str, &str); 19] = [
 pub struct Settings {
     pub config_path: PathBuf,
     pub data_dir: PathBuf,
-    /// `store/public`, read at run time until the cutover embeds it.
-    pub public_dir: PathBuf,
+    /// A directory to serve the web UI from (while working on it), or None for the copy compiled
+    /// into the binary.
+    pub public_dir: Option<PathBuf>,
     /// The hosting app's token (43 characters). Present means hosted.
     pub host_token: Option<String>,
     /// Where `build-and-sign` records trace signing keys (`traces::default_key_dir()`).
@@ -64,7 +65,7 @@ impl Settings {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         let host = hostname();
         Settings {
-            config_path, data_dir, public_dir, host_token: None,
+            config_path, data_dir, public_dir: Some(public_dir), host_token: None,
             key_dir: traces::default_key_dir(),
             debug_state_dir: std::env::var_os("DEBUGTRACE_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".local/state/debugtrace")),
             browser: Arc::new(Arc::new(debug::Mdns::default())),
@@ -324,25 +325,25 @@ impl App {
         if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
             return None;
         }
-        let file = self.settings.public_dir.join(rel);
-        if !file.is_file() {
-            return None;
-        }
-        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let bytes: Vec<u8> = match &self.settings.public_dir {
+            Some(dir) => fs::read(dir.join(rel)).ok().filter(|_| dir.join(rel).is_file())?,
+            None => crate::assets::get(rel.to_str()?)?.to_vec(),
+        };
+        let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("");
         let content_type = match ext {
             "html" => "text/html; charset=utf-8", "js" => "text/javascript", "css" => "text/css",
             "svg" => "image/svg+xml", "png" => "image/png", "ico" => "image/x-icon", _ => "application/octet-stream",
         };
         let res = if ext == "html" {
             let brand = self.brand();
-            let page = fs::read_to_string(&file).ok()?
+            let page = String::from_utf8(bytes).ok()?
                 .replace("{{BRAND_TITLE}}", &escape_html(&brand.title))
                 .replace("{{BRAND_NAME}}", &brand.name)
                 .replace("{{BRAND_MARK}}", &brand.mark)
                 .replace("{{BRAND_HEAD}}", &brand.head);
             with_header(reply(200, content_type, page), "cache-control", "no-store")
         } else {
-            reply(200, content_type, fs::read(&file).ok()?)
+            reply(200, content_type, bytes)
         };
         Some(with_header(res, "x-content-type-options", "nosniff"))
     }
