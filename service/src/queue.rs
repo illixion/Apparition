@@ -216,8 +216,14 @@ pub fn cli(config: &Config) -> PathBuf {
     if let Some(path) = std::env::var_os("APPARITION_CLI") {
         return PathBuf::from(path);
     }
-    if let Some(beside) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("apparition-cli"))).filter(|p| p.is_file()) {
+    let exe = std::env::current_exe().ok();
+    if let Some(beside) = exe.as_ref().and_then(|e| Some(e.parent()?.join("apparition-cli"))).filter(|p| p.is_file()) {
         return beside;
+    }
+    // The Store running inside the command line itself (`apparition store serve`) builds with
+    // that same program, not whichever older one is installed.
+    if let Some(itself) = exe.filter(|e| e.file_stem().is_some_and(|n| n == "apparition")) {
+        return itself;
     }
     let local = crate::home().join(".local/bin/apparition");
     if local.is_file() { local } else { PathBuf::from("apparition") }
