@@ -94,7 +94,11 @@ project's update instead.
 - **`inject` patches sources that are on the Mac.** It runs `debugtrace-inject` there, from the
   app's project root, so an agent on another computer can inject only when the project (or the
   files it names) lives on the Mac too; edits made on the other computer would need syncing first.
-- **Bonjour discovery trusts the network.** The Store sends a build's token only to an
-  advertisement carrying that build's tag, and to none when two claim one build, but a copy made
-  while the real app is away can't be told apart. A challenge-response in DebugTrace (the app
-  proving it holds the token over a fresh nonce) would close that.
+- **Older builds aren't attached to over Bonjour.** The Store sends no token to an address that
+  only advertises: an app found by Bonjour gets signed requests (`GET /_nonce`, then
+  `Authorization: DebugTrace-HMAC`, a proof over the nonce, method, target and body; the token never
+  crosses the network). A build from before that (`txtvers` 1 or 2) is listed as not attachable
+  until it is rebuilt with build-and-sign. Launch records, whose address build-and-sign recorded
+  itself, still use the bearer. What a copied advertisement can still do is answer a request meant
+  for the app with lies, as anything can on a plain-HTTP network: use the tailnet away from home.
+  Protocol: DebugTrace `Docs/server-and-security.md`.

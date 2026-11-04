@@ -3,8 +3,8 @@
 
 #![cfg(target_os = "macos")]
 
-use apparition_service::{debug::{Fixed, Service, advertisement_tag}, server::{Settings, router}};
-use axum::{Json, Router, body::Body, extract::State, http::{HeaderMap, Request}, response::IntoResponse, routing::{get, post}};
+use apparition_service::{debug::{Fixed, Service, advertisement_tag, request_proof}, server::{Settings, router}};
+use axum::{Json, Router, body::{Body, Bytes}, extract::State, http::{HeaderMap, Method, Request, Uri}, response::IntoResponse, routing::{get, post}};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::{Arc, Mutex}};
@@ -22,8 +22,16 @@ async fn fake_root(State(calls): State<Calls>, uri: axum::http::Uri) -> impl Int
     Json(json!({ "ok": true, "endpoints": ["_info"] }))
 }
 
-async fn fake_call(State(calls): State<Calls>, headers: HeaderMap, Json(body): Json<Value>) -> impl IntoResponse {
-    assert_eq!(headers["authorization"], format!("Bearer {TOKEN}").as_str());
+async fn fake_nonce() -> impl IntoResponse {
+    Json(json!({ "nonce": "n0", "expiresIn": 30 }))
+}
+
+async fn fake_call(State(calls): State<Calls>, headers: HeaderMap, method: Method, uri: Uri, raw: Bytes) -> impl IntoResponse {
+    // A launch record is a trusted address and gets the bearer; an advertisement's gets a proof.
+    let header = headers["authorization"].to_str().unwrap();
+    let proof = format!("DebugTrace-HMAC nonce=n0, mac={}", request_proof(TOKEN, "n0", method.as_str(), uri.path_and_query().map_or("/", |p| p.as_str()), &raw));
+    assert!(header == format!("Bearer {TOKEN}") || header == proof, "unexpected authorization: {header}");
+    let body: Value = serde_json::from_slice(&raw).unwrap();
     calls.lock().unwrap().push(body.clone());
     match body["name"].as_str().unwrap() {
         "_info" => Json(json!({ "ok": true, "data": { "app": { "bundleId": "com.x.app" }, "process": { "pid": 5 } } })).into_response(),
@@ -48,7 +56,7 @@ struct Rig {
 async fn rig(services: bool) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let calls: Calls = Arc::default();
-    let fake = Router::new().route("/", get(fake_root)).route("/_call", post(fake_call)).route("/trace.zip", get(|| async { vec![0x50u8, 0x4b, 3, 4] })).with_state(calls.clone());
+    let fake = Router::new().route("/_nonce", get(fake_nonce)).route("/", get(fake_root)).route("/_call", post(fake_call)).route("/trace.zip", get(|| async { vec![0x50u8, 0x4b, 3, 4] })).with_state(calls.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });

@@ -123,11 +123,43 @@ impl Browse for Arc<Mdns> {
 }
 
 /// The `t` a server with this token advertises for nonce `n` (`DebugTraceServer.advertisementTag`).
+/// Its label carries the protocol version: a build that advertises this takes signed requests.
 pub fn advertisement_tag(token: &str, nonce: &str) -> String {
+    tag_under(token, nonce, "debugtrace-advert3|")
+}
+
+/// What builds from before signed requests advertised. Recognised, never attached to.
+pub fn legacy_advertisement_tag(token: &str, nonce: &str) -> String {
+    tag_under(token, nonce, "debugtrace-advert|")
+}
+
+fn tag_under(token: &str, nonce: &str, label: &str) -> String {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     let key = hmac::Key::new(hmac::HMAC_SHA256, token.as_bytes());
-    let tag = hmac::sign(&key, format!("debugtrace-advert|{nonce}").as_bytes());
+    let tag = hmac::sign(&key, format!("{label}{nonce}").as_bytes());
     URL_SAFE_NO_PAD.encode(&tag.as_ref()[..12])
+}
+
+/// The `mac` of `Authorization: DebugTrace-HMAC nonce=<n>, mac=<mac>` (`DebugTraceServer.requestProof`):
+/// the token proved without being sent, over the app's one-use nonce and what is being asked, so a
+/// server that only claims to be the app gets one request it can't reuse for anything else.
+pub fn request_proof(token: &str, nonce: &str, method: &str, target: &str, body: &[u8]) -> String {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let digest: String = ring::digest::digest(&ring::digest::SHA256, body).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    let key = hmac::Key::new(hmac::HMAC_SHA256, token.as_bytes());
+    let mac = hmac::sign(&key, format!("debugtrace-request|{nonce}\n{method}\n{target}\n{digest}").as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.as_ref())
+}
+
+/// How an advertisement was matched to a ledger record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Matched {
+    /// The tag of a build that takes signed requests: only the token's holder makes it.
+    Signed,
+    /// The tag of a build from before them. A copy is as good as the original.
+    Legacy,
+    /// An old record that names its `keyId`, which anything on the network can write.
+    Named,
 }
 
 fn valid_key_id(id: &str) -> bool {
@@ -203,18 +235,21 @@ impl Debug {
         ids.iter().filter_map(|id| self.ledger_record(id)).filter(|r| r["commandToken"].as_str().is_some_and(|t| !t.is_empty())).collect()
     }
 
-    /// The ledger record behind an advertisement, and whether it was matched by its tag. Current
-    /// builds are matched by their tag; builds from before it still name their `keyId`, which
-    /// anyone on the network can copy into an advertisement of their own, so those are named
-    /// but never sent a token.
-    fn recognise(&self, txt: &HashMap<String, String>, records: &[Value]) -> Option<(Value, bool)> {
+    /// The ledger record behind an advertisement, and how it was matched. A copy of an
+    /// advertisement is as good as the original, so only a `Signed` match is ever attached to,
+    /// and then only with signed requests: the token goes to no address that merely claims the
+    /// build.
+    fn recognise(&self, txt: &HashMap<String, String>, records: &[Value]) -> Option<(Value, Matched)> {
+        use subtle::ConstantTimeEq;
+        let same = |expected: String, tag: &str| expected.len() == tag.len() && bool::from(expected.as_bytes().ct_eq(tag.as_bytes()));
         if let (Some(nonce), Some(tag)) = (txt.get("n").filter(|n| !n.is_empty()), txt.get("t").filter(|t| !t.is_empty())) {
-            return records.iter().find(|r| {
-                let expected = advertisement_tag(r["commandToken"].as_str().unwrap_or(""), nonce);
-                { use subtle::ConstantTimeEq; expected.len() == tag.len() && bool::from(expected.as_bytes().ct_eq(tag.as_bytes())) }
-            }).cloned().map(|r| (r, true));
+            let token = |r: &Value| r["commandToken"].as_str().unwrap_or("").to_string();
+            if let Some(r) = records.iter().find(|r| same(advertisement_tag(&token(r), nonce), tag)) {
+                return Some((r.clone(), Matched::Signed));
+            }
+            return records.iter().find(|r| same(legacy_advertisement_tag(&token(r), nonce), tag)).map(|r| (r.clone(), Matched::Legacy));
         }
-        self.ledger_record(txt.get("keyId")?).map(|r| (r, false))
+        self.ledger_record(txt.get("keyId")?).map(|r| (r, Matched::Named))
     }
 
     /// Where to reach an advertised server: the device's tailnet name when that answers (its name
@@ -237,7 +272,8 @@ impl Debug {
         let records = if services.is_empty() { Vec::new() } else { self.ledger_records() };
         let mut sessions = Vec::new();
         for service in services {
-            let (record, tagged) = self.recognise(&service.txt, &records).unwrap_or((Value::Null, false));
+            let (record, matched) = self.recognise(&service.txt, &records).map_or((Value::Null, None), |(r, m)| (r, Some(m)));
+            let tagged = matched == Some(Matched::Signed);
             let rec = |k: &str| record.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(String::from);
             let txt = |k: &str| service.txt.get(k).filter(|s| !s.is_empty()).cloned();
             let device = rec("device").unwrap_or_else(|| service.host.trim_end_matches(".local").to_string());
@@ -257,13 +293,15 @@ impl Debug {
             s.insert("url".into(), json!(url));
             if has_token {
                 s.insert("token".into(), json!(rec("commandToken")));
+                // Found by Bonjour, so the address is only a claim: requests are signed, never carry the token.
+                s.insert("proof".into(), json!(true));
                 s.insert("attachable".into(), json!(true));
             } else {
                 s.insert("attachable".into(), json!(false));
                 s.insert("reason".into(), json!(if record.is_null() {
                     "built on another Mac, or before per-build tokens: not in this Mac's key ledger"
                 } else if rec("commandToken").is_some() {
-                    "this build advertises only its key id, which anything on the network can copy; rebuild it with build-and-sign to attach"
+                    "this build advertises in a form anything on the network can copy, and would be sent its token in the clear; rebuild it with build-and-sign to attach"
                 } else {
                     "this build has no command token; rebuild it with build-and-sign"
                 }));
@@ -452,12 +490,29 @@ impl Debug {
     /// One request to the app.
     async fn request(&self, app: &Session, token: &str, post: Option<Value>, path: &str, timeout: Duration) -> Result<Reply, String> {
         let url = app_url(str_of(app, "url").unwrap_or(""), path)?;
-        let mut req = self.http.request(if post.is_some() { reqwest::Method::POST } else { reqwest::Method::GET }, url)
-            .timeout(timeout)
+        let method = if post.is_some() { reqwest::Method::POST } else { reqwest::Method::GET };
+        let body = match &post { Some(b) => serde_json::to_vec(b).map_err(|e| e.to_string())?, None => Vec::new() };
+        let authorization = if app.get("proof").and_then(Value::as_bool) == Some(true) {
+            // Found by Bonjour: ask the app for a one-use nonce and sign the request with it.
+            let challenge = self.http.get(app_url(str_of(app, "url").unwrap_or(""), "/_nonce")?).timeout(timeout).header("Accept", "application/json").send().await.map_err(describe)?;
+            let mut challenge = challenge;
+            // A claim, not yet an app: read no more than a nonce's worth.
+            let mut small = Vec::new();
+            while let Some(chunk) = challenge.chunk().await.map_err(describe)? {
+                small.extend_from_slice(&chunk);
+                if small.len() > 4096 { return Err("the app's challenge is too large".into()); }
+            }
+            let nonce = serde_json::from_slice::<Value>(&small).ok().and_then(|v| v["nonce"].as_str().map(String::from)).filter(|n| !n.is_empty() && n.len() <= 64 && n.bytes().all(|b| b.is_ascii_alphanumeric()))
+                .ok_or("the app gave no challenge for a signed request")?;
+            format!("DebugTrace-HMAC nonce={nonce}, mac={}", request_proof(token, &nonce, method.as_str(), &url_target(&url), &body))
+        } else {
+            format!("Bearer {token}")
+        };
+        let mut req = self.http.request(method, url).timeout(timeout)
             // Named in the app's "Allow debug access?" prompt.
-            .header("Authorization", format!("Bearer {token}")).header("Accept", "application/json").header("X-DebugTrace-Client", &self.client_name);
-        if let Some(body) = post {
-            req = req.json(&body);
+            .header("Authorization", authorization).header("Accept", "application/json").header("X-DebugTrace-Client", &self.client_name);
+        if post.is_some() {
+            req = req.header("Content-Type", "application/json").body(body);
         }
         let mut res = req.send().await.map_err(describe)?;
         let status = res.status().as_u16();
@@ -648,6 +703,14 @@ fn describe(e: reqwest::Error) -> String {
 /// `path` on the app's server, refusing anything that would leave it: the path comes from the
 /// app's own replies (a trace's `download`), and `http://host:port@evil/` would send the token
 /// elsewhere.
+/// What a request line names: the path and query, as sent.
+fn url_target(url: &reqwest::Url) -> String {
+    match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
 fn app_url(base: &str, path: &str) -> Result<reqwest::Url, String> {
     let base = reqwest::Url::parse(base).map_err(|_| format!("the app's address {base} isn't a URL"))?;
     if !path.starts_with('/') || path.starts_with("//") || path.contains('\\') {

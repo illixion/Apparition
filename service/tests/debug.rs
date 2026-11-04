@@ -3,8 +3,8 @@
 
 #![cfg(target_os = "macos")]
 
-use apparition_service::{debug::{Fixed, Service, advertisement_tag}, server::{Settings, router}};
-use axum::{Json, Router, body::Body, extract::State, http::{HeaderMap, Request, StatusCode}, response::IntoResponse, routing::{get, post}};
+use apparition_service::{debug::{Fixed, Service, advertisement_tag, legacy_advertisement_tag, request_proof}, server::{Settings, router}};
+use axum::{Json, Router, body::{Body, Bytes}, extract::State, http::{HeaderMap, Method, Request, StatusCode, Uri}, response::IntoResponse, routing::{get, post}};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 use std::{collections::HashMap, path::Path, process::Command, sync::{Arc, Mutex}};
@@ -22,18 +22,45 @@ fn the_advertisement_tag_matches_the_python_tool() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), advertisement_tag(TOKEN, "nonce-123"));
 }
 
+
+/// How the request was authorised, as the app sees it: "signed" for a valid `DebugTrace-HMAC`
+/// proof over the nonce the fake issued, else the header as sent (a bearer, or a bad proof).
+fn authorised_as(headers: &HeaderMap, method: &str, uri: &axum::http::Uri, body: &[u8]) -> String {
+    let header = headers["authorization"].to_str().unwrap();
+    match header.strip_prefix("DebugTrace-HMAC nonce=n0, mac=") {
+        Some(mac) if mac == request_proof(TOKEN, "n0", method, uri.path_and_query().map_or("/", |p| p.as_str()), body) => "signed".into(),
+        Some(_) => "bad proof".into(),
+        None => header.to_string(),
+    }
+}
+
+/// The vectors DebugTraceServer's own tests pin, so the two sides cannot drift apart.
+#[test]
+fn the_signing_matches_the_apps_vectors() {
+    assert_eq!(advertisement_tag("tok", "0011223344556677"), "2N7A_4Gb9-GQ1mCG");
+    assert_eq!(legacy_advertisement_tag("tok", "0011223344556677"), "2q1z0OLi6fUaWdLY");
+    assert_eq!(request_proof("tok", "00112233445566778899aabbccddeeff", "POST", "/_call", br#"{"name":"_info"}"#), "XBj45-WJrouo1KLc21k4unl9KF-WTwtS1s7fo9YLj2o");
+}
+
 #[derive(Default)]
 struct Seen {
     calls: Vec<(String, String, Value)>,
 }
 
-async fn fake_help(State(seen): State<Arc<Mutex<Seen>>>, headers: HeaderMap) -> impl IntoResponse {
-    seen.lock().unwrap().calls.push(("help".into(), format!("{}|{}", headers["authorization"].to_str().unwrap(), headers["x-debugtrace-client"].to_str().unwrap()), Value::Null));
+async fn fake_nonce() -> impl IntoResponse {
+    Json(json!({ "nonce": "n0", "expiresIn": 30 }))
+}
+
+async fn fake_help(State(seen): State<Arc<Mutex<Seen>>>, headers: HeaderMap, uri: Uri) -> impl IntoResponse {
+    let how = authorised_as(&headers, "GET", &uri, b"");
+    seen.lock().unwrap().calls.push(("help".into(), format!("{how}|{}", headers["x-debugtrace-client"].to_str().unwrap()), Value::Null));
     Json(json!({ "ok": true, "endpoints": ["_info", "_logs"] }))
 }
 
-async fn fake_call(State(seen): State<Arc<Mutex<Seen>>>, headers: HeaderMap, Json(body): Json<Value>) -> impl IntoResponse {
-    seen.lock().unwrap().calls.push(("call".into(), headers["authorization"].to_str().unwrap().into(), body.clone()));
+async fn fake_call(State(seen): State<Arc<Mutex<Seen>>>, headers: HeaderMap, method: Method, uri: Uri, raw: Bytes) -> impl IntoResponse {
+    let how = authorised_as(&headers, method.as_str(), &uri, &raw);
+    let body: Value = serde_json::from_slice(&raw).unwrap();
+    seen.lock().unwrap().calls.push(("call".into(), how, body.clone()));
     match body["name"].as_str().unwrap() {
         "_screenshot" => ([("content-type", "image/png")], vec![137u8, 80, 78, 71]).into_response(),
         "_logs" => {
@@ -58,7 +85,7 @@ struct Rig {
 async fn rig(console_record: bool) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
-    let fake = Router::new().route("/", get(fake_help)).route("/_call", post(fake_call)).with_state(seen.clone());
+    let fake = Router::new().route("/_nonce", get(fake_nonce)).route("/", get(fake_help)).route("/_call", post(fake_call)).with_state(seen.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
@@ -136,7 +163,7 @@ async fn a_call_reaches_the_app_with_the_ledger_token_and_the_client_name() {
     assert_eq!(status, 200);
     assert_eq!(json_of(&body)["data"], json!({ "echo": "_info", "args": { "a": 1 } }));
     let calls = r.seen.lock().unwrap().calls.clone();
-    assert_eq!(calls[0].1, format!("Bearer {TOKEN}"));
+    assert_eq!(calls[0].1, "signed", "found by Bonjour: a proof, never the token");
     assert_eq!(calls[0].2, json!({ "name": "_info", "arguments": { "a": 1 } }));
 
     let (status, headers, body) = send(&r.app, "POST", "/api/debug/build1/call", Some(json!({ "endpoint": "_screenshot" }))).await;
@@ -144,7 +171,7 @@ async fn a_call_reaches_the_app_with_the_ledger_token_and_the_client_name() {
 
     let (_, _, body) = send(&r.app, "GET", "/api/debug/build1/help", None).await;
     assert_eq!(json_of(&body)["endpoints"][1], "_logs");
-    assert_eq!(r.seen.lock().unwrap().calls.last().unwrap().1, format!("Bearer {TOKEN}|Test page"));
+    assert_eq!(r.seen.lock().unwrap().calls.last().unwrap().1, "signed|Test page");
 
     for bad in [json!({}), json!({ "endpoint": "not valid!" }), json!({ "endpoint": 5 }), json!({ "endpoint": "../x" })] {
         assert_eq!(send(&r.app, "POST", "/api/debug/build1/call", Some(bad)).await.0, 400);
@@ -237,7 +264,9 @@ async fn a_copied_advertisement_is_never_sent_the_token() {
     let txt = |pairs: &[(&str, &str)]| -> HashMap<String, String> { pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
     let tag = advertisement_tag(TOKEN, "n1");
     for (services, reason) in [
-        (vec![Service { instance: "000".into(), host: "127.0.0.1".into(), port, txt: txt(&[("keyId", "build1")]) }], "advertises only its key id"),
+        (vec![Service { instance: "000".into(), host: "127.0.0.1".into(), port, txt: txt(&[("keyId", "build1")]) }], "anything on the network can copy"),
+        // A build from before signed requests: its tag is recognised, but a copy of it is as good.
+        (vec![Service { instance: "000".into(), host: "127.0.0.1".into(), port, txt: txt(&[("n", "n1"), ("t", &legacy_advertisement_tag(TOKEN, "n1"))]) }], "anything on the network can copy"),
         (vec![
             Service { instance: "real".into(), host: "127.0.0.1".into(), port: 1, txt: txt(&[("n", "n1"), ("t", &tag)]) },
             Service { instance: "000".into(), host: "127.0.0.1".into(), port, txt: txt(&[("n", "n1"), ("t", &tag)]) },

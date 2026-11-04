@@ -16,7 +16,7 @@ only as the fallback until the Rust service passes the parity checklist, then go
 ## Status (2026-11-04)
 
 Every ported route has a test against the real Node store (or, for the MCP server, the Python
-`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 49 tests,
+`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 50 tests,
 `APPARITION_REQUIRE_NODE=1 cargo test -p apparition-service` (without the variable, the oracle
 tests say SKIPPED when Node doesn't run).
 
@@ -44,7 +44,8 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   Apparition installs (Developer › Sent from your computers). The stdio entry is `apparition mcp`,
   a bridge to the running app's `/mcp` (loopback on the Mac, the companion channel elsewhere), so
   the Local Network permission stays with the app.
-- Hardened before going remote (2026-11-04 review): no token for a copyable advertisement,
+- Hardened before going remote (2026-11-04 review): a Bonjour address never receives the token,
+  only a proof signed with it (DebugTrace `txtvers=3`, `GET /_nonce`, `DebugTrace-HMAC`);
   app paths kept on the app's origin, endpoint and bundle names checked before they name files,
   capped replies and trace inflation, DNS rebinding refused on a password-less store.
 
