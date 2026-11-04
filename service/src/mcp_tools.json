@@ -1,0 +1,235 @@
+{
+ "instructions": "Debug servers of the user's apps, running on their devices (dev builds signed by build-and-sign; `build-and-sign --run --mcp` launches one with its log attached). Call `apps` to see what is running, `help` to read an app's endpoints, then `call`. Queries only read; commands change app state. Every error carries a hint saying what to do next. Values the app logs as private show as <private>; don't try to work around that. The first request from you, and the first code change, each show a prompt on the device: if a reply says it is waiting for someone to allow it, ask the user to tap Allow, then retry.\nReach for these before adding logging or rebuilding:\n- Where does the time go: call `_profile` (threads=all for a render or game loop on its own thread). It names the busy threads, the hot functions and stacks, system frameworks included.\n- Memory: call `_memory` before and after an action and compare (footprint, jetsam headroom, malloc, GPU, region kinds).\n- A view looks broken: call `_screenshot` (a PNG of a window) and `_screen` (the text and layout of what is on screen). Each asks the person at the device unless they chose Allow for 15 Minutes; they show whatever is on screen, so use them when needed, not to poll.\n- Change code without a rebuild: edit the Swift file, then `inject` (needs a launch with `build-and-sign --run --mcp --inject`; no need to ask the user in chat first, the device's own \"Allow code changes?\" prompt is the check). Call it rather than predicting an edit can't go live (a refused call applies nothing and says what to do instead), and read `warnings` in the reply: an edit can be accepted yet change nothing. What a patch adds stays reachable from later patches and `run`. A change to a SwiftUI view's structure (a modifier added or removed) is refused unless a `.rebuildsOnPatch()` covers that view; values patch freely. `inject` with `run` evaluates Swift in the live app. An --inject build runs Swift code about 25-35% slower, so measure performance on a normal build.\n- The user is tuning something by feel (a brightness, a curve, a timing): read it through `DebugTunables` in the code (inject it, or rebuild) and they get sliders on the Apparition Store's Debug › Panels page; `panel` builds a hand-picked panel over tunables and endpoints. Read `_tunables` for what they settled on.\nWhen one app runs on two devices, address it as bundleId@device (com.example.app@ixPhone).",
+ "tools": [
+  {
+   "name": "apps",
+   "description": "Apps currently running with their debug server (launched with `build-and-sign --run --mcp`): name, bundle id, device, URL, when launched, and the console log file. Start here.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "help",
+   "description": "An app's self-describing API: every endpoint with its kind (query or command), typed parameters, defaults and ranges, and conventions. Pass `endpoint` for just one.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string",
+      "description": "app name or bundle id, with @device when it runs on several (Hypnos@ixPhone); optional when only one app is running"
+     },
+     "endpoint": {
+      "type": "string",
+      "description": "one endpoint's name"
+     }
+    },
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": true
+   }
+  },
+  {
+   "name": "call",
+   "description": "Run one endpoint of a running app and return its result. Pass the endpoint's parameters inside `arguments`, e.g. {\"endpoint\": \"_logs\", \"arguments\": {\"level\": \"error\"}}. Read `help` first for the endpoint's parameters. Built-ins every app has: _info, _logs (source=app|system, level, category/excludeCategory, contains, limit, sinceSeconds, afterSequence/waitSeconds to tail; each reply counts matches per category; a reply too large to return is saved to a file here and the newest lines come back), _features, _memory (footprint, headroom, malloc, GPU, region kinds; compare two calls), _profile (seconds, intervalMs, threads=main|all: busy threads, hot functions and stacks), _snapshot, _trace. Commands change app state.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string",
+      "description": "app name or bundle id, with @device when it runs on several (Hypnos@ixPhone); optional when only one app is running"
+     },
+     "endpoint": {
+      "type": "string",
+      "description": "endpoint name, e.g. _info or state"
+     },
+     "arguments": {
+      "type": "object",
+      "description": "the endpoint's arguments, by name"
+     }
+    },
+    "required": [
+     "endpoint"
+    ],
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "inject",
+   "description": "For an Apparition backend build, only declared native entry boundaries are replaceable, and Apparition must be attached (apparition inject handles this). Existing layout changes still need a rebuild; new type generations can be added with their caller boundary. For the default dynamic backend: Change the running app's code without rebuilding. Edit the Swift source file normally, then call this with no arguments: it finds the files that changed since the last injection, replaces the changed function and computed-property bodies in the live process, adds new methods, and reports what it did and how long it took (usually a few seconds). The app keeps its state. Needs an app launched with `build-and-sign --run --mcp --inject` (it embeds the patch runtime; the app needs no change). The device asks the person to allow every patch (each `inject` call, `run` included) unless they chose Allow for 15 Minutes, which stops it asking for 15 minutes; if the reply says it is waiting, ask them to tap Allow, then call again. A patch cannot change a type's header (inheritance, generics), add an instance stored property, or change an initializer or protocol requirement: the reply lists each refusal with what to do instead, and nothing is applied. Most type changes still go live: new types (top-level or nested), `static let`s and typed `let name: T = value` constants are carried, and to change what a type is, leave it, write the new one as a new type and patch its caller. What an earlier patch added (a method, a static, a type) stays part of the app: later patches of any file and `run` use it, change its body, make a static computed or remove it, and it keeps one storage. A SwiftUI view's structure is a type: adding or removing a modifier, or changing which views a branch or toolbar holds, is refused, because the app crashes when SwiftUI later reattaches the old view (a tab switch); values (text, colors, numbers, conditions) patch freely. Under a `.rebuildsOnPatch()` that covers the view, retry with `allowViewTypeChange: true`. Rebuild only when that is not possible. Read `warnings` in the reply: an edit can be accepted yet change nothing (a reordered enum, an added `@MainActor` or `final`, a new signature whose old callers are untouched). Don't decide beforehand that an edit can't go live (a new property, a changed type): call `inject`, since a refused call applies nothing and says what to do instead. With no `files` it diffs every changed source file, including ones another agent edited in a shared package, and a refusal in any of them blocks the rest: pass `files` with just yours. Code inside #if is fine: each #if is evaluated with the flags the app was built with, and only the branch it runs is patched. Optional `run` is a Swift function body (it must `return` a value) evaluated on the main actor afterwards, with the app's code in scope, private members and what patches added included; its result comes back as `output`. Code you edit stays edited on disk, so the next normal build has the change too.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string",
+      "description": "app name or bundle id, with @device when it runs on several (Hypnos@ixPhone); optional when only one app is running"
+     },
+     "files": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "source files to inject, absolute or relative to the project root; default: every file that differs from what the app is running"
+     },
+     "run": {
+      "type": "string",
+      "description": "Swift function body to evaluate after patching; must return a value, e.g. `return player.position`"
+     },
+     "allowViewTypeChange": {
+      "type": "boolean",
+      "description": "only after a refusal for a changed SwiftUI view type, when a `.rebuildsOnPatch()` or `.reopensWindowOnPatch(…)` sits above every place that view is shown (they make it again after the patch, which is safe); default false"
+     }
+    },
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "openWorldHint": false
+   }
+  },
+  {
+   "name": "trace",
+   "description": "Capture a debug trace (logs, feature breadcrumbs, a snapshot of every traced query, device info; signed when the build carries a key) and save the zip on this Mac. Returns its path and file list.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string",
+      "description": "app name or bundle id, with @device when it runs on several (Hypnos@ixPhone); optional when only one app is running"
+     },
+     "note": {
+      "type": "string",
+      "description": "what was being investigated; stored as note.txt"
+     },
+     "logMinutes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1440,
+      "description": "minutes of log history to include (default 30)"
+     }
+    },
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false
+   }
+  },
+  {
+   "name": "panel",
+   "description": "Build a tuning panel for a person to poke the running app by hand: sliders, toggles, choices, buttons and live readouts, shown on the Apparition Store's Debug › Panels page (on the Mac, or on a phone through the store) and kept per app across launches. Use it when the user is judging something by feel (a brightness, a curve, a timing) so they can try values themselves while you keep `call`. Controls drive either a tunable (a value the app reads through `DebugTunables.number/integer/boolean/choice(key, default, …)`; `_tunables` lists them and they already get an automatic panel, so build one only to pick, order or relabel) or any endpoint: a slider/toggle/choice sends its value as `argument` along with fixed `arguments`, a button calls the endpoint, a readout calls a query every `refreshSeconds` and shows `path` (dotted, into the reply's data). No tunable for what the user wants yet? Add a `DebugTunables` read in the code and `inject` it, or ask for a rebuild. Pass `controls` to create or replace the panel `name`; `remove: true` deletes it; neither lists the app's panels.",
+   "inputSchema": {
+    "type": "object",
+    "properties": {
+     "app": {
+      "type": "string",
+      "description": "app name or bundle id (a bundle id works when the app isn't running); optional when only one app is running"
+     },
+     "name": {
+      "type": "string",
+      "description": "panel id, lowercase letters, digits and dashes, e.g. hdr-tuning"
+     },
+     "title": {
+      "type": "string",
+      "description": "heading shown above the controls"
+     },
+     "note": {
+      "type": "string",
+      "description": "one line under the title: what to look for while tuning"
+     },
+     "controls": {
+      "type": "array",
+      "description": "in display order",
+      "items": {
+       "type": "object",
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "slider",
+          "toggle",
+          "choice",
+          "button",
+          "readout"
+         ]
+        },
+        "label": {
+         "type": "string"
+        },
+        "tunable": {
+         "type": "string",
+         "description": "a DebugTunables key; range, step, choices and the current value come from the app"
+        },
+        "endpoint": {
+         "type": "string",
+         "description": "endpoint to call instead of a tunable"
+        },
+        "argument": {
+         "type": "string",
+         "description": "slider/toggle/choice: the argument name the value is sent as"
+        },
+        "arguments": {
+         "type": "object",
+         "description": "fixed arguments sent with every call"
+        },
+        "min": {
+         "type": "number"
+        },
+        "max": {
+         "type": "number"
+        },
+        "step": {
+         "type": "number"
+        },
+        "choices": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "value": {
+         "description": "endpoint controls: the starting value shown"
+        },
+        "path": {
+         "type": "string",
+         "description": "readout: dotted path into the reply's data, e.g. stats.peakNits"
+        },
+        "refreshSeconds": {
+         "type": "number",
+         "minimum": 0.5,
+         "maximum": 60,
+         "description": "readout: how often to call (default 2)"
+        }
+       },
+       "required": [
+        "kind"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "remove": {
+      "type": "boolean",
+      "description": "delete the panel `name`"
+     }
+    },
+    "additionalProperties": false
+   },
+   "annotations": {
+    "readOnlyHint": false,
+    "destructiveHint": false,
+    "openWorldHint": false
+   }
+  }
+ ]
+}

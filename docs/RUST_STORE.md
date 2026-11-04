@@ -13,20 +13,33 @@ only as the fallback until the Rust service passes the parity checklist, then go
 - **Signing moves to the core's identity store.** A Mac that builds with a login-keychain
   certificate imports it once (`import_identity`); that user-visible step is accepted.
 
-## Status
+## Status (2026-11-04)
 
-- Phase 0 done: crate, config model.
-- Phase 1 in progress. Done: auth (byte-compatible with `lib/auth.js`, proven against the real
-  Node module), the web gate, login/logout/auth, static files with branding, the bearer service
-  API's auth, `/host*`, `/disconnect`, the one-time `/host-login`, `state.json`, presence and
-  install-mode resolution, git info, and `/api/state` (also `/api/service/v1/state`).
-  `tests/state_parity.rs` starts the real Node store on an identical config, state file and git
-  checkout and compares the two answers; it fails if either side drifts.
-  In `/api/state`, `devices`, `deviceApps`, `debugApps`, `macApps` and the build queue are not
-  ported yet (they need phase 3 and 5), and the parity test leaves out the first three.
-  Left in phase 1: traces (verify, list, files), crash logs, artifacts list, response diffing for
-  those, and embedding `store/public`. Unported routes answer 501 and the capabilities list stays
-  empty until a capability really works.
+Every ported route has a test against the real Node store (or, for the MCP server, the Python
+`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 42 tests, `cargo test -p apparition-service`.
+
+Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
+- Auth, byte-compatible with `lib/auth.js`: password hash, `sessions.json`, `data/secret`, signed links.
+- Web gate, login, the hosted-app contract (`/host*`, one-time `/host-login`), config writes that
+  keep unknown keys, the web UI compiled in (`assets.rs`, test fails if `store/public` drifts).
+- `/api/state`, `state.json`, git info, presence, install-mode resolution.
+- Traces: strict upload verifier (19-archive parity), list, files, zip, delete; links crash logs.
+- Kept builds (list, manifest, streamed download); crash logs (read side, shared index).
+- Debug: own Bonjour browse of `_debugtrace._tcp`, ledger recognition by HMAC tag (checked against
+  Python), launch records and dead-console recovery, the proxy for help/call/logs (SSE)/panels.
+  The Python tool could not make LAN connections; this runs where the Local Network permission is.
+- MCP server at `POST /mcp` (bearer, same as the service API): `apps`, `help`, `call`, `trace`,
+  `panel`, with the Python tool's schemas, forgiving arguments, reply spilling and panel validation.
+
+Not done:
+- `inject` over MCP (answers that it is not here yet; it wraps the external `debugtrace-inject` tool).
+- A stdio entry for agents on the Mac itself. It must be a thin bridge to the running app's `/mcp`,
+  because a bare binary has no Local Network permission; do it with the desktop wiring (phase 6).
+- Phase 2 delivery (OTA, AltSource feed, Mac zips, signed links, trace upload from the web page).
+- Phase 3 devices through the core (replaces devicectl): `devices`, `deviceApps`, installs, JIT.
+- Phase 4 re-sign. Phase 5 builds (`build-and-sign`), queue, `macApps`. Phase 6 desktop wiring,
+  hiding the feature off macOS, retiring `store/` and the bundled Node host.
+- Unported routes answer 501 and the capabilities list stays empty until a feature works.
 
 ## Constraint that does not move
 

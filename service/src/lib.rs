@@ -14,6 +14,7 @@ pub mod crashlogs;
 pub mod debug;
 pub mod git;
 pub mod install_mode;
+pub mod mcp;
 pub mod state;
 pub mod traces;
 pub mod server;

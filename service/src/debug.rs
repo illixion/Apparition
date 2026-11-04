@@ -250,6 +250,45 @@ impl Debug {
         sessions
     }
 
+    /// Sessions this Mac can attach to (`attachable` is not false): what an agent may address.
+    pub async fn live_sessions(&self) -> Vec<Session> {
+        self.all_sessions().await.into_iter().filter(|s| s.get("attachable").and_then(Value::as_bool) != Some(false)).collect()
+    }
+
+    /// Forget the last Bonjour answer, so the next lookup asks again.
+    pub async fn refresh_discovery(&self) {
+        *self.cache.lock().await = None;
+    }
+
+    pub fn recorded_sessions(&self) -> Vec<Session> {
+        self.session_records()
+    }
+
+    pub fn panels_root(&self) -> &Path {
+        &self.panels_dir
+    }
+
+    /// The bearer token for a session: its own (launch record or ledger), else the ledger's for its
+    /// key id, else `~/.config/debugtrace/token` for servers started some other way.
+    pub fn session_token(&self, s: &Session) -> Option<String> {
+        str_of(s, "token").filter(|t| !t.is_empty()).map(String::from)
+            .or_else(|| str_of(s, "keyId").and_then(|k| self.token(k)))
+            .or_else(|| {
+                let path = std::env::var_os("DEBUGTRACE_TOKEN_FILE").map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/debugtrace/token"));
+                std::fs::read_to_string(path).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+            })
+    }
+
+    /// One request to a session's app with its own token, as an agent sees it.
+    pub async fn app_request(&self, s: &Session, post: Option<Value>, path: &str, timeout: Duration) -> Result<Reply, String> {
+        let token = self.session_token(s).unwrap_or_default();
+        self.request(s, &token, post, path, timeout).await.map_err(|e| {
+            let reason = if e.is_timeout() { "timed out".to_string() } else { e.to_string() };
+            format!("{} did not answer at {}: {reason}", str_of(s, "appName").unwrap_or("The app"), str_of(s, "url").unwrap_or(""))
+        })
+    }
+
     /// A launch record is live while the process streaming the app's log runs. A shell can reap
     /// that process while the app keeps serving, so a record without one is kept and only
     /// revived when Bonjour shows the same build.

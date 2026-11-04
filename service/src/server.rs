@@ -7,6 +7,7 @@ use crate::{
     config::Config,
     artifacts, crashlogs,
     debug::{self, Debug},
+    mcp::Mcp,
     state::{State as StoreState, hostname},
     traces,
 };
@@ -79,6 +80,7 @@ pub struct App {
     auth: Auth,
     state: StoreState,
     debug: Arc<Debug>,
+    mcp: Mcp,
     config: Mutex<(Option<SystemTime>, Arc<Config>)>,
     host_sessions: Mutex<HashSet<String>>,
     host_codes: Mutex<HashMap<String, u64>>,
@@ -93,6 +95,7 @@ enum Deferred {
     Call(String, Value),
     Panels(String),
     Logs(String, String, Option<String>),
+    Mcp(Value),
 }
 
 fn defer(route: Deferred) -> Response {
@@ -109,6 +112,7 @@ pub fn router(settings: Settings) -> std::io::Result<Router> {
         settings,
         auth,
         state,
+        mcp: Mcp::new(debug.clone()),
         debug,
         config: Mutex::new((None, Arc::new(Config::default()))),
         host_sessions: Mutex::default(),
@@ -635,6 +639,15 @@ async fn run_debug(app: &Arc<App>, route: Deferred) -> Response {
             reply_of(app.debug.call(&id, body["endpoint"].as_str().unwrap_or(""), args).await)
         }
         Deferred::Panels(id) => reply_of(app.debug.panels(&id).await),
+        Deferred::Mcp(message) => {
+            if message.is_array() {
+                return json_reply(200, json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "batches are not supported" } }));
+            }
+            match app.mcp.handle(&message).await {
+                Some(answer) => json_reply(200, answer),
+                None => reply(202, "text/plain", ""),
+            }
+        }
         Deferred::Logs(id, level, contains) => {
             let rx = app.debug.stream_logs(id, level, contains);
             let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, std::convert::Infallible>);
@@ -667,6 +680,7 @@ fn dispatch(app: &App, req: &Req) -> Response {
         return with_header(redirect(safe_next(next)), "set-cookie", &cookie);
     }
     let machine_route = (req.method == Method::POST && req.path == "/api/traces")
+        || req.path == "/mcp"
         || (req.method == Method::GET && ["/ota/", "/altsource/", "/mac/"].iter().any(|p| req.path.starts_with(p)));
     if !app.web_ui_on() && !machine_route && !app.host_session(req) {
         return text(404, WEB_UI_OFF);
@@ -771,6 +785,22 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
                 json_reply(200, body)
             }
             Login::Refused { status, error } => json_reply(status, json!({ "error": error })),
+        });
+    }
+    if req.path == "/mcp" {
+        // The MCP endpoint for agents anywhere: the same bearer as the service API.
+        let bearer = req.header("authorization").strip_prefix("Bearer ").unwrap_or("");
+        let is_host = matches!(&app.settings.host_token, Some(h) if constant_eq(bearer, h));
+        let session = config.password_hash.as_deref().is_some_and(|h| app.auth.check(bearer, h));
+        if !is_host && !session {
+            return Some(json_reply(401, json!({ "error": "Connect to the build service again." })));
+        }
+        if req.method != Method::POST {
+            return Some(with_header(json_reply(405, json!({ "error": "POST JSON-RPC messages to /mcp" })), "allow", "POST"));
+        }
+        return Some(match serde_json::from_slice::<Value>(&req.body) {
+            Ok(message) => defer(Deferred::Mcp(message)),
+            Err(_) => json_reply(200, json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32700, "message": "parse error" } })),
         });
     }
     let suffix = req.path.strip_prefix(SERVICE_PREFIX).filter(|s| s.is_empty() || s.starts_with('/'))?;
