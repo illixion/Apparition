@@ -30,6 +30,7 @@ mod xcode;
 mod inject;
 mod developer;
 mod builder;
+mod crash_reports;
 
 const USAGE: &str = "\
 Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
@@ -181,6 +182,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       (vergence, RAVESDK...), and why: from the Mac's Store. --check asks the devices first; --run
       builds each once in a clean clone and installs it on every device that runs it; --auto on
       lets the Store do that by itself once sources have been still for a few minutes.
+  apparition crash-reports list [--app <text>] [--device <name>] | show <id> | done <id>... [--dry-run]
+      What the Store holds about crashes: crash logs pulled off devices and uploaded debug traces,
+      newest first. show prints a crash log symbolicated (or a trace's MetricKit reports); done
+      moves what you investigated to the Trash. An id is any unambiguous prefix of what list prints.
+      Reads the Store's data folder directly (STORE_DATA to use another), so it needs no login.
   apparition mcp [--local]
       An MCP server on stdin/stdout for agents here: the apps' debug servers the Mac can see
       (apps, help, call, trace, panel), plus deploy for builds made on this computer. Add it
@@ -262,6 +268,7 @@ async fn main() -> ExitCode {
         Some("deploy-signing") => developer::deploy_signing(&args[1..]),
         Some("mcp") => developer::mcp(&args[1..]).await,
         Some("updates") => developer::updates(&args[1..]).await,
+        Some("crash-reports") => crash_reports::run(&args[1..]).await,
         Some("browse") => {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
         }
