@@ -68,8 +68,11 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   (manifests read by `artifacts.js` and the service), installs over the core's pairing and launches
   with `apparition launch` (`--log`, `--mcp` with the session record, `--jit`). It runs as its own
   process, so a repo's `PRE_BUILD_HOOK` never shares memory with the app's keys; the Store's build
-  queue can start it as Node starts the script. Run for real 2026-11-04: xrTimer built, signed and
-  installed on a Vision Pro (the launch waited on the headset, as `devicectl`'s did). Not yet: Mac
+  queue can start it as Node starts the script. Run for real 2026-11-04 on a Vision Pro with xrTimer:
+  `--run` (a debug session under `MCP_DEFAULT=on`) installed and launched it in 13 s with its console,
+  found its debug server and wrote the launch record the `apps` tools attached through; `--run
+  --inject` built for patching in 40 s and an `inject` `run` patch applied in 7 s. `--jit` is not run
+  on a device yet. A headset that isn't worn holds launches (`devicectl`'s too); the build says so. Not yet: Mac
   apps, `--distribution`, `--sign-dylib` (inject's patch signing), `EXTRA_ENTITLEMENTS_PLIST` and
   `ASSOCIATED_DOMAINS` (no repo sets them), the Store's queue running it.
 
