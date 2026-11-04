@@ -129,8 +129,9 @@ the paired Mac otherwise. What a PC can't do:
 - **Installing from the Mac covers only what the Mac's signing can.** It signs offline with an
   imported certificate; signing with an Apple ID needs an interactive sign-in (and its two-factor
   step) the Store can't do on its own, so a Mac that only has the Apple ID in the Apparition app
-  leaves the install to the device. Not run against a real device yet: the planning and the routes
-  are tested with a stand-in, the tunnel and signing calls are the core's own.
+  leaves the install to the device. Run for real on 2026-11-04: a Windows PC paired, drove MCP and
+  sent a build already signed for a Vision Pro, which the Mac installed (46 MB in 38 s). Signing on
+  the Mac with an imported certificate is tested with a stand-in only.
 - **The device reaching the Mac away from home** still goes through the Store's HTTPS address and
   password (Developer › Connect), not the channel.
 - **Builds on the Mac over MCP** (`build-and-sign` from an agent elsewhere) need the build port

@@ -23,7 +23,8 @@ Every ported route has a test against the real Node store (or, for the MCP serve
 tests say SKIPPED when Node doesn't run). They pass on macOS, natively on Windows (cross-built
 for `x86_64-pc-windows-gnu`, run with the PC's Node) and on Linux (arm64, in Docker), as does the
 command line's end-to-end test of pairing, the encrypted channel, MCP and deploy on real sockets.
-None of it has been run with a real device or two real computers yet.
+Live on 2026-11-04: a Windows PC paired with the Mac for developer access, ran an MCP session
+through the channel and deployed a build the Mac installed on a Vision Pro.
 
 **Running now (macOS):** the desktop app runs this service in-process on loopback beside the Node
 build service, and offers it to computers paired for developer access over the companion channel.
@@ -48,7 +49,7 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
 - Devices through the core (phase 3, first part): `service/src/devices.rs` is the trait the app implements over
   the core's pairings (`desktop/src/store_devices.rs`): `GET /api/service/v1/devices`, `.../devices/<d>/apps`,
   `POST .../builds/<id>/install?device=`, and `deploy?...&install=auto` to finish a sent build on the Mac.
-  It signs with a certificate imported by `apparition deploy-signing import`. Unrun against a real device.
+  It signs with a certificate imported by `apparition deploy-signing import` (that part still unrun on a device; an IPA already signed for the device installed for real).
 - Deploys from other computers: `POST /api/service/v1/deploy` keeps an IPA as a build the device's
   Apparition installs (Developer › Sent from your computers). The stdio entry is `apparition mcp`,
   a bridge to the running app's `/mcp` (loopback on the Mac, the companion channel elsewhere), so
