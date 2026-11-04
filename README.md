@@ -36,8 +36,10 @@ access that signing needs only to a sign-in with a Mac's anisette, so Apparition
 macOS on your own Mac, as Xcode does. That Mac is either
 
 - your Mac on **macOS 26 or earlier**, which needs no setup, or
-- a **macOS virtual machine** on your Mac ([how](selfhost/macos-vm/README.md)), which is the way on
-  macOS 27, where macOS keeps its anisette to itself.
+- a **macOS virtual machine** on your Mac, which is the way on macOS 27, where macOS keeps its
+  anisette to itself. On Apple silicon the app sets one up and runs it for you (Companion ›
+  **Set up the anisette VM**, or `apparition vm setup`); you can also make one in UTM
+  ([how](selfhost/macos-vm/README.md)).
 
 Windows and Linux computers, and devices away from home, pair with that Mac for it over an
 encrypted channel. Apparition doesn't provide anisette, and doesn't run Apple code made for other

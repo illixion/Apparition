@@ -1,25 +1,28 @@
 # Anisette VM inside the app: scope
 
-Status: scoping, 2026-11-04; guest pinned and suspend-when-idle done the same day. The VM flow works end to end from the command line
-(`selfhost/macos-vm/`, see its README). This document is what it takes to make it a button in the
-desktop app that a stranger can press, and what was measured to decide that.
+Status, 2026-11-04: **in the app.** The Companion tab sets the VM up with one button (no administrator password, no
+typing, no Python), the companion offers its anisette to paired devices, and sign-ins on the Mac use it; `apparition
+vm` does the same from a terminal. A fresh setup from a local copy of the restore image took about 11 minutes and
+ended with Apple accepting the anisette. This document is the scope that got it there, and what is still open.
 
 ## What the person sees
 
 On a Mac that has no anisette of its own (macOS 27 and later), the desktop app's Companion tab offers
-**Set up the anisette VM** next to "Use this Mac" and "Use another Mac". One click, a progress bar, and
-about 45 minutes of waiting (most of it two downloads and the macOS install). No UTM, no Terminal, no
-typing in recoveryOS, and no administrator password if step 4 below holds.
+**Set up the anisette VM** (and "Use a restore image I have…"). One click, a progress bar, and about 11 minutes
+of waiting with the restore image on the Mac, 45 with its 20 GB download. No UTM, no Terminal, no typing in
+recoveryOS, no administrator password. Once set up, the companion offers it ("This Mac's anisette VM"), the sign-in
+form offers it, and the group shows whether it runs or is saved, with Check with Apple and Remove.
 
 Devices need no change. They pair with the Mac's companion exactly as they do with a Mac on macOS 26 or a
 Windows PC; the VM sits behind the companion as its anisette source (see "Reaching the VM").
 
 ## What exists and works (verified on macOS 26.6.2 guests, 2026-11-04)
 
-- Runner (`main.swift`): create, install, run, recovery boot, shutdown, and guest input for recoveryOS: key
-  chords, typing, clicks, and Vision OCR of its own window (`click-text`).
-- Driver (`vm.py`): the whole recoveryOS step with no hands on the keyboard (startup picker, Terminal, `csrutil`,
-  password, setup script), resumable between steps. Python, development only.
+- Runner (`main.swift`, `apparition-vm` in the app): create, install, run, recovery boot, shutdown, and guest input
+  for recoveryOS: key chords, typing, clicks, and Vision OCR of its own window (`click-text`).
+- Orchestrator (`core/src/vm.rs`, replacing `vm.py`): the pinned image (a local copy first), create, install, both
+  recoveryOS stages with no hands on the keyboard, the boots, the save; resumable at every step, one progress
+  stream for the app and `apparition vm`.
 - Guest side: first-boot account with a secure token, auto-login, SIP and AMFI off, the entitled helper in an
   Aqua LaunchAgent, status over vsock.
 - Appliance trim: 156 per-user and 74 system launchd services disabled before first login, no audio
@@ -32,9 +35,15 @@ Windows PC; the VM sits behind the companion as its anisette source (see "Reachi
   the VM saved to disk and stopped after 5 idle minutes, resumed by the next request, the guest clock set on
   resume. Measured in the README ("Serving anisette, suspended when idle").
 
-Not verified: a real account signing in through a VM-hosted companion end to end; a fresh install through the
-final no-root path, or with the new guest daemons from `provision.sh` (they were installed by hand on the test
-VM); host sleep and wake with the VM running.
+- Fresh setup through the no-root path, end to end, from `apparition vm setup` (2026-11-04): create and install
+  3.5 min, provision stage, first boot 25 s, setup stage, boot, save, Apple's check; no SSH and no relay in the
+  guest. The companion's VM backend serves isideload's own client (provisioning, headers, the guest's client info).
+- Every way of stopping the runner saves the VM (the logout/shutdown quit event, SIGTERM, SIGINT, `quit`), and the
+  next start resumes it in 1.0 s with Apple accepting the anisette.
+
+Not verified: a real account signing in through a VM-hosted companion end to end; a device pairing with a
+companion that offers the VM; the Companion tab's VM group in the running app (built, not yet clicked through);
+host sleep and wake with the VM running (it suspends on the sleep notification).
 
 ## Measured facts that shape the design
 
@@ -42,7 +51,8 @@ VM); host sleep and wake with the VM running.
 |---|---|
 | Restore image Apple's catalog offers for `VirtualMac2,1` | one entry: macOS 27.2 (26B123), 25.6 GB, `Accept-Ranges`, no published digest |
 | Restore image we pin | macOS 26.6.2 (25G83), 19.8 GB, not in the catalog but still on Apple's CDN with `x-amz-meta-digest-sha256` (matches ipsw.me); installed in a VM on 2026-11-04 |
-| Disk after install | 26.7 GB allocated (64 GB virtual, sparse); peak with the image about 52 GB |
+| Disk after install | 24 to 27 GB allocated (64 GB virtual, sparse); peak with the image about 47 to 52 GB |
+| Fresh setup, image on disk | about 11 min: hash 1, install 3.5, provision stage 1.5, first boot 0.5, setup stage 1, boot to anisette 1.5 |
 | RAM floor (trimmed or not) | 1.5 GiB boots; 1.25 GiB and 1 GiB do not (black screen, no network) |
 | RAM for recoveryOS | more than 2 GiB (black screen at 2 and 1.5, up in 26 s at 3); setup runs the install and both recovery boots at 4 GiB |
 | Host cost of the guest | its configured RAM, from the first seconds (1.57 GB footprint for 1.5 GiB), pageable, not wired |
@@ -57,21 +67,23 @@ VM); host sleep and wake with the VM running.
 
 **1. Guest version. Decided (2026-11-04): pin macOS 26.6.2.** Apple's catalog only lists the newest restore image
 (27.2), but the 26.6.2 file is still on Apple's CDN with its SHA-256 in the response headers, and 26 is the
-version the whole flow, the trim and the RAM floor were verified on. `vm.py` downloads that one URL and checks it;
+version the whole flow, the trim and the RAM floor were verified on. core/src/vm.rs uses a copy already on the Mac or downloads that one URL, and checks it;
 the runner refuses other builds unless `APPARITION_VM_ALLOW_UNVERIFIED=1` (the "advanced" switch, for trying the
 next one, because Apple has changed what it accepts twice this autumn, 12 and 30 October). The risk is Apple
 removing the file from its CDN; the pin then needs a mirror the app controls, checked against the same hash.
 A macOS 27 guest is a separate milestone if 26 ever stops being accepted.
 
-**2. Who writes into the guest disk before first boot.** Today `provision.sh` mounts the VM's disk on the host
-as root, which means an administrator prompt and a script running as root against a path in the user's
-library. Recommend: no host root at all. Boot recoveryOS once right after the install (the driver already
+**2. Who writes into the guest disk before first boot. Done: recoveryOS, no host root.** `provision.sh`
+(mounting the disk on the host as root) is gone. Before: it meant an administrator prompt and a script running as
+root against a path in the user's library. The recommendation was no host root at all. Boot recoveryOS once right after the install (the driver already
 does this reliably), run one script there that mounts the Data volume and writes the first-boot daemon,
 the status daemon, the trim lists and the companion, then boot normally. The existing `setup.sh` already
 does most of this in recovery. The cost is one more recovery boot (about two minutes) and a second
 OCR-driven pass; the gain is that the app never needs root and there is a single provisioning mechanism.
 Boot sequence: install, recovery (payload), boot (account is made, shuts down), recovery (`csrutil` with the
-account's password), boot (AMFI boot argument, reboots), boot (live).
+account's password), boot (AMFI boot argument, reboots), boot (live). That is what runs now. One finding on the way:
+csrutil looks for its administrator on the Preboot volume, which macOS updates lazily, so the first boot runs
+`diskutil apfs updatePreboot /` before it shuts down (from recoveryOS the account is listed but its password refused).
 
 **3. Reaching the VM.** Bridged networking needs `com.apple.vm.networking`, which an ad-hoc signed app
 cannot have, so the VM is NAT only. A phone cannot reach 192.168.64.x, and the host route and VPN problems
@@ -82,9 +94,10 @@ gets its anisette from the VM:
 - in the guest, `apparition anisette serve` on the guest's loopback, from an Aqua LaunchAgent, and `guest-bridge`
   (a small root daemon in C) carrying vsock 6970 to it (**done**; `relay` still runs beside it for now);
 - the runner bridges host loopback port 6970 to that vsock port (**done**, the front door in `vm serve`);
-- core gets a second `AnisetteSource` that proxies `client_info` and `get_headers` to that port, with the
-  paired-device token check staying on the host (`core/src/anisette/server.rs` calls `native::headers`
-  directly today; that call becomes a provider). **Not done.**
+- core's second `AnisetteSource`, `Vm`, proxies `client_info` and `get_headers` to that port, with the
+  paired-device token check staying on the host (`anisette::start_vm`; each request starts or resumes the
+  runner). **Done.** Sign-ins on the Mac itself use the front door directly (`VM_ANISETTE`, the default when the
+  Mac has no anisette of its own).
 
 This removes the DHCP-lease lookup, the subnet route, the pairing prompt problem (the LaunchAgent cannot ask
 for the six-digit code; the host app already can) and the wake problem (a device knocks on the host's
@@ -97,7 +110,8 @@ bundle and stopped, 0.8 s, all of its memory back to the host) and resumed by th
 guest's clock set before the request is let through). That is quick enough for every Mac, not only 8 GB ones, so
 there is no separate on-demand mode: the companion stays on and the VM costs memory only around sign-ins. A wake
 soon after a suspend doubles the idle period (up to an hour), so a client that polls cannot make it write 450 MB
-to disk every few minutes. Host logout or shutdown suspends it too.
+to disk every few minutes. Every stop saves it (logout, restart, shutdown, sleep, the app quitting), so the cold
+boot happens once, at the end of setup, and again only after a crash or a power cut.
 
 **5. Keeping the guest current.** macOS updates are off in the appliance. The helper and `apparition` inside
 the guest must follow the app, because Apple's acceptance changes. Recommend: the guest agent asks the host
@@ -107,21 +121,18 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
 ## Work, in order, each with a gate
 
 1. ~~Guest 27.2~~ Replaced by the pinned 26.6.2 (decision 1).
-2. **Recovery-only provisioning** (a day or two). Fold `provision.sh` into a recovery stage; the host server
-   serves the stage's files; delete the `sudo`/`osascript` path. Gate: a fresh bundle reaches a live
-   companion with no administrator prompt.
-3. **Helper and orchestrator** (several days). Split `main.swift` into a headless helper (create, install,
-   run, stop, status, vsock bridge, recovery input) built by `scripts/package-release.sh`, ad-hoc signed
-   with `com.apple.security.virtualization`, placed in `Contents/MacOS` like the anisette helper. A Rust step
-   engine in `core` replaces `vm.py`: persisted state in the bundle, one event stream for the CLI and the
-   app, restart-safe at every step. The helper runs as an accessory app that never takes focus.
-4. **Companion source** (a few days). The vsock transport and the suspend policy are done (`vm serve`);
-   left is `AnisetteSource::Vm` in core pointing at the front door. Gate: a device signs in with a real account
+2. ~~Recovery-only provisioning.~~ Done: setup.sh's provision stage; the gate (a fresh bundle reaches live
+   anisette with no administrator prompt) passed.
+3. ~~Helper and orchestrator.~~ Done: the runner ships in `Contents/MacOS` as `apparition-vm` (install-desktop.sh,
+   package-release.sh), with `apparition-vm-guest-status` and `-guest-bridge`; core/src/vm.rs replaced `vm.py`.
+   The runner kept its window (recoveryOS needs one to be read), off screen in `serve`.
+4. **Companion source.** `AnisetteSource::Vm` done; left is the gate: a device signs in with a real account
    through the VM.
-5. **App and CLI** (several days). A wizard in the Companion tab (preflight for chip, macOS version, free
-   disk, RAM; download with resume; install; the recovery stages with live status; delete and rebuild),
-   `apparition vm setup|start|stop|status|remove`, an exclusion from Time Machine for the bundle, the IPSW
-   in `~/Library/Caches` and removed after install. Intel Macs hide the whole thing.
+5. **App and CLI.** Done: the Companion tab's group (progress, stop, check with Apple, remove), the companion's
+   and sign-in form's VM choice, `apparition vm setup|status|serve|quit|shutdown|check|image|remove`, the bundle
+   excluded from Time Machine, the image in `~/Library/Caches`. Not done: a preflight for free disk (the app
+   says what it needs; the copy fails when the disk does), deleting the image after install (kept, so a rebuild
+   needs no download), and clicking it through in the running app.
 6. **Hardening** (ongoing). 24-hour soak, host sleep and wake, VPN on and off, a crash at every step then
    resume, a full disk, an unclean stop, the guest build changing under an update, uninstall. Docs.
 
@@ -144,8 +155,8 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
 
 ## Smaller items found on the way
 
-- `provision.sh` leaves a root-owned `provisioning/` folder with a copy of the password inside the bundle.
-  It is mode 700, but it should be deleted after use (needs the root that item 2 removes).
+- ~~`provision.sh` leaves a root-owned `provisioning/` folder.~~ No host root any more. Bundles made by it
+  (the test VMs) still have the folder; Remove moves the bundle to the Trash, folder and all.
 - The runner listens on loopback TCP with a token in a file; a unix socket in the bundle with mode 600 is
   simpler and removes the port.
 - ~~The runner activates its window and takes focus.~~ Automated runs are an accessory app that stays behind.

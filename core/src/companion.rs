@@ -27,6 +27,8 @@ use crate::relay::{ANISETTE_PORT, Log, Relay};
 pub enum AnisetteSource {
     /// This Mac's own (anisette::native).
     Builtin,
+    /// This Mac's anisette VM (vm.rs), for a Mac on macOS 27: the VM's own, served the same way from here.
+    Vm,
 }
 
 pub struct Companion {
@@ -161,7 +163,7 @@ impl Companion {
     fn update_pairing(&self) {
         let offered = self.offered();
         let can_pair = !offered.is_empty() && self.pairing_port != 0;
-        let paired_http_path = self.anisette() == Some(AnisetteSource::Builtin);
+        let paired_http_path = self.anisette().is_some();
         self.devices.accepting.store(can_pair, Ordering::Relaxed);
         *self.devices.offered.lock().unwrap() = offered.clone();
         self.channel_enabled.store(self.anisette().is_some(), Ordering::Release);
@@ -175,21 +177,7 @@ impl Companion {
     pub async fn share_builtin_anisette(&self) -> Result<(), Report> {
         #[cfg(all(feature = "anisette", target_os = "macos"))]
         {
-            let mut builtin = self.builtin.lock().await;
-            if builtin.is_none() {
-                let port = self.anisette_port;
-                let bind = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-                let devices = self.devices.clone();
-                let access: crate::anisette::Access = Some(Arc::new(move |token: &str| devices.accepts(token)));
-                let server = crate::anisette::start(bind, access).await.context(format!(
-                    "Couldn't serve anisette on port {port}. If another program uses that port, stop it."
-                ))?;
-                *builtin = Some(server);
-            }
-            *self.source.lock().unwrap() = Some(AnisetteSource::Builtin);
-            self.relay.set_anisette(Some(self.anisette_port));
-            self.update_pairing();
-            Ok(())
+            self.share(AnisetteSource::Builtin, None).await
         }
         #[cfg(not(all(feature = "anisette", target_os = "macos")))]
         {
@@ -197,13 +185,43 @@ impl Companion {
         }
     }
 
-    /// Stops serving the built-in anisette.
+    /// Serves the anisette of this Mac's anisette VM in `bundle` (vm.rs) on loopback, and offers it through the
+    /// encrypted channel to paired devices, as [`share_builtin_anisette`](Self::share_builtin_anisette) does this
+    /// Mac's own. The VM resumes on the first request and suspends itself when idle.
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
+    pub async fn share_vm_anisette(&self, bundle: PathBuf) -> Result<(), Report> {
+        self.share(AnisetteSource::Vm, Some(bundle)).await
+    }
+
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
+    async fn share(&self, source: AnisetteSource, bundle: Option<PathBuf>) -> Result<(), Report> {
+        let mut served = self.builtin.lock().await;
+        if served.is_none() || self.anisette() != Some(source) {
+            // One port: a server from the other source makes way first.
+            served.take();
+            let port = self.anisette_port;
+            let bind = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            let devices = self.devices.clone();
+            let access: crate::anisette::Access = Some(Arc::new(move |token: &str| devices.accepts(token)));
+            let started = match (source, bundle) {
+                (AnisetteSource::Vm, Some(bundle)) => crate::anisette::start_vm(bind, access, bundle).await,
+                _ => crate::anisette::start(bind, access).await,
+            };
+            *served = Some(started.context(format!("Couldn't serve anisette on port {port}. If another program uses that port, stop it."))?);
+        }
+        *self.source.lock().unwrap() = Some(source);
+        self.relay.set_anisette(Some(self.anisette_port));
+        self.update_pairing();
+        Ok(())
+    }
+
+    /// Stops serving anisette, whichever it was.
     pub async fn stop_builtin_anisette(&self) {
         #[cfg(all(feature = "anisette", target_os = "macos"))]
         {
             self.builtin.lock().await.take();
         }
-        if self.anisette() == Some(AnisetteSource::Builtin) {
+        if self.anisette().is_some() {
             *self.source.lock().unwrap() = None;
             self.relay.set_anisette(None);
         }

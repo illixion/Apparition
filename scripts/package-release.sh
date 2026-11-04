@@ -322,6 +322,13 @@ if has macos; then
   # executable is `Apparition`, which a case-insensitive volume would merge with it.
   cp "$WORK/macos/$bin" "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
   codesign -f -s - "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
+  # The anisette VM (core/src/vm.rs): its runner and the two programs it puts in the guest, arm64 only, since
+  # macOS runs in a VM only on Apple silicon. The runner keeps its virtualization entitlement.
+  bash "$ROOT/selfhost/macos-vm/build.sh"
+  cp "$ROOT/build/macos-vm/vm" "$WORK/macos/$app_name.app/Contents/MacOS/apparition-vm"
+  cp "$ROOT/build/macos-vm/guest-status" "$WORK/macos/$app_name.app/Contents/MacOS/apparition-vm-guest-status"
+  cp "$ROOT/build/macos-vm/guest-bridge" "$WORK/macos/$app_name.app/Contents/MacOS/apparition-vm-guest-bridge"
+  codesign -f -s - --entitlements "$ROOT/selfhost/macos-vm/runner.entitlements" "$WORK/macos/$app_name.app/Contents/MacOS/apparition-vm"
   codesign -f -s - "$WORK/macos/$app_name.app"
   readme "$WORK/macos" "./$bin" "Open $app_name.app for a guided install; it then stays in the menu bar as the companion. It isn't notarized, so macOS blocks it until you clear the download quarantine. Move $app_name.app to Applications, then run in Terminal: xattr -dr com.apple.quarantine /Applications/$app_name.app (and for the command line, in this folder: xattr -d com.apple.quarantine $bin $helper). The app holds the command line too: run /Applications/$app_name.app/Contents/MacOS/$bin-cli link once to put $bin on your PATH. Or open it once and click Open Anyway in System Settings > Privacy & Security. Don't re-sign it with codesign: that strips the anisette helper's entitlements."
   (cd "$WORK/macos" && zip -qryX "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt)

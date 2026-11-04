@@ -17,6 +17,7 @@ mod flow;
 mod host;
 mod service;
 mod updater;
+mod vm;
 
 use std::sync::Arc;
 
@@ -106,6 +107,11 @@ fn main() {
             companion::quit_app,
             companion::launch_at_login,
             companion::set_launch_at_login,
+            vm::vm_status,
+            vm::vm_setup,
+            vm::vm_cancel,
+            vm::vm_check,
+            vm::vm_remove,
         ])
         .setup(move |app| {
             if let Some(window) = app.get_webview_window("main") {
@@ -131,6 +137,8 @@ fn main() {
         .expect("couldn't start Apparition")
         .run(move |app, event| match event {
             tauri::RunEvent::Exit => {
+                // The anisette VM is saved, so the next start resumes it rather than booting it.
+                vm::shutdown();
                 cleanup.clean_up();
                 host::shutdown(&app.state::<host::ServiceHost>());
                 developer::shutdown();

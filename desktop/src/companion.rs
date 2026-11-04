@@ -43,6 +43,8 @@ pub enum AnisetteMode {
     Off,
     /// This Mac's own, to paired devices and computers over the encrypted channel.
     Builtin,
+    /// This Mac's anisette VM (the Companion tab sets it up), the same way: for a Mac on macOS 27.
+    Vm,
     /// The Docker server this app used to offer: read as `Off`, since only a Mac's own anisette
     /// is offered now.
     #[serde(other)]
@@ -176,12 +178,47 @@ impl CompanionState {
         companion.relay.set_advertise(settings.advertise);
         let result = match settings.anisette {
             AnisetteMode::Builtin => companion.share_builtin_anisette().await.map_err(|error| error.to_string()),
+            #[cfg(target_os = "macos")]
+            AnisetteMode::Vm => companion.share_vm_anisette(api::vm::default_bundle()).await.map_err(|error| error.to_string()),
+            #[cfg(not(target_os = "macos"))]
+            AnisetteMode::Vm => Err("The anisette VM runs only on a Mac.".to_string()),
             AnisetteMode::Off | AnisetteMode::Retired => {
                 companion.stop_builtin_anisette().await;
                 Ok(())
             }
         };
         *self.anisette_error.lock().unwrap() = result.err();
+    }
+
+    /// The anisette VM was just set up here: offer its anisette, unless the companion offers something already.
+    pub async fn use_vm_if_off(&self) {
+        {
+            let mut settings = self.settings.lock().unwrap();
+            if !matches!(settings.anisette, AnisetteMode::Off | AnisetteMode::Retired) {
+                return;
+            }
+            settings.anisette = AnisetteMode::Vm;
+        }
+        self.save();
+        self.apply().await;
+        self.update_tray().await;
+    }
+
+    /// The anisette VM is going away: stop offering it.
+    pub async fn stop_vm(&self) {
+        let was_vm = {
+            let mut settings = self.settings.lock().unwrap();
+            let was = settings.anisette == AnisetteMode::Vm;
+            if was {
+                settings.anisette = AnisetteMode::Off;
+            }
+            was
+        };
+        if was_vm {
+            self.save();
+            self.apply().await;
+            self.update_tray().await;
+        }
     }
 
     /// The in-process Store is up: offer it to computers paired for developer access.
@@ -203,8 +240,8 @@ impl CompanionState {
                 "error": *self.relay_error.lock().unwrap(),
             },
             "anisette": {
-                "mode": if settings.anisette == AnisetteMode::Builtin { AnisetteMode::Builtin } else { AnisetteMode::Off },
-                "offered": offered.map(|source| match source { AnisetteSource::Builtin => "builtin" }),
+                "mode": match settings.anisette { AnisetteMode::Retired => AnisetteMode::Off, mode => mode },
+                "offered": offered.map(|source| match source { AnisetteSource::Builtin => "builtin", AnisetteSource::Vm => "vm" }),
                 "port": ports().1,
                 "builtinAvailable": api::builtin_anisette_available(),
                 // This Mac gives its own anisette (macOS 26 or earlier, or a VM set up for it).
@@ -219,8 +256,8 @@ impl CompanionState {
                 "address": relay::primary_address().map(|ip| ip.to_string()),
             },
             "pairing": {
-                // Built-in anisette for paired devices only.
-                "required": settings.anisette == AnisetteMode::Builtin,
+                // Anisette for paired devices only.
+                "required": matches!(settings.anisette, AnisetteMode::Builtin | AnisetteMode::Vm),
                 "port": running.as_ref().map(|c| c.pairing_port()),
                 "channelPort": running.as_ref().map(|c| c.channel_port()),
                 "devices": running.as_ref().map(|c| c.devices.list()).unwrap_or_default(),
@@ -249,6 +286,7 @@ impl CompanionState {
         };
         let anisette = match running.as_ref().and_then(|c| c.anisette()) {
             Some(AnisetteSource::Builtin) => "Anisette: offered from this Mac".to_string(),
+            Some(AnisetteSource::Vm) => "Anisette: offered from this Mac's VM".to_string(),
             None => "Anisette: not offered".to_string(),
         };
         if let Some(tray) = &*self.tray.lock().unwrap() {
@@ -444,6 +482,10 @@ pub async fn companion_set_relay(state: Shared<'_>, on: bool) -> Result<Value, F
 pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode) -> Result<Value, Failure> {
     if mode == AnisetteMode::Builtin && !tokio::task::spawn_blocking(api::native_anisette).await.unwrap_or(false) {
         return Err("Only a Mac on macOS 26 or earlier, or a macOS VM set up for it, offers its own anisette. Pair your devices with that Mac's Apparition instead.".into());
+    }
+    #[cfg(target_os = "macos")]
+    if mode == AnisetteMode::Vm && !api::vm::default_bundle().join("ready").exists() {
+        return Err("Set up the anisette VM first (below).".into());
     }
     state.settings.lock().unwrap().anisette = mode;
     state.save();

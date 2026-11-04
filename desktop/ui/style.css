@@ -778,6 +778,15 @@ details[open] > summary { margin-bottom: .85rem; }
 .stages li[data-state="failed"] { color: var(--danger); }
 .stages li[data-state="failed"] .stage-mark { border-color: var(--danger); background: var(--danger); }
 .stages li[data-state="skipped"] { opacity: .5; }
+.vm-progress { display: grid; gap: .35rem; margin: .4rem 0 .6rem; max-width: var(--measure); }
+.vm-progress .meter { grid-column: auto; margin-top: 0; }
+.vm-step { margin: 0; font-size: .9rem; }
+/* A step that can't tell how far along it is: a short piece moving, not a bar that looks nearly full. */
+.vm-progress .meter.indeterminate .meter-fill { width: 30%; }
+@media (prefers-reduced-motion: no-preference) {
+  .vm-progress .meter.indeterminate .meter-fill { animation: meter-slide 1.6s ease-in-out infinite; }
+}
+@keyframes meter-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 .meter {
   grid-column: 2 / 4;
   height: 6px;

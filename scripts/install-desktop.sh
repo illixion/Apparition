@@ -9,7 +9,8 @@ set -euo pipefail
 #
 # It builds for this Mac's architecture only (scripts/package-release.sh makes the universal
 # release) and bundles the same pieces a release has: the app, the `apparition-cli` command
-# line next to it, and the anisette helper.
+# line next to it, the anisette helper and, on Apple silicon, the anisette VM's runner and the
+# two programs it puts in the VM (selfhost/macos-vm/build.sh).
 #
 # Usage:   [VERBOSE=1] scripts/install-desktop.sh
 #          Build output goes to build/install-desktop.log; VERBOSE=1 streams it.
@@ -121,10 +122,22 @@ if cmp -s "$MACOS_DIR/$CLI-cli" "$MACOS_DIR/$APP_NAME"; then
   echo "✗ $CLI-cli is the app's own binary (a case clash in target/release); run cargo build -p apparition-installer --release and try again." >&2
   exit 1
 fi
+# The anisette VM (core/src/vm.rs): macOS runs in a VM only on Apple silicon.
+VM=0
+if [[ "$(uname -m)" == arm64 ]]; then
+  echo "▶ Building the anisette VM's runner…"
+  run bash selfhost/macos-vm/build.sh || fail
+  cp build/macos-vm/vm "$MACOS_DIR/apparition-vm"
+  cp build/macos-vm/guest-status "$MACOS_DIR/apparition-vm-guest-status"
+  cp build/macos-vm/guest-bridge "$MACOS_DIR/apparition-vm-guest-bridge"
+  VM=1
+fi
 
 echo "▶ Signing (app and command line: $SIGN_IDENTITY; helper: ad-hoc with its entitlements)…"
 codesign -f -s - --entitlements installer/anisette-helper.entitlements "$MACOS_DIR/$HELPER"
 codesign -f -s "$SIGN_IDENTITY" "$MACOS_DIR/$CLI-cli"
+# The runner needs the virtualization entitlement; the guest's two programs keep build.sh's signatures.
+[[ "$VM" == 1 ]] && codesign -f -s "$SIGN_IDENTITY" --entitlements selfhost/macos-vm/runner.entitlements "$MACOS_DIR/apparition-vm"
 # Sealed around the helper, not --deep: that would sign the helper over without its entitlements.
 codesign -f -s "$SIGN_IDENTITY" --entitlements desktop/Entitlements.plist "$STAGE/$APP_NAME.app"
 codesign --verify --strict "$STAGE/$APP_NAME.app" \

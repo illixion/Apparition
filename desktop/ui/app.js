@@ -35,6 +35,8 @@ const state = {
   handOff: true,
   /** @type {any} */ settings: {},
   /** This Mac gives its own anisette (never off a Mac). */ builtinAnisette: false,
+  /** This Mac's anisette VM is set up (Companion tab). */ vmAnisette: false,
+  /** The anisette VM's state (vm_status), while the Companion tab shows it. @type {any} */ vm: null,
   /** The Mac this computer is paired with for anisette: {macName, address, paired}, or null. @type {any} */ pairedMac: null,
   /** What the sign-in form has chosen: "builtin", "paired" or a server's address; null until it is open. @type {string|null} */ anisetteChoice: null,
   /** The latest companion status, for the header's badge. @type {any} */ companion: null,
@@ -122,13 +124,14 @@ async function receiveNearby(root) {
 /** What the anisette choice `choice` is, in a word or three. */
 function anisetteName(/** @type {string} */ choice) {
   if (choice === "builtin") return "this Mac's own";
+  if (choice === "vm") return state.vmAnisette ? "this Mac's anisette VM" : "anisette VM (not set up)";
   if (choice === "paired") return state.pairedMac ? `paired Mac (${state.pairedMac.macName})` : "paired Mac (not paired)";
   return choice.trim() ? "your own server" : "none";
 }
 
-/** The anisette a sign-in uses when nothing was chosen: this Mac's own, else the paired Mac's. */
+/** The anisette a sign-in uses when nothing was chosen: this Mac's own, else its anisette VM, else the paired Mac's. */
 function defaultAnisette() {
-  return state.builtinAnisette ? "builtin" : state.pairedMac ? "paired" : "";
+  return state.builtinAnisette ? "builtin" : state.vmAnisette ? "vm" : state.pairedMac ? "paired" : "";
 }
 
 /**
@@ -141,9 +144,9 @@ async function drawSetupBadge() {
   const choice = state.anisetteChoice ?? state.settings?.anisette ?? defaultAnisette();
   const offered = state.companion?.relay?.running ? state.companion?.anisette?.offered : null;
   const parts = [`Sign-in anisette: ${anisetteName(choice)}`];
-  if (offered) parts.push("Companion offers: this Mac's own");
+  if (offered) parts.push(offered === "vm" ? "Companion offers: this Mac's anisette VM" : "Companion offers: this Mac's own");
   text.textContent = parts.join(" · ");
-  const mac = choice === "builtin" || (choice === "paired" && state.pairedMac);
+  const mac = choice === "builtin" || (choice === "vm" && state.vmAnisette) || (choice === "paired" && state.pairedMac);
   badge.className = `setup-badge${mac ? "" : " attention"}`;
   badge.hidden = false;
 }
@@ -570,16 +573,20 @@ function signing() {
   // Apple ID
   appleForm.email.value = state.settings.email ?? "";
   const savedAnisette = state.settings.anisette;
-  const isServer = (/** @type {string|null|undefined} */ choice) => !!choice && choice !== "builtin" && choice !== "paired";
+  const isServer = (/** @type {string|null|undefined} */ choice) => !!choice && choice !== "builtin" && choice !== "paired" && choice !== "vm";
   // Docker's old default isn't carried over: Apparition no longer provides a server.
   appleForm.anisette.value = isServer(savedAnisette) && !/^https?:\/\/localhost:6969\/?$/i.test(savedAnisette) ? savedAnisette : "";
   const sourceSelect = /** @type {HTMLSelectElement} */ (appleForm.elements.namedItem("source"));
   const builtinOption = /** @type {HTMLOptionElement} */ ($(appleForm, "source-builtin"));
   // This Mac's own is offered only where macOS gives it.
   builtinOption.hidden = builtinOption.disabled = !state.builtinAnisette;
+  // The anisette VM, once the Companion tab has set it up.
+  const vmOption = /** @type {HTMLOptionElement} */ ($(appleForm, "source-vm"));
+  vmOption.hidden = vmOption.disabled = !state.vmAnisette;
   // Nothing saved comes back as null, so `!= null` (not `!== undefined`).
   const initial = savedAnisette != null && isServer(savedAnisette) && appleForm.anisette.value ? "server"
     : savedAnisette === "builtin" && state.builtinAnisette ? "builtin"
+    : savedAnisette === "vm" && state.vmAnisette ? "vm"
     : savedAnisette === "paired" ? "paired"
     : defaultAnisette() || "paired";
   sourceSelect.value = initial === "server" ? "server" : initial;
@@ -599,6 +606,7 @@ function signing() {
   const drawSource = () => {
     const source = sourceSelect.value;
     $(appleForm, "anisette-builtin-hint").hidden = source !== "builtin";
+    $(appleForm, "anisette-vm-hint").hidden = source !== "vm";
     $(appleForm, "anisette-paired").hidden = source !== "paired";
     for (const role of ["anisette-server", "anisette-server-hint"]) $(appleForm, role).hidden = source !== "server";
     appleForm.anisette.required = source === "server";
@@ -868,7 +876,7 @@ function signInError(/** @type {any} */ error, /** @type {string} */ anisette = 
   if (error?.cancelled) return message;
   // core's REFUSED_ANISETTE and the paired Mac's failures already explain themselves.
   if (/-80045|-80046/.test(message) || error?.kind === "pairedMac") return message;
-  const usingServer = anisette !== "builtin" && anisette !== "paired";
+  const usingServer = anisette !== "builtin" && anisette !== "paired" && anisette !== "vm";
   if (usingServer && (/anisette/i.test(message) || /connect|dns|resolve|refused/i.test(message)))
     return `Couldn't sign in. Check that the anisette server is running and its address is right.\n\n${message}`;
   return message;
@@ -1556,10 +1564,76 @@ function buildCompanion() {
   companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((input) =>
     input.addEventListener("change", () => {
       const mode = /** @type {HTMLInputElement} */ (input).value;
-      const note = mode === "builtin" ? "Starting this Mac's anisette…" : "";
+      const note = mode === "builtin" ? "Starting this Mac's anisette…" : mode === "vm" ? "Offering the anisette VM's…" : "";
       companionCall("companion_set_anisette", { mode }, note);
     }),
   );
+  // The anisette VM: one button, then progress until it is set up (vm.rs does the work, resumable).
+  const vmRun = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-setup-run"));
+  const startVm = async (/** @type {string|null} */ ipsw) => {
+    vmNote = null;
+    try {
+      await invoke("vm_setup", { ipsw });
+    } catch (error) {
+      vmNote = { text: messageOf(error), kind: "error" };
+    }
+    refreshCompanion();
+  };
+  vmRun.addEventListener("click", () => startVm(null));
+  $(companionPanel, "vm-pick").addEventListener("click", async () => {
+    const [path] = await invoke("pick_file", { kind: "ipsw" });
+    if (path) startVm(path);
+  });
+  $(companionPanel, "vm-cancel").addEventListener("click", async () => {
+    await invoke("vm_cancel");
+    refreshCompanion();
+  });
+  const vmCheck = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-check"));
+  vmCheck.addEventListener("click", async () => {
+    setBusy(vmCheck, true);
+    vmNote = { text: "Asking Apple with the VM's anisette (no Apple ID is used)…" };
+    refreshCompanion();
+    try {
+      await invoke("vm_check");
+      vmNote = { text: "Apple accepts this VM's anisette.", kind: "good" };
+    } catch (error) {
+      vmNote = { text: messageOf(error), kind: "error" };
+    }
+    setBusy(vmCheck, false);
+    refreshCompanion();
+  });
+  // Removing takes a second click: it deletes 30 GB that took 45 minutes to make.
+  const vmRemove = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-remove"));
+  let removeArmed = 0;
+  vmRemove.addEventListener("click", async () => {
+    if (!removeArmed) {
+      vmRemove.textContent = "Move it to the Trash";
+      removeArmed = window.setTimeout(() => {
+        removeArmed = 0;
+        vmRemove.textContent = "Remove…";
+      }, 5000);
+      return;
+    }
+    window.clearTimeout(removeArmed);
+    removeArmed = 0;
+    vmRemove.textContent = "Remove…";
+    try {
+      state.vm = await invoke("vm_remove");
+      state.vmAnisette = false;
+      vmNote = { text: "The anisette VM is in the Trash. Empty it to get the disk space back." };
+    } catch (error) {
+      vmNote = { text: messageOf(error), kind: "error" };
+    }
+    refreshCompanion();
+  });
+  listen("vm-progress", (/** @type {any} */ e) => {
+    if (state.vm) state.vm = { ...state.vm, settingUp: true, progress: e.payload };
+    drawVm();
+  });
+  listen("vm-finished", (/** @type {any} */ e) => {
+    vmNote = e.payload.ok ? { text: "The anisette VM is set up, and the companion offers it to paired devices.", kind: "good" } : null;
+    refreshCompanion();
+  });
   // A macOS VM in recoveryOS can't paste: show the short line to type, and what it has fetched.
   const vmStatus = $(companionPanel, "vm-setup-status");
   const vmLines = $(companionPanel, "vm-setup-lines");
@@ -1635,8 +1709,75 @@ async function companionCall(/** @type {string} */ command, /** @type {any} */ a
 
 async function refreshCompanion() {
   try {
-    drawCompanion(await invoke("companion_status"));
+    const [status, vm] = await Promise.all([invoke("companion_status"), invoke("vm_status")]);
+    state.vm = previewVm ?? vm;
+    state.vmAnisette = !!vm?.ready;
+    drawCompanion(status);
   } catch {}
+}
+
+/** Debug builds: the anisette VM's group in a sample state (APPARITION_DESKTOP_PREVIEW=vm-new, vm-setup, vm-error;
+ * plain `vm` shows the real one). */
+const VM_PREVIEWS = {
+  "vm-new": { supported: true, exists: false, installed: false, ready: false, settingUp: false, imageCached: false, diskBytes: 0 },
+  "vm-setup": { supported: true, exists: true, installed: true, ready: false, settingUp: true, imageCached: true, diskBytes: 23e9,
+    progress: { step: "recovery", text: "recoveryOS is turning SIP off and installing Apparition", fraction: null } },
+  "vm-install": { supported: true, exists: true, installed: false, ready: false, settingUp: true, imageCached: true, diskBytes: 9e9,
+    progress: { step: "install", text: "Installing macOS in the VM", fraction: 0.42 } },
+  "vm-error": { supported: true, exists: true, installed: true, ready: false, settingUp: false, imageCached: true, diskBytes: 23e9,
+    error: "recoveryOS's csrutil didn't accept the VM's account; ~/Library/Application Support/Apparition/anisette.vm/screen.png has its screen. Run setup again to retry." },
+};
+/** @type {any} */
+let previewVm = null;
+
+/** A note under the anisette VM's buttons: the last check's answer, an error. */
+/** @type {{text: string, kind?: string}|null} */
+let vmNote = null;
+
+/** The anisette VM's group: what it is doing, or what can be done with it. */
+function drawVm() {
+  const vm = state.vm;
+  if (!companionPanel.firstElementChild || !vm) return;
+  const group = $(companionPanel, "vm");
+  // Only where it can run: a Mac with Apple silicon, and one with no anisette of its own (or one that has it set up).
+  group.hidden = !vm.supported || (!!state.companion?.anisette?.native && !vm.exists);
+  if (group.hidden) return;
+  const busy = !!vm.settingUp;
+  const progress = vm.progress;
+  $(companionPanel, "vm-progress").hidden = !busy;
+  if (busy) {
+    $(companionPanel, "vm-step").textContent = progress?.text ?? "Starting…";
+    const bar = $(companionPanel, "vm-bar");
+    const known = progress?.fraction != null;
+    bar.parentElement?.classList.toggle("indeterminate", !known);
+    bar.style.width = known ? `${Math.round(progress.fraction * 100)}%` : "";
+  }
+  const pill = $(companionPanel, "vm-pill");
+  const [label, kind] = busy ? ["Setting up", "info"]
+    : vm.ready ? (vm.serving && vm.phase === "running" ? ["Running", "good"] : ["Saved", "good"])
+    : vm.exists ? ["Not finished", "warn"]
+    : ["", ""];
+  pill.hidden = !label;
+  pill.textContent = label;
+  pill.className = `pill ${kind}`.trim();
+  $(companionPanel, "vm-intro").hidden = vm.ready;
+  $(companionPanel, "vm-memory-note").hidden = vm.ready || busy;
+  const run = $(companionPanel, "vm-setup-run");
+  run.hidden = busy || vm.ready;
+  run.textContent = vm.exists ? "Finish setting it up" : "Set up the anisette VM";
+  $(companionPanel, "vm-pick").hidden = busy || vm.ready || vm.installed || vm.imageCached;
+  $(companionPanel, "vm-cancel").hidden = !busy;
+  $(companionPanel, "vm-check").hidden = busy || !vm.ready;
+  $(companionPanel, "vm-remove").hidden = busy || !vm.exists;
+  const disk = vm.diskBytes ? ` It takes ${(vm.diskBytes / 1e9).toFixed(1)} GB of disk.` : "";
+  const text = vmNote?.text
+    ?? (vm.error && !busy ? vm.error
+      : vm.ready ? (vm.serving && vm.phase === "running"
+          ? `Running. It is saved to disk and stopped after a few idle minutes.${disk}`
+          : `Saved to disk, using no memory. It wakes in about a second when a device signs in.${disk}`)
+      : !busy && vm.exists ? "Setup stopped partway; it carries on from where it was." : "");
+  const kindOf = vmNote?.kind ?? (vm.error && !busy ? "error" : "");
+  setStatus($(companionPanel, "vm-status"), text, kindOf);
 }
 
 const amount = (/** @type {number} */ bytes) => (bytes < 1000 ? `${bytes} B` : megabytes(bytes));
@@ -1697,7 +1838,8 @@ function drawCompanion(/** @type {any} */ status) {
   $(companionPanel, "vm-setup").hidden = !status.anisette.builtinAvailable;
   const anisette = status.anisette;
   $(companionPanel, "mode-builtin").hidden = !anisette.native;
-  $(companionPanel, "anisette-not-mac").hidden = anisette.native;
+  $(companionPanel, "mode-vm").hidden = !state.vmAnisette && anisette.mode !== "vm";
+  $(companionPanel, "anisette-not-mac").hidden = anisette.native || state.vmAnisette;
   $(companionPanel, "anisette-not-mac-why").textContent = anisette.builtinAvailable
     ? "macOS 27 keeps it to itself outside a VM set up for it"
     : "only a Mac does";
@@ -1709,7 +1851,7 @@ function drawCompanion(/** @type {any} */ status) {
   });
 
   const pairing = status.pairing;
-  const builtin = anisette.mode === "builtin";
+  const builtin = anisette.mode === "builtin" || anisette.mode === "vm";
   $(companionPanel, "access").hidden = !builtin;
   const accessPill = $(companionPanel, "access-pill");
   accessPill.textContent = "Encrypted · paired devices only";
@@ -1751,9 +1893,12 @@ function drawCompanion(/** @type {any} */ status) {
       ? "Turn the relay on to offer anisette."
       : anisette.offered === "builtin"
         ? "Offering this Mac's own anisette to paired devices and computers."
-        : "");
+        : anisette.offered === "vm"
+          ? "Offering the anisette VM's to paired devices and computers."
+          : "");
   const kind = companionNote?.kind ?? (anisette.error ? "error" : anisette.offered ? "good" : "");
   setStatus($(companionPanel, "anisette-status"), text, kind);
+  drawVm();
 }
 
 // ------------------------------------------------------------ start
@@ -1766,7 +1911,8 @@ async function start() {
   state.info = await invoke("app_info");
   document.body.classList.toggle("mac", state.info.platform === "macos-universal");
   state.settings = await invoke("saved_settings");
-  [state.builtinAnisette, state.pairedMac] = await Promise.all([invoke("builtin_anisette"), invoke("paired_mac")]);
+  [state.builtinAnisette, state.pairedMac, state.vm] = await Promise.all([invoke("builtin_anisette"), invoke("paired_mac"), invoke("vm_status")]);
+  state.vmAnisette = !!state.vm?.ready;
   drawSetupBadge();
   // The companion's status only polls on its own tab; the badge needs to know on every screen.
   setInterval(refreshCompanion, 5000);
@@ -1792,6 +1938,14 @@ async function start() {
   if (state.info.preview === "companion") {
     render();
     return showView("companion");
+  }
+  if (/^vm(-|$)/.test(state.info.preview ?? "")) {
+    previewVm = VM_PREVIEWS[state.info.preview] ?? null;
+    render();
+    showView("companion");
+    // The real VM (`vm`): from the anisette choice down; the samples: the VM's group.
+    const target = previewVm ? '[data-role="vm"]' : '[data-role="anisette-modes"]';
+    return setTimeout(() => companionPanel.querySelector(target)?.scrollIntoView({ block: "start" }), 600);
   }
   if (state.info.preview) return preview(state.info.preview);
   render();

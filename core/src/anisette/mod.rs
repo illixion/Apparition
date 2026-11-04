@@ -14,3 +14,5 @@ pub mod native;
 mod server;
 
 pub use server::{Access, Server, start};
+#[cfg(feature = "desktop")]
+pub use server::start_vm;

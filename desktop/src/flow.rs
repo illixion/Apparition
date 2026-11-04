@@ -530,6 +530,11 @@ pub async fn apple_id_sign_in(
         if paired_mac(state.clone()).is_none() {
             return Err("Pair this computer with your Mac first.".into());
         }
+    } else if anisette == api::VM_ANISETTE {
+        #[cfg(target_os = "macos")]
+        if !api::vm::default_bundle().join("ready").exists() {
+            return Err("Set up the anisette VM first (Companion tab).".into());
+        }
     } else if !(anisette.starts_with("http://") || anisette.starts_with("https://")) {
         return Err("The anisette server's address starts with http:// or https://.".into());
     }
@@ -711,6 +716,8 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
                 .blocking_pick_files()
                 .unwrap_or_default(),
             "folder" => dialog.set_title("Choose the project's Git checkout").blocking_pick_folder().into_iter().collect(),
+            // The anisette VM's macOS (vm.rs checks it against the pinned SHA-256).
+            "ipsw" => dialog.set_title("Choose the macOS 26.6.2 restore image").add_filter("macOS restore images", &["ipsw"]).blocking_pick_file().into_iter().collect(),
             _ => return Err("unknown kind of file".into()),
         };
         Ok(paths.into_iter().filter_map(|p| p.into_path().ok()).map(|p| p.to_string_lossy().to_string()).collect())

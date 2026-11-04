@@ -111,6 +111,7 @@
       <div class="modes compact" data-role="anisette-modes">
         <label class="mode"><input type="radio" name="anisette-mode" value="off"><span class="mode-title">Don't offer it</span><span class="mode-text">This companion relays only.</span></label>
         <label class="mode" data-role="mode-builtin"><input type="radio" name="anisette-mode" value="builtin"><span class="mode-title">This Mac's own</span><span class="mode-text">Made by macOS and sent to paired devices and computers over the encrypted channel. Its HTTP provider listens only on this Mac. It never sees an Apple ID or password.</span></label>
+        <label class="mode" data-role="mode-vm" hidden><input type="radio" name="anisette-mode" value="vm"><span class="mode-title">This Mac's anisette VM</span><span class="mode-text">Made by macOS in the VM set up below and sent the same way, over the encrypted channel to paired devices and computers only. The VM wakes in about a second when one signs in, and is saved to disk again when idle.</span></label>
       </div>
       <p class="hint" data-role="anisette-not-mac" hidden>This computer doesn't give its own anisette: <span data-role="anisette-not-mac-why">only a Mac does</span>. Pair your devices with your Mac's Apparition for signing in; this companion still relays for them.</p>
       <div class="access" data-role="access" hidden>
@@ -137,8 +138,29 @@
       <p class="status" data-role="anisette-status" hidden></p>
     </div>
 
+    <div class="group" data-role="vm" hidden>
+      <div class="group-head">
+        <h2 class="small">Anisette VM on this Mac</h2>
+        <span class="pill" data-role="vm-pill" hidden></span>
+      </div>
+      <p class="hint" data-role="vm-intro">macOS 27 keeps this Mac's anisette to itself. A small macOS 26 virtual machine that exists only for that gives it instead. Setting it up takes about 45 minutes with nothing to do, or about 11 if this Mac has the restore image already: a 20 GB download from Apple, checked against Apple's own checksum, then the install and two short visits to the VM's recoveryOS that Apparition types for itself. No administrator password is needed. It then needs about 30 GB of disk, and 1.5 GB of memory only while it runs: idle, it is saved to disk and stopped, and it wakes in about a second when a device signs in.</p>
+      <p class="hint" data-role="vm-memory-note" hidden>While it installs, the VM uses 4 GB of memory for a few minutes. Close heavy apps first if this Mac has 8 GB.</p>
+      <div class="vm-progress" data-role="vm-progress" hidden>
+        <p class="vm-step" data-role="vm-step"></p>
+        <span class="meter"><span class="meter-fill" data-role="vm-bar"></span></span>
+      </div>
+      <div class="row" data-role="vm-actions">
+        <button type="button" class="button small" data-role="vm-setup-run">Set up the anisette VM</button>
+        <button type="button" class="button quiet small" data-role="vm-pick">Use a restore image I have…</button>
+        <button type="button" class="button quiet small" data-role="vm-cancel" hidden>Stop</button>
+        <button type="button" class="button quiet small" data-role="vm-check" hidden>Check with Apple</button>
+        <button type="button" class="button quiet small" data-role="vm-remove" hidden>Remove…</button>
+      </div>
+      <p class="status" data-role="vm-status" hidden></p>
+    </div>
+
     <div class="group" data-role="vm-setup" hidden>
-      <h2 class="small">Set up a macOS VM</h2>
+      <h2 class="small">Your own macOS VM (UTM, by hand)</h2>
       <p class="hint">For a VM that gives your anisette on macOS 27 (<a href="https://github.com/illixion/Apparition/blob/main/selfhost/macos-vm/README.md" target="_blank" rel="noreferrer">the walkthrough</a>). Boot the VM into recoveryOS, open Utilities &gt; Terminal, and type the line below with the address the VM can reach this Mac at. It installs this very build, with no internet needed.</p>
       <div class="row"><button type="button" class="button small" data-role="vm-setup-start">Show the line to type</button></div>
       <div data-role="vm-setup-lines" hidden>
@@ -292,11 +314,13 @@
       <label class="field" data-role="anisette-source">Anisette data
         <select name="source">
           <option value="builtin" data-role="source-builtin">This Mac's own</option>
+          <option value="vm" data-role="source-vm">This Mac's anisette VM</option>
           <option value="paired">From my paired Mac</option>
           <option value="server">From an anisette server I run</option>
         </select>
       </label>
       <p class="hint" data-role="anisette-builtin-hint">Signing in to Apple needs "anisette" data from a Mac. macOS makes this Mac's, so there is nothing to run or install. Only Apple sees it.</p>
+      <p class="hint" data-role="anisette-vm-hint" hidden>Signing in to Apple needs "anisette" data from a Mac. The anisette VM set up in the Companion tab makes it, waking for the sign-in if it is saved. Only Apple sees it.</p>
       <div class="paired-mac" data-role="anisette-paired">
         <p class="hint" data-role="paired-mac-hint">Signing in to Apple needs "anisette" data from a Mac you own: your Mac on macOS 26 or earlier, or a macOS VM on it set up for this. Run Apparition there with its companion offering the Mac's anisette, then pair this computer with it. Requests travel over the companion's encrypted channel, never your Apple ID or password. <button type="button" class="link" data-role="help">More in the FAQ</button></p>
         <p class="status good" data-role="paired-mac-status" hidden></p>

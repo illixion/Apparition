@@ -287,6 +287,10 @@ pub const BUILTIN_ANISETTE: &str = "builtin";
 /// companion's encrypted channel (see [`companion_client`]).
 pub const PAIRED_MAC_ANISETTE: &str = "paired";
 
+/// What to pass as the anisette address to use this Mac's anisette VM ([`vm`]), which its runner serves on
+/// loopback, starting it (or resuming it) when it isn't running.
+pub const VM_ANISETTE: &str = "vm";
+
 /// Whether this build and platform has the built-in anisette: a Mac's own, so only on macOS.
 /// Whether this Mac gives its anisette is [`native_anisette`].
 pub fn builtin_anisette_available() -> bool {
@@ -308,11 +312,15 @@ pub fn native_anisette() -> bool {
 }
 
 /// The anisette to use when the person names none, for the Apple ID folder `data_dir`: this
-/// Mac's own when it gives it, else the Mac this computer is paired with, else `None` (pair
-/// with a Mac, or give an anisette server's address).
+/// Mac's own when it gives it, else its anisette VM when one is set up, else the Mac this computer is paired with,
+/// else `None` (pair with a Mac, or give an anisette server's address).
 pub fn default_anisette(data_dir: &std::path::Path) -> Option<&'static str> {
     if native_anisette() {
         return Some(BUILTIN_ANISETTE);
+    }
+    #[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
+    if vm::default_bundle().join("ready").exists() {
+        return Some(VM_ANISETTE);
     }
     #[cfg(feature = "desktop")]
     if companion_client::status(&anisette_dir(data_dir)).is_some() {
@@ -368,6 +376,7 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
     match requested {
         BUILTIN_ANISETTE => builtin_address().await,
         PAIRED_MAC_ANISETTE => paired_mac_address(data_dir).await,
+        VM_ANISETTE => vm_address().await,
         other => Ok(other.to_string()),
     }
 }
@@ -385,6 +394,17 @@ async fn builtin_address() -> Result<String, Report> {
     #[cfg(not(all(feature = "anisette", target_os = "macos")))]
     {
         bail!("Only a Mac makes its own anisette. Pair this computer with your Mac (or a macOS VM) running Apparition, or give the address of an anisette server you run.")
+    }
+}
+
+async fn vm_address() -> Result<String, Report> {
+    #[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
+    {
+        Ok(vm::serve(&vm::default_bundle()).await.context("Couldn't use this Mac's anisette VM")?)
+    }
+    #[cfg(not(all(feature = "desktop", feature = "anisette", target_os = "macos")))]
+    {
+        bail!("Only a Mac with Apple silicon runs the anisette VM")
     }
 }
 
