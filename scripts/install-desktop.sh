@@ -29,6 +29,10 @@ set -euo pipefail
 #                       40-character SHA-1 hash pins one.
 #   DEST_DIR=…          where the app goes (default /Applications)
 #   LAUNCH=0            install without opening the app
+#   LINK=0              leave `apparition` on PATH alone. By default `apparition-cli link` points
+#                       ~/.local/bin/apparition at the installed app's command line (a symlink, so
+#                       it follows every reinstall); LINK_DIR=… picks another directory. A real file
+#                       there is someone's own install and is left alone, with a warning.
 #   VERBOSE=1           stream the build instead of logging it
 
 APP_NAME="Apparition"
@@ -162,6 +166,16 @@ fi
 echo "▶ Installing to ${DEST}…"
 rm -rf -- "$DEST"
 ditto "$STAGE/$APP_NAME.app" "$DEST"
+
+# The command line on PATH is what build-and-sign, agents' `inject` and the Store's builds run, so
+# keep it the one just installed rather than whatever older copy the link pointed at.
+if [[ "${LINK:-1}" != 0 ]]; then
+  echo "▶ Linking the command line onto PATH…"
+  # No empty array: bash 3.2 under `set -u` calls it unbound.
+  if ! "$DEST/Contents/MacOS/$CLI-cli" link ${LINK_DIR:+--dir "$LINK_DIR"}; then
+    echo "⚠ Couldn't link \`$CLI\` onto PATH (above); the app is installed. Run \`$DEST/Contents/MacOS/$CLI-cli link\` once it's sorted." >&2
+  fi
+fi
 
 if [[ "${LAUNCH:-1}" == 0 ]]; then
   echo "✓ $APP_NAME installed to $DEST_DIR (not launched)."
