@@ -52,11 +52,18 @@ fn pick(inventory: &Value, plan_exists: impl Fn(&str) -> bool) -> Option<(String
         .find(|(id, _)| plan_exists(id))
 }
 
-/// The core's calls run on a blocking thread, driven with `block_on`, as the app's own install
-/// flow does (`flow.rs`): their futures aren't provably `Send`, which a task on the shared
-/// runtime needs.
+/// The core's calls run on a thread of their own, driven with `block_on`: their futures aren't
+/// provably `Send`, which a task on the shared runtime needs, and they are deep. The tunnel's
+/// setup overflowed the 2 MiB stack of a tokio blocking thread in a debug build (the first run
+/// against a Vision Pro, 2026-11-04), so the thread gets a stack sized like the main thread's.
 async fn off_thread<T: Send + 'static>(job: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(job).await.map_err(|e| e.to_string())?
+    let (send, receive) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("store-device".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || { let _ = send.send(job()); })
+        .map_err(|e| format!("couldn't start a thread for the device: {e}"))?;
+    receive.await.map_err(|_| "the device call stopped without an answer".to_string())?
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
