@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -44,6 +45,56 @@ class WorkflowTests(unittest.TestCase):
                 run.assert_not_called()
             self.assertEqual((args.bundle/'credentials.txt').read_text(),'retained')
 
+    def test_shutdown_of_a_suspended_vm_whose_runner_is_gone_resumes_it_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            bundle=Path(d)
+            workflow.saved_state(bundle).write_bytes(b'state')
+            states=iter([None, {'ok': True}, {'ok': True}, None])
+            with patch.object(workflow,'live',side_effect=lambda b: next(states)), patch.object(workflow,'start') as start, \
+                 patch.object(workflow,'control') as control:
+                workflow.shutdown(bundle)
+            start.assert_called_once_with(bundle, background=True)
+            control.assert_called_once_with(bundle, 'shutdown')
+
+
+class RestoreImageTests(unittest.TestCase):
+    image = dict(version='26.0', build='TEST', size=11, sha256=__import__('hashlib').sha256(b'macos image').hexdigest(),
+                 url='https://example.invalid/path/Test_Restore.ipsw')
+
+    def test_the_pinned_build_is_the_one_the_runner_accepts(self):
+        source = Path(__file__).with_name('main.swift').read_text()
+        builds = re.search(r'let verifiedBuilds = \[([^\]]*)\]', source).group(1)
+        self.assertEqual(re.findall(r'"([^"]+)"', builds)[0], workflow.RESTORE_IMAGE['build'])
+        self.assertTrue(workflow.RESTORE_IMAGE['url'].startswith('https://updates.cdn-apple.com/'))
+        self.assertIn(workflow.RESTORE_IMAGE['build'], workflow.RESTORE_IMAGE['url'])
+
+    def test_download_is_checked_and_a_checked_file_is_not_hashed_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            calls=[]
+            def download(url, partial):
+                calls.append(url); partial.write_bytes(b'macos image')
+            path = workflow.fetch_ipsw(self.image, Path(d), download)
+            self.assertEqual(path.read_bytes(), b'macos image')
+            self.assertEqual(path.name, 'Test_Restore.ipsw')
+            with patch.object(workflow.hashlib, 'sha256', side_effect=AssertionError('hashed again')):
+                self.assertEqual(workflow.fetch_ipsw(self.image, Path(d), download), path)
+            self.assertEqual(len(calls), 1)
+
+    def test_a_download_that_does_not_match_is_set_aside_not_used(self):
+        with tempfile.TemporaryDirectory() as d:
+            def download(url, partial): partial.write_bytes(b'macos imagE')
+            with self.assertRaisesRegex(RuntimeError, 'does not match'):
+                workflow.fetch_ipsw(self.image, Path(d), download)
+            self.assertFalse(Path(d, 'Test_Restore.ipsw').exists())
+            self.assertTrue(Path(d, 'Test_Restore.ipsw.bad').exists())
+
+    def test_a_short_download_is_kept_to_resume(self):
+        with tempfile.TemporaryDirectory() as d:
+            def download(url, partial): partial.write_bytes(b'macos')
+            with self.assertRaisesRegex(RuntimeError, 'run this again'):
+                workflow.fetch_ipsw(self.image, Path(d), download)
+            self.assertEqual(Path(d, 'Test_Restore.ipsw.partial').read_bytes(), b'macos')
+
 
 import os
 import plistlib
@@ -57,7 +108,7 @@ NEVER_DISABLE = {'com.apple.Finder', 'com.apple.Dock.agent', 'com.apple.SystemUI
                  'com.apple.bluetoothd', 'com.apple.storagekitd', 'com.apple.analyticsd', 'com.apple.symptomsd',
                  'com.apple.sysmond', 'com.apple.loginwindow', 'com.apple.WindowServer', 'com.apple.opendirectoryd',
                  'com.apple.securityd', 'com.apple.cfprefsd.xpc.daemon', 'com.apple.mobile.keybagd',
-                 'com.illixion.apparition.anisette'}
+                 'com.illixion.apparition.anisette', 'com.illixion.apparition.vm-anisette', 'com.illixion.apparition.vm-bridge'}
 
 
 def labels(name):

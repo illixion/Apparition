@@ -14,17 +14,32 @@ import threading
 import re
 import ipaddress
 import hashlib
+import shutil
 import signal
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 RUNNER = ROOT / 'build/macos-vm/vm'
 
+# The macOS the VM flow is verified with (main.swift's verifiedBuilds). Apple's VM restore catalog lists only the newest
+# macOS, so this is Apple's own CDN address for that build, pinned to the size and SHA-256 Apple publishes with it
+# (x-amz-meta-digest-sha256 on the file; ipsw.me lists the same).
+RESTORE_IMAGE = dict(
+    version='26.6.2', build='25G83', size=19772231540,
+    sha256='885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95',
+    url='https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/'
+        'UniversalMac_26.6.2_25G83_Restore.ipsw')
+CACHE = Path.home() / 'Library/Caches/Apparition'
+
+
+def saved_state(bundle):
+    return bundle / 'suspended.vzvmsave'
+
 
 def control(bundle, operation='status', **values):
     config = json.loads((bundle / 'control.json').read_text())
     with socket.create_connection(('127.0.0.1', config['port']), 2) as sock:
-        sock.settimeout(60 if operation in ('screen','type','click-text') else 3)
+        sock.settimeout(60 if operation in ('screen','type','click-text') else 180 if operation in ('suspend','resume') else 3)
         sock.sendall(json.dumps(dict(token=config['token'], operation=operation, **values)).encode() + b'\n')
         output = b''
         while b'\n' not in output:
@@ -67,11 +82,13 @@ def wait_for(check, timeout, description):
 
 
 def ensure_runner():
-    if not RUNNER.exists() or not (RUNNER.parent/'guest-status').exists() or RUNNER.stat().st_mtime < max((HERE/name).stat().st_mtime for name in ['main.swift','guest-status.c','build.sh']):
+    sources = ['main.swift', 'guest-status.c', 'guest-bridge.c', 'build.sh']
+    built = [RUNNER, RUNNER.parent/'guest-status', RUNNER.parent/'guest-bridge']
+    if not all(path.exists() for path in built) or min(path.stat().st_mtime for path in built) < max((HERE/name).stat().st_mtime for name in sources):
         subprocess.run(['bash', str(HERE / 'build.sh')], check=True)
 
 
-def start(bundle, recovery=False, network=False, background=False):
+def start(bundle, recovery=False, network=False, background=False, serve=False):
     existing = live(bundle)
     if existing:
         raise RuntimeError('VM is already running; use shutdown before changing boot mode')
@@ -80,8 +97,8 @@ def start(bundle, recovery=False, network=False, background=False):
     logs.mkdir(exist_ok=True)
     # Keep the boot log, but never log control tokens, input text or credentials.
     log = open(logs / ('recovery.log' if recovery else 'boot.log'), 'ab', buffering=0)
-    command = [str(RUNNER), 'setup' if recovery else 'run', str(bundle)]
-    if not recovery:
+    command = [str(RUNNER), 'setup' if recovery else 'serve' if serve else 'run', str(bundle)]
+    if not recovery and not serve:
         command += ['--network=on' if network else '--network=off']
     if background:
         command += ['--background']  # accessory app, window behind the others: never takes the keyboard
@@ -97,9 +114,60 @@ def start(bundle, recovery=False, network=False, background=False):
 
 
 def shutdown(bundle):
+    """A clean guest shutdown, also of a suspended VM: the runner resumes it first, and one whose runner is gone (the
+    host restarted) is resumed from its saved state by a new runner. Booting or provisioning over a saved state instead
+    would throw away the guest's memory, which is what a power cut does."""
+    if not live(bundle) and saved_state(bundle).exists():
+        start(bundle, background=True)
     if live(bundle):
         control(bundle, 'shutdown')
-        wait_for(lambda: not live(bundle), 120, 'guest shutdown')
+        wait_for(lambda: not live(bundle), 180, 'guest shutdown')
+
+
+def fetch_ipsw(image=RESTORE_IMAGE, directory=CACHE, download=None):
+    """The pinned restore image, downloaded once into ~/Library/Caches/Apparition (resumable) and checked against its
+    size and SHA-256 before anything uses it. Returns its path."""
+    directory.mkdir(parents=True, exist_ok=True)
+    final = directory / image['url'].rsplit('/', 1)[1]
+    stamp = final.with_name(final.name + '.sha256')
+    if final.exists():
+        # Hashing 20 GB takes a minute: a stamp records that this very file (size and time) was checked.
+        status = final.stat()
+        if stamp.exists() and stamp.read_text().split() == [image['sha256'], str(status.st_size), str(int(status.st_mtime))]:
+            return final
+    else:
+        partial = final.with_name(final.name + '.partial')
+        have = partial.stat().st_size if partial.exists() else 0
+        free = shutil.disk_usage(directory).free
+        if free < image['size'] - have + (2 << 30):
+            print(f'Only {free / 1e9:.1f} GB is free right now for a {(image["size"] - have) / 1e9:.1f} GB download. macOS frees '
+                  'purgeable space as it is needed; if the download stops for lack of space, free some and run this again: '
+                  'it resumes.', flush=True)
+        print(f'Downloading macOS {image["version"]} ({image["build"]}, {image["size"] / 1e9:.1f} GB) from Apple'
+              f'{f", resuming at {have / 1e9:.1f} GB" if have else ""}', flush=True)
+        (download or curl_download)(image['url'], partial)
+        if partial.stat().st_size != image['size']:
+            raise RuntimeError(f'The download is {partial.stat().st_size} bytes, not {image["size"]}; run this again to resume it')
+        partial.rename(final)
+    print(f'Checking {final.name}', flush=True)
+    digest = hashlib.sha256()
+    with open(final, 'rb') as file:
+        while chunk := file.read(8 << 20):
+            digest.update(chunk)
+    if digest.hexdigest() != image['sha256']:
+        bad = final.with_name(final.name + '.bad')
+        final.rename(bad)
+        raise RuntimeError(f'{final.name} does not match the SHA-256 Apple publishes for it; it was moved to {bad.name}. '
+                           'Delete that file and run this again.')
+    status = final.stat()
+    stamp.write_text(f'{image["sha256"]} {status.st_size} {int(status.st_mtime)}\n')
+    return final
+
+
+def curl_download(url, partial):
+    # curl resumes (-C -) and retries on its own; -f fails on an HTTP error instead of saving the error page.
+    subprocess.run(['/usr/bin/curl', '-fL', '--retry', '10', '--retry-delay', '5', '--retry-all-errors', '-C', '-',
+                    '--progress-bar', '-o', str(partial), url], check=True)
 
 
 def address(bundle):
@@ -129,13 +197,14 @@ def tcp_ready(ip, port):
 def state(bundle):
     return dict(bundle=str(bundle), installed=(bundle/'installed').exists(),
                 provisioned=(bundle/'prepared').exists(), control=live(bundle), guest=report(bundle),
-                address=address(bundle), credentials=str(bundle/'credentials.txt'))
+                suspended=saved_state(bundle).exists(), address=address(bundle), credentials=str(bundle/'credentials.txt'))
 
 
 def payload_hash():
     digest=hashlib.sha256()
     for path in [HERE/'provision.sh', HERE/'first-boot.sh', HERE/'report-status.sh', HERE/'appliance-trim.sh',
-                 HERE/'appliance-disabled-user.txt', HERE/'appliance-disabled-system.txt', RUNNER.parent/'guest-status']:
+                 HERE/'appliance-disabled-user.txt', HERE/'appliance-disabled-system.txt', RUNNER.parent/'guest-status',
+                 RUNNER.parent/'guest-bridge']:
         digest.update(path.read_bytes())
     return digest.hexdigest()
 
@@ -145,12 +214,14 @@ def prepare(args):
     if not args.public_key.is_file():
         raise RuntimeError("Authorized public key file is missing")
     ensure_runner()
+    needs_image = not bundle.exists() or not (bundle/'installed').exists()
+    ipsw = args.ipsw or (fetch_ipsw() if needs_image else None)
     if not bundle.exists():
-        subprocess.run([str(RUNNER), 'create', str(args.ipsw), str(bundle)], check=True)
+        subprocess.run([str(RUNNER), 'create', str(ipsw), str(bundle)], check=True)
     if not (bundle/'restore-build').exists():
         raise RuntimeError('Unmanaged existing bundle: refusing to install over it')
     if not (bundle/'installed').exists():
-        subprocess.run([str(RUNNER), 'install', str(args.ipsw), str(bundle)], check=True)
+        subprocess.run([str(RUNNER), 'install', str(ipsw), str(bundle)], check=True)
     if not (bundle/'prepared').exists() or (bundle/'prepared').read_text().strip() != payload_hash():
         shutdown(bundle)
         command = shlex.join(['/bin/bash', str(HERE/'provision.sh'), str(bundle), str(args.public_key)])
@@ -304,6 +375,7 @@ def setup(args):
     if not tcp_ready(ip, 49160):
         raise RuntimeError(f'Guest reports a listener but host cannot reach {ip}:49160. Check the host route to the VM bridge and VPN configuration.')
     print(f'Companion ready: {ip}:49160. SSH: apparition@{ip}. Pairing and real-account sign-in must still be verified.')
+    print(f'To run it as the appliance (anisette on 127.0.0.1, suspended when idle): vm.py shutdown, then vm.py serve {shlex.quote(str(args.bundle))}')
 
 
 def main():
@@ -311,13 +383,14 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ['prepare','setup']:
         p=commands.add_parser(name)
-        p.add_argument('ipsw', type=lambda p: Path(p).expanduser().resolve())
-        p.add_argument('bundle', type=lambda p: Path(p).expanduser().resolve())
+        # [ipsw] bundle: without an IPSW, the pinned macOS (RESTORE_IMAGE) is downloaded and checked.
+        p.add_argument('paths', nargs='+', metavar='[ipsw] bundle', type=lambda p: Path(p).expanduser().resolve())
         p.add_argument('--public-key', type=lambda p: Path(p).expanduser().resolve(), required=True)
         if name == 'setup':
             p.add_argument('--manual-recovery',action='store_true',help='Use the keyboard yourself instead of own-window automation')
             p.add_argument('--companion', type=lambda p: Path(p).expanduser().resolve(), required=True)
-    for name in ['status','run','recovery','shutdown','network','key','type','click','click-text','screen','force-stop','credentials']:
+    commands.add_parser('fetch-ipsw', help=f'download and check macOS {RESTORE_IMAGE["version"]} into {CACHE}')
+    for name in ['status','run','serve','suspend','resume','recovery','shutdown','network','key','type','click','click-text','screen','force-stop','credentials']:
         p=commands.add_parser(name)
         p.add_argument('bundle', type=lambda p: Path(p).expanduser().resolve())
         if name in ['network','run']:
@@ -332,10 +405,18 @@ def main():
             p.add_argument('--manual-recovery',action='store_true')
             p.add_argument('--companion',type=lambda p:Path(p).expanduser().resolve(),required=True)
     args=parser.parse_args()
-    if args.command == 'prepare': prepare(args)
+    if args.command in ('prepare','setup'):
+        if len(args.paths) > 2: parser.error('give at most an IPSW and a bundle')
+        args.ipsw, args.bundle = (None, *args.paths) if len(args.paths) == 1 else args.paths
+    if args.command == 'fetch-ipsw': print(fetch_ipsw())
+    elif args.command == 'prepare': prepare(args)
     elif args.command == 'setup': setup(args)
     elif args.command == 'status': print(json.dumps(state(args.bundle),indent=2))
     elif args.command == 'run': start(args.bundle,network=args.network=='on')
+    elif args.command == 'serve':
+        start(args.bundle,background=True,serve=True)
+        print(f'Anisette: {control(args.bundle)["anisette"]}. The VM suspends when idle and resumes on the next request.')
+    elif args.command in ('suspend','resume'): print(json.dumps(control(args.bundle,args.command)))
     elif args.command == 'recovery': recover(args,resume=bool((live(args.bundle) or {}).get('recovery')))
     elif args.command == 'shutdown': shutdown(args.bundle)
     elif args.command == 'force-stop':

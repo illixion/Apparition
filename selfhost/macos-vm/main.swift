@@ -28,13 +28,22 @@ struct VMSettings: Codable {
     var displayWidth: Int
     var displayHeight: Int
     var ppi: Int
+    /// The virtual sound device. Off for the appliance: with it attached, coreaudiod in the guest grows by hundreds of MB.
     var audio: Bool
+    /// `serve`: the host loopback port of the anisette front door (6970 when absent).
+    var anisettePort: Int?
+    /// `serve`: suspend the VM after this many seconds without an anisette connection (300 when absent, 0 never).
+    var idleSuspendSeconds: Int?
+
+    var frontDoorPort: UInt16 { UInt16(clamping: anisettePort ?? 6970) }
+    var idleSeconds: TimeInterval { TimeInterval(idleSuspendSeconds ?? 300) }
 
     /// The appliance needs 1.5 GiB: macOS 26 doesn't boot in 1.25 GiB, and once its desktop services are trimmed
     /// (appliance-trim.sh) 1.5 GiB runs with no swap. A Mac with 8 GB gets that floor, one with more gets headroom.
     static func defaults() -> VMSettings {
         let small = ProcessInfo.processInfo.physicalMemory <= 9 << 30
-        return VMSettings(memoryMB: small ? 1536 : 2048, cpus: 2, displayWidth: 1920, displayHeight: 1200, ppi: 144, audio: true)
+        return VMSettings(memoryMB: small ? 1536 : 2048, cpus: 2, displayWidth: 1920, displayHeight: 1200, ppi: 144, audio: false,
+                          anisettePort: 6970, idleSuspendSeconds: 300)
     }
 
     static func url(_ b: Bundle_) -> URL { b.dir.appendingPathComponent("config.json") }
@@ -49,6 +58,7 @@ struct VMSettings: Codable {
         if let value = env["APPARITION_VM_MEMORY_MB"].flatMap(Int.init) { settings.memoryMB = value }
         if let value = env["APPARITION_VM_CPUS"].flatMap(Int.init) { settings.cpus = value }
         if let value = env["APPARITION_VM_PPI"].flatMap(Int.init) { settings.ppi = value }
+        if let value = env["APPARITION_VM_IDLE_SUSPEND"].flatMap(Int.init) { settings.idleSuspendSeconds = value }
         if let size = env["APPARITION_VM_DISPLAY"]?.split(separator: "x").compactMap({ Int($0) }), size.count == 2 {
             settings.displayWidth = size[0]; settings.displayHeight = size[1]
         }
@@ -115,6 +125,18 @@ func makeConfig(_ b: Bundle_, hardwareModel: VZMacHardwareModel, machineID: VZMa
 
 // MARK: install
 
+/// The restore images this flow has been verified with, end to end (install, recovery automation, trim, Apple accepting
+/// the anisette). vm.py pins the download of the first one. APPARITION_VM_ALLOW_UNVERIFIED=1 lets any other macOS 26 build
+/// through, for trying the next one.
+let verifiedBuilds = ["25G83"]  // macOS 26.6.2
+
+func checkVerified(_ image: VZMacOSRestoreImage) {
+    guard image.operatingSystemVersion.majorVersion == 26 else { fail("only macOS 26 is supported") }
+    guard verifiedBuilds.contains(image.buildVersion) || ProcessInfo.processInfo.environment["APPARITION_VM_ALLOW_UNVERIFIED"] == "1" else {
+        fail("macOS build \(image.buildVersion) hasn't been verified with this VM (verified: \(verifiedBuilds.joined(separator: ", "))); APPARITION_VM_ALLOW_UNVERIFIED=1 tries it anyway")
+    }
+}
+
 func create(ipsw: URL, dir: URL, diskGB: Int) async throws {
     let b = Bundle_(dir: dir)
     guard diskGB >= 40, diskGB <= 1024 else { fail("diskGB must be 40...1024") }
@@ -125,7 +147,7 @@ func create(ipsw: URL, dir: URL, diskGB: Int) async throws {
     guard let req = image.mostFeaturefulSupportedConfiguration else {
         fail("host can't run this image (no supported configuration)")
     }
-    guard image.operatingSystemVersion.majorVersion == 26 else { fail("only macOS 26 is supported") }
+    checkVerified(image)
     try FileManager.default.createDirectory(at: dir.deletingLastPathComponent(), withIntermediateDirectories: true)
     guard mkdir(dir.path, 0o700) == 0 else { fail("could not create a new bundle; refusing to overwrite") }
     try image.buildVersion.write(to: dir.appendingPathComponent("restore-build"), atomically: true, encoding: .utf8)
@@ -159,7 +181,7 @@ func configuration(_ dir: URL, network: Bool = false, minimumMemoryMB: Int = 0) 
 
 @MainActor func install(ipsw: URL, dir: URL) async throws {
     let image = try await VZMacOSRestoreImage.image(from: ipsw)
-    guard image.operatingSystemVersion.majorVersion == 26 else { fail("only macOS 26 is supported") }
+    checkVerified(image)
     guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("installed").path) else {
         fail("already installed; refusing to erase this VM")
     }
@@ -192,12 +214,322 @@ func configuration(_ dir: URL, network: Bool = false, minimumMemoryMB: Int = 0) 
 // MARK: run
 
 final class Delegate: NSObject, VZVirtualMachineDelegate, NSApplicationDelegate {
-    func guestDidStop(_ vm: VZVirtualMachine) { print("guest stopped"); exit(0) }
-    func virtualMachine(_ vm: VZVirtualMachine, didStopWithError e: Error) { print("stopped with error: \(e)"); exit(2) }
+    weak var machine: Machine?
+    /// Only the current VM stopping ends the runner; one stopped to suspend it was let go of first.
+    func current(_ vm: VZVirtualMachine) -> Bool { MainActor.assumeIsolated { machine?.vm === vm } }
+    func guestDidStop(_ vm: VZVirtualMachine) {
+        guard current(vm) else { return }
+        print("guest stopped"); exit(0)
+    }
+    func virtualMachine(_ vm: VZVirtualMachine, didStopWithError e: Error) {
+        guard current(vm) else { return }
+        print("stopped with error: \(e)"); exit(2)
+    }
     func virtualMachine(_ vm: VZVirtualMachine, networkDevice: VZNetworkDevice, attachmentWasDisconnectedWithError error: Error) {
         print("NETWORK ERROR: \(error)")
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+}
+
+struct RunnerError: LocalizedError {
+    let errorDescription: String?
+    init(_ text: String) { errorDescription = text }
+}
+
+/// The VM across suspends. Suspending pauses the VM, saves its memory and devices to `suspended.vzvmsave` in the bundle
+/// and stops it, which gives its memory back to the host (a 1.5 GiB guest saves in a few seconds). Resuming makes a new
+/// VZVirtualMachine from the same configuration and restores that file. The file only matches the disk as it was when it
+/// was saved, so it is deleted the moment it has been restored, and a cold boot deletes it first.
+@MainActor final class Machine {
+    enum Phase: String { case starting, running, suspending, suspended, resuming }
+
+    let dir: URL
+    let configuration: VZVirtualMachineConfiguration
+    let network: Bool
+    let delegate: Delegate
+    let statusListener: VZVirtioSocketListener
+    weak var view: VZVirtualMachineView?
+    private(set) var vm: VZVirtualMachine?
+    private(set) var phase = Phase.starting
+    /// The current VM's NAT attachment, kept so `network-off` can be undone.
+    private(set) var attachment: VZNetworkDeviceAttachment?
+    private(set) var suspendedAt: Date?
+    /// Called each time the VM runs again after starting, resuming or a failed suspend.
+    var onRunning: ((_ resumedAfter: TimeInterval?) -> Void)?
+    private var waiters: [CheckedContinuation<Void, Error>] = []
+    /// Why this configuration can't be saved, if it can't.
+    var unsaveable: String?
+
+    nonisolated static func savedState(_ dir: URL) -> URL { dir.appendingPathComponent("suspended.vzvmsave") }
+    var savedState: URL { Self.savedState(dir) }
+
+    init(dir: URL, configuration: VZVirtualMachineConfiguration, network: Bool, delegate: Delegate, statusListener: VZVirtioSocketListener) {
+        self.dir = dir
+        self.configuration = configuration
+        self.network = network
+        self.delegate = delegate
+        self.statusListener = statusListener
+        delegate.machine = self
+    }
+
+    private func make() -> VZVirtualMachine {
+        let vm = VZVirtualMachine(configuration: configuration)
+        vm.delegate = delegate
+        (vm.socketDevices.first as? VZVirtioSocketDevice)?.setSocketListener(statusListener, forPort: 3939)
+        attachment = vm.networkDevices.first?.attachment
+        self.vm = vm
+        view?.virtualMachine = vm
+        return vm
+    }
+
+    /// A cold boot. A saved state is discarded first: once this boot writes to the disk, it would no longer match.
+    func boot(recovery: Bool) throws {
+        try? FileManager.default.removeItem(at: savedState)
+        let bootID = dir.appendingPathComponent("guest-status/boot-id")
+        try UUID().uuidString.write(to: bootID, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: bootID.path)
+        phase = .starting
+        let vm = make()
+        let options = VZMacOSVirtualMachineStartOptions()
+        options.startUpFromMacOSRecovery = recovery
+        vm.start(options: options) { [self] error in
+            if let error { fail("start failed: \(error)") }
+            if !network { vm.networkDevices.first?.attachment = nil }
+            print("VM STARTED")
+            becameRunning(resumedAfter: nil)
+        }
+    }
+
+    /// Resumes from the saved state. False when there is none or it can't be used; the caller then boots.
+    func restore() async -> Bool {
+        guard FileManager.default.fileExists(atPath: savedState.path) else { return false }
+        phase = .resuming
+        let started = Date()
+        let vm = make()
+        do {
+            try await vm.restoreMachineStateFrom(url: savedState)
+            // From here on the guest writes to the disk, so this state must never be restored again.
+            try FileManager.default.removeItem(at: savedState)
+            try await vm.resume()
+        } catch {
+            print("RESTORE FAILED: \(error.localizedDescription); booting instead")
+            try? FileManager.default.removeItem(at: savedState)
+            if self.vm === vm { self.vm = nil; view?.virtualMachine = nil }
+            return false
+        }
+        if !network { vm.networkDevices.first?.attachment = nil }
+        print(String(format: "VM RESUMED in %.1f s", -started.timeIntervalSinceNow))
+        // For a moment after a restore the guest's vsock resets its connections: one made then is accepted on this side
+        // and dead on the guest's. Setting the clock is retried until it goes through, and only then are requests carried
+        // over, so none of them hits that moment either. A guest without guest-bridge gives up after five seconds.
+        let clockStarted = Date()
+        var reply = ""
+        for _ in 0..<25 {
+            reply = await setGuestClock(vm)
+            if reply == "ok" { break }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        print(reply == "ok" ? String(format: "guest clock set (%.1f s)", -clockStarted.timeIntervalSinceNow) : "GUEST CLOCK: \(reply)")
+        becameRunning(resumedAfter: suspendedAt.map { -$0.timeIntervalSinceNow })
+        return true
+    }
+
+    func suspend() async throws {
+        guard phase == .running, let vm, vm.state == .running else { throw RunnerError("the VM isn't running") }
+        if let unsaveable { throw RunnerError("this VM can't be suspended: \(unsaveable)") }
+        phase = .suspending
+        let started = Date()
+        let partial = dir.appendingPathComponent("suspended.vzvmsave.partial")
+        do {
+            try await vm.pause()
+            try? FileManager.default.removeItem(at: partial)
+            try await vm.saveMachineStateTo(url: partial)
+            // Only a complete file gets the name a restore looks for.
+            try FileManager.default.moveItem(at: partial, to: savedState)
+        } catch {
+            try? FileManager.default.removeItem(at: partial)
+            if vm.state == .paused { try? await vm.resume() }
+            becameRunning(resumedAfter: nil)
+            throw error
+        }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: savedState.path))?[.size] as? Int) ?? 0
+        self.vm = nil
+        view?.virtualMachine = nil
+        attachment = nil
+        do { try await vm.stop() } catch { print("STOP AFTER SAVE: \(error.localizedDescription)") }
+        phase = .suspended
+        suspendedAt = Date()
+        print(String(format: "VM SUSPENDED in %.1f s (%d MB saved)", -started.timeIntervalSinceNow, size >> 20))
+        if !waiters.isEmpty { wake() }
+    }
+
+    /// Returns once the VM runs, resuming it first (or booting it, if its saved state can't be used).
+    func running() async throws {
+        if phase == .running { return }
+        try await withCheckedThrowingContinuation { (k: CheckedContinuation<Void, Error>) in
+            waiters.append(k)
+            if phase == .suspended { wake() }
+        }
+    }
+
+    private func wake() {
+        phase = .resuming
+        Task {
+            if await restore() { return }
+            do { try boot(recovery: false) } catch { fail("boot failed: \(error)") }
+        }
+    }
+
+    private func becameRunning(resumedAfter: TimeInterval?) {
+        phase = .running
+        let ready = waiters
+        waiters = []
+        ready.forEach { $0.resume() }
+        onRunning?(resumedAfter)
+    }
+
+    /// A vsock connection to `port` in the guest, resuming the VM first. A guest that is still booting refuses until
+    /// guest-bridge listens, which is retried for two minutes.
+    func connect(port: UInt32) async throws -> VZVirtioSocketConnection {
+        let deadline = Date().addingTimeInterval(120)
+        while true {
+            try await running()
+            if let device = vm?.socketDevices.first as? VZVirtioSocketDevice {
+                do { return try await device.connect(toPort: port) } catch { if Date() > deadline { throw error } }
+            }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
+    /// A restored guest's clock stood still for as long as it was suspended, and anisette carries the client's time:
+    /// guest-bridge sets the clock from the host's before anything else reaches the guest.
+    @discardableResult func setGuestClock(_ vm: VZVirtualMachine) async -> String {
+        guard let device = vm.socketDevices.first as? VZVirtioSocketDevice else { return "no vsock device" }
+        do {
+            let connection = try await device.connect(toPort: 6971)
+            let fd = connection.fileDescriptor
+            let reply = await Task.detached { () -> String in
+                var timeout = timeval(tv_sec: 1, tv_usec: 0)
+                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                var now = timeval()
+                gettimeofday(&now, nil)
+                let line = Array("\(now.tv_sec).\(String(format: "%06d", Int(now.tv_usec)))\n".utf8)
+                guard write(fd, line, line.count) == line.count else { return "send failed" }
+                // The reply is a line, which may arrive in pieces.
+                var reply = [UInt8](), byte: UInt8 = 0
+                while reply.count < 64, read(fd, &byte, 1) == 1, byte != 10 { reply.append(byte) }
+                return String(decoding: reply, as: UTF8.self)
+            }.value
+            connection.close()
+            return reply.isEmpty ? "no reply" : reply
+        } catch { return error.localizedDescription }
+    }
+}
+
+/// Copies both ways between two sockets until both sides have finished. A side that goes quiet for two minutes (an
+/// idle keep-alive connection), or ten seconds after the other side finished, is closed, so the idle clock can run.
+func pump(_ a: Int32, _ b: Int32) {
+    var fds = [pollfd(fd: a, events: Int16(POLLIN), revents: 0), pollfd(fd: b, events: Int16(POLLIN), revents: 0)]
+    var buffer = [UInt8](repeating: 0, count: 65536)
+    var open = 2
+    while open > 0 {
+        let ready = poll(&fds, 2, open == 2 ? 120_000 : 10_000)
+        if ready == 0 { return }
+        if ready < 0 { if errno == EINTR { continue }; return }
+        for i in 0..<2 where fds[i].fd >= 0 && fds[i].revents & Int16(POLLIN | POLLHUP | POLLERR) != 0 {
+            let from = i == 0 ? a : b, to = i == 0 ? b : a
+            let count = read(from, &buffer, buffer.count)
+            if count < 0 && errno == EINTR { continue }
+            if count <= 0 {
+                shutdown(to, SHUT_WR)
+                fds[i].fd = -1
+                open -= 1
+                continue
+            }
+            var sent = 0
+            while sent < count {
+                let n = buffer.withUnsafeBytes { write(to, $0.baseAddress! + sent, count - sent) }
+                if n < 0 && errno == EINTR { continue }
+                if n <= 0 { return }
+                sent += n
+            }
+        }
+    }
+}
+
+/// `serve`: the appliance's anisette on host loopback. Each connection is carried over vsock to guest-bridge (vsock
+/// 6970, which hands it to the guest's own `apparition anisette serve` on the guest's loopback), so nothing in the guest
+/// listens on a network. The door also keeps the idle clock: the VM is suspended after a quiet period and resumed by the
+/// next connection, which waits for it.
+final class FrontDoor: @unchecked Sendable {
+    let port: UInt16
+    private let listener: Int32
+    private let lock = NSLock()
+    private var open = 0
+    private var lastUsed = Date()
+
+    init(port: UInt16) throws {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard fd >= 0, bound == 0, listen(fd, 16) == 0 else {
+            if fd >= 0 { close(fd) }
+            throw RunnerError("can't listen on 127.0.0.1:\(port): \(String(cString: strerror(errno)))")
+        }
+        listener = fd
+        self.port = port
+    }
+
+    /// Seconds since the last connection ended, or nil while one is open.
+    func idle() -> TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        return open > 0 ? nil : -lastUsed.timeIntervalSinceNow
+    }
+
+    func touch() { lock.lock(); lastUsed = Date(); lock.unlock() }
+
+    func start(_ machine: Machine) {
+        Thread.detachNewThread { [self] in
+            while true {
+                let client = accept(listener, nil, nil)
+                if client < 0 {
+                    if errno == EINTR || errno == ECONNABORTED { continue }
+                    print("FRONT DOOR: accept failed: \(String(cString: strerror(errno)))"); return
+                }
+                var yes: Int32 = 1
+                setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+                lock.lock(); open += 1; lock.unlock()
+                Task { @MainActor in await self.carry(client, machine) }
+            }
+        }
+    }
+
+    @MainActor private func carry(_ client: Int32, _ machine: Machine) async {
+        do {
+            let connection = try await machine.connect(port: 6970)
+            let guest = connection.fileDescriptor
+            DispatchQueue.global(qos: .userInitiated).async {
+                pump(client, guest)
+                close(client)
+                DispatchQueue.main.async { connection.close(); self.finished() }
+            }
+        } catch {
+            print("FRONT DOOR: \(error.localizedDescription)")
+            close(client)
+            finished()
+        }
+    }
+
+    private func finished() { lock.lock(); open -= 1; lastUsed = Date(); lock.unlock() }
 }
 
 // A listener belongs to this VM's vsock device; another VM cannot impersonate it.
@@ -245,17 +577,18 @@ final class GuestStatus: NSObject, VZVirtioSocketListenerDelegate, @unchecked Se
 // Bind to loopback and require a per-run token kept in a mode-600 bundle file.
 final class ControlServer {
     let listener: NWListener
-    let vm: VZVirtualMachine
+    let machine: Machine
+    /// nil while the VM is suspended.
+    var vm: VZVirtualMachine? { MainActor.assumeIsolated { machine.vm } }
     weak var view: VZVirtualMachineView?
     var guestStatus: GuestStatus?
-    let networkAttachment: VZNetworkDeviceAttachment?
+    var frontDoor: FrontDoor?
     let recovery: Bool
     let token = UUID().uuidString
     let file: URL
-    init(vm: VZVirtualMachine, dir: URL, recovery: Bool) throws {
-        self.vm = vm
+    init(machine: Machine, dir: URL, recovery: Bool) throws {
+        self.machine = machine
         self.recovery = recovery
-        networkAttachment = vm.networkDevices.first?.attachment
         file = dir.appendingPathComponent("control.json")
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
@@ -309,7 +642,7 @@ final class ControlServer {
         } else { throw InputError.invalid }
     }
     func send(code: UInt16, flags: NSEvent.ModifierFlags) throws {
-        guard let view, let window = view.window, vm.state == .running else { throw InputError.invalid }
+        guard let view, let window = view.window, vm?.state == .running else { throw InputError.invalid }
         // Each modifier: its generic flag, its left-hand key code, and the device-dependent bit
         // (NX_DEVICEL*KEYMASK). VZ decides whether a flagsChanged event is a press or a release by
         // testing only the device bit, so without it every modifier press reaches the guest as a release.
@@ -336,7 +669,7 @@ final class ControlServer {
 
     /// Click at a fraction (x, y; origin top-left) of the whole VM window, as `screen` reports it.
     func click(x: Double, y: Double) throws {
-        guard let view, let window = view.window, vm.state == .running, (0...1).contains(x), (0...1).contains(y) else { throw InputError.invalid }
+        guard let view, let window = view.window, vm?.state == .running, (0...1).contains(x), (0...1).contains(y) else { throw InputError.invalid }
         let point = NSPoint(x: x * window.frame.width, y: (1 - y) * window.frame.height)
         func mouse(_ type: NSEvent.EventType) -> NSEvent {
             NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
@@ -474,53 +807,122 @@ final class ControlServer {
                     // Validate the whole string before sending any events.
                     let strokes = try text.map { try self.stroke($0) }
                     for stroke in strokes { try self.send(code: stroke.0, flags: stroke.1); Thread.sleep(forTimeInterval: 0.01) }
-                case "network-on": self.vm.networkDevices.first?.attachment = self.networkAttachment
-                case "network-off": self.vm.networkDevices.first?.attachment = nil
+                case "network-on": MainActor.assumeIsolated { self.vm?.networkDevices.first?.attachment = self.machine.attachment }
+                case "network-off": self.vm?.networkDevices.first?.attachment = nil
                 case "shutdown":
-                    if self.vm.state == .stopped { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exit(0) } }
-                    else { self.guestStatus?.requestShutdown() }
+                    if let vm = self.vm, vm.state == .stopped { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exit(0) } }
+                    else if self.vm == nil {
+                        // Suspended: a clean shutdown needs the guest, so resume it and then ask.
+                        Task { @MainActor in try? await self.machine.running(); self.guestStatus?.requestShutdown() }
+                    } else { self.guestStatus?.requestShutdown() }
                 case "force-stop":
-                    if self.vm.state == .stopped { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exit(0) } }
-                    else { self.vm.stop { error in
+                    // Suspended, its saved state stays valid: the next run resumes it.
+                    guard let vm = self.vm, vm.state != .stopped else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { exit(0) }; break }
+                    vm.stop { error in
                         if let error { print("STOP ERROR: \(error)") } else { exit(0) }
-                    } }
+                    }
+                case "clock":
+                    Task { @MainActor in
+                        guard let vm = self.vm else { self.respond(connection, ["ok": false, "error": "suspended"]); return }
+                        let reply = await self.machine.setGuestClock(vm)
+                        self.respond(connection, ["ok": reply == "ok", "reply": reply])
+                    }
+                    return
+                case "suspend", "resume":
+                    let suspend = request["operation"] == "suspend"
+                    Task { @MainActor in
+                        do {
+                            if suspend { try await self.machine.suspend() } else { try await self.machine.running() }
+                            self.respond(connection, self.state())
+                        } catch { self.respond(connection, ["ok": false, "error": "\(request["operation"]!) failed: \(error.localizedDescription)"]) }
+                    }
+                    return
                 default: throw NSError(domain: "control", code: 2)
                 }
-                reply = ["ok": true, "state": self.vm.state.rawValue,
-                         "network": self.vm.networkDevices.first?.attachment != nil, "running": self.vm.state == .running, "recovery": self.recovery]
+                reply = self.state()
             } catch { reply["error"] = "command failed: \(error.localizedDescription)" }
             self.respond(connection, reply)
         }
+    }
+
+    func state() -> [String: Any] {
+        var reply: [String: Any] = ["ok": true, "state": vm?.state.rawValue ?? -1, "phase": MainActor.assumeIsolated { machine.phase.rawValue },
+                                    "network": vm?.networkDevices.first?.attachment != nil, "running": vm?.state == .running,
+                                    "recovery": recovery]
+        if let frontDoor { reply["anisette"] = "http://127.0.0.1:\(frontDoor.port)" }
+        return reply
     }
 }
 
 /// `background`: an automated run. It is an accessory app (no Dock icon, never active) whose window stays behind
 /// the others, so a setup that takes minutes does not steal the keyboard from whoever is at the Mac.
-@MainActor func run(dir: URL, network: Bool, recovery: Bool, background: Bool = false) throws {
+/// `serve`: the appliance. Network on, the anisette front door on host loopback, suspended when idle and resumed by the
+/// next request. A VM that is woken again soon after it was suspended would have been better left running, so each such
+/// wake doubles the idle period (up to an hour), and a sleep of more than an hour puts it back.
+@MainActor func serve(_ machine: Machine, control: ControlServer, settings: VMSettings) throws -> AnyObject {
+    let door = try FrontDoor(port: settings.frontDoorPort)
+    control.frontDoor = door
+    let base = settings.idleSeconds
+    var idlePeriod = base
+    machine.onRunning = { slept in
+        door.touch()
+        guard let slept, base > 0 else { return }
+        if slept < idlePeriod { idlePeriod = min(idlePeriod * 2, max(base, 3600)) } else if slept > 3600 { idlePeriod = base }
+        print("idle period now \(Int(idlePeriod)) s")
+    }
+    door.start(machine)
+    print("ANISETTE \(door.port) (http://127.0.0.1:\(door.port)), suspend after \(Int(base)) s idle")
+    if base > 0 && machine.unsaveable == nil {
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                guard machine.phase == .running, let idle = door.idle(), idle >= idlePeriod else { return }
+                Task { do { try await machine.suspend() } catch { print("SUSPEND FAILED: \(error.localizedDescription)") } }
+            }
+        }
+    }
+    // Logging out or shutting down the host: suspend instead of pulling the plug, and the next start resumes.
+    signal(SIGTERM, SIG_IGN)
+    let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    terminate.setEventHandler {
+        Task { @MainActor in
+            if machine.phase == .running && machine.unsaveable == nil { try? await machine.suspend() }
+            exit(0)
+        }
+    }
+    terminate.resume()
+    return terminate
+}
+
+/// `background`: an automated run. It is an accessory app (no Dock icon, never active) whose window stays behind
+/// the others, so a setup that takes minutes does not steal the keyboard from whoever is at the Mac.
+@MainActor func run(dir: URL, network: Bool, recovery: Bool, background: Bool = false, serving: Bool = false) throws {
     let lock = open(dir.appendingPathComponent(".lock").path, O_RDWR | O_CREAT, 0o600)
     guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { fail("bundle is already in use") }
     defer { close(lock) }
+    let saved = FileManager.default.fileExists(atPath: Machine.savedState(dir).path)
+    if recovery && saved { fail("this VM is suspended; resume and shut it down first (vm.py shutdown does both)") }
     // recoveryOS runs from a RAM disk and shows a black screen forever in 2 GiB (and in 1.5), so recovery gets the same
     // 4 GiB as the install; the appliance itself only needs its small size.
     let config = try configuration(dir, network: network, minimumMemoryMB: recovery ? 4096 : 0)
-    let bootID = dir.appendingPathComponent("guest-status/boot-id")
-    try UUID().uuidString.write(to: bootID, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: bootID.path)
-    let vm = VZVirtualMachine(configuration: config)
+    // A configuration VZ can't save (a device without save support) still runs; it just never suspends.
+    var unsaveable: String?
+    do { try config.validateSaveRestoreSupport() } catch { unsaveable = error.localizedDescription }
     let delegate = Delegate()
-    vm.delegate = delegate
-    let control = try ControlServer(vm: vm, dir: dir, recovery: recovery)
     let status = GuestStatus(directory: dir.appendingPathComponent("guest-status"))
-    control.guestStatus = status
     let statusListener = VZVirtioSocketListener()
     statusListener.delegate = status
-    (vm.socketDevices.first as? VZVirtioSocketDevice)?.setSocketListener(statusListener, forPort: 3939)
+    let machine = Machine(dir: dir, configuration: config, network: network, delegate: delegate, statusListener: statusListener)
+    machine.unsaveable = unsaveable
+    if let unsaveable, !recovery { print("SUSPEND UNAVAILABLE: \(unsaveable)") }
+    let control = try ControlServer(machine: machine, dir: dir, recovery: recovery)
+    control.guestStatus = status
+    let signalSource = serving ? try serve(machine, control: control, settings: VMSettings.load(Bundle_(dir: dir))) : nil
 
     let app = NSApplication.shared
     app.setActivationPolicy(background ? .accessory : .regular)
     app.delegate = delegate
     let view = VZVirtualMachineView()
-    view.virtualMachine = vm
+    machine.view = view
     control.view = view
     view.capturesSystemKeys = true
     // A fixed display (APPARITION_VM_DISPLAY) keeps its size; otherwise the guest display follows the window.
@@ -537,22 +939,24 @@ final class ControlServer {
         win.makeKeyAndOrderFront(nil)
         app.activate(ignoringOtherApps: true)
     }
-    let options = VZMacOSVirtualMachineStartOptions()
-    options.startUpFromMacOSRecovery = recovery
-    vm.start(options: options) { error in
-        if let error { fail("start failed: \(error)") }
-        if !network { vm.networkDevices.first?.attachment = nil }
-        print("VM STARTED")
+    if recovery || !saved { try machine.boot(recovery: recovery) }
+    else {
+        print("resuming the saved state")
+        Task {
+            guard !(await machine.restore()) else { return }
+            do { try machine.boot(recovery: false) } catch { fail("boot failed: \(error)") }
+        }
     }
-    withExtendedLifetime((control, status, statusListener)) { app.run() }
+    withExtendedLifetime((control, status, statusListener, machine, signalSource)) { app.run() }
 }
 
 // MARK: main
 
 umask(0o077)
 setvbuf(stdout, nil, _IOLBF, 0)
+signal(SIGPIPE, SIG_IGN)  // a client that hangs up mid-reply must not take the runner with it
 let args = CommandLine.arguments
-let usage = "usage: vm create <ipsw> <new-bundle> [diskGB] | install <ipsw> <bundle> | run <bundle> --network=off|on [--background] | setup <bundle> [--background]"
+let usage = "usage: vm create <ipsw> <new-bundle> [diskGB] | install <ipsw> <bundle> | run <bundle> --network=off|on [--background] | serve <bundle> [--background] | setup <bundle> [--background]"
 guard args.count >= 3 else { fail(usage) }
 switch args[1] {
 case "create", "install":
@@ -570,14 +974,15 @@ case "create", "install":
         } catch { fail("\(args[1]) failed: \(error)") }
     }
     RunLoop.main.run()
-case "run", "setup":
-    let recovery = args[1] == "setup"
+case "run", "setup", "serve":
+    let recovery = args[1] == "setup", serving = args[1] == "serve"
     let background = args.last == "--background"
     let rest = Array(args.dropFirst(2).dropLast(background ? 1 : 0))  // bundle [--network=...]
-    guard recovery ? rest.count == 1 : (rest.count == 2 && ["--network=off", "--network=on"].contains(rest[1])) else { fail(usage) }
-    // Recovery needs NAT to fetch the setup script. Setup Assistant must use network=off.
+    guard recovery || serving ? rest.count == 1 : (rest.count == 2 && ["--network=off", "--network=on"].contains(rest[1])) else { fail(usage) }
+    // Recovery needs NAT to fetch the setup script, and the appliance to reach Apple. Setup Assistant must use network=off.
     try MainActor.assumeIsolated {
-        try run(dir: URL(fileURLWithPath: rest[0]), network: recovery || rest[1] == "--network=on", recovery: recovery, background: background)
+        try run(dir: URL(fileURLWithPath: rest[0]), network: recovery || serving || rest[1] == "--network=on", recovery: recovery,
+                background: background, serving: serving)
     }
 default: fail(usage)
 }

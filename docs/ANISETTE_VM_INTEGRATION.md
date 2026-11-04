@@ -1,6 +1,6 @@
 # Anisette VM inside the app: scope
 
-Status: scoping, 2026-11-04. The VM flow works end to end from the command line
+Status: scoping, 2026-11-04; guest pinned and suspend-when-idle done the same day. The VM flow works end to end from the command line
 (`selfhost/macos-vm/`, see its README). This document is what it takes to make it a button in the
 desktop app that a stranger can press, and what was measured to decide that.
 
@@ -22,36 +22,46 @@ Windows PC; the VM sits behind the companion as its anisette source (see "Reachi
   password, setup script), resumable between steps. Python, development only.
 - Guest side: first-boot account with a secure token, auto-login, SIP and AMFI off, the entitled helper in an
   Aqua LaunchAgent, status over vsock.
-- Appliance trim (new): 156 per-user and 74 system launchd services disabled before first login, no audio
+- Appliance trim: 156 per-user and 74 system launchd services disabled before first login, no audio
   device. Footprint 2.9 GB to about 1.0 GB, zero swap at 1.5 GiB RAM, 12 of 12 probes accepted in a 12-minute
   soak. Measured in the README, with the lesson that a disabled service something keeps asking for is worse
   than a running one (`failed-lookups.sh` finds those).
+- Pinned guest: macOS 26.6.2 (25G83) from Apple's CDN, checked against the size and SHA-256 Apple publishes with
+  the file; the runner refuses other builds (`verifiedBuilds`).
+- Anisette over vsock and suspend when idle (`vm serve`): a host loopback front door, `guest-bridge` in the guest,
+  the VM saved to disk and stopped after 5 idle minutes, resumed by the next request, the guest clock set on
+  resume. Measured in the README ("Serving anisette, suspended when idle").
 
-Not verified: a real account signing in through a VM-hosted companion end to end; a guest on macOS 27; a
-fresh install through the final no-root path; host sleep and wake with the VM running.
+Not verified: a real account signing in through a VM-hosted companion end to end; a fresh install through the
+final no-root path, or with the new guest daemons from `provision.sh` (they were installed by hand on the test
+VM); host sleep and wake with the VM running.
 
 ## Measured facts that shape the design
 
 | Fact | Number |
 |---|---|
 | Restore image Apple's catalog offers for `VirtualMac2,1` | one entry: macOS 27.2 (26B123), 25.6 GB, `Accept-Ranges`, no published digest |
-| Restore image we tested with | macOS 26.6.2, 19.8 GB; not in Apple's catalog |
+| Restore image we pin | macOS 26.6.2 (25G83), 19.8 GB, not in the catalog but still on Apple's CDN with `x-amz-meta-digest-sha256` (matches ipsw.me); installed in a VM on 2026-11-04 |
 | Disk after install | 26.7 GB allocated (64 GB virtual, sparse); peak with the image about 52 GB |
 | RAM floor (trimmed or not) | 1.5 GiB boots; 1.25 GiB and 1 GiB do not (black screen, no network) |
 | RAM for recoveryOS | more than 2 GiB (black screen at 2 and 1.5, up in 26 s at 3); setup runs the install and both recovery boots at 4 GiB |
 | Host cost of the guest | its configured RAM, from the first seconds (1.57 GB footprint for 1.5 GiB), pageable, not wired |
 | Boot to Apple-accepted anisette | 36 s stock, 70 to 85 s trimmed (measured with a 4 s poll) |
+| Suspend (pause, save, stop) | 0.8 s, 430 to 500 MB file; the VM process and its memory are gone, the runner keeps 23 MB |
+| Resume to Apple-accepted anisette | 1.0 s restore + 0.2 s clock; a request that wakes it is answered in 2.7 to 3.9 s |
+| Guest clock after a resume | behind by the time suspended until set (macOS fixes it itself about 5 s later) |
 | Own-window capture permission | a freshly rebuilt ad-hoc runner captured its window with no Screen Recording prompt seen; recheck on a clean account |
 | `VZMacOSRestoreImage.fetchLatestSupported` | meant to follow the host's macOS; it failed here with "restore image catalog failed to load", while the catalog file itself downloaded fine, so the app should read the catalog itself |
 
 ## Decisions, with a recommendation each
 
-**1. Guest version.** Apple only publishes the latest restore image, and users who need the VM are by
-definition on macOS 27 or later, so the guest should be the entry in Apple's catalog (`mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml`, `VirtualMac2,1`).
-The macOS 26 flow is verified; 27 is not. Recommend: make the 27 guest the first milestone, keep the
-macOS 26 path as the fallback (a pinned URL from a third-party index such as ipsw.me, only if 27 fails),
-and let the app list the guest builds it has verified. An unverified build is allowed only behind an
-"advanced" switch, because Apple has changed what it accepts twice this autumn (12 and 30 October).
+**1. Guest version. Decided (2026-11-04): pin macOS 26.6.2.** Apple's catalog only lists the newest restore image
+(27.2), but the 26.6.2 file is still on Apple's CDN with its SHA-256 in the response headers, and 26 is the
+version the whole flow, the trim and the RAM floor were verified on. `vm.py` downloads that one URL and checks it;
+the runner refuses other builds unless `APPARITION_VM_ALLOW_UNVERIFIED=1` (the "advanced" switch, for trying the
+next one, because Apple has changed what it accepts twice this autumn, 12 and 30 October). The risk is Apple
+removing the file from its CDN; the pin then needs a mirror the app controls, checked against the same hash.
+A macOS 27 guest is a separate milestone if 26 ever stops being accepted.
 
 **2. Who writes into the guest disk before first boot.** Today `provision.sh` mounts the VM's disk on the host
 as root, which means an administrator prompt and a script running as root against a path in the user's
@@ -69,25 +79,25 @@ in the README are all about that subnet. Recommend: the VM exposes nothing on an
 own companion keeps doing pairing, the encrypted channel, the Apple TLS relay, mDNS and the wake knock, and
 gets its anisette from the VM:
 
-- in the guest, `apparition anisette serve` listens on **vsock** (a `--vsock <port>` option) from the Aqua
-  LaunchAgent, replacing `relay`;
-- the runner bridges a host loopback port to that vsock port;
+- in the guest, `apparition anisette serve` on the guest's loopback, from an Aqua LaunchAgent, and `guest-bridge`
+  (a small root daemon in C) carrying vsock 6970 to it (**done**; `relay` still runs beside it for now);
+- the runner bridges host loopback port 6970 to that vsock port (**done**, the front door in `vm serve`);
 - core gets a second `AnisetteSource` that proxies `client_info` and `get_headers` to that port, with the
   paired-device token check staying on the host (`core/src/anisette/server.rs` calls `native::headers`
-  directly today; that call becomes a provider).
+  directly today; that call becomes a provider). **Not done.**
 
 This removes the DHCP-lease lookup, the subnet route, the pairing prompt problem (the LaunchAgent cannot ask
 for the six-digit code; the host app already can) and the wake problem (a device knocks on the host's
 address, which is the Mac that sleeps). Guest `AF_VSOCK` is already proven by `guest-status.c`.
 
-**4. Lifecycle on an 8 GB Mac.** The guest costs its RAM, 1.5 GiB of 8, plus the runner (about 90 MB today).
-Setup is the exception: the install and both recovery boots need 4 GiB, so the wizard should ask the person to
-close heavy apps and show it as a temporary cost.
-Recommend: default to running while the companion is on for Macs with 16 GB or more, and start on demand for
-8 GB Macs (start when the first request or knock arrives, stop after an idle period). Cold start is 70 to 85
-s, which a sign-in can wait for behind a visible "starting" state. Saving and restoring VM state would make
-that near instant; `VZVirtualMachine.saveMachineStateTo` exists for macOS guests but is untested here and
-must be checked against the guest's clock after a restore (anisette carries a timestamp).
+**4. Lifecycle on an 8 GB Mac. Done in the runner (`serve`).** The guest costs its RAM, 1.5 GiB of 8, while it
+runs. Setup is the exception: the install and both recovery boots need 4 GiB, so the wizard should ask the person to
+close heavy apps and show it as a temporary cost. Otherwise the VM is suspended after 5 idle minutes (saved to the
+bundle and stopped, 0.8 s, all of its memory back to the host) and resumed by the next request (about 1.2 s, the
+guest's clock set before the request is let through). That is quick enough for every Mac, not only 8 GB ones, so
+there is no separate on-demand mode: the companion stays on and the VM costs memory only around sign-ins. A wake
+soon after a suspend doubles the idle period (up to an hour), so a client that polls cannot make it write 450 MB
+to disk every few minutes. Host logout or shutdown suspends it too.
 
 **5. Keeping the guest current.** macOS updates are off in the appliance. The helper and `apparition` inside
 the guest must follow the app, because Apple's acceptance changes. Recommend: the guest agent asks the host
@@ -96,8 +106,7 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
 
 ## Work, in order, each with a gate
 
-1. **Guest 27.2** (about a day). Run the existing flow on the 27.2 image, regenerate the trim lists from the
-   running guest, find the RAM floor again. Gate: Apple accepts the anisette at 1.5 GiB on 27.
+1. ~~Guest 27.2~~ Replaced by the pinned 26.6.2 (decision 1).
 2. **Recovery-only provisioning** (a day or two). Fold `provision.sh` into a recovery stage; the host server
    serves the stage's files; delete the `sudo`/`osascript` path. Gate: a fresh bundle reaches a live
    companion with no administrator prompt.
@@ -106,8 +115,9 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
    with `com.apple.security.virtualization`, placed in `Contents/MacOS` like the anisette helper. A Rust step
    engine in `core` replaces `vm.py`: persisted state in the bundle, one event stream for the CLI and the
    app, restart-safe at every step. The helper runs as an accessory app that never takes focus.
-4. **vsock transport and companion source** (several days). Guest `anisette serve --vsock`, runner bridge,
-   `AnisetteSource::Vm`, start/stop policy. Gate: a device signs in with a real account through the VM.
+4. **Companion source** (a few days). The vsock transport and the suspend policy are done (`vm serve`);
+   left is `AnisetteSource::Vm` in core pointing at the front door. Gate: a device signs in with a real account
+   through the VM.
 5. **App and CLI** (several days). A wizard in the Companion tab (preflight for chip, macOS version, free
    disk, RAM; download with resume; install; the recovery stages with live status; delete and rebuild),
    `apparition vm setup|start|stop|status|remove`, an exclusion from Time Machine for the bundle, the IPSW
@@ -138,7 +148,5 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
   It is mode 700, but it should be deleted after use (needs the root that item 2 removes).
 - The runner listens on loopback TCP with a token in a file; a unix socket in the bundle with mode 600 is
   simpler and removes the port.
-- The runner activates its window and takes focus. Automated runs should be an accessory app that stays
-  behind.
-- The runner refuses anything but macOS 26 (`main.swift`, in `create` and `install`); that check becomes the
-  verified-builds list.
+- ~~The runner activates its window and takes focus.~~ Automated runs are an accessory app that stays behind.
+- ~~The runner refuses anything but macOS 26.~~ That check is now the verified-builds list.
