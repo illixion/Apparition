@@ -4,7 +4,8 @@
 //!
 //! Tools: `apps`, `help`, `call`, `trace`, `panel`. Their schemas and the instructions are the
 //! Python tool's own, embedded from `mcp_tools.json` (a test compares them with the Python source).
-//! `inject` is listed but answers that it is not in this server yet.
+//! `inject` runs the external `debugtrace-inject` tool (a Swift binary) on the Mac, from the app's
+//! project root, so the sources it patches must be on this Mac.
 
 use crate::debug::{CALL_TIMEOUT, Debug, Session};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -136,7 +137,7 @@ impl Mcp {
             "call" => self.tool_call(&args).await?,
             "trace" => self.tool_trace(&args).await?,
             "panel" => self.tool_panel(&args).await?,
-            _ => return Err(err_hint("inject is not available in the Rust service yet", "use the Python debugtrace-mcp or `apparition inject` on the build Mac")),
+            _ => self.tool_inject(&args).await?,
         };
         if !notes.is_empty() {
             result["content"].as_array_mut().unwrap().push(json!({ "type": "text", "text": format!("note: {}", notes.join("; ")) }));
@@ -359,6 +360,163 @@ impl Mcp {
         };
         let (status, _, raw) = self.request(&session, None, &path).await?;
         Ok(text_result(String::from_utf8_lossy(&raw).into_owned(), status >= 400))
+    }
+
+    async fn tool_inject(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        let session = self.verified(args.get("app").and_then(Value::as_str)).await?;
+        let name = s(&session, "appName").unwrap_or("The app").to_string();
+        let Some(directory) = s(&session, "injectDir").filter(|d| !d.is_empty()).map(PathBuf::from) else {
+            return Err(err_hint(format!("{name} was not launched for live patching"), "rebuild and relaunch it with `build-and-sign --run --mcp --inject` from the app's repo"));
+        };
+        let files: Vec<String> = match args.get("files") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::String(f)) => vec![f.clone()],
+            Some(Value::Array(a)) if a.iter().all(Value::is_string) => a.iter().filter_map(Value::as_str).map(String::from).collect(),
+            Some(_) => return Err(err_hint("`files` must be a list of paths", "e.g. {\"files\": [\"Game/Player.swift\"]}")),
+        };
+        // The tool compiles what it is given and sends it to the app: only Swift sources, and never
+        // a name it could read as an option.
+        if let Some(bad) = files.iter().find(|f| !f.ends_with(".swift") || f.starts_with('-') || f.contains('\0')) {
+            return Err(err_hint(format!("`{bad}` is not a Swift source file"), "pass paths of .swift files, absolute or relative to the project root"));
+        }
+        let allow = match args.get("allowViewTypeChange") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(err_hint("`allowViewTypeChange` must be true or false", "e.g. {\"allowViewTypeChange\": true}")),
+        };
+        let run = args.get("run").and_then(Value::as_str).filter(|r| !r.is_empty()).map(String::from);
+        // One patch at a time per build, across clients and the command line: the ledger is a file.
+        let _lock = match lock_transactions(&directory) {
+            Ok(l) => l,
+            Err(()) => return Err(err_hint("another patch is in progress for this build", "wait for that injection to finish, then retry")),
+        };
+        self.inject_session(&session, &directory, files, run, allow).await
+    }
+
+    async fn app_call(&self, session: &Session, name: &str, arguments: Value) -> Result<(u16, Value), ToolError> {
+        let (status, _, raw) = self.request(session, Some(json!({ "name": name, "arguments": arguments })), "/_call").await?;
+        match serde_json::from_slice(&raw) {
+            Ok(v) => Ok((status, v)),
+            Err(_) => Err(err_hint(format!("{} answered {status} with something that is not JSON", s(session, "appName").unwrap_or("The app")),
+                String::from_utf8_lossy(&raw).chars().take(300).collect::<String>())),
+        }
+    }
+
+    async fn inject_session(&self, session: &Session, directory: &Path, files: Vec<String>, run: Option<String>, allow: bool) -> Result<Value, ToolError> {
+        let name = s(session, "appName").unwrap_or("The app").to_string();
+        let root = s(session, "projectRoot").filter(|r| !r.is_empty()).map(PathBuf::from);
+        let backend = std::fs::read_to_string(directory.join("modules.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|m| m["backend"].as_str().map(String::from)).unwrap_or_else(|| "dynamic".into());
+        // Is the app still the process that was built? A relaunch resets it to the build.
+        let (_, mut listed) = self.app_call(session, "_patches", json!({})).await?;
+        if listed["ok"] != json!(true) {
+            if listed.pointer("/error/code").and_then(Value::as_str) == Some("not_found") {
+                return Err(err_hint(format!("{name} has no `_inject` endpoint"), "link the DebugTraceInject product and call DebugTraceInject.register() at launch, then rebuild with --inject"));
+            }
+            return Ok(text_result(listed, true));
+        }
+        if backend == "apparition" {
+            let wait = std::env::var("DEBUGTRACE_WAIT_FOR_DEBUGGER").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).clamp(0.0, 60.0);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(wait);
+            while listed["ok"] == json!(true) && listed.pointer("/data/debuggerAttached") != Some(&json!(true)) && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                listed = self.app_call(session, "_patches", json!({})).await?.1;
+            }
+            if listed.pointer("/data/debuggerAttached") != Some(&json!(true)) {
+                return Err(err_hint("the Apparition entry backend needs its debugger attached", "use apparition inject <bundle-id> --device <device> --file <path>, or run apparition jit <bundle-id> --attach first"));
+            }
+        }
+        let dir = directory.to_string_lossy().into_owned();
+        if listed.pointer("/data/patches").and_then(Value::as_array).is_none_or(|p| p.is_empty()) {
+            run_inject_tool(root.as_deref(), &["reset".into(), "--dir".into(), dir.clone()]).await?;
+        }
+        let mut command: Vec<String> = vec!["patch".into(), "--dir".into(), dir.clone()];
+        for f in &files {
+            command.extend(["--file".into(), f.clone()]);
+        }
+        if let Some(r) = &run {
+            command.extend(["--run".into(), r.clone()]);
+        }
+        if allow {
+            command.push("--allow-view-type-change".into());
+        }
+        let (plan, code) = run_inject_tool(root.as_deref(), &command).await?;
+        if code != 0 || plan["ok"] != json!(true) {
+            return Ok(text_result(plan, true));
+        }
+        let warnings = patch_warnings(&plan);
+        let dylibs = plan["dylibs"].as_array().cloned().unwrap_or_default();
+        if dylibs.is_empty() {
+            // Nothing this build compiles changed: record the file as current so the same edit is
+            // not reported again by the next call.
+            if plan.get("commit").is_some_and(|c| !c.is_null()) {
+                commit_plan(root.as_deref(), &dir, &plan).await?;
+            }
+            let mut out = json!({ "ok": true, "applied": [], "nothingToPatch": true,
+                "note": "no function or computed-property body changed in code this build compiles, so nothing was sent to the app. If you meant to change behavior, the edit is in a comment, in whitespace, or in a branch of an #if that is not active for this build (e.g. #if os(tvOS) on a visionOS build): edit the branch that is.",
+                "files": plan["files"] });
+            if !warnings.is_empty() { out["warnings"] = json!(warnings); }
+            return Ok(text_result(out, false));
+        }
+        let (mut loaded, mut output) = (Vec::<Value>::new(), None);
+        for dylib in &dylibs {
+            let label = dylib["label"].as_str().unwrap_or("").to_string();
+            let raw = tokio::fs::read(dylib["path"].as_str().unwrap_or("")).await.map_err(|e| err(format!("could not read the patch for {label}: {e}")))?;
+            let mut arguments = json!({ "patch": STANDARD.encode(&raw), "label": label });
+            let mut deflated = false;
+            if arguments["patch"].as_str().unwrap_or("").len() > MAX_PATCH_BASE64 {
+                // A big SwiftUI body drags megabytes of mangled type names into the symbol table; they
+                // deflate to a few percent. Only when needed, so an app whose runtime predates
+                // `encoding` keeps working for ordinary patches.
+                arguments = json!({ "patch": STANDARD.encode(deflate(&raw)), "label": label, "encoding": "deflate", "bytes": raw.len() });
+                deflated = true;
+                let size = arguments["patch"].as_str().unwrap_or("").len();
+                if size > MAX_PATCH_BASE64 {
+                    return Err(err_hint(format!("the patch for {} is {} KiB even deflated, over the server's body limit", dylib["module"].as_str().unwrap_or(&label), size / 1024), "inject fewer files at once"));
+                }
+            }
+            if dylib["backend"] == "apparition" {
+                arguments["backend"] = json!("apparition");
+            }
+            let (status, reply) = self.app_call(session, "_inject", arguments).await?;
+            if deflated && status == 400 && reply.to_string().contains("encoding") {
+                return Err(err_hint(format!("{name}'s patch runtime is too old to take a patch this large"), "relaunch it with `build-and-sign --run --mcp --inject` (that rebuilds the runtime), or inject fewer files at once"));
+            }
+            if status >= 400 || reply["ok"] != json!(true) {
+                return Ok(text_result(json!({ "ok": false, "applied": loaded, "failedAt": label, "reply": reply,
+                    "hint": "files are unchanged on disk; fix the reported problem and call inject again" }), true));
+            }
+            loaded.push(json!(label));
+            if let Some(o) = reply.pointer("/data/output").filter(|o| !o.is_null()) {
+                output = Some(o.clone());
+            }
+        }
+        if plan.get("commit").is_some_and(|c| !c.is_null()) || plan.get("record").is_some_and(|c| !c.is_null()) {
+            commit_plan(root.as_deref(), &dir, &plan).await?;
+        }
+        let mut summary = json!({ "ok": true, "applied": loaded });
+        if let Some(d) = plan.get("domainCoverage").filter(|d| !d.is_null() && d.as_object().is_none_or(|o| !o.is_empty())) {
+            summary["domainCoverage"] = d.clone();
+        }
+        let mut lists: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
+        for (relative, report) in plan["files"].as_object().into_iter().flatten() {
+            for (key, field) in [("patched", "patched"), ("added", "added"), ("recompiled", "recompiled"), ("implementationGroups", "implementationGroups")] {
+                for item in report[field].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                    lists.entry(key).or_default().push(format!("{relative}: {item}"));
+                }
+            }
+        }
+        for (key, items) in lists {
+            summary[key] = json!(items);
+        }
+        if !warnings.is_empty() {
+            summary["warnings"] = json!(warnings);
+            summary["warningsNote"] = json!("the patch applied, but not everything you edited did what the source says; read each warning and, if it matters, rebuild");
+        }
+        if let Some(o) = output {
+            summary["output"] = o;
+        }
+        Ok(text_result(summary, false))
     }
 
     async fn tool_call(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
@@ -599,6 +757,91 @@ fn civil(ms: u64) -> (i64, u32, u32, u64, u64, u64) {
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let year = yoe + era * 400 + i64::from(month <= 2);
     (year, month, day, rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// The server refuses bodies over 1 MiB; a patch travels base64-encoded.
+const MAX_PATCH_BASE64: usize = 900_000;
+
+/// Raw DEFLATE (RFC 1951): what Apple's Compression calls COMPRESSION_ZLIB.
+fn deflate(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+    let _ = encoder.write_all(data);
+    encoder.finish().unwrap_or_default()
+}
+
+/// Where `debugtrace-inject` is: `DEBUGTRACE_INJECT_TOOL`, the DebugTrace checkout, or the PATH.
+fn inject_tool() -> PathBuf {
+    if let Some(p) = std::env::var_os("DEBUGTRACE_INJECT_TOOL").filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let checkout = home.join("Projects/DebugTrace/Tools/debugtrace-inject/debugtrace-inject");
+    if checkout.is_file() { checkout } else { PathBuf::from("debugtrace-inject") }
+}
+
+/// The helper's JSON reply and exit status. It prints JSON on success and on failure.
+async fn run_inject_tool(root: Option<&Path>, command: &[String]) -> Result<(Value, i32), ToolError> {
+    let tool = inject_tool();
+    let mut process = tokio::process::Command::new(&tool);
+    process.args(command).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    if let Some(root) = root.filter(|r| r.is_dir()) {
+        process.current_dir(root);
+    }
+    let output = match tokio::time::timeout(CALL_TIMEOUT, process.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(err_hint(format!("could not run debugtrace-inject: {e}"), format!("expected at {}; set DEBUGTRACE_INJECT_TOOL to its path", tool.display()))),
+        Err(_) => return Err(err("debugtrace-inject took too long and was stopped")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match serde_json::from_str(&stdout) {
+        Ok(v) => Ok((v, output.status.code().unwrap_or(-1))),
+        Err(_) => {
+            let text = if output.stderr.is_empty() { stdout.into_owned() } else { String::from_utf8_lossy(&output.stderr).into_owned() };
+            let tail: String = text.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+            Err(err(format!("debugtrace-inject failed: {tail}")))
+        }
+    }
+}
+
+/// Records the patch as live: its files become what the app runs, and its modules join the ledger
+/// that later patches and `run` snippets import (so what it added stays reachable).
+async fn commit_plan(root: Option<&Path>, directory: &str, plan: &Value) -> Result<(), ToolError> {
+    let mut command: Vec<String> = vec!["commit".into(), "--dir".into(), directory.into()];
+    for f in plan["commit"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        command.extend(["--file".into(), f.into()]);
+    }
+    for (key, flag) in [("record", "--record"), ("sourceSnapshots", "--sources")] {
+        if let Some(v) = plan[key].as_str().filter(|v| !v.is_empty()) {
+            command.extend([flag.into(), v.into()]);
+        }
+    }
+    run_inject_tool(root, &command).await.map(|_| ())
+}
+
+/// What the rewriter accepted but that changes nothing the agent probably meant (a reordered enum,
+/// a changed isolation, a new signature the old callers never reach), as `file: message` lines.
+fn patch_warnings(plan: &Value) -> Vec<String> {
+    plan["files"].as_object().into_iter().flatten().flat_map(|(relative, report)| {
+        report["warnings"].as_array().into_iter().flatten().filter_map(Value::as_str).map(move |w| format!("{relative}: {w}"))
+    }).collect()
+}
+
+/// An exclusive lock on the build's patch ledger, held while the guard lives. Err when another
+/// client holds it.
+struct Transaction(#[allow(dead_code)] Option<std::fs::File>);
+
+fn lock_transactions(directory: &Path) -> Result<Transaction, ()> {
+    use std::os::fd::AsRawFd;
+    if !directory.is_dir() {
+        return Ok(Transaction(None));
+    }
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(directory.join("transaction.lock")).map_err(|_| ())?;
+    // SAFETY: flock on a descriptor this function owns.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(());
+    }
+    Ok(Transaction(Some(file)))
 }
 
 fn stamp() -> String {

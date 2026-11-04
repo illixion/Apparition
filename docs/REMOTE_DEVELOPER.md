@@ -65,7 +65,7 @@ Add the MCP server to an agent as a command:
 claude mcp add apps -- apparition mcp
 ```
 
-It offers the Mac's tools (`apps`, `help`, `call`, `trace`, `panel`) and adds `deploy`, which
+It offers the Mac's tools (`apps`, `help`, `call`, `trace`, `panel`, `inject`) and adds `deploy`, which
 reads a file on this computer and sends it to the Mac.
 
 ## Deploy a build made here (xtool)
@@ -90,7 +90,10 @@ project's update instead.
 - **The device reaching the Mac away from home** still goes through the Store's HTTPS address and
   password (Developer › Connect), not the channel.
 - **Builds on the Mac over MCP** (`build-and-sign` from an agent elsewhere) need the build port
-  (phase 5); `inject` over MCP isn't ported either.
+  (phase 5).
+- **`inject` patches sources that are on the Mac.** It runs `debugtrace-inject` there, from the
+  app's project root, so an agent on another computer can inject only when the project (or the
+  files it names) lives on the Mac too; edits made on the other computer would need syncing first.
 - **Bonjour discovery trusts the network.** The Store sends a build's token only to an
   advertisement carrying that build's tag, and to none when two claim one build, but a copy made
   while the real app is away can't be told apart. A challenge-response in DebugTrace (the app

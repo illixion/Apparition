@@ -16,7 +16,7 @@ only as the fallback until the Rust service passes the parity checklist, then go
 ## Status (2026-11-04)
 
 Every ported route has a test against the real Node store (or, for the MCP server, the Python
-`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 47 tests,
+`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 49 tests,
 `APPARITION_REQUIRE_NODE=1 cargo test -p apparition-service` (without the variable, the oracle
 tests say SKIPPED when Node doesn't run).
 
@@ -36,7 +36,10 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   Python), launch records and dead-console recovery, the proxy for help/call/logs (SSE)/panels.
   The Python tool could not make LAN connections; this runs where the Local Network permission is.
 - MCP server at `POST /mcp` (bearer, same as the service API): `apps`, `help`, `call`, `trace`,
-  `panel`, with the Python tool's schemas, forgiving arguments, reply spilling and panel validation.
+  `panel`, with the Python tool's schemas, forgiving arguments, reply spilling and panel validation. `inject` runs the
+  external `debugtrace-inject` binary (`DEBUGTRACE_INJECT_TOOL`, else the DebugTrace checkout, else
+  the PATH) from the app's project root, one patch at a time per build (`transaction.lock`), so the
+  sources must be on the Mac.
 - Deploys from other computers: `POST /api/service/v1/deploy` keeps an IPA as a build the device's
   Apparition installs (Developer › Sent from your computers). The stdio entry is `apparition mcp`,
   a bridge to the running app's `/mcp` (loopback on the Mac, the companion channel elsewhere), so
@@ -46,7 +49,6 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   capped replies and trace inflation, DNS rebinding refused on a password-less store.
 
 Not done:
-- `inject` over MCP (answers that it is not here yet; it wraps the external `debugtrace-inject` tool).
 - Phase 2 delivery (OTA, AltSource feed, Mac zips, signed links, trace upload from the web page).
 - Phase 3 devices through the core (replaces devicectl): `devices`, `deviceApps`, installs, JIT.
 - Phase 4 re-sign. Phase 5 builds (`build-and-sign`), queue, `macApps`. Phase 6 desktop wiring,

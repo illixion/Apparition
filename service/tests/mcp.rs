@@ -5,6 +5,7 @@
 
 use apparition_service::{debug::{Fixed, Service, advertisement_tag}, server::{Settings, router}};
 use axum::{Json, Router, body::Body, extract::State, http::{HeaderMap, Request}, response::IntoResponse, routing::{get, post}};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::{Arc, Mutex}};
 use tower::ServiceExt;
@@ -31,6 +32,8 @@ async fn fake_call(State(calls): State<Calls>, headers: HeaderMap, Json(body): J
         "_big" => Json(json!({ "ok": true, "data": { "entries": (0..4000).map(|i| format!("log line number {i} with padding padding padding")).collect::<Vec<_>>(), "lastSequence": 4000, "returned": 4000 } })).into_response(),
         "_bigobject" => Json(json!({ "ok": true, "data": { "blob": "x".repeat(70_000), "other": 1 } })).into_response(),
         "_trace" => Json(json!({ "ok": true, "data": { "download": "/trace.zip", "filename": "app-trace.zip", "traceId": "t1", "signed": true, "files": [{ "path": "a.log" }] } })).into_response(),
+        "_patches" => Json(json!({ "ok": true, "data": { "patches": [] } })).into_response(),
+        "_inject" => Json(json!({ "ok": true, "data": { "output": "42" } })).into_response(),
         "_fail" => (axum::http::StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "error": { "message": "nope" } }))).into_response(),
         name => Json(json!({ "ok": true, "data": { "echo": name, "args": body["arguments"] } })).into_response(),
     }
@@ -265,4 +268,69 @@ async fn an_endpoint_name_cannot_leave_the_project() {
         assert!(text_of(&result).contains("isn't an endpoint name"), "{result}");
     }
     assert!(!r.calls.lock().unwrap().iter().any(|c| c["name"].as_str().is_some_and(|n| n.contains('/'))));
+}
+
+/// `inject` drives the external patch tool from the project root and sends what it builds to the
+/// app: reset when the app has no patches, patch, one `_inject` per library, then commit.
+#[tokio::test]
+async fn inject_runs_the_patch_tool_and_sends_its_libraries() {
+    let r = rig(true).await;
+    let dir = r.dir.path();
+    let (inject_dir, log) = (dir.join("inject"), dir.join("tool.log"));
+    std::fs::create_dir_all(&inject_dir).unwrap();
+    // The launch record names the injection directory, as `build-and-sign --run --mcp --inject` writes it.
+    let record = dir.join("state/sessions/a.json");
+    let mut session: Value = serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    session["injectDir"] = json!(inject_dir);
+    std::fs::write(&record, session.to_string()).unwrap();
+    let tool_path = dir.join("fake-inject");
+    std::fs::write(&tool_path, format!("#!/bin/bash\necho \"$PWD :: $*\" >> {log}\ncase \"$1\" in\n  patch) printf 'PATCH' > {dylib}\n    echo '{{\"ok\":true,\"dylibs\":[{{\"path\":\"{dylib}\",\"label\":\"p1\",\"module\":\"M\"}}],\"commit\":[\"A.swift\"],\"record\":\"rec.json\",\"files\":{{\"A.swift\":{{\"patched\":[\"f()\"],\"warnings\":[\"reordered\"]}}}}}}';;\n  *) echo '{{\"ok\":true}}';;\nesac\n",
+        log = log.display(), dylib = dir.join("p1.dylib").display())).unwrap();
+    std::fs::set_permissions(&tool_path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    unsafe { std::env::set_var("DEBUGTRACE_INJECT_TOOL", &tool_path) };
+
+    let result = tool(&r.app, "inject", json!({ "app": "com.x.app", "files": ["A.swift"], "run": "return 1", "allowViewTypeChange": true })).await;
+    assert!(result["isError"].is_null(), "{result}");
+    let summary: Value = serde_json::from_str(&text_of(&result)).unwrap();
+    assert_eq!(summary["applied"], json!(["p1"]));
+    assert_eq!(summary["output"], "42");
+    assert_eq!(summary["patched"], json!(["A.swift: f()"]));
+    assert_eq!(summary["warnings"], json!(["A.swift: reordered"]));
+
+    let sent: Vec<Value> = r.calls.lock().unwrap().iter().filter(|c| c["name"] == "_inject").cloned().collect();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["arguments"]["label"], "p1");
+    assert_eq!(STANDARD.decode(sent[0]["arguments"]["patch"].as_str().unwrap()).unwrap(), b"PATCH");
+
+    let lines = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = lines.lines().collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines[0].ends_with(&format!(":: reset --dir {}", inject_dir.display())), "{}", lines[0]);
+    assert!(lines[0].starts_with(&std::fs::canonicalize(dir.join("project")).unwrap().display().to_string()), "runs from the project root: {}", lines[0]);
+    assert!(lines[1].ends_with(&format!(":: patch --dir {} --file A.swift --run return 1 --allow-view-type-change", inject_dir.display())), "{}", lines[1]);
+    assert!(lines[2].ends_with(&format!(":: commit --dir {} --file A.swift --record rec.json", inject_dir.display())), "{}", lines[2]);
+
+    // Only Swift sources, and nothing the tool could read as an option.
+    for bad in ["../../etc/passwd", "--evil.swift", "Notes.txt"] {
+        let refused = tool(&r.app, "inject", json!({ "app": "com.x.app", "files": [bad] })).await;
+        assert_eq!(refused["isError"], true, "{bad}");
+        assert!(text_of(&refused).contains("is not a Swift source file"), "{refused}");
+    }
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 3, "a refused call runs nothing");
+
+    // A second client is turned away while one patch holds the ledger.
+    use std::os::fd::AsRawFd;
+    let held = std::fs::OpenOptions::new().create(true).append(true).open(inject_dir.join("transaction.lock")).unwrap();
+    assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    let busy = tool(&r.app, "inject", json!({ "app": "com.x.app" })).await;
+    assert!(text_of(&busy).contains("another patch is in progress"), "{busy}");
+    drop(held);
+}
+
+#[tokio::test]
+async fn inject_needs_a_build_made_for_patching() {
+    let r = rig(true).await;
+    let result = tool(&r.app, "inject", json!({ "app": "com.x.app" })).await;
+    assert_eq!(result["isError"], true);
+    assert!(text_of(&result).contains("was not launched for live patching"), "{result}");
 }
