@@ -7,7 +7,8 @@ description = "Apparition Store in Rust: the build, delivery and device service 
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 scrypt = { version = "0.12", default-features = false }

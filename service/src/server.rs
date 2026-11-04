@@ -5,6 +5,7 @@
 use crate::{
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
+    artifacts,
     state::{State as StoreState, hostname},
     traces,
 };
@@ -321,6 +322,15 @@ impl App {
         Ok(())
     }
 
+    /// Kept builds: config `buildManifestDir` (relative to config.json), else the default store.
+    fn build_store(&self) -> PathBuf {
+        let config_dir = self.settings.config_path.parent().unwrap_or(Path::new("."));
+        match self.config().raw.get("buildManifestDir").and_then(Value::as_str).filter(|d| !d.is_empty()) {
+            Some(dir) => config_dir.join(dir),
+            None => artifacts::default_store(),
+        }
+    }
+
     fn traces_dir(&self) -> PathBuf {
         self.settings.data_dir.join("traces")
     }
@@ -357,6 +367,24 @@ impl App {
         let traces = self.traces_dir();
         match segments.as_slice() {
             ["api", "state"] if get => Some(self.state_response()),
+            ["api", "artifacts"] if get => Some(json_reply(200, json!({ "builds": artifacts::list_builds(&self.build_store(), 40) }))),
+            ["api", "artifacts", id, which @ ("manifest" | "download")] if get && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') => {
+                let Ok(kept) = artifacts::read_build(id, &self.build_store()) else {
+                    return Some(json_reply(404, json!({ "error": "Build artifact not found or invalid." })));
+                };
+                if *which == "manifest" {
+                    return Some(json_reply(200, kept.manifest));
+                }
+                let name = kept.manifest["artifact"]["file"].as_str().unwrap_or("artifact");
+                let length = kept.manifest["artifact"]["bytes"].as_u64().unwrap_or(0);
+                let file = fs::File::open(&kept.file).ok()?;
+                let body = Body::from_stream(tokio_util::io::ReaderStream::new(tokio::fs::File::from_std(file)));
+                let mut res = reply(200, "application/octet-stream", body);
+                res = with_header(res, "content-length", &length.to_string());
+                res = with_header(res, "content-disposition", &format!("attachment; filename=\"{name}\""));
+                res = with_header(res, "cache-control", "no-store");
+                Some(with_header(res, "x-content-type-options", "nosniff"))
+            }
             ["api", "traces"] if get => Some(json_reply(200, json!({ "traces": traces::list(&traces) }))),
             ["api", "traces", file] if get && file.strip_suffix(".zip").is_some_and(is_id) => {
                 let id = file.strip_suffix(".zip").unwrap();
@@ -623,6 +651,8 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
     Some(match (req.method.as_str(), suffix) {
         ("GET", "" | "/capabilities") => json_reply(200, capabilities()),
         ("GET", "/state") => app.state_response(),
+        ("GET", "/artifacts") => app.api(req, "/api/artifacts").unwrap_or_else(unknown),
+        ("GET", s) if s.starts_with("/artifacts/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         ("GET", "/traces") => app.api(req, "/api/traces").unwrap_or_else(unknown),
         ("GET", s) if s.starts_with("/traces/") && s.contains("/files/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         (_, "/host" | "/host/web-ui" | "/host/web-link") if !is_host => unknown(),

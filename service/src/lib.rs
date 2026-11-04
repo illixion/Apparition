@@ -6,6 +6,7 @@
 //! nothing elsewhere and the desktop app leaves the feature out of its Windows and Linux builds.
 #![cfg(target_os = "macos")]
 
+pub mod artifacts;
 pub mod auth;
 pub mod config;
 pub mod git;
