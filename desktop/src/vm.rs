@@ -66,7 +66,7 @@ mod mac {
         job.last = None;
         job.error = None;
         job.task = Some(tauri::async_runtime::spawn(async move {
-            let options = vm::SetupOptions { bundle: vm::default_bundle(), ipsw: ipsw.map(Into::into), public_key: None };
+            let options = vm::SetupOptions { bundle: vm::default_bundle(), ipsw: ipsw.map(Into::into), ..Default::default() };
             let emitter = app.clone();
             let say = move |progress: vm::Progress| {
                 let _ = emitter.emit("vm-progress", &progress);

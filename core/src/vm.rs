@@ -692,6 +692,8 @@ pub struct SetupOptions {
     pub ipsw: Option<PathBuf>,
     /// Development only: authorize this SSH key in the guest and keep Remote Login on.
     pub public_key: Option<PathBuf>,
+    /// Keep the cache's copy of the restore image once the VM is set up (for building VMs again and again).
+    pub keep_image: bool,
 }
 
 /// Sets the VM up, or carries on from wherever an earlier run stopped, and ends with it saved: the next start
@@ -785,8 +787,25 @@ pub async fn setup(options: &SetupOptions, say: Say<'_>) -> Result<String, Repor
         let _ = std::fs::remove_file(bundle.join("ready"));
         return Err(error);
     }
+    if !options.keep_image && forget_image(&RESTORE_IMAGE, &cache_dir()) {
+        tell(say, "ready", "Removed the macOS restore image from the cache: the VM never needs it again", None);
+    }
     tell(say, "ready", "The anisette VM is set up", Some(1.0));
     Ok(url)
+}
+
+/// Removes the cache's copy of `image` (with its stamp and any partial download). A VM that is set up never reads it
+/// again: its recoveryOS is on its own disk, and resuming or rebooting needs nothing else. Building a VM again later
+/// takes the download (or the person's own copy) again. A copy the person had elsewhere is theirs and stays; the
+/// cache's clone of it shares its blocks, so removing that frees nothing today and keeps the cache from holding
+/// 20 GB once they delete theirs. True when there was a copy.
+fn forget_image(image: &RestoreImage, cache: &Path) -> bool {
+    let file = cache.join(image.file_name());
+    let had = file.exists();
+    let _ = std::fs::remove_file(&file);
+    let _ = std::fs::remove_file(stamp_path(&file));
+    let _ = std::fs::remove_file(cache.join(format!("{}.partial", image.file_name())));
+    had
 }
 
 /// Runs the runner to completion (create, install), passing each output line to `line`.
@@ -1087,6 +1106,22 @@ mod tests {
         std::fs::write(stamp_path(&cached), stamp.replace(&TINY.sha256[..4], "0000")).unwrap();
         assert!(format!("{}", ensure_image(&TINY, &cache, None, false, &quiet).await.unwrap_err()).contains("isn't on this Mac"));
         assert!(cache.join("Test_Restore.ipsw.bad").exists());
+    }
+
+    #[tokio::test]
+    async fn a_set_up_vm_forgets_the_caches_copy_and_leaves_the_persons_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let theirs = dir.path().join("Downloads/macos.ipsw");
+        std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        std::fs::write(&theirs, b"hello world").unwrap();
+        let cache = dir.path().join("cache");
+        let cached = ensure_image(&TINY, &cache, Some(&theirs), false, &quiet).await.unwrap();
+        std::fs::write(cache.join("other-file"), b"not ours to remove").unwrap();
+        assert!(forget_image(&TINY, &cache));
+        assert!(!cached.exists() && !stamp_path(&cached).exists());
+        assert!(theirs.exists(), "the person's own copy stays");
+        assert!(cache.join("other-file").exists());
+        assert!(!forget_image(&TINY, &cache), "nothing left the second time");
     }
 
     #[test]

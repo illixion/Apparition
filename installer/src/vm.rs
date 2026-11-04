@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rootcause::prelude::*;
 
-pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--public-key <file>] | status [--json] | serve | quit | shutdown | force-stop | check | image [--ipsw <file>] | remove
+pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--keep-image] [--public-key <file>] | status [--json] | serve | quit | shutdown | force-stop | check | image [--ipsw <file>] | remove
        apparition vm screen | key <chord> | type <file> | click-text <text> [--menubar] | suspend | resume | network on|off   (for looking into a setup)
        every command takes --bundle <dir> (default ~/Library/Application Support/Apparition/anisette.vm)";
 
@@ -13,7 +13,7 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
     use apparition_core::api::vm;
 
     let mut rest: Vec<&str> = Vec::new();
-    let (mut bundle, mut ipsw, mut public_key, mut json, mut menubar) = (vm::default_bundle(), None, None, false, false);
+    let (mut bundle, mut ipsw, mut public_key, mut json, mut menubar, mut keep_image) = (vm::default_bundle(), None, None, false, false, false);
     let mut words = args.iter().map(String::as_str);
     while let Some(word) = words.next() {
         let mut path = || words.next().map(PathBuf::from).ok_or_else(|| report!("{word} needs a path"));
@@ -23,6 +23,7 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
             "--public-key" => public_key = Some(path()?),
             "--json" => json = true,
             "--menubar" => menubar = true,
+            "--keep-image" => keep_image = true,
             other => rest.push(other),
         }
     }
@@ -32,7 +33,7 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
     };
     match rest.as_slice() {
         ["setup"] => {
-            let options = vm::SetupOptions { bundle, ipsw, public_key };
+            let options = vm::SetupOptions { bundle, ipsw, public_key, keep_image };
             let url = vm::setup(&options, &say).await?;
             println!("The anisette VM is set up and saved: its anisette is at {url}, and it resumes in a second when asked.");
             println!("Sign-ins here use it when this Mac has no anisette of its own; the app's companion offers it to devices.");

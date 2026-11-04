@@ -130,9 +130,9 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
    through the VM.
 5. **App and CLI.** Done: the Companion tab's group (progress, stop, check with Apple, remove), the companion's
    and sign-in form's VM choice, `apparition vm setup|status|serve|quit|shutdown|check|image|remove`, the bundle
-   excluded from Time Machine, the image in `~/Library/Caches`. Not done: a preflight for free disk (the app
-   says what it needs; the copy fails when the disk does), deleting the image after install (kept, so a rebuild
-   needs no download), and clicking it through in the running app.
+   excluded from Time Machine, the image in `~/Library/Caches`. The cache's copy of the image is removed once the VM is
+   set up (the person's own copy stays). Not done: a preflight for free disk (the app says what it needs; the copy
+   fails when the disk does), and clicking it through in the running app.
 6. **Hardening** (ongoing). 24-hour soak, host sleep and wake, VPN on and off, a crash at every step then
    resume, a full disk, an unclean stop, the guest build changing under an update, uninstall. Docs.
 
