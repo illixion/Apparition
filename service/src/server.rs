@@ -6,6 +6,7 @@ use crate::{
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
     artifacts, crashlogs,
+    debug::{self, Debug},
     state::{State as StoreState, hostname},
     traces,
 };
@@ -24,6 +25,7 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
+use futures_util::StreamExt;
 use subtle::ConstantTimeEq;
 
 const NOT_YET: &str = "Not available in the Rust service yet.";
@@ -48,24 +50,65 @@ pub struct Settings {
     pub host_token: Option<String>,
     /// Where `build-and-sign` records trace signing keys (`traces::default_key_dir()`).
     pub key_dir: PathBuf,
+    /// DebugTrace's state directory (`sessions/` inside): `DEBUGTRACE_STATE_DIR` or
+    /// `~/.local/state/debugtrace`.
+    pub debug_state_dir: PathBuf,
+    /// Where running apps are found; Bonjour unless a test supplies a list.
+    pub browser: Arc<dyn debug::Browse>,
+    /// Named in a device's "Allow debug access?" prompt.
+    pub client_name: String,
+}
+
+impl Settings {
+    pub fn new(config_path: PathBuf, data_dir: PathBuf, public_dir: PathBuf) -> Settings {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let host = hostname();
+        Settings {
+            config_path, data_dir, public_dir, host_token: None,
+            key_dir: traces::default_key_dir(),
+            debug_state_dir: std::env::var_os("DEBUGTRACE_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".local/state/debugtrace")),
+            browser: Arc::new(Arc::new(debug::Mdns::default())),
+            client_name: format!("Apparition Store page on {}", host.split('.').next().unwrap_or("")),
+        }
+    }
 }
 
 pub struct App {
     settings: Settings,
     auth: Auth,
     state: StoreState,
+    debug: Arc<Debug>,
     config: Mutex<(Option<SystemTime>, Arc<Config>)>,
     host_sessions: Mutex<HashSet<String>>,
     host_codes: Mutex<HashMap<String, u64>>,
 }
 
+/// A debug route needs the network, so the synchronous dispatch hands it to `handle`, which runs
+/// it on the async side. It rides on an otherwise empty response.
+#[derive(Clone)]
+enum Deferred {
+    Apps,
+    Help(String),
+    Call(String, Value),
+    Panels(String),
+    Logs(String, String, Option<String>),
+}
+
+fn defer(route: Deferred) -> Response {
+    let mut res = Response::new(Body::empty());
+    res.extensions_mut().insert(route);
+    res
+}
+
 pub fn router(settings: Settings) -> std::io::Result<Router> {
     let auth = Auth::open(&settings.data_dir)?;
     let state = StoreState::load(&settings.data_dir);
+    let debug = Arc::new(Debug::new(settings.key_dir.clone(), &settings.debug_state_dir, settings.browser.clone(), settings.client_name.clone()));
     let app = Arc::new(App {
         settings,
         auth,
         state,
+        debug,
         config: Mutex::new((None, Arc::new(Config::default()))),
         host_sessions: Mutex::default(),
         host_codes: Mutex::default(),
@@ -373,6 +416,34 @@ impl App {
         let get = req.method == Method::GET;
         let traces = self.traces_dir();
         match segments.as_slice() {
+            ["api", "debug", "apps"] if get => Some(defer(Deferred::Apps)),
+            ["api", "debug", id, action @ ("help" | "call" | "logs" | "panels")] if !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) => {
+                let id = id.to_string();
+                match (*action, &req.method) {
+                    ("help", &Method::GET) => Some(defer(Deferred::Help(id))),
+                    ("panels", &Method::GET) => Some(defer(Deferred::Panels(id))),
+                    ("call", &Method::POST) => {
+                        let body = req.json_body();
+                        let ok = body.get("endpoint").and_then(Value::as_str).is_some_and(|e| {
+                            let e = e.strip_prefix('_').unwrap_or(e);
+                            let mut c = e.chars();
+                            e.len() <= 48 && c.next().is_some_and(|f| f.is_ascii_alphabetic()) && c.all(|x| x.is_ascii_alphanumeric())
+                        });
+                        if !ok {
+                            return Some(json_reply(400, json!({ "ok": false, "error": { "message": "body must be {\"endpoint\": \"<name>\", \"arguments\": {...}}" } })));
+                        }
+                        Some(defer(Deferred::Call(id, body)))
+                    }
+                    ("logs", &Method::GET) => {
+                        let level = req.query.get("level").cloned().unwrap_or_else(|| "debug".into());
+                        if !["debug", "info", "notice", "error", "fault"].contains(&level.as_str()) {
+                            return Some(json_reply(400, json!({ "error": "unknown level" })));
+                        }
+                        Some(defer(Deferred::Logs(id, level, req.query.get("contains").filter(|c| !c.is_empty()).cloned())))
+                    }
+                    _ => None,
+                }
+            }
             ["api", "state"] if get => Some(self.state_response()),
             ["api", "artifacts"] if get => Some(json_reply(200, json!({ "builds": artifacts::list_builds(&self.build_store(), 40) }))),
             ["api", "artifacts", id, which @ ("manifest" | "download")] if get && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') => {
@@ -453,7 +524,11 @@ impl App {
     }
 
     fn state_response(&self) -> Response {
-        json_reply(200, self.state.bundle(&self.config(), system_ms(), &hostname()))
+        let mut bundle = self.state.bundle(&self.config(), system_ms(), &hostname());
+        // The last discovery; a fresh one runs in the background, so this never waits on Bonjour.
+        bundle["debugApps"] = self.debug.cached_apps();
+        self.debug.refresh_in_background();
+        json_reply(200, bundle)
     }
 
     fn host_status(&self) -> Value {
@@ -526,7 +601,48 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     }).collect();
     let req = Req { method: parts.method, path: parts.uri.path().to_string(), query, headers: parts.headers, body };
     // blocking work (scrypt, file reads) stays off the async threads
-    tokio::task::spawn_blocking(move || dispatch(&app, &req)).await.unwrap_or_else(|_| json_reply(500, json!({ "error": "internal error" })))
+    let dispatcher = app.clone();
+    let res = tokio::task::spawn_blocking(move || dispatch(&dispatcher, &req)).await.unwrap_or_else(|_| json_reply(500, json!({ "error": "internal error" })));
+    match res.extensions().get::<Deferred>().cloned() {
+        Some(route) => run_debug(&app, route).await,
+        None => res,
+    }
+}
+
+fn reply_of(reply: debug::Reply) -> Response {
+    if reply.body.is_some() || reply.raw.is_empty() {
+        return json_reply(reply.status, reply.body.unwrap_or(Value::Null));
+    }
+    // An image or file from the app: passed through, never as HTML.
+    let ct = reply.content_type.to_lowercase();
+    let allowed = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "application/zip", "application/octet-stream", "text/plain"].iter().any(|t| ct.starts_with(t));
+    let res = reply_status(reply.status, if allowed { &reply.content_type } else { "application/octet-stream" }, reply.raw);
+    let res = with_header(res, "x-content-type-options", "nosniff");
+    with_header(res, "content-security-policy", "default-src 'none'")
+}
+
+fn reply_status(status: u16, content_type: &str, body: impl Into<Body>) -> Response {
+    reply(status, content_type, body)
+}
+
+async fn run_debug(app: &Arc<App>, route: Deferred) -> Response {
+    match route {
+        Deferred::Apps => json_reply(200, app.debug.apps().await),
+        Deferred::Help(id) => reply_of(app.debug.help(&id).await),
+        Deferred::Call(id, body) => {
+            let args = body.get("arguments").filter(|a| a.is_object()).cloned().unwrap_or_else(|| json!({}));
+            reply_of(app.debug.call(&id, body["endpoint"].as_str().unwrap_or(""), args).await)
+        }
+        Deferred::Panels(id) => reply_of(app.debug.panels(&id).await),
+        Deferred::Logs(id, level, contains) => {
+            let rx = app.debug.stream_logs(id, level, contains);
+            let stream = tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, std::convert::Infallible>);
+            let mut res = reply(200, "text/event-stream", Body::from_stream(stream));
+            res = with_header(res, "cache-control", "no-store");
+            res = with_header(res, "connection", "keep-alive");
+            with_header(res, "x-accel-buffering", "no")
+        }
+    }
 }
 
 fn dispatch(app: &App, req: &Req) -> Response {
@@ -674,6 +790,9 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
     Some(match (req.method.as_str(), suffix) {
         ("GET", "" | "/capabilities") => json_reply(200, capabilities()),
         ("GET", "/state") => app.state_response(),
+        ("GET", "/debug/apps") => app.api(req, "/api/debug/apps").unwrap_or_else(unknown),
+        ("GET", s) if s.starts_with("/debug/") && s.ends_with("/help") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
+        ("POST", s) if s.starts_with("/debug/") && s.ends_with("/call") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         ("GET", "/crashlogs") => app.api(req, "/api/crashlogs").unwrap_or_else(unknown),
         ("GET", s) if s.starts_with("/crashlogs/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         ("GET", "/artifacts") => app.api(req, "/api/artifacts").unwrap_or_else(unknown),

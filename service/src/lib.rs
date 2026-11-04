@@ -10,6 +10,7 @@ pub mod artifacts;
 pub mod auth;
 pub mod config;
 pub mod crashlogs;
+pub mod debug;
 pub mod git;
 pub mod install_mode;
 pub mod state;

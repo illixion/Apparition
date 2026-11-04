@@ -24,11 +24,11 @@ fn fixture(config: Value, hosted: bool) -> Fixture {
     std::fs::write(public.join("favicon.svg"), "<svg/>").unwrap();
     std::fs::write(dir.path().join("secret-notes.txt"), "no").unwrap();
     let app = router(Settings {
-        config_path: dir.path().join("config.json"),
-        data_dir: dir.path().join("data"),
-        public_dir: public,
         host_token: hosted.then(|| TOKEN.to_string()),
         key_dir: dir.path().join("keys"),
+        debug_state_dir: dir.path().join("debugtrace"),
+        browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])),
+        ..Settings::new(dir.path().join("config.json"), dir.path().join("data"), public)
     })
     .unwrap();
     Fixture { dir, app }

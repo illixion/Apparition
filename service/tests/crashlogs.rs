@@ -47,7 +47,7 @@ async fn crash_logs_match_the_node_store() {
         seed(&dir);
     }
     let rust = work.path().join("rust");
-    let app = router(Settings { config_path: rust.join("config.json"), data_dir: rust.join("data"), public_dir: rust.join("p"), host_token: None, key_dir: rust.join("k") }).unwrap();
+    let app = router(Settings { host_token: None, key_dir: rust.join("k"), browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])), ..Settings::new(rust.join("config.json"), rust.join("data"), rust.join("p")) }).unwrap();
     let node = work.path().join("node");
     let Some(node) = common::NodeStore::start(&node.join("config.json"), &node.join("data"), port, &[]) else { return };
 

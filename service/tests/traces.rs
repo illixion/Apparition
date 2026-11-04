@@ -115,7 +115,7 @@ async fn the_rust_verifier_agrees_with_the_node_store_on_good_and_bad_archives()
     let (rust_dir, node_dir) = (work.path().join("rust"), work.path().join("node"));
     config(&rust_dir, 1);
     config(&node_dir, port);
-    let app = router(Settings { config_path: rust_dir.join("config.json"), data_dir: rust_dir.join("data"), public_dir: rust_dir.join("p"), host_token: None, key_dir: keys.clone() }).unwrap();
+    let app = router(Settings { host_token: None, key_dir: keys.clone(), browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])), ..Settings::new(rust_dir.join("config.json"), rust_dir.join("data"), rust_dir.join("p")) }).unwrap();
     let store = Path::new(env!("CARGO_MANIFEST_DIR")).join("../store");
     let _node = Kill(Command::new("node").arg("server.js").current_dir(&store)
         .env("STORE_CONFIG", node_dir.join("config.json")).env("STORE_DATA", node_dir.join("data")).env("DEBUGTRACE_KEY_DIR", &keys)
