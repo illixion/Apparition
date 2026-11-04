@@ -249,8 +249,13 @@ name = "apparition-service"
 version = "0.4.5"
 dependencies = [
  "axum",
+ "base64 0.22.1",
+ "ring",
+ "scrypt",
  "serde",
  "serde_json",
+ "subtle",
+ "tempfile",
  "tokio",
 ]
 
