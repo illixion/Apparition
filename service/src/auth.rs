@@ -28,6 +28,11 @@ fn sha_hex(input: &[u8]) -> String {
     digest::digest(&digest::SHA256, input).as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// 32 random bytes, base64url: a session or one-time code.
+pub fn new_token() -> String {
+    URL_SAFE_NO_PAD.encode(random(32))
+}
+
 fn random(len: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; len];
     SystemRandom::new().fill(&mut bytes).expect("system randomness");

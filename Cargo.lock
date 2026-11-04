@@ -257,6 +257,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "tokio",
+ "tower",
 ]
 
 [[package]]

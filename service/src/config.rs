@@ -17,6 +17,16 @@ pub struct Config {
     pub web_ui: bool,
     #[serde(default)]
     pub repos: Vec<Repo>,
+    pub branding: Option<Branding>,
+}
+
+/// `{ org, title, icon }`: `title` is the full name, else "<org>'s Apparition Store"; `icon` is
+/// an image path relative to config.json, or any other text shown as is (an emoji, a letter).
+#[derive(Debug, Default, Deserialize)]
+pub struct Branding {
+    pub org: Option<String>,
+    pub title: Option<String>,
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

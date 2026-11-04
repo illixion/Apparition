@@ -4,6 +4,25 @@ Goal: the desktop app serves what `store/` serves today, from Rust in its own pr
 Node.js and no bash on the Mac. Node bundling is explicitly out of scope: the Node server stays
 only as the fallback until the Rust service passes the parity checklist, then goes.
 
+## Decisions (2026-11-04)
+
+- **Mac only.** The feature is hidden on Windows and Linux; the `service` crate compiles to
+  nothing off macOS and the desktop app leaves the Developer build tab out of those builds.
+- **`~/Projects/appstore` is archived and superseded** by this service once it reaches parity.
+  The Node `store/` stays only as the fallback until phase 6, then goes.
+- **Signing moves to the core's identity store.** A Mac that builds with a login-keychain
+  certificate imports it once (`import_identity`); that user-visible step is accepted.
+
+## Status
+
+- Phase 0 done: crate, config model.
+- Phase 1 in progress: done are auth (byte-compatible with `lib/auth.js`, proven against the real
+  Node module), the web gate, login/logout/auth, static files with branding, the bearer service
+  API's auth, `/host*`, `/disconnect`, and the one-time `/host-login`. Unported routes answer 501
+  and the capabilities list stays empty until a capability really works. Left in phase 1:
+  `/api/state`, traces, crash logs, artifacts, presence, response diffing against the Node
+  service, and embedding `store/public`.
+
 ## Constraint that does not move
 
 `xcodebuild` exists only on a Mac with Xcode. The Rust service runs it as a child process, the
