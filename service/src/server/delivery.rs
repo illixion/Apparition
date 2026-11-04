@@ -10,9 +10,22 @@ const MAC_LINK_TTL_DAYS: u64 = 7;
 
 /// The scheme and host the device used to reach this Store: behind `tailscale serve` that is
 /// https and the ts.net name (`X-Forwarded-*`); a direct LAN hit falls back to the Host header.
-pub(super) fn request_base(req: &Req) -> String {
+/// Where the request's client reached the Store: what a proxy in front (`tailscale serve`) says,
+/// else its Host. A request to loopback with no proxy in front (`apparition store`, the app, a
+/// paired computer's channel) gets config.json's `publicUrl` when there is one, as links made
+/// for it are for devices, which can't reach this computer's loopback.
+pub(super) fn request_base(req: &Req, public_url: Option<&str>) -> String {
+    let forwarded = req.header("x-forwarded-host");
+    let host = req.header("host");
+    let loopback = {
+        let name = host.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(name, _)| name);
+        ["127.0.0.1", "localhost", "[::1]"].contains(&name)
+    };
+    if forwarded.is_empty() && loopback && let Some(url) = public_url.filter(|u| u.starts_with("https://") || u.starts_with("http://")) {
+        return url.trim_end_matches('/').to_string();
+    }
     let proto = match req.header("x-forwarded-proto") { "" => "http", p => p };
-    let host = match req.header("x-forwarded-host") { "" => req.header("host"), h => h };
+    let host = if forwarded.is_empty() { host } else { forwarded };
     format!("{proto}://{host}")
 }
 
@@ -86,20 +99,26 @@ pub(super) fn hold_seconds(query: &HashMap<String, String>, default: u64) -> u64
 }
 
 impl App {
+    /// The base of links made for this request (`request_base`).
+    pub(super) fn base(&self, req: &Req) -> String {
+        let config = self.config();
+        request_base(req, config.raw.get("publicUrl").and_then(Value::as_str))
+    }
+
     /// The OTA copy the state lists under this slug.
     fn ota_entry(&self, slug: &str) -> Option<Value> {
         self.state.field("ota").as_object()?.values().find(|e| e["slug"].as_str() == Some(slug)).cloned()
     }
 
     fn signed_ota_url(&self, req: &Req, pathname: &str) -> String {
-        format!("{}{pathname}?t={}", request_base(req), self.auth.sign_path(pathname, 3600))
+        format!("{}{pathname}?t={}", self.base(req), self.auth.sign_path(pathname, 3600))
     }
 
     /// `/ota`, `/ota/<slug>/manifest.plist` and `/ota/<slug>.ipa` (the last two arrive with a signed
     /// link or a session), and `/api/ota/<slug>/link`.
-    pub(super) fn ota_routes(&self, req: &Req) -> Option<Response> {
+    pub(super) fn ota_routes(&self, req: &Req, path: &str) -> Option<Response> {
         let get = req.method == Method::GET;
-        let segments: Vec<&str> = req.path.trim_start_matches('/').split('/').collect();
+        let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
         let slug_ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
         match segments.as_slice() {
             ["api", "ota", slug, "link"] if get && slug_ok(slug) => Some(match self.ota_entry(slug) {
@@ -129,7 +148,7 @@ impl App {
     }
 
     fn ota_page(&self, req: &Req) -> String {
-        let base = request_base(req);
+        let base = self.base(req);
         let https = base.starts_with("https://");
         let ota = self.state.field("ota");
         let mut entries: Vec<(&String, &Value)> = ota.as_object().into_iter().flatten().collect();
@@ -191,7 +210,7 @@ impl App {
     }
 
     fn alt_url(&self, req: &Req, platform: Option<&str>) -> String {
-        format!("{}/altsource/{}.json?k={}", request_base(req), platform.map_or("source".to_string(), encode_uri_component), encode_uri_component(&self.alt_token()))
+        format!("{}/altsource/{}.json?k={}", self.base(req), platform.map_or("source".to_string(), encode_uri_component), encode_uri_component(&self.alt_token()))
     }
 
     fn alt_links(&self, req: &Req) -> Value {
@@ -210,7 +229,7 @@ impl App {
     /// every refresh, so they never get old in practice).
     fn alt_link(&self, req: &Req, pathname: &str) -> String {
         let days = self.alt_cfg().get("linkTtlDays").and_then(Value::as_f64).filter(|d| *d > 0.0).unwrap_or(7.0);
-        format!("{}{pathname}?t={}", request_base(req), self.auth.sign_path(pathname, (days * 86400.0) as u64))
+        format!("{}{pathname}?t={}", self.base(req), self.auth.sign_path(pathname, (days * 86400.0) as u64))
     }
 
     /// The OTA page's AltStore section (empty while the mode is off).
@@ -391,7 +410,7 @@ impl App {
     /// seven days. The branch is part of what is signed.
     fn signed_mac_latest(&self, req: &Req, slug: &str, branch: &str) -> String {
         let signed = format!("/mac/{slug}/latest.app.zip?branch={}", encode_uri_component(branch));
-        format!("{}{signed}&t={}", request_base(req), self.auth.sign_path(&signed, MAC_LINK_TTL_DAYS * 86400))
+        format!("{}{signed}&t={}", self.base(req), self.auth.sign_path(&signed, MAC_LINK_TTL_DAYS * 86400))
     }
 
     /// Whether a request for `/mac/<slug>/<latest|commit>.app.zip` carries a valid signed link.

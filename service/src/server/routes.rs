@@ -68,6 +68,14 @@ impl App {
         if !self.patching.lock().unwrap().insert(key.clone()) {
             return refuse("A patch is already in progress for this app and device.".into());
         }
+        // Let go however this ends, a client that hangs up mid-patch included.
+        struct Patching<'a>(&'a std::sync::Mutex<std::collections::HashSet<String>>, String);
+        impl Drop for Patching<'_> {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().remove(&self.1);
+            }
+        }
+        let _patching = Patching(&self.patching, key);
         let config = self.config();
         let mut command = tokio::process::Command::new(queue::cli(&config));
         command.arg("inject").arg(bundle).arg("--device").arg(device);
@@ -81,7 +89,6 @@ impl App {
             }
         }
         let output = tokio::time::timeout(std::time::Duration::from_secs(90), command.output()).await;
-        self.patching.lock().unwrap().remove(&key);
         let output = match output {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => return refuse(format!("Patch failed: couldn't start the Apparition CLI: {e}")),

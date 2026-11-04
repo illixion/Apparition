@@ -19,8 +19,6 @@ use serde_json::{Value, json};
 
 use crate::service::BuildService;
 
-const DEFAULT_PORT: u16 = 8484;
-
 struct Running {
     stop: Box<dyn FnOnce() + Send>,
     route: DeveloperRoute,
@@ -36,36 +34,7 @@ pub struct ServiceHost {
 }
 
 pub(crate) fn support_dir() -> PathBuf {
-    apparition_core::api::store_dir()
-}
-
-/// 32 random bytes as 43 characters of unpadded base64url, the token shape the Store accepts.
-pub(crate) fn token() -> Result<String, String> {
-    Ok(apparition_service::auth::new_token())
-}
-
-/// The Store's config, made on first start: an empty project list on the usual port.
-pub(crate) fn ensure_config() -> Result<(PathBuf, u16), String> {
-    let dir = support_dir();
-    std::fs::create_dir_all(dir.join("data")).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
-    let path = dir.join("config.json");
-    if !path.is_file() {
-        let config = json!({ "port": DEFAULT_PORT, "bundlePrefix": [], "repos": [] });
-        std::fs::write(&path, serde_json::to_string_pretty(&config).unwrap() + "\n")
-            .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-    }
-    let port = std::fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|c| c["port"].as_u64())
-        .and_then(|p| u16::try_from(p).ok())
-        .unwrap_or(DEFAULT_PORT);
-    Ok((path, port))
+    apparition_service::hosted::store_dir()
 }
 
 impl ServiceHost {
@@ -90,8 +59,9 @@ impl ServiceHost {
             return Ok(running.route.clone());
         }
         match crate::developer::start_store().await {
-            Ok((route, stop)) => {
-                *self.last_error.lock().unwrap() = None;
+            Ok((route, moved, stop)) => {
+                // Running, but not where apps and links expect it: worth saying.
+                *self.last_error.lock().unwrap() = moved;
                 *self.running.lock().unwrap() = Some(Running { stop, route: route.clone(), started: Instant::now() });
                 Ok(route)
             }
@@ -117,18 +87,24 @@ pub fn host_status(host: tauri::State<'_, ServiceHost>) -> Value {
 
 /// Starts the Store if needed and makes it the one the Developer tab talks to.
 #[tauri::command]
-pub async fn host_connect(host: tauri::State<'_, ServiceHost>, service: tauri::State<'_, BuildService>) -> Result<Value, String> {
+pub async fn host_connect(host: tauri::State<'_, ServiceHost>, service: tauri::State<'_, BuildService>,
+    companion: tauri::State<'_, std::sync::Arc<crate::companion::CompanionState>>) -> Result<Value, String> {
     if !cfg!(target_os = "macos") {
         return Err("Builds need a Mac with Xcode. Connect to one instead.".into());
     }
     let route = host.start().await?;
+    // A start after a stop has a new token (and maybe port): paired computers get it too.
+    companion.offer_developer(Some(route.clone())).await;
     service.adopt_local(route.address.port(), route.token).await
 }
 
 #[tauri::command]
-pub fn host_stop(host: tauri::State<'_, ServiceHost>, service: tauri::State<'_, BuildService>) {
+pub async fn host_stop(host: tauri::State<'_, ServiceHost>, service: tauri::State<'_, BuildService>,
+    companion: tauri::State<'_, std::sync::Arc<crate::companion::CompanionState>>) -> Result<(), String> {
     service.forget_local();
     host.stop();
+    companion.offer_developer(None).await;
+    Ok(())
 }
 
 /// Turns the Store's web pages on or off; a password, when given, replaces the old one.
@@ -176,17 +152,4 @@ pub async fn host_settings(service: tauri::State<'_, BuildService>) -> Result<Va
 /// The app is quitting: the Store goes with it.
 pub fn shutdown(host: &ServiceHost) {
     host.stop();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tokens_have_the_shape_the_store_accepts() {
-        let a = token().unwrap();
-        assert_eq!(a.len(), 43);
-        assert!(a.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
-        assert_ne!(a, token().unwrap());
-    }
 }

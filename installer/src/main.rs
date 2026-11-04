@@ -30,6 +30,7 @@ mod inject;
 mod developer;
 mod builder;
 mod crash_reports;
+mod store;
 mod vm;
 
 const USAGE: &str = "\
@@ -149,7 +150,8 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       terminal. Without a terminal, or with --no-prompt, requests are declined: pair in a
       terminal once (paired devices are remembered). All anisette requests use the encrypted
       channel on port 49162. --no-mdns doesn't announce this computer: devices then need its
-      address typed in.
+      address typed in. While an Apparition Store runs here (the app's or `apparition store
+      serve`), computers can also pair for developer access to it, as with the app.
   apparition relay devices [forget <id>]
       List the devices and computers paired to use this Mac's anisette, or unpair one.
   apparition anisette pair <address>[:<port>]
@@ -177,6 +179,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       (vergence, RAVESDK...), and why: from the Mac's Store. --check asks the devices first; --run
       builds each once in a clean clone and installs it on every device that runs it; --auto on
       lets the Store do that by itself once sources have been still for a few minutes.
+  apparition store serve | status | web-ui | open | projects | add | devices | build | builds | log
+          | cancel | kept | resign | ota | altsource | mac | traces
+      Everything the Apparition Store does, from here: run it without the app (serve), add
+      projects, queue builds and follow their logs, re-sign, and the OTA, AltStore and Mac download
+      links. `apparition store help` for each.
   apparition crash-reports list [--app <text>] [--device <name>] | show <id> | done <id>... [--dry-run]
       What the Store holds about crashes: crash logs pulled off devices and uploaded debug traces,
       newest first. show prints a crash log symbolicated (or a trace's MetricKit reports); done
@@ -271,6 +278,7 @@ async fn main() -> ExitCode {
         Some("deploy-signing") => developer::deploy_signing(&args[1..]),
         Some("mcp") => developer::mcp(&args[1..]).await,
         Some("updates") => developer::updates(&args[1..]).await,
+        Some("store") => store::run(&args[1..]).await,
         Some("crash-reports") => crash_reports::run(&args[1..]).await,
         Some("browse") => {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
@@ -300,7 +308,7 @@ async fn main() -> ExitCode {
                 Some("pairedMac") => eprintln!("`apparition anisette status` shows the Mac this computer is paired with; `apparition anisette pair <address>` pairs again."),
                 _ => {}
             }
-            ExitCode::FAILURE
+            builder::exit_code().map_or(ExitCode::FAILURE, ExitCode::from)
         }
     }
 }
@@ -1717,7 +1725,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         }
     }
     let log: relay::Log = std::sync::Arc::new(|line: &str| println!("{line}"));
-    let companion = Companion::start(port, relay::ANISETTE_PORT, advertise, &anisette_dir(), log).await?;
+    let companion = std::sync::Arc::new(Companion::start(port, relay::ANISETTE_PORT, advertise, &anisette_dir(), log).await?);
     println!("Apparition companion relay listening on port {}.", companion.relay.port());
     let address = relay::primary_address().map(|ip| ip.to_string()).unwrap_or_else(|| "this computer's address".into());
     if advertise {
@@ -1742,8 +1750,8 @@ async fn relay(args: &[String]) -> Result<(), Error> {
             return;
         }
         println!(
-            "\n{} ({}) asks to use this Mac's anisette and relay encrypted Apple connections. Its code: {}\nAllow it if the same code shows on the device or computer. Allow? [y/N]",
-            request.device_name, request.peer, request.code
+            "\n{} ({}) asks for {}. Its code: {}\nAllow it if the same code shows on the device or computer. Allow? [y/N]",
+            request.device_name, request.peer, describe_grants(&request.grants), request.code
         );
         let _ = asked.send(id);
     }));
@@ -1767,8 +1775,39 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         "none" => println!("Not offering anisette: only a Mac does. Pair your devices with your Mac's Apparition for it."),
         other => return Err(fail(format!("--anisette is builtin or none, not {other}"))),
     }
+    // The Store running here (the app's or `apparition store serve`), for the computers paired
+    // with developer access: looked for again every few seconds, as it starts, stops and moves.
+    let developer = companion.clone();
+    tokio::spawn(async move {
+        let mut offered: Option<std::net::SocketAddr> = None;
+        loop {
+            let route = apparition_service::hosted::running(&apparition_service::hosted::store_dir()).map(|(route, _)| route);
+            let address = route.as_ref().map(|r| r.address);
+            if address != offered {
+                match &route {
+                    Some(r) => println!("Offering the Apparition Store at http://{} to computers paired for developer access.", r.address),
+                    None if offered.is_some() => println!("The Apparition Store here stopped: paired computers can't reach it now."),
+                    None => {}
+                }
+                developer.set_developer(route);
+                offered = address;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    });
     let _ = tokio::signal::ctrl_c().await;
     Ok(())
+}
+
+/// What a pairing asks for, in words.
+fn describe_grants(grants: &[String]) -> String {
+    let words: Vec<&str> = grants.iter().map(|g| match g.as_str() {
+        "anisette" => "this Mac's anisette",
+        "appleRelay" => "relaying encrypted Apple connections",
+        "developer" => "developer access to the Apparition Store here (builds, deploys, its apps' debug servers)",
+        other => other,
+    }).collect();
+    if words.is_empty() { "pairing".into() } else { words.join(", ") }
 }
 
 /// `relay devices [forget <id>]`.

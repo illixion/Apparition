@@ -157,7 +157,21 @@ pub fn prepare(clones: &Path, repo: &Path, branch: &str, rev: &str, exclude: &[S
         if app.exists() {
             fs::remove_dir_all(&app).map_err(|e| format!("couldn't clear {}: {e}", app.display()))?;
         }
-        clone_tree(repo, &app, exclude, "")?;
+        if repo.join(".git").is_file() {
+            // A worktree: its `.git` file points into the main repository, whose refs a copy
+            // would share and whose branch the checkout below would move. A clone of its own.
+            let out = Command::new("git").args(["clone", "-q", "--shared", "--no-checkout"]).arg(repo).arg(&app)
+                .stdin(Stdio::null()).output().map_err(|e| format!("git: {e}"))?;
+            if !out.status.success() {
+                return Err(format!("couldn't clone {}: {}", repo.display(), String::from_utf8_lossy(&out.stderr).trim()));
+            }
+        } else {
+            // The checkout's own build output stays behind: its lock and console pidfiles name
+            // processes of the checkout's builds, which the clone's build would wait on or stop.
+            let mut exclude = exclude.to_vec();
+            exclude.push("build".into());
+            clone_tree(repo, &app, &exclude, "")?;
+        }
     }
     // Into a ref of its own, so the clone's checked-out branch never blocks the fetch.
     git(&app, &["fetch", "-q", "--no-tags", &repo.to_string_lossy(), &format!("+refs/heads/{branch}:refs/remotes/store/{branch}")], log)?;

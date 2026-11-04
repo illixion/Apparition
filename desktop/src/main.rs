@@ -12,7 +12,6 @@
 
 mod companion;
 mod developer;
-mod store_devices;
 mod flow;
 mod host;
 mod service;
@@ -141,7 +140,6 @@ fn main() {
                 vm::shutdown();
                 cleanup.clean_up();
                 host::shutdown(&app.state::<host::ServiceHost>());
-                developer::shutdown();
             }
             // macOS: clicking the Dock icon (or opening the app again) brings the window back.
             #[cfg(target_os = "macos")]

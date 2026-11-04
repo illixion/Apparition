@@ -256,6 +256,7 @@ dependencies = [
 name = "apparition-service"
 version = "0.4.5"
 dependencies = [
+ "apparition-core",
  "axum",
  "base64 0.22.1",
  "flate2",

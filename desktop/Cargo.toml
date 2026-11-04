@@ -29,7 +29,7 @@ tempfile = "3"
 zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 # The Apparition Store, in-process: deploys from other computers, kept builds and the apps'
 # debug servers (MCP), on every desktop OS. Builds with Xcode stay on a Mac.
-apparition-service = { path = "../service" }
+apparition-service = { path = "../service", features = ["hosted"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

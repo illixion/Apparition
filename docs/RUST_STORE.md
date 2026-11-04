@@ -103,8 +103,8 @@ some tests run against recorded fixtures of what the Node Store wrote
 - **`--distribution` builds.** `apparition build` refuses the flag.
 - **`EXTRA_ENTITLEMENTS_PLIST` and `ASSOCIATED_DOMAINS`**, two conf keys the script supported and no
   project of the author's sets.
-- **A server edition.** The Store has no standalone mode: no launchd or systemd unit, no
-  `set-password` command. The password and the pages are managed from the app.
+- **A packaged server edition.** `apparition store serve` runs the Store without the app, but no
+  launchd or systemd unit ships with it.
 - **The `apparition xcode` handoff**, which registered an existing Xcode product in the build store
   or generated a scheme that did. It depended on the Node tools and has not been ported.
 - **Crash-log pulling.** It was switched off before the rewrite (it woke sleeping Apple TVs) and

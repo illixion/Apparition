@@ -125,26 +125,59 @@ fn defer(route: Deferred) -> Response {
 
 /// Serves the Store on a free loopback port, on the current tokio runtime, until the task is
 /// dropped or aborted. Other computers reach it only through the companion channel.
-pub async fn serve_loopback(settings: Settings) -> std::io::Result<(std::net::SocketAddr, tokio::task::JoinHandle<()>)> {
+pub async fn serve_loopback(settings: Settings) -> std::io::Result<(std::net::SocketAddr, Served)> {
     let wanted = settings.port;
-    let app = router(settings)?;
+    let app = build(settings)?;
+    let mut moved = None;
     let listener = match wanted {
         Some(port) => match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => listener,
             Err(e) => {
-                eprintln!("port {port} is taken ({e}); the Store listens on another one");
+                let note = format!("Port {port} is taken ({e}), so the Store listens on another one: apps' trace uploads and links made for port {port} don't reach it. Quit what holds {port} and start the Store again.");
+                eprintln!("{note}");
+                moved = Some(note);
                 tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?
             }
         },
         None => tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?,
     };
     let address = listener.local_addr()?;
+    let router = Router::new().fallback(handle).with_state(app.clone());
     let task = tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, app).await {
+        if let Err(error) = axum::serve(listener, router).await {
             eprintln!("the Store stopped: {error}");
         }
     });
-    Ok((address, task))
+    Ok((address, Served { task, app, moved }))
+}
+
+/// A Store `serve_loopback` started.
+pub struct Served {
+    task: tokio::task::JoinHandle<()>,
+    app: Arc<App>,
+    /// Why it isn't on the port asked for, when it isn't.
+    pub moved: Option<String>,
+}
+
+impl Served {
+    /// Stops it: no new connections, the queue's builds stopped and noted as failed, and every
+    /// request still arriving on an open connection answered 503. Another Store can then take
+    /// the same folder.
+    pub fn stop(&self) {
+        self.app.queue.shutdown();
+        self.task.abort();
+    }
+
+    /// Runs until the server stops by itself (only on an error).
+    pub async fn wait(&mut self) {
+        let _ = (&mut self.task).await;
+    }
+}
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// What the AltSource feed and the Mac downloads ask of the Store: the live config, a branch
@@ -212,6 +245,10 @@ impl queue::Deliver for Deliveries {
 }
 
 pub fn router(settings: Settings) -> std::io::Result<Router> {
+    Ok(Router::new().fallback(handle).with_state(build(settings)?))
+}
+
+fn build(settings: Settings) -> std::io::Result<Arc<App>> {
     let auth = Auth::open(&settings.data_dir)?;
     let state = Arc::new(StoreState::load(&settings.data_dir));
     let debug = Arc::new(Debug::new(settings.key_dir.clone(), &settings.debug_state_dir, settings.browser.clone(), settings.client_name.clone()));
@@ -250,7 +287,7 @@ pub fn router(settings: Settings) -> std::io::Result<Router> {
         let (queue, ctx) = (app.queue.clone(), app.queue_context());
         runtime.spawn(async move { queue.refresh_devices(&ctx, false).await });
     }
-    Ok(Router::new().fallback(handle).with_state(app))
+    Ok(app)
 }
 
 /// The automatic mode (config `autoUpdate.enabled`): once a minute, builds and installs what is
@@ -260,7 +297,7 @@ async fn automatic_updates(app: std::sync::Weak<App>) {
     let (mut asked, mut reaped) = (0u64, 0u64);
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        let Some(app) = app.upgrade() else { return };
+        let Some(app) = app.upgrade().filter(|a| !a.queue.stopped()) else { return };
         let ctx = app.queue_context();
         let now = system_ms();
         if now - reaped > 3_600_000 {
@@ -541,21 +578,30 @@ impl App {
     }
 
     /// Rewrites `config.json` with `change`, atomically, keeping every key it does not touch.
-    fn update_config(&self, change: impl FnOnce(&mut serde_json::Map<String, Value>)) -> Result<(), String> {
+    /// A change made meanwhile (a project registered, an edit by hand) is read again and the
+    /// change applied over it, rather than written over.
+    fn update_config(&self, change: impl Fn(&mut serde_json::Map<String, Value>)) -> Result<(), String> {
         let path = &self.settings.config_path;
-        let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let mut value: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        let object = value.as_object_mut().ok_or("config.json is not an object")?;
-        change(object);
-        let tmp = path.with_extension(format!("json.tmp-{}-{}", std::process::id(), crate::auth::new_token()));
-        {
-            use std::io::Write;
-            let mut file = crate::private_file().write(true).create(true).truncate(true).open(&tmp).map_err(|e| e.to_string())?;
-            file.write_all((serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n").as_bytes()).map_err(|e| e.to_string())?;
+        for _ in 0..5 {
+            let original = fs::read(path).map_err(|e| e.to_string())?;
+            let mut value: Value = serde_json::from_slice(&original).map_err(|e| e.to_string())?;
+            let object = value.as_object_mut().ok_or("config.json is not an object")?;
+            change(object);
+            let tmp = path.with_extension(format!("json.tmp-{}-{}", std::process::id(), crate::auth::new_token()));
+            {
+                use std::io::Write;
+                let mut file = crate::private_file().write(true).create(true).truncate(true).open(&tmp).map_err(|e| e.to_string())?;
+                file.write_all((serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n").as_bytes()).map_err(|e| e.to_string())?;
+            }
+            if fs::read(path).ok().as_deref() != Some(original.as_slice()) {
+                let _ = fs::remove_file(&tmp);
+                continue;
+            }
+            fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+            self.config.lock().unwrap().0 = None; // reread on the next request
+            return Ok(());
         }
-        fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-        self.config.lock().unwrap().0 = None; // reread on the next request
-        Ok(())
+        Err("config.json keeps changing; try again".into())
     }
 
     /// Kept builds: config `buildManifestDir` (relative to config.json), else the default store.
@@ -676,7 +722,7 @@ impl App {
         if let Some(res) = self.updates_api(req, &segments) {
             return Some(res);
         }
-        if let Some(res) = self.ota_routes(req).or_else(|| self.mac_api(req, &segments)) {
+        if let Some(res) = self.ota_routes(req, path).or_else(|| self.mac_api(req, &segments)) {
             return Some(res);
         }
         let post = req.method == Method::POST;
@@ -842,8 +888,8 @@ impl App {
         let hash = password.map(hash_password).transpose().map_err(|e| (400, e.to_string()))?;
         self.update_config(|c| {
             c.insert("webUi".into(), Value::Bool(enabled));
-            if let Some(hash) = hash {
-                c.insert("passwordHash".into(), Value::String(hash));
+            if let Some(hash) = &hash {
+                c.insert("passwordHash".into(), Value::String(hash.clone()));
             }
         })
         .map_err(|_| (500, "Could not change the web UI setting.".to_string()))
@@ -1010,6 +1056,9 @@ fn constant_eq(a: &str, b: &str) -> bool {
 }
 
 async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
+    if app.queue.stopped() {
+        return json_reply(503, json!({ "error": "This Store has stopped." }));
+    }
     let (parts, body) = request.into_parts();
     if parts.method == Method::POST && parts.uri.path() == DEPLOY_PATH {
         return deploy_route(&app, parts, body).await;
@@ -1018,6 +1067,10 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         return res;
     }
     let upload = parts.method == Method::POST && parts.uri.path() == "/api/traces";
+    // Uploads are read and verified in memory (up to the inflated cap each): a few at a time,
+    // and the turn is taken before the body is read, so waiting ones hold no memory.
+    static UPLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let _upload = if upload { UPLOADS.acquire().await.ok() } else { None };
     let limit = if upload { traces::MAX_UPLOAD } else { 1_000_000 };
     let body = match to_bytes(body, limit).await {
         Ok(b) => b,
@@ -1028,9 +1081,6 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
         let (k, v) = p.split_once('=').unwrap_or((p, ""));
         (percent_decode(k), percent_decode(v))
     }).collect();
-    // Uploads are verified in memory (up to the inflated cap each): a few at a time.
-    static UPLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-    let _upload = if upload { UPLOADS.acquire().await.ok() } else { None };
     let req = Req { method: parts.method, path: parts.uri.path().to_string(), query, headers: parts.headers, body };
     // blocking work (scrypt, file reads) stays off the async threads
     let dispatcher = app.clone();
@@ -1137,7 +1187,11 @@ fn dispatch(app: &App, req: &Req) -> Response {
     let config = app.config();
     match (req.method.as_str(), req.path.as_str()) {
         ("POST", "/api/login") => {
-            let Some(hash) = &config.password_hash else { return json_reply(200, json!({ "ok": true, "open": true })) };
+            let Some(hash) = &config.password_hash else {
+                // Open only to this Mac's own pages; elsewhere there is nothing to sign in with.
+                return if app.signed_in(req) { json_reply(200, json!({ "ok": true, "open": true })) }
+                    else { json_reply(403, json!({ "error": "This Store has no password. Set one under Web UI and other devices in Apparition, or `apparition store web-ui on`." })) };
+            };
             let password = req.json_body().get("password").and_then(Value::as_str).unwrap_or("").to_string();
             let user = req.header("tailscale-user-login");
             return match app.auth.login(&password, hash, (!user.is_empty()).then_some(user)) {
@@ -1275,8 +1329,13 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
     let bearer = req.header("authorization").strip_prefix("Bearer ").filter(|t| {
         t.len() == 43 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     });
-    let is_host = matches!((bearer, &app.settings.host_token), (Some(t), Some(h)) if constant_eq(t, h));
-    let session = bearer.is_some_and(|t| config.password_hash.as_deref().is_some_and(|h| app.auth.check(t, h)));
+    let token = matches!((bearer, &app.settings.host_token), (Some(t), Some(h)) if constant_eq(t, h));
+    // The companion channel brings paired computers in with the app's token, and always names
+    // the computer: they drive builds and deploys, but the Store's own settings (its password,
+    // the web pages, sign-in links) stay the owner's, as for a password session.
+    let paired = token && !req.header("x-apparition-computer").is_empty();
+    let is_host = token && !paired;
+    let session = paired || bearer.is_some_and(|t| config.password_hash.as_deref().is_some_and(|h| app.auth.check(t, h)));
     if !is_host && !session {
         return Some(json_reply(401, json!({ "error": "Connect to the build service again." })));
     }
@@ -1317,7 +1376,7 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
             Err((status, message)) => json_reply(status, json!({ "error": message })),
         },
         ("POST", "/disconnect") => {
-            if !is_host {
+            if !token {
                 app.auth.logout(bearer.unwrap_or(""));
             }
             json_reply(200, json!({ "ok": true }))
@@ -1329,7 +1388,10 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
         ("POST", "/installs") => app.service_installs(req),
         ("POST", "/projects/discover") => app.service_discover(req),
         ("POST", "/projects") => app.service_register(req),
-        _ => unknown(),
+        // The rest of what the Store's page does (refreshing devices, OTA, AltStore and Mac
+        // links, Mac download builds, debug panels and logs, trace downloads and deletion), as
+        // the page asks for it.
+        _ => app.api(req, &format!("/api{suffix}")).unwrap_or_else(unknown),
     })
 }
 

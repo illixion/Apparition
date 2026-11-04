@@ -222,9 +222,11 @@ impl CompanionState {
     }
 
     /// The in-process Store is up: offer it to computers paired for developer access.
-    pub async fn offer_developer(&self, route: apparition_core::companion_channel::DeveloperRoute) {
+    /// The Store paired computers reach (None once it stopped): its port and token change with
+    /// every start.
+    pub async fn offer_developer(&self, route: Option<apparition_core::companion_channel::DeveloperRoute>) {
         if let Some(companion) = self.running.lock().await.as_ref() {
-            companion.set_developer(Some(route));
+            companion.set_developer(route);
         }
     }
 

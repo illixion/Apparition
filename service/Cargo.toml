@@ -26,6 +26,13 @@ flate2 = "1"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 plist = "1"
 
+# `hosted`: the Store as a computer runs it (the desktop app, `apparition store serve`), with the
+# devices it is paired with, through the core.
+apparition-core = { path = "../core", features = ["desktop"], optional = true }
+
+[features]
+hosted = ["dep:apparition-core"]
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

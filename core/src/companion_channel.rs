@@ -308,8 +308,8 @@ fn developer_request(header: &[u8], path: &str, route: &DeveloperRoute, computer
         // Credentials and routing are this end's to set; anything the Store reads as identity
         // comes from the pairing, never from the computer.
         if matches!(name.as_str(), "authorization" | "cookie" | "host" | "connection" | "keep-alive" | "upgrade"
-            | "proxy-authorization" | "proxy-connection" | "forwarded" | "x-forwarded-for" | "x-real-ip")
-            || name.starts_with("x-apparition-")
+            | "proxy-authorization" | "proxy-connection" | "forwarded" | "x-real-ip")
+            || name.starts_with("x-apparition-") || name.starts_with("x-forwarded-") || name.starts_with("tailscale-")
         {
             continue;
         }
@@ -318,9 +318,9 @@ fn developer_request(header: &[u8], path: &str, route: &DeveloperRoute, computer
     }
     let computer: String = computer.chars().filter(|c| !c.is_control()).take(64).collect();
     out.push_str(&format!("Host: {}\r\nAuthorization: Bearer {}\r\n", route.address, route.token));
-    if !computer.is_empty() {
-        out.push_str(&format!("X-Apparition-Computer: {computer}\r\n"));
-    }
+    // Always named: the Store tells a paired computer from its own app by this header.
+    let computer = if computer.is_empty() { "a paired computer".to_string() } else { computer };
+    out.push_str(&format!("X-Apparition-Computer: {computer}\r\n"));
     out.push_str("Connection: close\r\n\r\n");
     Ok(out.into_bytes())
 }

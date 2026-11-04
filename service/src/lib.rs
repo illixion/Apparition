@@ -1,9 +1,10 @@
 //! Apparition Store in Rust. Scope and phases: docs/RUST_STORE.md.
 //!
-//! A library, so it tests without Tauri; the desktop app runs it in-process.
+//! A library, so it tests without Tauri; the desktop app runs it in-process, and so does
+//! `apparition store serve` (`hosted`, with the `hosted` feature).
 
-//! It runs on macOS, Windows and Linux. What needs a Mac (Xcode builds, `inject`, the Node build
-//! service beside it) says so when asked for elsewhere; kept builds, deploys from other
+//! It runs on macOS, Windows and Linux. What needs a Mac (Xcode builds, `inject`) says so when
+//! asked for elsewhere; kept builds, deploys from other
 //! computers, traces and the apps' debug servers work everywhere, so a PC that builds with xtool
 //! has the Store without a Mac.
 
@@ -28,6 +29,10 @@ pub mod state;
 pub mod traces;
 pub mod updates;
 pub mod server;
+#[cfg(feature = "hosted")]
+pub mod hosted;
+#[cfg(feature = "hosted")]
+pub mod paired_devices;
 
 /// What replies to other computers call the computer this Store runs on.
 pub const HERE: &str = if cfg!(target_os = "macos") { "the Mac" } else { "the PC" };

@@ -14,7 +14,6 @@
 use std::sync::Mutex;
 
 use apparition_core::companion_channel::DeveloperRoute;
-use serde_json::json;
 use tauri::Manager;
 
 static ROUTE: Mutex<Option<DeveloperRoute>> = Mutex::new(None);
@@ -24,10 +23,6 @@ pub fn route() -> Option<DeveloperRoute> {
     ROUTE.lock().unwrap().clone()
 }
 
-fn handoff_path() -> std::path::PathBuf {
-    crate::host::support_dir().join("developer.json")
-}
-
 /// Starts the Store and offers it to the companion.
 pub fn setup(app: &tauri::AppHandle) {
     let app = app.clone();
@@ -35,58 +30,26 @@ pub fn setup(app: &tauri::AppHandle) {
         match app.state::<crate::host::ServiceHost>().start().await {
             Ok(route) => {
                 let companion = app.state::<std::sync::Arc<crate::companion::CompanionState>>().inner().clone();
-                companion.offer_developer(route).await;
+                companion.offer_developer(Some(route)).await;
             }
             Err(error) => eprintln!("the Apparition Store didn't start: {error}"),
         }
     });
 }
 
-/// Starts the Store on config.json's port; the second value stops it.
-pub async fn start_store() -> Result<(DeveloperRoute, Box<dyn FnOnce() + Send>), String> {
-    let (config, port) = crate::host::ensure_config()?;
-    let dir = crate::host::support_dir();
-    let token = crate::host::token()?;
-    let mut settings = apparition_service::server::Settings::new(config, dir.join("data"), dir.join("public"));
-    settings.port = Some(port);
-    // The web UI compiled into the app, not a folder.
-    settings.public_dir = None;
-    settings.host_token = Some(token.clone());
-    settings.client_name = format!("Apparition on {}", apparition_core::relay::machine_name());
-    // The devices this computer is paired with: sent builds can be installed from here.
-    settings.devices = Some(std::sync::Arc::new(crate::store_devices::CoreDevices::new()));
-    let (address, task) = apparition_service::server::serve_loopback(settings).await.map_err(|e| e.to_string())?;
-    let route = DeveloperRoute { address, token };
-    write_handoff(&route)?;
+/// Starts the Store on config.json's port (another if that one is taken), with the devices this
+/// computer is paired with; the second value stops it and takes `developer.json` away.
+pub async fn start_store() -> Result<(DeveloperRoute, Option<String>, Box<dyn FnOnce() + Send>), String> {
+    let name = format!("Apparition on {}", apparition_core::relay::machine_name());
+    let hosted = apparition_service::hosted::start(apparition_service::hosted::Options::new(name)).await?;
+    let route = hosted.route.clone();
+    let moved = hosted.moved().map(String::from);
     *ROUTE.lock().unwrap() = Some(route.clone());
-    eprintln!("Apparition Store at http://{address} (MCP at /mcp)");
-    Ok((route, Box::new(move || task.abort())))
+    eprintln!("Apparition Store at http://{} (MCP at /mcp)", route.address);
+    Ok((route, moved, Box::new(move || hosted.stop())))
 }
 
 /// The Store was stopped: agents here and paired computers can't reach it any more.
 pub fn store_stopped() {
     *ROUTE.lock().unwrap() = None;
-    let _ = std::fs::remove_file(handoff_path());
-}
-
-/// Where `apparition mcp` on this computer finds the Store.
-fn write_handoff(route: &DeveloperRoute) -> Result<(), String> {
-    use std::io::Write;
-    let path = handoff_path();
-    let temporary = path.with_extension("json.new");
-    let body = json!({ "url": format!("http://{}", route.address), "token": route.token, "pid": std::process::id() });
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    // Windows: the profile folder's ACL already keeps other users out.
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&temporary)
-        .map_err(|e| format!("Couldn't write {}: {e}", temporary.display()))?;
-    file.write_all(body.to_string().as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&temporary, &path).map_err(|e| e.to_string())
-}
-
-/// The app is quitting: agents here can't reach the Store any more.
-pub fn shutdown() {
-    store_stopped();
 }

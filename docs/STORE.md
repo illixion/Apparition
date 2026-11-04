@@ -18,19 +18,52 @@ computer, and **[RUST_STORE.md](RUST_STORE.md)** describes how it is built.
 - **In the desktop app.** The Store listens on `127.0.0.1` on the `port` in `config.json` (8484 by
   default). If that port is taken it listens on another free one and says so in the app's log; apps
   that upload traces to 8484 and a `tailscale serve` pointed there then miss it, so keep the port
-  free. Nothing outside the computer reaches the port directly: other computers come through the
-  companion's encrypted channel, and devices through an HTTPS address you put in front of it (see
-  "Security").
+  free (the app's Developer tab shows it when this happens). Nothing outside the computer reaches the
+  port directly: other computers come through the companion's encrypted channel, and devices through
+  an HTTPS address you put in front of it (see "Security").
+- **Without the app: `apparition store serve`.** The same Store, folder and port, in a terminal,
+  under launchd or systemd, until Ctrl-C or SIGTERM. One Store runs per folder: `serve` refuses
+  while the app's runs, and the reverse. `apparition relay` beside it offers it to computers paired
+  for developer access, as the app's companion does. `APPARITION_STORE_DIR` runs a Store over
+  another folder (a second Store, a test). Stopping a Store (quitting the app, Stop in the Developer
+  tab, or ending `serve`) stops its running builds too and notes them as failed.
 - **Config and data** are in `~/Library/Application Support/Apparition/Store/` on a Mac
   (`%APPDATA%\Apparition\Store` on Windows, `~/.local/share/Apparition/Store` on Linux):
   `config.json`, and `data/` with `state.json` (what is installed where), `queue.json` (build
   jobs), `logs/` (one log per build), `clones/` (build clones), `traces/`, `crashlogs/`, `ota/`,
   `altsource/`, `macapps/`, `sessions.json` and `secret`. `developer.json` appears beside them while
-  the app runs.
+  a Store runs.
 - **Builds need a Mac with Xcode.** On Windows and Linux the Store runs too, with kept builds,
   deploys from other computers, traces and the apps' debug servers, but it doesn't build.
-- **A standalone server edition is not part of 1.0.** The Store runs only inside the app, so it is
-  up only while Apparition is open.
+
+## From the command line
+
+Everything the Store does works from a terminal through `apparition store`, against the Store this
+computer reaches: the app's (or `serve`'s) here, else the Mac paired for developer access
+(`apparition mac pair`). `--local` insists on this computer's, and `--json` prints the Store's
+answer as it is. `apparition store help` has the details.
+
+| | |
+|---|---|
+| `store serve [--port N]` | run the Store without the app |
+| `store status` · `store web-ui on\|off [--password]` · `store open [debug [<app>]]` | the Store itself, its web pages and password, its page or Debug console in the browser here |
+| `store projects` · `store add <folder> [--app S] [--device D]` | the projects; add an Xcode project (as the Developer tab's Add project) |
+| `store devices [--refresh [--force]]` | paired devices and what they have installed |
+| `store build <project> [--device D]... [--install M] [--run] [--jit] ...` | queue a deploy and follow its log (exit 1 if it fails) |
+| `store builds` · `store log <id> [--follow]` · `store cancel <id>` | the queue |
+| `store kept [download <id>]` | kept builds, downloaded and checked against their manifest |
+| `store resign ...` · `store resign --profiles` | re-sign on a device with another profile |
+| `store ota [<bundle id>]` · `store altsource` · `store mac <slug>` | OTA, AltStore and Mac download links |
+| `store traces [delete <id>]` | uploaded traces (`apparition crash-reports` reads them) |
+
+Alongside: `apparition updates` (the update queue), `apparition deploy` (send an IPA built
+elsewhere), `apparition deploy-signing` (the certificate the Store signs sent builds with),
+`apparition crash-reports` and `apparition mcp` (the apps' debug servers, for agents).
+
+Links for devices made from the command line (OTA, AltStore, Mac) would otherwise name
+`127.0.0.1`, which a phone can't reach: set `"publicUrl": "https://your-mac.your-tailnet.ts.net"` in
+`config.json`, the address `tailscale serve` puts in front of the Store, and they start with it.
+Requests through a proxy keep using the proxy's own address.
 
 ## What you need
 
@@ -604,19 +637,26 @@ remote hosts and don't follow redirects. Only the service address is remembered 
   `help`/`call`, `artifacts` (recent kept builds) with `artifacts/<buildId>/manifest` and
   `/download`, `updates` with `updates/{check,run,auto}`, `inject`, `installs`, `projects` and
   `projects/discover`, `resign` and `resign/options`, `devices`, `devices/<device>/apps`,
-  `builds/<id>/install?device=`, and `deploy`. Everything else is refused.
+  `builds/<id>/install?device=`, and `deploy`.
 - **A build request** is `{repo, device, targetPlatform, branch, run, mcp, jit, inject,
   injectBackend, buildDebug, deploy, install}`. The booleans are optional; `jit` applies only with
   `run`. The project, platform, device and branch (`current` or a configured one) must match the
   configuration, and the platform is kept even when one device has several platform aliases.
-- **Only the app's token** reaches `GET /api/service/v1/host` (status) and `POST
+- The rest of what the page does is under `/api/service/v1/` too, by the page's own paths without
+  `/api`: `refresh-devices`, `altsource`, `ota/<slug>/link`, `mac/<slug>/link` and `/build`,
+  `debug/<id>/panels` and `/logs`, `traces/<id>.zip` and `/delete`, `crashlogs/refresh`.
+  `apparition store` uses them.
+- **Only the app's token** (which `apparition store` on the same computer reads from `developer.json`) reaches `GET /api/service/v1/host` (status) and `POST
   /api/service/v1/host/web-ui {enabled, password?}`, and `POST /api/service/v1/host/web-link`, which
   returns `/host-login?code=...`: a code good once for 60 seconds that becomes an in-memory session
   cookie (gone when the app quits), which passes the web gate even with the pages off. The Console
-  window uses it.
+  window uses it. Computers paired for developer access come in with the app's token too, but the
+  channel names them (`X-Apparition-Computer`), and the Store gives them what a password session
+  gets: builds, deploys, debugging, not the password, the pages or sign-in links. The channel also
+  drops `X-Forwarded-*` and `Tailscale-*` headers they send.
 - **Agents on the Mac** use the app's token through `developer.json` in the Store's folder (the
   loopback URL, token and pid, mode 0600, removed when the app quits), which `apparition mcp`,
-  `apparition updates` and `apparition deploy` read. Other computers come through the companion's
+  `apparition updates`, `apparition deploy` and `apparition store` read. Other computers come through the companion's
   encrypted channel with a pairing of their own, see
   [REMOTE_DEVELOPER.md](REMOTE_DEVELOPER.md).
 - **Project registration**: `POST /api/service/v1/projects` (`name`, Mac `path`, optional `branches`,
@@ -628,8 +668,6 @@ remote hosts and don't follow redirects. Only the service address is remembered 
 
 ## What isn't in 1.0
 
-- A **server edition**: the Store doesn't run on its own under launchd or systemd, has no
-  `set-password` command, and isn't reachable while the app is closed.
 - **`--distribution` builds.** `apparition build` refuses them.
 - The conf keys `EXTRA_ENTITLEMENTS_PLIST` and `ASSOCIATED_DOMAINS`.
 - The **`apparition xcode` handoff** (registering an Xcode product, or a generated scheme that

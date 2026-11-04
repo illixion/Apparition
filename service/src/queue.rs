@@ -169,6 +169,18 @@ pub struct Context {
     pub deliver: Option<Arc<dyn Deliver>>,
 }
 
+/// How long one update install may take before it is given up on.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// `apparition build`'s exit status when it installed but couldn't launch (`builder::LAUNCH_FAILED`).
+const LAUNCH_FAILED: u8 = 3;
+
+/// A job's turn: its checkout or clone, and a build slot.
+struct Turn {
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
 pub struct Queue {
     file: PathBuf,
     pub logs: PathBuf,
@@ -186,6 +198,9 @@ pub struct Queue {
     busy: Mutex<Vec<PathBuf>>,
     /// Device names being asked for their apps right now.
     asking: Mutex<Vec<String>>,
+    /// Set by `shutdown`: nothing more starts, and queue.json is no longer written, so a Store
+    /// started after this one over the same folder owns it alone.
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 pub fn max_builds(config: &Config) -> usize {
@@ -294,11 +309,40 @@ impl Queue {
             saved: Mutex::new(saved), slots: Arc::new(tokio::sync::Semaphore::new(max)),
             locks: Mutex::default(), pids: Mutex::default(),
             manifests: updates::Manifests::default(), plans: Mutex::default(), failures: Mutex::default(), busy: Mutex::default(),
-            asking: Mutex::default(),
+            asking: Mutex::default(), stopped: Default::default(),
+        }
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The Store is stopping: what is queued or running is noted as failed, the builds running
+    /// are stopped (their whole process group), and nothing starts after this.
+    pub fn shutdown(&self) {
+        let pids: Vec<u32> = {
+            let mut saved = self.saved.lock().unwrap();
+            if self.stopped() {
+                return;
+            }
+            for job in saved.jobs.iter_mut().filter(|j| j.active()) {
+                job.status = "failed".into();
+                job.error = Some("the Store stopped during the build".into());
+                job.finished_at = Some(system_ms());
+            }
+            self.save(&saved);
+            self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.pids.lock().unwrap().values().copied().collect()
+        };
+        for pid in pids {
+            stop(pid);
         }
     }
 
     fn save(&self, saved: &Saved) {
+        if self.stopped() {
+            return;
+        }
         let Ok(text) = serde_json::to_string_pretty(saved) else { return };
         let tmp = self.file.with_extension("json.tmp");
         if std::fs::write(&tmp, text).is_ok() {
@@ -581,7 +625,9 @@ impl Queue {
             return Ok(Workdir { dir: path, direct, branch: out, key });
         }
         let branch = if job.branch == "current" { out } else { job.branch.clone() };
-        Ok(Workdir { dir: clones::slot(&self.clones, &path, &branch), direct, key: format!("{}|{branch}", job.repo), branch })
+        // Keyed by the slot's folder: `feature/x` and `feature-x` share one.
+        let dir = clones::slot(&self.clones, &path, &branch);
+        Ok(Workdir { key: dir.display().to_string(), dir, direct, branch })
     }
 
     async fn run(self: Arc<Self>, ctx: Context, id: u64) {
@@ -595,13 +641,18 @@ impl Queue {
             self.wait(after).await;
         }
         let lock = self.locks.lock().unwrap().entry(work.key.clone()).or_default().clone();
-        let _slot_turn = lock.lock().await;
-        let Ok(_permit) = self.slots.clone().acquire_owned().await else { return };
-        if self.job(id).is_none_or(|j| j.status != "queued") {
+        let lock = lock.lock_owned().await;
+        let Ok(permit) = self.slots.clone().acquire_owned().await else { return };
+        if self.stopped() {
             return;
         }
-        self.update(id, |j| { j.status = "running".into(); j.started_at = Some(system_ms()); });
-        let result = if job.kind == "resign" { self.clone().resign(&ctx, &job).await } else { self.clone().build(&ctx, &job, work).await };
+        // Queued to running in one step, so a cancel can't land between the look and the change.
+        let started = self.update(id, |j| if j.status == "queued" { j.status = "running".into(); j.started_at = Some(system_ms()); });
+        if started.is_none_or(|j| j.status != "running") {
+            return;
+        }
+        let turn = Turn { _lock: lock, _permit: permit };
+        let result = if job.kind == "resign" { self.clone().resign(&ctx, &job).await.map(|()| drop(turn)) } else { self.clone().build(&ctx, &job, work, turn).await };
         if let Err(error) = result {
             let cancelled = self.job(id).is_some_and(|j| j.status == "cancelled");
             if !cancelled {
@@ -698,7 +749,18 @@ impl Queue {
         self.push(ctx, jobs)
     }
 
-    async fn build(self: Arc<Self>, ctx: &Context, job: &Job, work: Workdir) -> Result<(), String> {
+    /// Ends a job as a success, unless it was cancelled meanwhile.
+    fn succeed(&self, id: u64) {
+        self.update(id, |j| if j.status == "running" { j.status = "success".into(); j.finished_at = Some(system_ms()); });
+    }
+
+    fn cancelled(&self, id: u64) -> bool {
+        self.job(id).is_some_and(|j| j.status == "cancelled")
+    }
+
+    /// `turn` (the checkout's lock and a build slot) is let go once the build process is done:
+    /// the installs that follow don't keep other builds waiting.
+    async fn build(self: Arc<Self>, ctx: &Context, job: &Job, work: Workdir, turn: Turn) -> Result<(), String> {
         let id = job.id;
         std::fs::create_dir_all(&self.logs).map_err(|e| e.to_string())?;
         let log_file = std::fs::File::create(self.log_path(id)).map_err(|e| e.to_string())?;
@@ -749,13 +811,19 @@ impl Queue {
         if job.mcp { args.extend(["--run".into(), "--mcp".into()]); }
         else if job.run { args.extend(["--run".into(), "--no-mcp".into()]); }
         else if !job.no_deploy && job.kind != "update" || job.kind == "update" { args.push("--no-mcp".into()); }
+        // The row's device, not whichever DEVICE_NAME the conf names.
+        if !job.no_deploy && job.kind == "deploy" && !job.device.is_empty() { args.extend(["--device".into(), job.device.clone()]); }
         if job.jit { args.push("--jit".into()); }
         if job.build_debug { args.push("--debug".into()); }
         if job.inject { args.extend(["--inject-backend".into(), job.inject_backend.clone().unwrap_or_else(|| "dynamic".into())]); }
         for s in &settings { args.extend(["--set".into(), s.clone()]); }
+        if self.cancelled(id) {
+            release(&self);
+            return Err("cancelled".into());
+        }
         say(format!("==> {} {} (PLATFORM={})\n", ctx.cli.display(), args.join(" "), job.platform));
         let mut command = tokio::process::Command::new(&ctx.cli);
-        command.args(&args).current_dir(&app_dir)
+        command.args(&args).current_dir(&app_dir).env("PATH", child_path())
             .env("PLATFORM", &job.platform).env("APPARITION_BUILD_DIR", &ctx.build_store)
             .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -781,12 +849,17 @@ impl Queue {
                 }
             })
         };
-        let a = pump(child.stdout.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>));
-        let b = pump(child.stderr.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>));
+        let mut a = pump(child.stdout.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>));
+        let mut b = pump(child.stderr.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Unpin + Send>));
         let status = child.wait().await;
-        let _ = (a.await, b.await);
+        // What the build left running (a console, a hook's daemon) may hold the pipes open: the
+        // job ends with the process, after a moment for the last lines.
+        let _ = tokio::time::timeout(Duration::from_secs(2), async { let _ = (&mut a).await; let _ = (&mut b).await; }).await;
+        a.abort();
+        b.abort();
         self.pids.lock().unwrap().remove(&id);
         release(&self);
+        drop(turn);
         let output = output.lock().unwrap().clone();
         // `apparition build` keeps the signed build before it installs, so one it couldn't install
         // is still there for the device's Apparition to take.
@@ -795,7 +868,11 @@ impl Queue {
             return Err("cancelled".into());
         }
         let status = status.map_err(|e| e.to_string())?;
-        if !status.success() {
+        let launch_failed = status.code() == Some(LAUNCH_FAILED.into()) && kept_id.is_some();
+        if launch_failed {
+            say("==> Store: installed, but the app didn't launch (see above); the build counts as installed".into());
+        }
+        if !status.success() && !launch_failed {
             if kept_id.is_some() && !job.no_deploy && job.kind == "deploy" {
                 self.update(id, |j| { j.build_id = kept_id.clone(); j.kept_build_id = kept_id.clone(); });
                 say("==> The signed build was kept and can be installed from the device".into());
@@ -826,7 +903,7 @@ impl Queue {
             let deliver = ctx.deliver.as_ref().ok_or("this Store doesn't publish Mac downloads")?;
             deliver.mac_built(slug, &job.rev, &work.branch, &kept)?;
             say(format!("\n==> Store: {} {} ({}@{}) ready to download", job.bundle_id, version.clone().unwrap_or_default(), work.branch, short));
-            self.update(id, |j| { j.status = "success".into(); j.finished_at = Some(system_ms()); });
+            self.succeed(id);
             return Ok(());
         }
         if kept.manifest["artifact"]["kind"].as_str() != Some("ipa") {
@@ -849,9 +926,14 @@ impl Queue {
                 // The installs, one device at a time, exactly as signed.
                 let mut installs = Vec::new();
                 for device in &job.devices {
+                    if self.cancelled(id) {
+                        say(format!("==> Cancelled: not installed on {device}"));
+                        break;
+                    }
                     let outcome = match &ctx.devices {
                         None => Err("this Store reaches no devices itself".to_string()),
-                        Some(backend) => install_signed(backend.clone(), &kept, device).await,
+                        Some(backend) => tokio::time::timeout(INSTALL_TIMEOUT, install_signed(backend.clone(), &kept, device)).await
+                            .unwrap_or_else(|_| Err(format!("{device} didn't finish the install in {} minutes", INSTALL_TIMEOUT.as_secs() / 60))),
                     };
                     let at = system_ms();
                     match outcome {
@@ -865,6 +947,11 @@ impl Queue {
                             installs.push(Install { device: device.clone(), ok: false, queued: false, error: Some(error), at });
                         }
                     }
+                }
+                // Installed nowhere: the automatic mode leaves this commit alone for a while rather
+                // than building it again every minute while the devices are away.
+                if !installs.is_empty() && installs.iter().all(|i| !i.ok) {
+                    self.failures.lock().unwrap().insert(format!("{}@{}", job.devices.join(","), job.rev), system_ms());
                 }
                 self.update(id, |j| j.installs = installs);
             }
@@ -880,7 +967,7 @@ impl Queue {
             "deploy" => say(format!("\n==> Store: built {} {} ({}@{short}); {}'s Apparition installs it", job.bundle_id, version.clone().unwrap_or_default(), work.branch, job.device)),
             _ => say(format!("\n==> Store: built {} {} ({}@{short})", job.bundle_id, version.clone().unwrap_or_default(), work.branch)),
         }
-        self.update(id, |j| { j.status = "success".into(); j.finished_at = Some(system_ms()); });
+        self.succeed(id);
         Ok(())
     }
 
@@ -1045,6 +1132,20 @@ fn stop(pid: u32) {
 
 #[cfg(not(unix))]
 fn stop(_pid: u32) {}
+
+/// PATH for what the Store runs: the Store's own, plus Homebrew's and the system's folders. An
+/// app opened from the Finder or at login has only launchd's PATH (`/usr/bin:/bin:...`), and
+/// build phases call Homebrew tools (swiftlint, bash 5 through `env bash`).
+pub fn child_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    #[cfg(unix)]
+    for d in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+        if !dirs.iter().any(|x| x == Path::new(d)) {
+            dirs.push(PathBuf::from(d));
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
 
 struct LogWriter(Arc<Mutex<std::fs::File>>);
 

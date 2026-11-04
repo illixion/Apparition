@@ -9,7 +9,7 @@
 //! for one already signed for that device; the error then says to import a certificate.
 
 use apparition_core::api::{self, DeviceStore, Platform};
-use apparition_service::devices::{App, Device, Devices, Fut, Installed};
+use crate::devices::{App, Device, Devices, Fut, Installed};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -66,8 +66,11 @@ async fn off_thread<T: Send + 'static>(job: impl FnOnce() -> Result<T, String> +
     receive.await.map_err(|_| "the device call stopped without an answer".to_string())?
 }
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    tauri::async_runtime::block_on(future)
+/// On `off_thread`'s own thread, which no runtime drives: a small one of its own.
+fn block_on<F: std::future::Future<Output = Result<T, String>>, T>(future: F) -> Result<T, String> {
+    tokio::runtime::Builder::new_current_thread().enable_all().build()
+        .map_err(|e| format!("couldn't start a runtime for the device: {e}"))?
+        .block_on(future)
 }
 
 impl Devices for CoreDevices {

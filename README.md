@@ -178,7 +178,8 @@ launch and keeps in memory. Its web pages are off until you turn them on with a 
 device connect. **Connect to another Mac** takes the HTTPS address and password of that Mac's
 Store. The Store speaks the `apparition-service` version 1 API. Builds run `apparition build`,
 which builds with Xcode and installs and launches over Apparition's own pairing with the device,
-never `devicectl`. A standalone server edition of the Store is not part of 1.0.
+never `devicectl`. Without the app, `apparition store serve` runs the same Store, and
+`apparition store` does everything the Developer tab does from a terminal ([docs/STORE.md](docs/STORE.md)).
 
 **Console** on a running app (Reports › Running apps, this Mac's Store) opens the Store's
 Debug console in its own window: live log, tuning panels (sliders for `DebugTunables` values and
@@ -373,8 +374,8 @@ Implementation order:
    credentials. Keep unverified imports separately classified. Report upload never
    grants live debug access; preserve device approvals for inspection and code changes.
 6. **Consolidate packaging.** Done for 1.0: the builder is `apparition build`, the Store runs
-   inside the desktop app, and configs and ledgers are read as they were. A standalone
-   server edition is not part of 1.0.
+   inside the desktop app (or `apparition store serve`), and configs and ledgers are read as
+   they were.
 
 Structural Swift changes need a separate approach: recreate a component with selected
 state migration, or rebuild/relaunch with state restoration. Executable-memory access

@@ -231,3 +231,81 @@ async fn without_a_directory_the_compiled_in_ui_is_served() {
     assert_eq!((status, header(&headers, "content-type")), (StatusCode::OK, Some("text/javascript")));
     assert_eq!(send(&app, "GET", "/shared/nope.js", &[], None).await.0, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn a_paired_computer_drives_the_store_but_not_its_settings() {
+    let f = fixture(json!({ "repos": [] }), true);
+    let bearer = format!("Bearer {TOKEN}");
+    let paired = [("authorization", bearer.as_str()), ("x-apparition-computer", "Gaming PC")];
+    let (status, _, _) = send(&f.app, "GET", "/api/service/v1/state", &paired, None).await;
+    assert_eq!(status, StatusCode::OK);
+    for (method, path) in [("GET", "/api/service/v1/host"), ("POST", "/api/service/v1/host/web-link"), ("POST", "/api/service/v1/host/web-ui")] {
+        let (status, _, _) = send(&f.app, method, path, &paired, Some(json!({ "enabled": true, "password": "a password here" }))).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path} is the owner's");
+    }
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(f.dir.path().join("config.json")).unwrap()).unwrap();
+    assert!(config.get("passwordHash").is_none());
+    // The app itself still is the owner.
+    let (status, _, _) = send(&f.app, "GET", "/api/service/v1/host", &[("authorization", bearer.as_str())], None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_service_api_reaches_what_the_page_does_and_links_use_the_public_url() {
+    let f = fixture(json!({ "repos": [], "publicUrl": "https://mac.example.ts.net/", "altSource": { "enabled": true } }), true);
+    let bearer = format!("Bearer {TOKEN}");
+    let auth = [("authorization", bearer.as_str()), ("host", "127.0.0.1:8484")];
+    let (status, _, body) = send(&f.app, "GET", "/api/service/v1/altsource", &auth, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let links: Value = serde_json::from_str(&body).unwrap();
+    assert!(links["combined"]["url"].as_str().unwrap().starts_with("https://mac.example.ts.net/altsource/source.json?k="), "{links}");
+    // Through a proxy, the proxy's name wins.
+    let proxied = [("authorization", bearer.as_str()), ("host", "127.0.0.1:8484"), ("x-forwarded-host", "other.example"), ("x-forwarded-proto", "https")];
+    let (_, _, body) = send(&f.app, "GET", "/api/service/v1/altsource", &proxied, None).await;
+    assert!(body.contains("https://other.example/altsource/"), "{body}");
+    let (status, _, _) = send(&f.app, "POST", "/api/service/v1/refresh-devices", &auth, Some(json!({}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = send(&f.app, "GET", "/api/service/v1/nothing-like-this", &auth, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_stopped_store_answers_nothing_and_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.json"), json!({ "repos": [] }).to_string()).unwrap();
+    let mut settings = Settings::new(dir.path().join("config.json"), dir.path().join("data"), dir.path().join("public"));
+    settings.host_token = Some(TOKEN.into());
+    settings.key_dir = dir.path().join("keys");
+    settings.debug_state_dir = dir.path().join("debugtrace");
+    settings.browser = std::sync::Arc::new(apparition_service::debug::Fixed(vec![]));
+    let (address, served) = apparition_service::server::serve_loopback(settings).await.unwrap();
+    let ask = |path: &'static str| async move {
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {TOKEN}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        let mut text = String::new();
+        let _ = stream.read_to_string(&mut text).await;
+        text
+    };
+    assert!(ask("/api/service/v1/state").await.starts_with("HTTP/1.1 200"));
+    served.stop();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(tokio::net::TcpStream::connect(address).await.is_err(), "no new connections after stop");
+}
+
+#[tokio::test]
+async fn ota_links_come_through_the_service_api_too() {
+    let f = fixture(json!({ "repos": [], "publicUrl": "https://mac.example.ts.net" }), true);
+    let data = f.dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(data.join("state.json"), json!({ "ota": { "com.example.app|iOS": { "slug": "com.example.app-iOS", "bundleId": "com.example.app" } } }).to_string()).unwrap();
+    let f = Fixture { app: router(Settings {
+        host_token: Some(TOKEN.to_string()), key_dir: f.dir.path().join("keys"), debug_state_dir: f.dir.path().join("debugtrace"),
+        browser: std::sync::Arc::new(apparition_service::debug::Fixed(vec![])),
+        ..Settings::new(f.dir.path().join("config.json"), data, f.dir.path().join("public"))
+    }).unwrap(), dir: f.dir };
+    let bearer = format!("Bearer {TOKEN}");
+    let (status, _, body) = send(&f.app, "GET", "/api/service/v1/ota/com.example.app-iOS/link", &[("authorization", bearer.as_str())], None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.contains("https://mac.example.ts.net/ota/com.example.app-iOS/manifest.plist?t="), "{body}");
+}

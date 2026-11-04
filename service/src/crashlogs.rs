@@ -1,6 +1,6 @@
-//! Crash logs kept beside the traces (`store/lib/crashlogs.js`, the read side).
+//! Crash logs kept beside the traces (the read side).
 //!
-//! `data/crashlogs/index.json` is shared with `bin/crash-reports`, which moves an investigated
+//! `data/crashlogs/index.json` is shared with `apparition crash-reports`, which moves an investigated
 //! crash's files to the Trash, so nothing is cached here: each call reads the index, forgets
 //! entries whose `.ips` is gone and answers from what is on disk. Pulling logs off devices is off
 //! (it woke sleeping Apple TVs, 2026-10-31), so only older logs and linking remain.
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{fs, path::{Path, PathBuf}};
 
 /// Held across each read-modify-write of the index in this process, so two requests can't lose
-/// each other's change. (`bin/crash-reports` writes it too, rarely and from a person's command.)
+/// each other's change. (`apparition crash-reports` writes it too, rarely and from a person's command.)
 static INDEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub struct CrashLogs {

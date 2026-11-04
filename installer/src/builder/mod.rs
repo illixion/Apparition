@@ -203,7 +203,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--set" => o.settings.push(value(&mut args, arg)?),
             "--ipa" => { o.ipa = Some(PathBuf::from(value(&mut args, arg)?)); o.sign_only = true; }
             "--profile" => o.profile = Some(PathBuf::from(value(&mut args, arg)?)),
-            "--distribution" => return Err("--distribution isn't in `apparition build` yet; use build-and-sign --distribution".into()),
+            "--distribution" => return Err("--distribution isn't supported by `apparition build`: it signs development builds for your devices".into()),
             // The last option: it takes the files.
             "--sign-dylib" => {
                 o.sign_dylibs = args.by_ref().map(PathBuf::from).collect();
@@ -510,6 +510,8 @@ struct Build {
 enum Launched {
     None,
     Run,
+    /// Installed, but the plain launch didn't happen (a headset not worn): exit `LAUNCH_FAILED`.
+    Failed(String),
     Jit,
     Log { debug_api: Option<String>, note: Option<String> },
 }
@@ -1020,12 +1022,11 @@ impl Build {
                 println!("==> Launching {bundle_id} (through Apparition's tunnel)...");
                 let mut tunnel = crate::store().connect_verified(device).await.map_err(|e| format!("{} didn't answer: {}", device.name, api::describe(&e)))?;
                 // A headset that isn't worn holds a launch without answering: give up after 30 s.
-                match tokio::time::timeout(Duration::from_secs(30), tunnel.launch(&bundle_id, &[], &environment, false, false)).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => return Err(format!("Failed to launch {bundle_id} on {}: {}", device.name, api::describe(&e))),
-                    Err(_) => return Err(format!("{} didn't launch {bundle_id} within 30 s. Put it on or unlock it, then launch the app (it is installed).", device.name)),
-                }
-                launched = Launched::Run;
+                launched = match tokio::time::timeout(Duration::from_secs(30), tunnel.launch(&bundle_id, &[], &environment, false, false)).await {
+                    Ok(Ok(_)) => Launched::Run,
+                    Ok(Err(e)) => Launched::Failed(format!("Failed to launch {bundle_id} on {}: {}", device.name, api::describe(&e))),
+                    Err(_) => Launched::Failed(format!("{} didn't launch {bundle_id} within 30 s. Put it on or unlock it, then launch the app (it is installed).", device.name)),
+                };
             }
         }
 
@@ -1050,9 +1051,11 @@ impl Build {
         let device_label = device.as_ref().map(|d| d.name.clone()).or(device_name.clone()).unwrap_or_default();
         if installed { line("Status:", &format!("✓ installed on {device_label}")) }
         else if !mac { line("Status:", &format!("not deployed (install with: apparition push '{}' --device <name>)", signed_ipa.display())) }
+        let launch_failed = match &launched { Launched::Failed(why) => Some(why.clone()), _ => None };
         match launched {
             Launched::None => {}
             Launched::Run => line("Launched:", &format!("✓ running on {device_label}")),
+            Launched::Failed(why) => line("Launched:", &format!("✗ {why}")),
             Launched::Jit => {
                 line("Launched:", &format!("✓ running on {device_label}, JIT served by Apparition"));
                 line("JIT log:", &app_log.display().to_string());
@@ -1068,8 +1071,22 @@ impl Build {
             }
         }
         println!("=========================================================");
+        if let Some(why) = launch_failed {
+            EXIT_CODE.store(LAUNCH_FAILED, std::sync::atomic::Ordering::SeqCst);
+            return Err(why);
+        }
         Ok(())
     }
+}
+
+/// The exit status of a build that installed but couldn't launch (the Store notes it as built
+/// and installed, with a warning). Any other failure is 1.
+pub const LAUNCH_FAILED: u8 = 3;
+static EXIT_CODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The status a failed `apparition build` exits with, when it isn't 1.
+pub fn exit_code() -> Option<u8> {
+    Some(EXIT_CODE.load(std::sync::atomic::Ordering::SeqCst)).filter(|c| *c != 0)
 }
 
 #[cfg(test)]
@@ -1089,7 +1106,7 @@ mod tests {
         assert!(o.sign_only && o.no_deploy && o.unsigned && o.mcp == Some(false));
         assert!(parse(&args(&["--help"])).unwrap().is_none());
         assert!(parse(&args(&["--plan"])).unwrap().unwrap().plan);
-        assert!(parse(&args(&["--distribution"])).unwrap_err().contains("build-and-sign --distribution"));
+        assert!(parse(&args(&["--distribution"])).unwrap_err().contains("--distribution isn't supported"));
         let o = parse(&args(&["--profile", "p.mobileprovision", "--sign-dylib", "a.dylib", "b.dylib"])).unwrap().unwrap();
         assert_eq!(o.sign_dylibs, [PathBuf::from("a.dylib"), PathBuf::from("b.dylib")]);
         assert!(parse(&args(&["--sign-dylib"])).unwrap_err().contains("needs the files"));

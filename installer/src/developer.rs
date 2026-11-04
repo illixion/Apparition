@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use crate::{Error, anisette_dir, fail};
 
 /// Where requests go.
-enum Target {
+pub(crate) enum Target {
     /// The Mac this computer is paired with, through the channel.
     Paired { dir: PathBuf, name: String },
     /// This Mac's own app.
@@ -28,7 +28,7 @@ enum Target {
 }
 
 impl Target {
-    fn find(prefer_local: bool) -> Result<Target, Error> {
+    pub(crate) fn find(prefer_local: bool) -> Result<Target, Error> {
         let dir = anisette_dir();
         let paired = paired_mac::status(&dir).filter(|p| p.developer);
         let local = local_store();
@@ -38,19 +38,19 @@ impl Target {
             (None, Some((address, token))) => Ok(Target::Local { address, token }),
             (None, None) => Err(fail(match paired_mac::status(&dir) {
                 Some(p) => format!("{} paired this computer for anisette only. Pair again with `apparition mac pair {}` and allow developer access on the Mac.", p.mac_name, p.address),
-                None => "Open the Apparition app on this computer (its Store starts with it), or pair this computer with your build Mac: `apparition mac pair <address>`.".into(),
+                None => "Open the Apparition app on this computer (its Store starts with it), run `apparition store serve`, or pair this computer with your build Mac: `apparition mac pair <address>`.".into(),
             })),
         }
     }
 
-    fn name(&self) -> String {
+    pub(crate) fn name(&self) -> String {
         match self {
             Target::Paired { name, .. } => name.clone(),
             Target::Local { .. } => "this computer".into(),
         }
     }
 
-    async fn request(&self, method: &str, path: &str, content_type: Option<&str>, body: Upload<'_>) -> Result<Reply, Error> {
+    pub(crate) async fn request(&self, method: &str, path: &str, content_type: Option<&str>, body: Upload<'_>) -> Result<Reply, Error> {
         match self {
             Target::Paired { dir, .. } => paired_mac::developer(dir, method, path, content_type, body).await,
             Target::Local { address, token } => paired_mac::local_developer(*address, token, method, path, content_type, body).await,
@@ -58,15 +58,10 @@ impl Target {
     }
 }
 
-/// The app's Store on this computer, if it runs: `developer.json` in the Store's folder.
+/// The Store running on this computer (the app's, or `apparition store serve`), if one does.
 fn local_store() -> Option<(SocketAddr, String)> {
-    let file = apparition_core::api::store_dir().join("developer.json");
-    let value: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
-    let address: SocketAddr = value["url"].as_str()?.strip_prefix("http://")?.parse().ok()?;
-    let token = value["token"].as_str()?.to_string();
-    // Left behind by an app that didn't quit cleanly: nothing answers there.
-    std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300)).ok()?;
-    Some((address, token))
+    let (route, _) = apparition_service::hosted::running(&apparition_service::hosted::store_dir())?;
+    Some((route.address, route.token))
 }
 
 pub async fn mac(args: &[String]) -> Result<(), Error> {
@@ -380,7 +375,7 @@ mod end_to_end {
         assert!(companion.devices.forget(&device_id));
         let refused = answer(&target, r#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#).await.unwrap();
         assert!(refused["error"]["message"].as_str().unwrap().contains("Pair with it again"), "{refused}");
-        store.abort();
+        store.stop();
     }
 }
 
