@@ -352,7 +352,7 @@ impl Debug {
             .or_else(|| str_of(s, "keyId").and_then(|k| self.token(k)))
             .or_else(|| {
                 let path = std::env::var_os("DEBUGTRACE_TOKEN_FILE").map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config/debugtrace/token"));
+                    .unwrap_or_else(|| crate::home().join(".config/debugtrace/token"));
                 std::fs::read_to_string(path).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
             })
     }
@@ -683,6 +683,13 @@ fn valid_panel_file(name: &str) -> bool {
 /// A launch record's pid is live while it is the process streaming the app's log: `devicectl
 /// --console`, or `apparition launch`, which serves quiet devices and `--jit` (the Python tool
 /// knew only devicectl and treated those launches as ended until Bonjour recovered them).
+#[cfg(not(unix))]
+fn pid_is_console_streamer(_: Option<i64>) -> bool {
+    // Launch records come from build-and-sign, on a Mac.
+    false
+}
+
+#[cfg(unix)]
 fn pid_is_console_streamer(pid: Option<i64>) -> bool {
     let Some(pid) = pid.filter(|p| *p > 0 && *p <= i32::MAX as i64) else { return false };
     // SAFETY: signal 0 only checks that the process exists and can be signalled.

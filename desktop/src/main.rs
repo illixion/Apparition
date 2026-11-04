@@ -11,10 +11,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod companion;
-#[cfg(target_os = "macos")]
 mod developer;
-#[cfg(target_os = "macos")]
-mod mac_devices;
+mod store_devices;
 mod flow;
 mod host;
 mod service;
@@ -116,7 +114,6 @@ fn main() {
             companion::setup(app.handle(), companion_state)?;
             updater::setup(app.handle());
             host::setup(app.handle());
-            #[cfg(target_os = "macos")]
             developer::setup(app.handle());
             // Started at login: straight to the tray.
             if std::env::args().any(|arg| arg == companion::HIDDEN) {
@@ -137,7 +134,6 @@ fn main() {
             tauri::RunEvent::Exit => {
                 cleanup.clean_up();
                 host::shutdown(&app.state::<host::ServiceHost>());
-                #[cfg(target_os = "macos")]
                 developer::shutdown();
             }
             // macOS: clicking the Dock icon (or opening the app again) brings the window back.

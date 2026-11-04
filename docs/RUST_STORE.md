@@ -6,8 +6,10 @@ only as the fallback until the Rust service passes the parity checklist, then go
 
 ## Decisions (2026-11-04)
 
-- **Mac only.** The feature is hidden on Windows and Linux; the `service` crate compiles to
-  nothing off macOS and the desktop app leaves the Developer build tab out of those builds.
+- **Mac only** for builds. Revised the same day: the Store itself runs on Windows and Linux
+  (deploys, kept builds, MCP, traces), so xtool on a PC works without a Mac; Xcode builds,
+  `inject` and the Node build service stay on the Mac, and the desktop app still leaves the
+  Developer build tab out of the Windows and Linux builds.
 - **`~/Projects/appstore` is archived and superseded** by this service once it reaches parity.
   The Node `store/` stays only as the fallback until phase 6, then goes.
 - **Signing moves to the core's identity store.** A Mac that builds with a login-keychain
@@ -41,7 +43,7 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   the PATH) from the app's project root, one patch at a time per build (`transaction.lock`), so the
   sources must be on the Mac.
 - Devices through the core (phase 3, first part): `service/src/devices.rs` is the trait the app implements over
-  the core's pairings (`desktop/src/mac_devices.rs`): `GET /api/service/v1/devices`, `.../devices/<d>/apps`,
+  the core's pairings (`desktop/src/store_devices.rs`): `GET /api/service/v1/devices`, `.../devices/<d>/apps`,
   `POST .../builds/<id>/install?device=`, and `deploy?...&install=auto` to finish a sent build on the Mac.
   It signs with a certificate imported by `apparition deploy-signing import`. Unrun against a real device.
 - Deploys from other computers: `POST /api/service/v1/deploy` keeps an IPA as a build the device's

@@ -124,9 +124,8 @@ pub fn system_ms() -> u64 {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension(format!("tmp-{}", new_token()));
-    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+    let mut file = crate::private_file().write(true).create(true).truncate(true).open(&tmp)?;
     file.write_all(bytes)?;
     fs::rename(tmp, path)
 }

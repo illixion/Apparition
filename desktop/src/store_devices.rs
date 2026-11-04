@@ -1,11 +1,11 @@
-//! The devices this Mac reaches through its own pairings, for the Store (`apparition_service::devices`):
+//! The devices this computer reaches through its own pairings, for the Store (`apparition_service::devices`):
 //! the paired list, what each has installed, and installing an IPA that arrived from another
 //! computer. All of it over the core's tunnel: no `devicectl`, so Xcode's DeviceHub never learns of
 //! it and a sleeping Apple TV stays asleep.
 //!
-//! Signing is the Mac's own, headless: a certificate and profiles imported once into the
+//! Signing is this computer's own, headless: a certificate and profiles imported once into the
 //! `signing` folder of the device store (`apparition deploy-signing import`). With one that covers the
-//! device, the Mac signs the app and installs it. Without, the IPA goes as it is, which works only
+//! device, it signs the app and installs it. Without, the IPA goes as it is, which works only
 //! for one already signed for that device; the error then says to import a certificate.
 
 use apparition_core::api::{self, DeviceStore, Platform};
@@ -25,7 +25,7 @@ impl CoreDevices {
     }
 
     fn device(&self, udid: &str) -> Result<api::PairedDevice, String> {
-        self.store.device(udid).ok_or_else(|| format!("this Mac is no longer paired with {udid}"))
+        self.store.device(udid).ok_or_else(|| format!("this computer is no longer paired with {udid}"))
     }
 
     pub fn signing_dir(&self) -> PathBuf {
@@ -33,7 +33,7 @@ impl CoreDevices {
     }
 }
 
-/// Where the Mac keeps the certificate and profiles it signs sent builds with.
+/// Where this computer keeps the certificate and profiles it signs sent builds with.
 pub fn signing_dir(store: &DeviceStore) -> PathBuf {
     store.dir.join("signing")
 }
@@ -115,7 +115,7 @@ async fn install_on(store: DeviceStore, signing: PathBuf, device: api::PairedDev
         }
         None => {
             let reply = tunnel.install_signed_ipa(&ipa, Some(&bundle_id), detach).await.map_err(|e| format!(
-                "{e}. No certificate imported on this Mac covers {} for this app, so it was sent as it is; import one with `apparition deploy-signing import`", device.name))?;
+                "{e}. No certificate imported on this computer covers {} for this app, so it was sent as it is; import one with `apparition deploy-signing import`", device.name))?;
             (reply, None)
         }
     };

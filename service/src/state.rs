@@ -67,6 +67,12 @@ impl State {
     }
 }
 
+#[cfg(windows)]
+pub fn hostname() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+#[cfg(unix)]
 pub fn hostname() -> String {
     let mut buf = [0u8; 256];
     // SAFETY: gethostname writes at most `buf.len()` bytes into the buffer we own.

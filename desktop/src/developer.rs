@@ -1,15 +1,16 @@
-//! The Apparition Store in this process, on a Mac: what an agent or another computer drives to
-//! build, deploy and debug apps (MCP at `/mcp`, deploys at `/api/service/v1/deploy`), on a free
-//! loopback port with a token of its own. Nothing outside this Mac reaches that port:
+//! The Apparition Store in this process, on every desktop OS: what an agent or another computer
+//! drives to deploy and debug apps (MCP at `/mcp`, deploys at `/api/service/v1/deploy`), on a free
+//! loopback port with a token of its own. Nothing outside this computer reaches that port:
 //!
 //! - Other computers come through the companion's encrypted channel, once the person pairs them
 //!   and allows developer access (`core/src/companion_channel.rs`, the `developer` grant). The
 //!   companion adds this token to what they send.
-//! - Agents on this Mac run `apparition mcp`, which reads the port and token from
-//!   `developer.json` in the Store's folder (readable only by this user, gone when the app quits).
+//! - Agents here run `apparition mcp`, which reads the port and token from `developer.json` in
+//!   the Store's folder (readable only by this user, gone when the app quits).
 //!
-//! The Node build service (`host.rs`) still runs builds beside it until those are ported
-//! (docs/RUST_STORE.md); both read the same config and data.
+//! On a Mac the Node build service (`host.rs`) still runs Xcode builds beside it until those are
+//! ported (docs/RUST_STORE.md); both read the same config and data. On Windows and Linux there is
+//! no Xcode: builds come from xtool (or a Mac) as IPAs, through `apparition deploy`.
 
 use std::sync::OnceLock;
 
@@ -51,8 +52,8 @@ async fn start() -> Result<DeveloperRoute, String> {
     settings.public_dir = None;
     settings.host_token = Some(token.clone());
     settings.client_name = format!("Apparition on {}", apparition_core::relay::machine_name());
-    // The devices this Mac is paired with: sent builds can be installed from here.
-    settings.devices = Some(std::sync::Arc::new(crate::mac_devices::CoreDevices::new()));
+    // The devices this computer is paired with: sent builds can be installed from here.
+    settings.devices = Some(std::sync::Arc::new(crate::store_devices::CoreDevices::new()));
     let (address, task) = apparition_service::server::serve_loopback(settings).await.map_err(|e| e.to_string())?;
     // Runs for the app's life.
     std::mem::forget(task);
@@ -63,14 +64,18 @@ async fn start() -> Result<DeveloperRoute, String> {
     Ok(route)
 }
 
-/// Where `apparition mcp` on this Mac finds the Store.
+/// Where `apparition mcp` on this computer finds the Store.
 fn write_handoff(route: &DeveloperRoute) -> Result<(), String> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
     let path = handoff_path();
     let temporary = path.with_extension("json.new");
     let body = json!({ "url": format!("http://{}", route.address), "token": route.token, "pid": std::process::id() });
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temporary)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    // Windows: the profile folder's ACL already keeps other users out.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&temporary)
         .map_err(|e| format!("Couldn't write {}: {e}", temporary.display()))?;
     file.write_all(body.to_string().as_bytes()).map_err(|e| e.to_string())?;
     std::fs::rename(&temporary, &path).map_err(|e| e.to_string())

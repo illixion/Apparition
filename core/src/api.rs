@@ -715,6 +715,13 @@ mod desktop {
         }
     }
 
+    /// The Apparition Store's folder (config, data, and `developer.json` while the app runs):
+    /// `~/Library/Application Support/Apparition/Store` on a Mac, `%APPDATA%\Apparition\Store` on
+    /// Windows, `~/.local/share/Apparition/Store` on Linux.
+    pub fn store_dir() -> PathBuf {
+        dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("Apparition").join("Store")
+    }
+
     impl DeviceStore {
         fn devices_path(&self) -> PathBuf {
             self.dir.join("devices.json")

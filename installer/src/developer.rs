@@ -38,8 +38,7 @@ impl Target {
             (None, Some((address, token))) => Ok(Target::Local { address, token }),
             (None, None) => Err(fail(match paired_mac::status(&dir) {
                 Some(p) => format!("{} paired this computer for anisette only. Pair again with `apparition mac pair {}` and allow developer access on the Mac.", p.mac_name, p.address),
-                None if cfg!(target_os = "macos") => "Open Apparition on this Mac (its Store starts with it), or pair this computer with your build Mac: `apparition mac pair <address>`.".into(),
-                None => "Pair this computer with your Mac first: `apparition mac pair <address>`, with Apparition open on the Mac.".into(),
+                None => "Open the Apparition app on this computer (its Store starts with it), or pair this computer with your build Mac: `apparition mac pair <address>`.".into(),
             })),
         }
     }
@@ -47,7 +46,7 @@ impl Target {
     fn name(&self) -> String {
         match self {
             Target::Paired { name, .. } => name.clone(),
-            Target::Local { .. } => "this Mac".into(),
+            Target::Local { .. } => "this computer".into(),
         }
     }
 
@@ -59,13 +58,9 @@ impl Target {
     }
 }
 
-/// The app's Store on this Mac, if it runs: `developer.json` in the Store's folder.
+/// The app's Store on this computer, if it runs: `developer.json` in the Store's folder.
 fn local_store() -> Option<(SocketAddr, String)> {
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    let file = home.join("Library/Application Support/Apparition/Store/developer.json");
+    let file = apparition_core::api::store_dir().join("developer.json");
     let value: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
     let address: SocketAddr = value["url"].as_str()?.strip_prefix("http://")?.parse().ok()?;
     let token = value["token"].as_str()?.to_string();
@@ -102,7 +97,7 @@ pub async fn mac(args: &[String]) -> Result<(), Error> {
                 None => println!("This computer isn't paired with a Mac."),
             }
             if local_store().is_some() {
-                println!("Apparition's Store runs on this Mac too: `apparition mcp --local` uses it.");
+                println!("Apparition's Store runs on this computer too: `apparition mcp --local` uses it.");
             }
             Ok(())
         }
@@ -388,7 +383,7 @@ mod end_to_end {
     }
 }
 
-/// `apparition deploy-signing import | list`: the certificate and profiles this Mac's Store signs sent
+/// `apparition deploy-signing import | list`: the certificate and profiles this computer's Store signs sent
 /// builds with, kept in the device store's `signing` folder (the Apparition app reads the same).
 pub fn deploy_signing(args: &[String]) -> Result<(), Error> {
     let store = apparition_core::api::DeviceStore::default();
@@ -399,7 +394,7 @@ pub fn deploy_signing(args: &[String]) -> Result<(), Error> {
             let inventory = apparition_core::api::signing_inventory(&dir, None);
             let identities = inventory["identities"].as_array().cloned().unwrap_or_default();
             if identities.is_empty() {
-                println!("No certificate is imported on this Mac. `apparition deploy-signing import <cert.p12> --profile <file>...` adds one.");
+                println!("No certificate is imported on this computer. `apparition deploy-signing import <cert.p12> --profile <file>...` adds one.");
             }
             for identity in &identities {
                 println!("{} ({}), expires {}{}", identity["name"].as_str().unwrap_or("?"), identity["teamName"].as_str().unwrap_or("?"),
@@ -431,7 +426,7 @@ pub fn deploy_signing(args: &[String]) -> Result<(), Error> {
                 Some(w) => {
                     let known = store.devices();
                     Some(known.iter().find(|d| d.udid.eq_ignore_ascii_case(&w) || d.name.eq_ignore_ascii_case(&w)).map(|d| d.udid.clone())
-                        .ok_or_else(|| fail(format!("this Mac is not paired with '{w}'")))?)
+                        .ok_or_else(|| fail(format!("this computer is not paired with '{w}'")))?)
                 }
                 None => None,
             };
@@ -445,7 +440,7 @@ pub fn deploy_signing(args: &[String]) -> Result<(), Error> {
                 let covers = match profile["includesDevice"].as_bool() { Some(true) => ", lists the device", Some(false) => ", does NOT list the device", None => "" };
                 println!("Imported profile {} for {}{covers}.", profile["name"].as_str().unwrap_or("?"), profile["appIdPattern"].as_str().unwrap_or("?"));
             }
-            println!("The Apparition app on this Mac signs with it when another computer sends a build for a device a profile lists.");
+            println!("The Apparition app here signs with it when a build is sent here for a device a profile lists.");
             Ok(())
         }
         _ => Err(usage()),

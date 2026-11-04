@@ -24,7 +24,7 @@ two jobs that nothing else can, and everything else works without one:
 | What | Needs | Without a Mac |
 |---|---|---|
 | Signing with a free Apple ID | A Mac's anisette: your Mac, a macOS VM on it, or a server backed by a Mac | A paid account's certificate and profile, which need no sign-in |
-| Building your own apps with Xcode, and live patching (`inject`) | A Mac with Xcode | [xtool](https://github.com/xtool-org/xtool) builds on Linux, and on Windows through WSL |
+| Building your own apps with Xcode, and live patching (`inject`) | A Mac with Xcode | [xtool](https://github.com/xtool-org/xtool) builds on Linux, and on Windows through WSL; `apparition deploy` installs it and `apparition mcp` debugs it from the PC ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) |
 | Installing, refreshing, JIT, the companion | Nothing in particular | Any computer (macOS, Windows, Linux), or the device itself with LocalDevVPN |
 
 With a Mac, the rest of your work can happen on it or on a Windows or Linux PC: the PC pairs with

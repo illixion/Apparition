@@ -210,12 +210,12 @@ async fn handle(
     .context("anisette request header timed out")??;
     if let Some(rest) = request_path(&header).and_then(developer_path) {
         if !devices.channel_allows(&identity, "developer") {
-            tls.write_all(&plain_reply(403, "Pair this computer with the Mac again and allow developer access there.")).await?;
+            tls.write_all(&plain_reply(403, &format!("Pair this computer with {HOST} again and allow developer access there."))).await?;
             bail!("device has no developer grant");
         }
         let route = developer.lock().unwrap().clone();
         let Some(route) = route else {
-            tls.write_all(&plain_reply(503, "The Mac's Apparition Store isn't running. Open Apparition on the Mac.")).await?;
+            tls.write_all(&plain_reply(503, &format!("The Apparition Store on {HOST} isn't running. Open Apparition there."))).await?;
             bail!("no Store to forward developer requests to");
         };
         let rest = rest.to_string();
@@ -326,6 +326,9 @@ fn developer_request(header: &[u8], path: &str, route: &DeveloperRoute, computer
 }
 
 /// A short plain-text HTTP reply, then the channel closes.
+/// What the developer route's replies call the computer it runs on.
+const HOST: &str = if cfg!(target_os = "macos") { "the Mac" } else { "the PC" };
+
 fn plain_reply(status: u16, text: &str) -> Vec<u8> {
     let reason = match status { 403 => "Forbidden", 503 => "Service Unavailable", _ => "Error" };
     format!("HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}", text.len()).into_bytes()

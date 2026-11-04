@@ -43,7 +43,7 @@ pub fn default_key_dir() -> PathBuf {
         return dir.into();
     }
     let state = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
+        .unwrap_or_else(|| crate::home().join(".local/state"));
     state.join("debugtrace/keys")
 }
 

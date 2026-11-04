@@ -108,7 +108,7 @@ async fn a_deploy_can_ask_the_mac_to_finish_the_install_itself() {
     let r = rig(true);
     let (status, reply) = call(&r.app, "POST", "/api/service/v1/deploy?file=Thing.ipa&device=ixPhone&install=auto", HOST, ipa("iPhoneOS")).await;
     assert_eq!(status, 201, "{reply}");
-    assert_eq!((reply["install"]["via"].as_str(), reply["install"]["installed"].as_bool()), (Some("mac"), Some(true)));
+    assert_eq!((reply["install"]["via"].as_str(), reply["install"]["installed"].as_bool()), (Some("store"), Some(true)));
     assert_eq!(reply["install"]["message"], "Thing is installed on ixPhone.");
     assert_eq!(reply["install"]["signedWith"], "Apple Development: Someone");
     let installs = r.fake.installs.lock().unwrap().clone();

@@ -1,4 +1,4 @@
-//! The devices this Mac reaches itself, through the core's own pairings (no `devicectl`, no
+//! The devices the Store's computer reaches itself, through the core's own pairings (no `devicectl`, no
 //! Xcode tunnel): which are paired, what they have installed, and installing an IPA that
 //! arrived from another computer (`deploy.rs`).
 //!
@@ -44,12 +44,12 @@ pub struct Installed {
 }
 
 pub trait Devices: Send + Sync {
-    /// The devices this Mac is paired with (the core's `DeviceStore`).
+    /// The devices this computer is paired with (the core's `DeviceStore`).
     fn list(&self) -> Fut<'_, Vec<Device>>;
-    /// What `device` (a name or UDID from `list`) has installed, over this Mac's pairing.
+    /// What `device` (a name or UDID from `list`) has installed, over this computer's pairing.
     fn apps(&self, device: String) -> Fut<'_, Vec<App>>;
     /// Installs `ipa` on `device`. It signs the app here with the certificate and profiles
-    /// imported on this Mac when one covers the device, and sends it as it is when none does and
+    /// imported on this computer when one covers the device, and sends it as it is when none does and
     /// it is already signed for the device. The error says what to do next.
     fn install(&self, device: String, ipa: PathBuf) -> Fut<'_, Installed>;
 }
@@ -63,7 +63,7 @@ pub fn find<'a>(devices: &'a [Device], wanted: &str) -> Result<&'a Device, Strin
     let matches: Vec<&Device> = devices.iter().filter(|d| d.name.to_lowercase() == wanted.to_lowercase()).collect();
     match matches.as_slice() {
         [one] => Ok(one),
-        [] => Err(format!("this Mac is not paired with a device named '{wanted}'{}", if devices.is_empty() { String::new() } else {
+        [] => Err(format!("this computer is not paired with a device named '{wanted}'{}", if devices.is_empty() { String::new() } else {
             format!(" (paired: {})", devices.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", "))
         })),
         _ => Err(format!("more than one paired device is named '{wanted}'; use its UDID")),

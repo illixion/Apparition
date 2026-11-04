@@ -81,7 +81,7 @@ pub struct Mcp {
 
 impl Mcp {
     pub fn new(debug: Arc<Debug>) -> Mcp {
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let home = crate::home();
         Mcp { debug, spec: serde_json::from_str(TOOLS_JSON).expect("mcp_tools.json"), params: parameter_order(), verified: Mutex::default(), downloads: home.join("Downloads") }
     }
 
@@ -363,6 +363,10 @@ impl Mcp {
     }
 
     async fn tool_inject(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        if !cfg!(target_os = "macos") {
+            return Err(err_hint("live patching compiles with the app's own Xcode toolchain, which only a Mac has",
+                "pair this computer with a Mac (`apparition mac pair <address>`) and use its MCP server, with the sources on the Mac"));
+        }
         let session = self.verified(args.get("app").and_then(Value::as_str)).await?;
         let name = s(&session, "appName").unwrap_or("The app").to_string();
         let Some(directory) = s(&session, "injectDir").filter(|d| !d.is_empty()).map(PathBuf::from) else {
@@ -775,7 +779,7 @@ fn inject_tool() -> PathBuf {
     if let Some(p) = std::env::var_os("DEBUGTRACE_INJECT_TOOL").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let home = crate::home();
     let checkout = home.join("Projects/DebugTrace/Tools/debugtrace-inject/debugtrace-inject");
     if checkout.is_file() { checkout } else { PathBuf::from("debugtrace-inject") }
 }
@@ -832,15 +836,12 @@ fn patch_warnings(plan: &Value) -> Vec<String> {
 struct Transaction(#[allow(dead_code)] Option<std::fs::File>);
 
 fn lock_transactions(directory: &Path) -> Result<Transaction, ()> {
-    use std::os::fd::AsRawFd;
     if !directory.is_dir() {
         return Ok(Transaction(None));
     }
     let file = std::fs::OpenOptions::new().create(true).append(true).open(directory.join("transaction.lock")).map_err(|_| ())?;
-    // SAFETY: flock on a descriptor this function owns.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(());
-    }
+    // flock(2) on Unix, the same lock the Swift tool and the Python one take.
+    file.try_lock().map_err(|_| ())?;
     Ok(Transaction(Some(file)))
 }
 

@@ -14,7 +14,7 @@
 //! `APPARITION_STORE_DIR` points at an Apparition Store checkout instead of the bundled copy (for
 //! working on Apparition Store), `APPARITION_NODE` at a Node.js binary.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Mutex;
@@ -50,7 +50,7 @@ fn home() -> PathBuf {
 }
 
 pub(crate) fn support_dir() -> PathBuf {
-    home().join("Library/Application Support/Apparition/Store")
+    apparition_core::api::store_dir()
 }
 
 fn log_path() -> PathBuf {
@@ -102,19 +102,7 @@ fn child_path() -> String {
 
 /// 32 random bytes as 43 characters of unpadded base64url, the token shape Apparition Store accepts.
 pub(crate) fn token() -> Result<String, String> {
-    let mut bytes = [0u8; 32];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
-        .map_err(|_| "Couldn't make a token for the build service.".to_string())?;
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity(43);
-    for chunk in bytes.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
-        for i in 0..=chunk.len() {
-            out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
-        }
-    }
-    Ok(out)
+    Ok(apparition_service::auth::new_token())
 }
 
 /// The service's config, made on first start: an empty project list on the usual port.
@@ -362,6 +350,7 @@ pub fn shutdown(host: &ServiceHost) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn tokens_have_the_shape_store_accepts() {

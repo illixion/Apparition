@@ -96,6 +96,34 @@ The Store also answers `GET /api/service/v1/devices`, `GET .../devices/<device>/
 `POST .../builds/<id>/install?device=<device>` for the paired computers and agents (the
 `developer` grant), so a kept build can be installed later or on another device.
 
+## Without a Mac: xtool on Windows or Linux
+
+The Store runs in the Apparition app on Windows and Linux too, so a PC that builds with
+[xtool](https://github.com/xtool-org/xtool) deploys and debugs with no Mac in the loop. Pair the
+device with the PC's Apparition as usual, then:
+
+```sh
+apparition deploy-signing import cert.p12 --profile App.mobileprovision --device ixPhone   # once
+xtool dev build
+apparition deploy xtool/MyApp.ipa --device ixPhone   # the PC's own Store, over its own pairing
+claude mcp add apps -- apparition mcp                # debug servers of builds the Store knows
+```
+
+`apparition deploy` and `apparition mcp` use the local app's Store when it runs
+(`developer.json` in `%APPDATA%\Apparition\Store`, or `~/.local/share/Apparition/Store`), and
+the paired Mac otherwise. What a PC can't do:
+
+- **Sign with a free Apple ID headless.** The PC's Store signs with an imported paid
+  certificate. Free-account signing needs a Mac's anisette (a paired Mac, or a server with a Mac
+  behind it), and an interactive sign-in the Store can't do on its own.
+- **Live patching** (`inject`) compiles with the app's Xcode toolchain; the tool says so.
+- **Let the device fetch a build the PC couldn't install.** A Mac's device reaches its Node
+  build service for that; nothing on a PC answers it yet (it will be the companion channel).
+- **Attach to an xtool build's debug server.** The Store attaches only to apps whose per-build
+  token it knows, which `build-and-sign` records when it embeds it. An xtool build has none, so
+  `apparition mcp` lists it as not attachable. The fix is for the Store to embed the token when it
+  signs a sent build, which is part of the signing port (phase 5).
+
 ## What isn't here yet
 
 - **Installing from the Mac covers only what the Mac's signing can.** It signs offline with an

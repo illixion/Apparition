@@ -48,8 +48,11 @@ pub async fn receive(store: &Path, body: axum::body::Body, origin: Origin) -> Re
 
 async fn receive_into(store: &Path, stage: &Path, body: axum::body::Body, origin: Origin) -> Result<Value, Refused> {
     {
-        use std::os::unix::fs::DirBuilderExt;
-        fs::DirBuilder::new().mode(0o700).create(stage).map_err(|e| refused(500, e.to_string()))?;
+        #[allow(unused_mut)]
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(stage).map_err(|e| refused(500, e.to_string()))?;
     }
     let staged = stage.join("artifact");
     let mut file = tokio::fs::File::create(&staged).await.map_err(|e| refused(500, e.to_string()))?;
@@ -164,8 +167,8 @@ fn publish(store: &Path, stage: &Path, staged: &Path, sha: &str, bytes: u64, ori
         "origin": { "kind": "upload", "computer": label(origin.computer), "file": label(origin.file), "device": label(origin.device) },
     });
     {
-        use std::{io::Write, os::unix::fs::OpenOptionsExt};
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(stage.join("manifest.json")).map_err(|e| refused(500, e.to_string()))?;
+        use std::io::Write;
+        let mut file = crate::private_file().write(true).create_new(true).open(stage.join("manifest.json")).map_err(|e| refused(500, e.to_string()))?;
         file.write_all(serde_json::to_string_pretty(&manifest).unwrap_or_default().as_bytes()).map_err(|e| refused(500, e.to_string()))?;
     }
     let destination: PathBuf = store.join(&build_id);

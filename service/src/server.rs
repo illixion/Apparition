@@ -65,7 +65,7 @@ pub struct Settings {
 
 impl Settings {
     pub fn new(config_path: PathBuf, data_dir: PathBuf, public_dir: PathBuf) -> Settings {
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let home = crate::home();
         let host = hostname();
         Settings {
             config_path, data_dir, public_dir: Some(public_dir), host_token: None,
@@ -326,9 +326,9 @@ impl App {
     fn brand_icon_file(&self, config: &Config) -> Option<PathBuf> {
         let icon = config.branding.as_ref()?.icon.as_deref()?;
         image_type(icon)?;
-        let icon = match (icon.strip_prefix("~/"), std::env::var_os("HOME")) {
-            (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
-            _ => PathBuf::from(icon),
+        let icon = match icon.strip_prefix("~/") {
+            Some(rest) => crate::home().join(rest),
+            None => PathBuf::from(icon),
         };
         let file = self.settings.config_path.parent()?.join(icon);
         file.is_file().then_some(file)
@@ -403,8 +403,8 @@ impl App {
         change(object);
         let tmp = path.with_extension(format!("json.tmp-{}-{}", std::process::id(), crate::auth::new_token()));
         {
-            use std::{io::Write, os::unix::fs::OpenOptionsExt};
-            let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
+            use std::io::Write;
+            let mut file = crate::private_file().write(true).create(true).truncate(true).open(&tmp).map_err(|e| e.to_string())?;
             file.write_all((serde_json::to_string_pretty(&value).map_err(|e| e.to_string())? + "\n").as_bytes()).map_err(|e| e.to_string())?;
         }
         fs::rename(&tmp, path).map_err(|e| e.to_string())?;
@@ -661,20 +661,20 @@ async fn deploy_route(app: &Arc<App>, parts: axum::http::request::Parts, body: B
                 None => "Open Apparition on the device to install it.".to_string(),
             };
             eprintln!("deploy {} {} from {}", manifest["buildId"].as_str().unwrap_or(""), manifest.pointer("/app/bundleId").and_then(Value::as_str).unwrap_or(""),
-                manifest.pointer("/origin/computer").and_then(Value::as_str).unwrap_or("this Mac"));
+                manifest.pointer("/origin/computer").and_then(Value::as_str).unwrap_or("this computer"));
             // The sender may ask the Mac to finish the install itself, through its own pairing with
             // the device. Whatever stops that, the build is kept and the device's Apparition can take it.
             let wants_install = matches!(query.get("install").map(String::as_str), Some("1" | "auto"));
             let install = match (wants_install, &device) {
                 (true, Some(target)) => match install_kept(app, manifest["buildId"].as_str().unwrap_or(""), target).await {
-                    Ok(done) => json!({ "via": "mac", "installed": true, "device": done.device, "seconds": done.seconds, "queued": done.queued, "signedWith": done.signed_with,
+                    Ok(done) => json!({ "via": "store", "installed": true, "device": done.device, "seconds": done.seconds, "queued": done.queued, "signedWith": done.signed_with,
                         "message": if done.queued { format!("{name} is on {}; it finishes installing when the app is closed there.", done.device) } else { format!("{name} is installed on {}.", done.device) } }),
                     Err(error) => json!({ "via": "device", "installed": false, "error": error,
-                        "message": format!("{name} is on the Mac, but it couldn't install it itself: {error} {}", open_it(&device)) }),
+                        "message": format!("{name} is on {}, but it couldn't install it itself: {error} {}", crate::HERE, open_it(&device)) }),
                 },
                 (true, None) => json!({ "via": "device", "installed": false, "error": "no device was named",
-                    "message": format!("{name} is on the Mac. Name a device to install it from the Mac, or open Apparition on the device to install it.") }),
-                (false, _) => json!({ "via": "device", "message": format!("{name} is on the Mac. {}", open_it(&device)) }),
+                    "message": format!("{name} is on {here}. Name a device to install it from {here}, or open Apparition on the device to install it.", here = crate::HERE) }),
+                (false, _) => json!({ "via": "device", "message": format!("{name} is on {}. {}", crate::HERE, open_it(&device)) }),
             };
             json_reply(201, json!({ "ok": true, "buildId": manifest["buildId"], "app": manifest["app"], "platform": manifest["platform"], "install": install }))
         }
@@ -685,7 +685,7 @@ async fn deploy_route(app: &Arc<App>, parts: axum::http::request::Parts, body: B
 /// Installs a kept build on a device through this Mac's own pairing. The platform must fit
 /// (visionOS also runs iOS apps).
 async fn install_kept(app: &Arc<App>, build_id: &str, device: &str) -> Result<devices::Installed, String> {
-    let backend = app.settings.devices.clone().ok_or("this Mac's Store has no devices.")?;
+    let backend = app.settings.devices.clone().ok_or("this Store has no devices.")?;
     let kept = artifacts::read_build(build_id, &app.build_store()).map_err(|e| format!("{e}."))?;
     let known = backend.list().await?;
     let target = devices::find(&known, device).map_err(|e| format!("{e}."))?;
