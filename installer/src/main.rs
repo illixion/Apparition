@@ -161,10 +161,16 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       developer access to that Mac's Apparition Store and, from a Mac on macOS 26 or earlier,
       its anisette. Requests go over the companion's encrypted channel, at home over the LAN
       and away over your tailnet. `apparition mac status | forget`.
-  apparition deploy <app.ipa> [--device <name>] [--local]
-      Send an app built here (xtool, Xcode, any build) to the paired Mac's Store; the device's
-      Apparition installs it with its own signing once someone opens it there. --local uses
-      the Store of the Apparition app running on this Mac.
+  apparition deploy <app.ipa> [--device <name>] [--keep] [--local]
+      Send an app built here (xtool, Xcode, any build) to the paired Mac's Store. With a device
+      named, the Mac installs it itself when it is paired with that device and has a certificate
+      for it (`apparition deploy-signing import`, run on the Mac); otherwise it waits there and the
+      device's Apparition installs it with its own signing once someone opens it. --keep only
+      stores it. --local uses the Store of the Apparition app running on this Mac.
+  apparition deploy-signing import <cert.p12> --profile <file>... [--device <name or UDID>] | list
+      On the Mac that builds for you: give its Apparition Store a certificate and provisioning
+      profiles, once, so it can sign what other computers send and install it without the
+      device's Apparition. Kept in the Apparition folder, next to the device pairings.
   apparition mcp [--local]
       An MCP server on stdin/stdout for agents here: the apps' debug servers the Mac can see
       (apps, help, call, trace, panel), plus deploy for builds made on this computer. Add it
@@ -242,6 +248,7 @@ async fn main() -> ExitCode {
         Some("anisette") => anisette(&args[1..]).await,
         Some("mac") => developer::mac(&args[1..]).await,
         Some("deploy") => developer::deploy(&args[1..]).await,
+        Some("deploy-signing") => developer::deploy_signing(&args[1..]),
         Some("mcp") => developer::mcp(&args[1..]).await,
         Some("browse") => {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))

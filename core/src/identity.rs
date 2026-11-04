@@ -657,7 +657,8 @@ fn sorted(dictionary: Dictionary) -> Dictionary {
         .collect()
 }
 
-fn list(data_dir: &Path, udid: Option<&str>) -> Value {
+/// The imported certificates and profiles, as `apparition_signing_list` returns them.
+pub fn list(data_dir: &Path, udid: Option<&str>) -> Value {
     let identities = Identity::all(data_dir);
     let profiles = Profile::all(data_dir);
     json!({

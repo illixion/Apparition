@@ -13,6 +13,8 @@
 mod companion;
 #[cfg(target_os = "macos")]
 mod developer;
+#[cfg(target_os = "macos")]
+mod mac_devices;
 mod flow;
 mod host;
 mod service;

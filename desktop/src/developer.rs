@@ -51,6 +51,8 @@ async fn start() -> Result<DeveloperRoute, String> {
     settings.public_dir = None;
     settings.host_token = Some(token.clone());
     settings.client_name = format!("Apparition on {}", apparition_core::relay::machine_name());
+    // The devices this Mac is paired with: sent builds can be installed from here.
+    settings.devices = Some(std::sync::Arc::new(crate::mac_devices::CoreDevices::new()));
     let (address, task) = apparition_service::server::serve_loopback(settings).await.map_err(|e| e.to_string())?;
     // Runs for the app's life.
     std::mem::forget(task);

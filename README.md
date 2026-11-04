@@ -635,7 +635,8 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `anisette pair <address>`, `status`, `forget` | Pair this computer with a Mac running the companion, for its anisette; say which anisette sign-ins use; forget the pairing. See [Anisette](#anisette). |
 | `anisette serve` | Serve this Mac's own anisette on loopback, for other programs on this Mac. |
 | `mac pair <address>`, `status`, `forget` | Pair this computer with your build Mac: developer access to its Apparition Store and, where it offers it, its anisette, with one approval there. See [docs/REMOTE_DEVELOPER.md](docs/REMOTE_DEVELOPER.md). |
-| `deploy <app.ipa> [--device <name>]` | Send an app built here (xtool, Xcode) to the paired Mac; the device's Apparition installs it. |
+| `deploy <app.ipa> [--device <name>] [--keep]` | Send an app built here (xtool, Xcode) to the paired Mac. With a device named, the Mac installs it itself when it can (paired with the device, certificate imported); otherwise the device's Apparition installs it. |
+| `deploy-signing import <cert.p12> --profile <file>… \| list` | On the Mac: give its Store a certificate and profiles so it can sign and install what other computers send. |
 | `mcp` | An MCP server on stdio for agents here: the debug servers of the apps the Mac sees, plus `deploy`. |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
 | `link` | Puts `apparition` on your `PATH` (above). |

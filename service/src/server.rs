@@ -5,7 +5,7 @@
 use crate::{
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
-    artifacts, crashlogs, deploy,
+    artifacts, crashlogs, deploy, devices,
     debug::{self, Debug},
     mcp::Mcp,
     state::{State as StoreState, hostname},
@@ -59,6 +59,8 @@ pub struct Settings {
     pub browser: Arc<dyn debug::Browse>,
     /// Named in a device's "Allow debug access?" prompt.
     pub client_name: String,
+    /// The devices this Mac reaches through its own pairings; the hosting app supplies them.
+    pub devices: Option<Arc<dyn devices::Devices>>,
 }
 
 impl Settings {
@@ -71,6 +73,7 @@ impl Settings {
             debug_state_dir: std::env::var_os("DEBUGTRACE_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".local/state/debugtrace")),
             browser: Arc::new(Arc::new(debug::Mdns::default())),
             client_name: format!("Apparition Store page on {}", host.split('.').next().unwrap_or("")),
+            devices: None,
         }
     }
 }
@@ -622,6 +625,16 @@ fn capabilities() -> Value {
         "capabilities": [], "authentication": "password-session" })
 }
 
+/// Whether the request carries the service API's bearer: Some(true) for the hosting app's own
+/// token, Some(false) for a password session, None for neither.
+fn bearer_access(app: &Arc<App>, parts: &axum::http::request::Parts) -> Option<bool> {
+    let header = parts.headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let bearer = header.strip_prefix("Bearer ").unwrap_or("");
+    let is_host = matches!(&app.settings.host_token, Some(h) if constant_eq(bearer, h));
+    let session = !bearer.is_empty() && app.config().password_hash.as_deref().is_some_and(|h| app.auth.check(bearer, h));
+    (is_host || session).then_some(is_host)
+}
+
 /// Where another computer sends a build to install (`deploy.rs`).
 pub const DEPLOY_PATH: &str = "/api/service/v1/deploy";
 
@@ -629,13 +642,9 @@ pub const DEPLOY_PATH: &str = "/api/service/v1/deploy";
 /// disk: the bearer of the service API, then a kept build the device's Apparition installs.
 async fn deploy_route(app: &Arc<App>, parts: axum::http::request::Parts, body: Body) -> Response {
     let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let bearer = header("authorization").strip_prefix("Bearer ").unwrap_or("").to_string();
-    let config = app.config();
-    let is_host = matches!(&app.settings.host_token, Some(h) if constant_eq(&bearer, h));
-    let session = !bearer.is_empty() && config.password_hash.as_deref().is_some_and(|h| app.auth.check(&bearer, h));
-    if !is_host && !session {
+    let Some(is_host) = bearer_access(app, &parts) else {
         return json_reply(401, json!({ "error": "Connect to the build service again." }));
-    }
+    };
     let query: HashMap<String, String> = parts.uri.query().unwrap_or("").split('&').filter(|p| !p.is_empty()).map(|p| {
         let (k, v) = p.split_once('=').unwrap_or((p, ""));
         (percent_decode(k), percent_decode(v))
@@ -647,17 +656,94 @@ async fn deploy_route(app: &Arc<App>, parts: axum::http::request::Parts, body: B
         Ok(manifest) => {
             let name = manifest.pointer("/app/name").and_then(Value::as_str).or_else(|| manifest.pointer("/app/bundleId").and_then(Value::as_str)).unwrap_or("The app").to_string();
             let device = manifest.pointer("/origin/device").and_then(Value::as_str).map(String::from);
-            let message = match device {
-                Some(device) => format!("{name} is on the Mac. Open Apparition on {device} to install it."),
-                None => format!("{name} is on the Mac. Open Apparition on the device to install it."),
+            let open_it = |device: &Option<String>| match device {
+                Some(device) => format!("Open Apparition on {device} to install it."),
+                None => "Open Apparition on the device to install it.".to_string(),
             };
             eprintln!("deploy {} {} from {}", manifest["buildId"].as_str().unwrap_or(""), manifest.pointer("/app/bundleId").and_then(Value::as_str).unwrap_or(""),
                 manifest.pointer("/origin/computer").and_then(Value::as_str).unwrap_or("this Mac"));
-            json_reply(201, json!({ "ok": true, "buildId": manifest["buildId"], "app": manifest["app"], "platform": manifest["platform"],
-                "install": { "via": "device", "message": message } }))
+            // The sender may ask the Mac to finish the install itself, through its own pairing with
+            // the device. Whatever stops that, the build is kept and the device's Apparition can take it.
+            let wants_install = matches!(query.get("install").map(String::as_str), Some("1" | "auto"));
+            let install = match (wants_install, &device) {
+                (true, Some(target)) => match install_kept(app, manifest["buildId"].as_str().unwrap_or(""), target).await {
+                    Ok(done) => json!({ "via": "mac", "installed": true, "device": done.device, "seconds": done.seconds, "queued": done.queued, "signedWith": done.signed_with,
+                        "message": if done.queued { format!("{name} is on {}; it finishes installing when the app is closed there.", done.device) } else { format!("{name} is installed on {}.", done.device) } }),
+                    Err(error) => json!({ "via": "device", "installed": false, "error": error,
+                        "message": format!("{name} is on the Mac, but it couldn't install it itself: {error} {}", open_it(&device)) }),
+                },
+                (true, None) => json!({ "via": "device", "installed": false, "error": "no device was named",
+                    "message": format!("{name} is on the Mac. Name a device to install it from the Mac, or open Apparition on the device to install it.") }),
+                (false, _) => json!({ "via": "device", "message": format!("{name} is on the Mac. {}", open_it(&device)) }),
+            };
+            json_reply(201, json!({ "ok": true, "buildId": manifest["buildId"], "app": manifest["app"], "platform": manifest["platform"], "install": install }))
         }
         Err(deploy::Refused { status, error }) => json_reply(status, json!({ "ok": false, "error": error })),
     }
+}
+
+/// Installs a kept build on a device through this Mac's own pairing. The platform must fit
+/// (visionOS also runs iOS apps).
+async fn install_kept(app: &Arc<App>, build_id: &str, device: &str) -> Result<devices::Installed, String> {
+    let backend = app.settings.devices.clone().ok_or("this Mac's Store has no devices.")?;
+    let kept = artifacts::read_build(build_id, &app.build_store()).map_err(|e| format!("{e}."))?;
+    let known = backend.list().await?;
+    let target = devices::find(&known, device).map_err(|e| format!("{e}."))?;
+    let built = kept.manifest.get("platform").and_then(Value::as_str).unwrap_or("").to_lowercase();
+    let fits = built.is_empty() || built == target.platform.to_lowercase() || (built == "ios" && target.platform == "visionOS");
+    if !fits {
+        return Err(format!("the build is for {}, and {} runs {}.", kept.manifest["platform"].as_str().unwrap_or(""), target.name, target.platform));
+    }
+    backend.install(target.udid.clone(), kept.file).await.map_err(|e| if e.ends_with('.') { e } else { format!("{e}.") })
+}
+
+/// `GET /api/service/v1/devices`, `GET .../devices/<device>/apps` and
+/// `POST .../builds/<id>/install?device=<device>`: what this Mac does with devices itself.
+/// None when the path is not one of those.
+async fn devices_route(app: &Arc<App>, parts: &axum::http::request::Parts) -> Option<Response> {
+    let suffix = parts.uri.path().strip_prefix(SERVICE_PREFIX)?;
+    let segments: Vec<&str> = suffix.trim_start_matches('/').split('/').collect();
+    let get = parts.method == Method::GET;
+    let post = parts.method == Method::POST;
+    let listing = get && segments == ["devices"];
+    let apps = get && segments.len() == 3 && segments[0] == "devices" && segments[2] == "apps";
+    let install = post && segments.len() == 3 && segments[0] == "builds" && segments[2] == "install";
+    if !(listing || apps || install) {
+        return None;
+    }
+    if bearer_access(app, parts).is_none() {
+        return Some(json_reply(401, json!({ "error": "Connect to the build service again." })));
+    }
+    let Some(backend) = app.settings.devices.clone() else {
+        return Some(json_reply(501, json!({ "error": "This Mac's Store reaches no devices." })));
+    };
+    let fail = |status: u16, error: String| json_reply(status, json!({ "ok": false, "error": error }));
+    if listing {
+        return Some(match backend.list().await {
+            Ok(list) => json_reply(200, json!({ "devices": list })),
+            Err(e) => fail(502, e),
+        });
+    }
+    if apps {
+        let wanted = percent_decode(segments[1]);
+        let list = match backend.list().await { Ok(l) => l, Err(e) => return Some(fail(502, e)) };
+        let target = match devices::find(&list, &wanted) { Ok(t) => t.clone(), Err(e) => return Some(fail(404, e)) };
+        return Some(match backend.apps(target.udid.clone()).await {
+            Ok(apps) => json_reply(200, json!({ "device": target, "apps": apps })),
+            Err(e) => fail(502, e),
+        });
+    }
+    let query: HashMap<String, String> = parts.uri.query().unwrap_or("").split('&').filter(|p| !p.is_empty()).map(|p| {
+        let (k, v) = p.split_once('=').unwrap_or((p, ""));
+        (percent_decode(k), percent_decode(v))
+    }).collect();
+    let Some(device) = query.get("device").filter(|d| !d.is_empty()) else {
+        return Some(fail(400, "name the device with ?device=".into()));
+    };
+    Some(match install_kept(app, segments[1], device).await {
+        Ok(done) => json_reply(200, json!({ "ok": true, "installed": done })),
+        Err(e) => fail(if e.contains("invalid build") || e.contains("No such file") { 404 } else { 409 }, e),
+    })
 }
 
 fn constant_eq(a: &str, b: &str) -> bool {
@@ -668,6 +754,9 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     if parts.method == Method::POST && parts.uri.path() == DEPLOY_PATH {
         return deploy_route(&app, parts, body).await;
+    }
+    if let Some(res) = devices_route(&app, &parts).await {
+        return res;
     }
     let upload = parts.method == Method::POST && parts.uri.path() == "/api/traces";
     let limit = if upload { traces::MAX_UPLOAD } else { 1_000_000 };

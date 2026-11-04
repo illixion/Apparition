@@ -16,7 +16,7 @@ only as the fallback until the Rust service passes the parity checklist, then go
 ## Status (2026-11-04)
 
 Every ported route has a test against the real Node store (or, for the MCP server, the Python
-`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 50 tests,
+`debugtrace-mcp` it replaces) so the two cannot drift unnoticed. 55 tests,
 `APPARITION_REQUIRE_NODE=1 cargo test -p apparition-service` (without the variable, the oracle
 tests say SKIPPED when Node doesn't run).
 
@@ -40,6 +40,10 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   external `debugtrace-inject` binary (`DEBUGTRACE_INJECT_TOOL`, else the DebugTrace checkout, else
   the PATH) from the app's project root, one patch at a time per build (`transaction.lock`), so the
   sources must be on the Mac.
+- Devices through the core (phase 3, first part): `service/src/devices.rs` is the trait the app implements over
+  the core's pairings (`desktop/src/mac_devices.rs`): `GET /api/service/v1/devices`, `.../devices/<d>/apps`,
+  `POST .../builds/<id>/install?device=`, and `deploy?...&install=auto` to finish a sent build on the Mac.
+  It signs with a certificate imported by `apparition deploy-signing import`. Unrun against a real device.
 - Deploys from other computers: `POST /api/service/v1/deploy` keeps an IPA as a build the device's
   Apparition installs (Developer › Sent from your computers). The stdio entry is `apparition mcp`,
   a bridge to the running app's `/mcp` (loopback on the Mac, the companion channel elsewhere), so
@@ -51,7 +55,9 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
 
 Not done:
 - Phase 2 delivery (OTA, AltSource feed, Mac zips, signed links, trace upload from the web page).
-- Phase 3 devices through the core (replaces devicectl): `devices`, `deviceApps`, installs, JIT.
+- Phase 3, the rest: `devices` and `deviceApps` in the web state and `/api/refresh-devices` (the Node build service
+  still owns `state.json`), installs of the Store's own builds, JIT, uninstall, containers. The service routes below
+  and the Mac-side install of sent builds are done.
 - Phase 4 re-sign. Phase 5 builds (`build-and-sign`), queue, `macApps`. Phase 6 desktop wiring,
   hiding the feature off macOS, retiring `store/` and the bundled Node host.
 - Unported routes answer 501 and the capabilities list stays empty until a feature works.

@@ -73,20 +73,36 @@ reads a file on this computer and sends it to the Mac.
 ```sh
 xtool dev build                                   # makes the .ipa
 apparition deploy xtool/MyApp.ipa --device ixPhone
-# MyApp is on the Mac. Open Apparition on ixPhone to install it.
+# MyApp is installed on ixPhone.
 ```
 
 The Mac keeps the IPA as a build (`apparition-build/1`, origin `upload`, with the computer's and
-device's names). On the device, Apparition's Developer tab lists it under **Sent from your
-computers**; Install downloads it from the Mac and signs it there with the device's own signing,
-like a project's kept build. A build whose bundle ID a Store project already builds shows as that
-project's update instead.
+device's names). With a device named, it then tries to finish the install itself, over its own
+pairing with the device (the core's tunnel: no `devicectl`, so a sleeping Apple TV stays asleep):
+
+- It signs the app with a certificate and profiles imported on the Mac, when one covers the device
+  and the app. Import them once, on the Mac: `apparition deploy-signing import cert.p12 --profile
+  App.mobileprovision --device ixPhone` (`deploy-signing list` shows what is there). Nothing about
+  the certificate travels to the computer that sent the build.
+- With none, the IPA goes as it is, which works only for one already signed for that device.
+- If the Mac can't install it (not paired with the device, no certificate, the platform doesn't fit,
+  the device is away), the build stays kept and the reply says why and to open Apparition on the
+  device: its Developer tab lists it under **Sent from your computers**, and Install signs it there
+  with the device's own signing. `--keep` skips the Mac's attempt.
+
+A build whose bundle ID a Store project already builds shows as that project's update on the device.
+
+The Store also answers `GET /api/service/v1/devices`, `GET .../devices/<device>/apps` and
+`POST .../builds/<id>/install?device=<device>` for the paired computers and agents (the
+`developer` grant), so a kept build can be installed later or on another device.
 
 ## What isn't here yet
 
-- **Installing from the Mac without the device's Apparition.** The Mac doesn't yet install a sent
-  build onto a device it reaches itself: that is phase 3 of `RUST_STORE.md` (devices through the
-  core). Until then the device's Apparition finishes the install.
+- **Installing from the Mac covers only what the Mac's signing can.** It signs offline with an
+  imported certificate; signing with an Apple ID needs an interactive sign-in (and its two-factor
+  step) the Store can't do on its own, so a Mac that only has the Apple ID in the Apparition app
+  leaves the install to the device. Not run against a real device yet: the planning and the routes
+  are tested with a stand-in, the tunnel and signing calls are the core's own.
 - **The device reaching the Mac away from home** still goes through the Store's HTTPS address and
   password (Developer › Connect), not the channel.
 - **Builds on the Mac over MCP** (`build-and-sign` from an agent elsewhere) need the build port

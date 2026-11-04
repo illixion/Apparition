@@ -133,25 +133,29 @@ pub async fn deploy(args: &[String]) -> Result<(), Error> {
     let mut file = None;
     let mut device = None;
     let mut local = false;
+    let mut keep_only = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--device" => device = Some(iter.next().ok_or_else(|| fail("--device needs a device name"))?.clone()),
             "--local" => local = true,
+            "--keep" => keep_only = true,
             other if file.is_none() && !other.starts_with("--") => file = Some(PathBuf::from(other)),
             other => return Err(fail(format!("unknown argument {other}"))),
         }
     }
-    let file = file.ok_or_else(|| fail("usage: apparition deploy <app.ipa> [--device <name>] [--local]"))?;
+    let file = file.ok_or_else(|| fail("usage: apparition deploy <app.ipa> [--device <name>] [--keep] [--local]"))?;
     let target = Target::find(local)?;
     println!("Sending {} to {}…", file.display(), target.name());
-    let reply = send_build(&target, &file, device.as_deref()).await?;
+    let reply = send_build(&target, &file, device.as_deref(), !keep_only).await?;
     println!("{}", reply["install"]["message"].as_str().unwrap_or("Sent."));
     Ok(())
 }
 
-/// Uploads `file` to the Store, as a kept build for the device's Apparition to install.
-async fn send_build(target: &Target, file: &Path, device: Option<&str>) -> Result<Value, Error> {
+/// Uploads `file` to the Store, as a kept build. With a device named and `install` set, the Mac
+/// also tries to install it itself through its own pairing (and signing), and falls back to
+/// leaving it for the device's Apparition when it can't; the reply's `install` says which.
+async fn send_build(target: &Target, file: &Path, device: Option<&str>, install: bool) -> Result<Value, Error> {
     if !file.is_file() {
         return Err(fail(format!("{} isn't a file. Pass the .ipa your build made (xtool: xtool dev build, then the .ipa it names).", file.display())));
     }
@@ -159,6 +163,9 @@ async fn send_build(target: &Target, file: &Path, device: Option<&str>) -> Resul
     let mut path = format!("/api/service/v1/deploy?file={}", encode(name));
     if let Some(device) = device {
         path.push_str(&format!("&device={}", encode(device)));
+        if install {
+            path.push_str("&install=auto");
+        }
     }
     let reply = target.request("POST", &path, Some("application/octet-stream"), Upload::File(file)).await?;
     let body: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
@@ -177,12 +184,13 @@ fn encode(text: &str) -> String {
 fn deploy_tool() -> Value {
     json!({
         "name": "deploy",
-        "description": "Send an app built on this computer (an .ipa from xtool, Xcode or any build) to the Mac's Apparition Store, to install on a device. The device's Apparition installs it with its own signing: the reply says to open Apparition there. Use it after building, instead of copying files to the Mac.",
+        "description": "Send an app built on this computer (an .ipa from xtool, Xcode or any build) to the Mac's Apparition Store, to install on a device. With `device` named, the Mac installs it itself when it is paired with that device and has a certificate for it (signing the app there); otherwise the build waits on the Mac and the reply says to open Apparition on the device, which installs it with its own signing. Use it after building, instead of copying files to the Mac.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "The .ipa on this computer." },
-                "device": { "type": "string", "description": "The device it's for, as the person calls it (shown to them; optional)." }
+                "device": { "type": "string", "description": "The device it's for, as the person calls it. The Mac installs on it when it can; optional." },
+                "install": { "type": "boolean", "description": "Set false to only keep the build on the Mac and not try to install it (default true when a device is named)." }
             },
             "required": ["path"]
         }
@@ -230,9 +238,15 @@ async fn answer(target: &Target, line: &str) -> Option<Value> {
         let args = &message["params"]["arguments"];
         let result = match args["path"].as_str() {
             None => tool_text("`path` is required: the .ipa on this computer", true),
-            Some(path) => match send_build(target, Path::new(path), args["device"].as_str()).await {
-                Ok(reply) => tool_text(&json!({ "ok": true, "buildId": reply["buildId"], "app": reply["app"], "platform": reply["platform"],
-                    "message": reply["install"]["message"], "hint": "tell the person to open Apparition on the device to finish installing" }).to_string(), false),
+            Some(path) => match send_build(target, Path::new(path), args["device"].as_str(), args["install"].as_bool() != Some(false)).await {
+                Ok(reply) => {
+                    let mut out = json!({ "ok": true, "buildId": reply["buildId"], "app": reply["app"], "platform": reply["platform"],
+                        "installed": reply["install"]["installed"].as_bool() == Some(true), "message": reply["install"]["message"] });
+                    if out["installed"] != true {
+                        out["hint"] = json!("tell the person to open Apparition on the device to finish installing");
+                    }
+                    tool_text(&out.to_string(), false)
+                }
                 Err(error) => tool_text(&error.to_string(), true),
             },
         };
@@ -279,7 +293,27 @@ mod tests {
 #[cfg(all(test, target_os = "macos"))]
 mod end_to_end {
     use super::*;
+    use apparition_service::devices::{App, Device, Devices, Fut, Installed};
     use std::io::Write;
+
+    /// A Mac paired with one phone, which installs whatever it is given.
+    struct Phone(std::sync::Mutex<Vec<String>>);
+
+    impl Devices for Phone {
+        fn list(&self) -> Fut<'_, Vec<Device>> {
+            Box::pin(async { Ok(vec![Device { udid: "AAAA-1".into(), name: "ixPhone".into(), platform: "iOS".into(), model: "iPhone17,1".into() }]) })
+        }
+        fn apps(&self, _: String) -> Fut<'_, Vec<App>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn install(&self, device: String, ipa: PathBuf) -> Fut<'_, Installed> {
+            Box::pin(async move {
+                assert!(ipa.is_file());
+                self.0.lock().unwrap().push(device);
+                Ok(Installed { bundle_id: "com.example.thing".into(), device: "ixPhone".into(), seconds: 0.5, queued: false, signed_with: None })
+            })
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn an_agent_elsewhere_drives_the_macs_store_and_deploys() {
@@ -293,6 +327,8 @@ mod end_to_end {
         settings.key_dir = mac.path().join("keys");
         settings.debug_state_dir = mac.path().join("debugtrace");
         settings.browser = Arc::new(apparition_service::debug::Fixed(vec![]));
+        let phone = Arc::new(Phone(Default::default()));
+        settings.devices = Some(phone.clone());
         let (address, store) = apparition_service::server::serve_loopback(settings).await.unwrap();
         let relay_port = (0..50).map(|i| 40_000 + (std::process::id() as u16 % 5_000) * 3 + i * 3)
             .find(|p| (0..3).all(|k| std::net::TcpListener::bind(("0.0.0.0", p + k)).is_ok())).unwrap();
@@ -329,7 +365,16 @@ mod end_to_end {
         let message = json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "deploy", "arguments": { "path": ipa, "device": "ixPhone" } } });
         let deployed = answer(&target, &message.to_string()).await.unwrap();
         let text: Value = serde_json::from_str(deployed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(text["message"], "Thing is on the Mac. Open Apparition on ixPhone to install it.", "{deployed}");
+        // A device named: the Mac installs it itself, through its own pairing.
+        assert_eq!((text["installed"].as_bool(), text["message"].as_str()), (Some(true), Some("Thing is installed on ixPhone.")), "{deployed}");
+        assert!(text.get("hint").is_none());
+        assert_eq!(*phone.0.lock().unwrap(), ["AAAA-1"]);
+        // install: false only keeps it, for the device's Apparition.
+        let message = json!({ "jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": { "name": "deploy", "arguments": { "path": ipa, "device": "ixPhone", "install": false } } });
+        let kept = answer(&target, &message.to_string()).await.unwrap();
+        let kept: Value = serde_json::from_str(kept["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!((kept["installed"].as_bool(), kept["message"].as_str()), (Some(false), Some("Thing is on the Mac. Open Apparition on ixPhone to install it.")));
+        assert_eq!(phone.0.lock().unwrap().len(), 1, "nothing more was installed");
         let id = text["buildId"].as_str().unwrap();
         let manifest: Value = serde_json::from_slice(&std::fs::read(mac.path().join("builds").join(id).join("manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest["origin"]["computer"], apparition_core::relay::machine_name().as_str());
@@ -340,5 +385,69 @@ mod end_to_end {
         let refused = answer(&target, r#"{"jsonrpc":"2.0","id":5,"method":"ping"}"#).await.unwrap();
         assert!(refused["error"]["message"].as_str().unwrap().contains("Pair with it again"), "{refused}");
         store.abort();
+    }
+}
+
+/// `apparition deploy-signing import | list`: the certificate and profiles this Mac's Store signs sent
+/// builds with, kept in the device store's `signing` folder (the Apparition app reads the same).
+pub fn deploy_signing(args: &[String]) -> Result<(), Error> {
+    let store = apparition_core::api::DeviceStore::default();
+    let dir = store.dir.join("signing");
+    let usage = || fail("usage: apparition deploy-signing import <cert.p12> --profile <file>... [--device <name or UDID>] | list");
+    match args.first().map(String::as_str) {
+        Some("list") if args.len() == 1 => {
+            let inventory = apparition_core::api::signing_inventory(&dir, None);
+            let identities = inventory["identities"].as_array().cloned().unwrap_or_default();
+            if identities.is_empty() {
+                println!("No certificate is imported on this Mac. `apparition deploy-signing import <cert.p12> --profile <file>...` adds one.");
+            }
+            for identity in &identities {
+                println!("{} ({}), expires {}{}", identity["name"].as_str().unwrap_or("?"), identity["teamName"].as_str().unwrap_or("?"),
+                    identity["expires"].as_str().unwrap_or("?"), if identity["expired"] == true { " (expired)" } else { "" });
+            }
+            for profile in inventory["profiles"].as_array().into_iter().flatten() {
+                println!("  profile {} for {}, {} devices, expires {}", profile["name"].as_str().unwrap_or("?"), profile["appIdPattern"].as_str().unwrap_or("?"),
+                    profile["deviceCount"], profile["expires"].as_str().unwrap_or("?"));
+            }
+            Ok(())
+        }
+        Some("import") => {
+            let (mut p12, mut profiles, mut wanted) = (None, Vec::new(), None);
+            let mut iter = args[1..].iter();
+            while let Some(arg) = iter.next() {
+                match arg.as_str() {
+                    "--profile" => profiles.push(PathBuf::from(iter.next().ok_or_else(usage)?)),
+                    "--device" => wanted = Some(iter.next().ok_or_else(usage)?.clone()),
+                    other if p12.is_none() && !other.starts_with("--") => p12 = Some(PathBuf::from(other)),
+                    _ => return Err(usage()),
+                }
+            }
+            let p12 = p12.ok_or_else(usage)?;
+            if profiles.is_empty() {
+                return Err(fail("add at least one provisioning profile with --profile <file>; it must list the device"));
+            }
+            // A profile's device list is checked against this device, so a mismatch says so now.
+            let udid = match wanted {
+                Some(w) => {
+                    let known = store.devices();
+                    Some(known.iter().find(|d| d.udid.eq_ignore_ascii_case(&w) || d.name.eq_ignore_ascii_case(&w)).map(|d| d.udid.clone())
+                        .ok_or_else(|| fail(format!("this Mac is not paired with '{w}'")))?)
+                }
+                None => None,
+            };
+            std::fs::create_dir_all(&dir)?;
+            let password = rpassword::prompt_password(format!("Password for {}: ", p12.display())).unwrap_or_default();
+            let identity = apparition_core::api::import_identity(&dir, &std::fs::read(&p12)?, password)?;
+            println!("Imported {}.", identity["identity"]["name"].as_str().unwrap_or("the certificate"));
+            for profile in profiles {
+                let imported = apparition_core::api::import_profile(&dir, std::fs::read(&profile)?, udid.as_deref())?;
+                let profile = &imported["profile"];
+                let covers = match profile["includesDevice"].as_bool() { Some(true) => ", lists the device", Some(false) => ", does NOT list the device", None => "" };
+                println!("Imported profile {} for {}{covers}.", profile["name"].as_str().unwrap_or("?"), profile["appIdPattern"].as_str().unwrap_or("?"));
+            }
+            println!("The Apparition app on this Mac signs with it when another computer sends a build for a device a profile lists.");
+            Ok(())
+        }
+        _ => Err(usage()),
     }
 }
