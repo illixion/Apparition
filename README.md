@@ -43,11 +43,13 @@ macOS on your own Mac, as Xcode does. That Mac is either
 
 Windows and Linux computers, and devices away from home, pair with that Mac for it over an
 encrypted channel. Apparition doesn't provide anisette, and doesn't run Apple code made for other
-platforms to stand in for a Mac. An anisette server you give by address works only when a Mac is
-behind it: Apple refuses developer access to any other (`-80046`), so a public anisette server
-won't sign apps. Without a Mac, only a paid developer account's own certificate and profile sign
-apps (they need no sign-in). The Apple ID is yours too: use a spare one for sideloading if you
-can.
+platforms to stand in for a Mac. An anisette server you give by address works only when what it
+serves is a Mac's anisette: Apple refuses developer access to any other (`-80046`), so a server
+made from another platform's libraries won't sign apps. Some public servers do serve a Mac's, but
+you don't control them and Apple changes what it accepts without notice; Apparition doesn't
+provide or recommend one, and a Mac you own is the supported setup. Without a Mac, only a paid
+developer account's own certificate and profile sign apps (they need no sign-in). The Apple ID is
+yours too: use a spare one for sideloading if you can.
 
 **JIT needs no particular computer.** Apparition on the device is the app's debugger. It only
 needs a way back to the device's own services, which the device won't connect to directly: a
@@ -568,7 +570,12 @@ Releases are listed on [apparition.illixion.com](https://apparition.illixion.com
 files (`.github/workflows/release.yml`, running `scripts/package-release.sh` on macOS and native
 Linux runners) and attests their provenance: `gh attestation verify <file> -R
 illixion/Apparition` checks a download came from this repository's workflow. The site then
-signs the files' SHA256SUMS with a key in `release-signers`, which never goes near CI. `core/src/release.rs` checks that signature against the keys compiled in,
+signs the files' SHA256SUMS with a key in `release-signers`, which never goes near CI, and only
+after `scripts/audit-release.sh` passes: it takes the commit from the files' attestations, checks
+that commit's dependencies (lock files current, every crate from crates.io or a pinned git
+commit, none yanked, no RustSec advisory beyond `scripts/audit-allow`), and rebuilds the macOS
+files from nothing with the toolchain in `scripts/release-toolchain`, which must give CI's
+bytes. `core/src/release.rs` checks that signature against the keys compiled in,
 then every download's hash, so the files can be hosted anywhere. `apparition install`
 with no IPA installs the latest release this way.
 
@@ -872,7 +879,7 @@ restore a free account's weekly allowance before it expires.
 
     scripts/install-tauri-cli.sh      # once (or cargo install tauri-cli --version '^2' --locked)
     cd desktop && cargo tauri build --bundles app                           # this Mac
-    scripts/install-desktop.sh        # build, sign, install to /Applications and relaunch (this Mac)
+    scripts/install-desktop.sh        # build, sign, install to /Applications, link `apparition` onto PATH and relaunch (this Mac; LINK=0 skips the link)
     cargo tauri build --target universal-apple-darwin --bundles app         # arm64 + x86_64
     cargo build --release --features custom-protocol --target x86_64-pc-windows-gnu   # Windows exe
     docker build -t apparition-desktop-linux -f ../scripts/desktop-linux.Dockerfile ../scripts
@@ -942,10 +949,12 @@ Up to 0.4.5, Apparition made anisette off a Mac with the two libraries Apple Mus
 fetched from Apple's CDN and run in its own process. Since October 2026 Apple gives the Xcode token
 only to a Mac's anisette, so those libraries no longer get a free account to signing, and running
 another platform's Apple code to stand in for a Mac isn't something Apparition wants to depend on.
-It now needs a Mac you own, which is what Apple's own tools need too. The October refusals that
-looked like the end of that anisette (an HTML `403 Forbidden` from `gsd.apple.com` and
-`gsa.apple.com`) were a request header: Apple rejects the legacy `text/x-xml-plist` and
-`application/x-xml-plist` content types, and Apparition sends `text/xml`.
+It now needs a Mac you own, which is what Apple's own tools need too. An HTML `403 Forbidden` from
+`gsd.apple.com` is not always the request header, though. Apple's edge did refuse the legacy
+`text/x-xml-plist` and `application/x-xml-plist` content types in October, and Apparition sends
+`text/xml`. But since 3 November `gsd.apple.com`'s sign-in endpoint (the one Android anisette is
+sent to) refuses every content type, and `gsa.apple.com` answers an Android claim with `503`, so
+other anisette means Apple didn't like what that anisette claims to be.
 
 ## Build
 
