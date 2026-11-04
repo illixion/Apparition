@@ -209,6 +209,32 @@ final class DeveloperModel {
         }
     }
 
+    /// Where installing a build another computer sent has got to.
+    func sentPhase(_ artifact: BuildService.Artifact) -> Phase? { phases["sent|\(artifact.app.bundleId)"] }
+
+    /// Downloads a build another computer sent to the Mac (`apparition deploy`), signs it here and
+    /// installs it, like a project's kept build. It belongs to no project: its reservations are
+    /// kept under its bundle id.
+    func installSent(_ artifact: BuildService.Artifact) async {
+        let key = "sent|\(artifact.app.bundleId)"
+        guard phases[key]?.isWorking != true else { return }
+        phases[key] = .downloading
+        let file: URL
+        do { file = try await service.download(artifact) }
+        catch { phases[key] = .failed(error.localizedDescription, keptBuild: artifact.buildId); return }
+        defer { try? FileManager.default.removeItem(at: file) }
+        phases[key] = .installing
+        switch await library.installProjectBuild(file, project: "sent:\(artifact.app.bundleId)", buildId: artifact.buildId) {
+        case .installed(let name):
+            phases[key] = .done("\(name) installed on this \(ThisDevice.noun).")
+            await library.refreshDeviceApps()
+        case .cancelled:
+            phases[key] = .failed("Installing was cancelled.", keptBuild: artifact.buildId)
+        case .failed(let reason):
+            phases[key] = .failed(reason, keptBuild: artifact.buildId)
+        }
+    }
+
     /// The newest kept build of a target that is not the one installed, if any: what Install update offers.
     func update(for project: BuildService.Project, target: BuildService.Target, installedBuild: String?) -> BuildService.Artifact? {
         guard let bundleId = target.bundleId,

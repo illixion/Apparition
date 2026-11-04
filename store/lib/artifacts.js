@@ -166,7 +166,7 @@ function listBuilds({ store = defaultStore(), limit = 40 } = {}) {
     try {
       const { manifest: m } = readBuild(entry.id, { store });
       builds.push({ buildId: m.buildId, createdAt: m.createdAt, project: m.project,
-        platform: m.platform, configuration: m.configuration, app: m.app, artifact: m.artifact,
+        platform: m.platform, configuration: m.configuration, app: m.app, artifact: m.artifact, origin: m.origin || null,
         source: m.source ? { stable: m.source.stable, anyDirty: m.source.before.anyDirty,
           fingerprint: m.source.before.fingerprint } : null });
     } catch { /* incomplete or corrupt imports do not hide other builds */ }

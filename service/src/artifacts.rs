@@ -70,7 +70,7 @@ pub fn list_builds(store: &Path, limit: usize) -> Vec<Value> {
         builds.push(json!({
             "buildId": m["buildId"], "createdAt": m.get("createdAt"), "project": m.get("project"),
             "platform": m.get("platform"), "configuration": m.get("configuration"), "app": m.get("app"),
-            "artifact": m["artifact"], "source": source,
+            "artifact": m["artifact"], "origin": m.get("origin").cloned().unwrap_or(Value::Null), "source": source,
         }));
     }
     builds

@@ -107,7 +107,56 @@ struct DeveloperView: View {
             } footer: {
                 Text("Each project lists the devices it installs on. Open one to build, install, re-sign or read its reports.")
             }
+            let sent = service.sentBuilds
+            if !sent.isEmpty {
+                Section {
+                    ForEach(sent) { build in SentBuildRow(developer: developer, build: build) }
+                } header: {
+                    Text("Sent from your computers")
+                } footer: {
+                    Text("Apps built on another computer and sent to the Mac with apparition deploy. Install signs them here, with this \(ThisDevice.noun)'s own signing.")
+                }
+            }
         }
+    }
+}
+
+/// A build another computer sent: what it is, where it came from, and Install.
+private struct SentBuildRow: View {
+    let developer: DeveloperModel
+    let build: BuildService.Artifact
+
+    var body: some View {
+        let phase = developer.sentPhase(build)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(build.app.name ?? build.app.bundleId).font(.headline)
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if phase?.isWorking == true {
+                    ProgressView()
+                } else {
+                    Button("Install") { Task { await developer.installSent(build) } }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("installSent-\(build.app.bundleId)")
+                }
+            }
+            switch phase {
+            case .done(let message)?: Text(message).font(.caption).foregroundStyle(.green)
+            case .failed(let reason, _)?: Text(reason).font(.caption).foregroundStyle(.red)
+            default: EmptyView()
+            }
+        }
+    }
+
+    private var detail: String {
+        var parts: [String] = []
+        if let version = build.app.version { parts.append(build.app.build.map { "\(version) (\($0))" } ?? version) }
+        if let computer = build.origin?.computer { parts.append("from \(computer)") }
+        if let device = build.origin?.device { parts.append("for \(device)") }
+        return parts.joined(separator: " · ")
     }
 }
 

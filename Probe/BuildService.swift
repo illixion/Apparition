@@ -141,12 +141,16 @@ final class BuildService {
     }
     struct Artifact: Decodable, Identifiable {
         struct App: Decodable { let name: String?; let bundleId: String; let originalBundleId: String?; let build: String?; let version: String? }
+        /// Where the build came from. `upload` is one another computer sent (`apparition deploy`:
+        /// an xtool or Xcode build made there), with that computer's name and the device it is for.
+        struct Origin: Decodable { let kind: String?; let computer: String?; let device: String? }
         var id: String { buildId }
         let buildId: String
         let platform: String
         let project: String?
         let createdAt: String?
         let app: App
+        let origin: Origin?
     }
     private struct Artifacts: Decodable { let builds: [Artifact] }
     /// A provisioning profile in the Mac's build-signing folder, as the service describes it:
@@ -512,6 +516,26 @@ final class BuildService {
         let candidates = artifacts.filter { $0.app.bundleId == bundleId || $0.app.originalBundleId == bundleId }
         if let installedBuild, let exact = candidates.first(where: { $0.app.build == installedBuild }) { return exact }
         return candidates.first
+    }
+
+    /// Builds another computer sent to the Mac for a device to install, newest of each app, that
+    /// no project here builds (those show as the project's update instead). Only this platform's.
+    var sentBuilds: [Artifact] {
+        let projectApps = Set((state?.repos ?? []).flatMap { $0.platforms.compactMap(\.bundleId) })
+        #if os(visionOS)
+        let platforms: Set<String> = ["visionos", "ios"]
+        #elseif os(tvOS)
+        let platforms: Set<String> = ["tvos"]
+        #else
+        let platforms: Set<String> = ["ios"]
+        #endif
+        var seen = Set<String>()
+        return artifacts.filter { $0.origin?.kind == "upload" }
+            .sorted { ($0.createdAt ?? "") > ($1.createdAt ?? "") }
+            .filter { build in
+                !projectApps.contains(build.app.bundleId) && platforms.contains(build.platform.lowercased())
+                    && seen.insert(build.app.bundleId).inserted
+            }
     }
 
     func latestArtifact(project: Project, target: Target, bundleId: String) -> Artifact? {
