@@ -8,14 +8,14 @@ screen does.
 
 ## The pieces
 
-- **[Apparition Store](https://github.com/illixion/Apparition/tree/main/store)** is an open-source build service that runs
-  on your Mac. It builds your projects from their Git checkouts with its `build-and-sign` script.
-  For a device-side install it keeps an unsigned IPA for Apparition to sign on the device; a
-  direct Mac install is signed with your development certificate and installed through Xcode's
-  device tunnel. It keeps build artifacts with a manifest of exactly what went into them and
-  receives debug traces from apps
-  that link [DebugTrace](https://github.com/illixion/DebugTrace). It has its own web page too, but
-  Apparition talks to its versioned service API.
+- **The Apparition Store** is the build service built into the desktop app, so it runs on your Mac
+  while Apparition is open ([reference](STORE.md)). It builds your projects from their Git checkouts
+  with `apparition build`, the same command you can run in a terminal. For a device-side install it
+  keeps an unsigned IPA for Apparition to sign on the device; a direct Mac install is signed with
+  your development certificate and installed over Apparition's own pairing with the device. It
+  keeps build artifacts with a manifest of exactly what went into them and receives debug traces
+  from apps that link [DebugTrace](https://github.com/illixion/DebugTrace). It has its own web page
+  too, but Apparition talks to its versioned service API.
 - **Apparition on the Mac** (the desktop app) has a **Develop** tab (choose **Develop apps** the first
   time it opens, or switch with the buttons in the header) that connects to the Apparition Store on
   the same Mac or another one. It can also register projects and send your signing certificates to
@@ -23,39 +23,37 @@ screen does.
 - **Apparition on a device** (Apple Vision Pro, iPhone, iPad, Apple TV) has the same **Developer**
   tab, and its **Library** shows the apps your projects installed there, with their updates.
 
-Apparition never builds anything itself. The Mac builds; Apparition asks it to and shows the
-result. The device's own approvals still apply: connecting to the service doesn't grant debug
-access or code changes.
+Builds happen on a Mac with Xcode, in the Store; Apparition on a device asks for them and shows the
+result. The device's own approvals still apply: connecting to the Store doesn't grant debug access
+or code changes.
 
 ## What you need
 
-- A Mac with Xcode, Node 18 or newer and Homebrew's bash (`brew install bash`).
+- A Mac with Xcode. Nothing else to install: the Store is part of Apparition.
 - For **Mac-side signed installs**, a paid Apple Developer account, a development certificate
   exported as `.p12`, and a development provisioning profile listing your devices. A wildcard
   profile (App ID `*`) signs every app. For **device-side installs**, the Mac retains an unsigned
   build and Apparition signs it on the device with the Apple ID or certificate configured there;
   no Mac-side signing material is needed for that route.
-- Your devices paired with the Mac in Xcode (Window > Devices and Simulators).
+- Your devices paired with Apparition on the Mac (`apparition pair`, or pairing in the app).
+  The Store reads, installs to and launches on a device over that pairing, not Xcode's.
 - For a headset, iPhone or Apple TV away from the Mac: a way to reach the Mac over HTTPS. Tailscale
   Serve is the easy one (see "Away from home, over Tailscale" in the README).
 
 ## Setting up
 
-1. **Set up Apparition Store.** It comes with the desktop app and runs while Apparition is open
-   (Developer shows it running). It needs Xcode and Node.js 18 on the Mac. Add signing material
-   only if you will install directly from the Mac:
+1. **Set up the Store.** It comes with the desktop app and runs while Apparition is open
+   (Developer shows it running); it needs Xcode on the Mac. Add signing material only if you will
+   install directly from the Mac:
 
    ```sh
    mkdir -p ~/.config/build-signing/{certs,profiles}
-   cp /path/to/Apparition/store/examples/global.conf.example ~/.config/build-signing/global.conf   # then edit
+   # then write ~/.config/build-signing/global.conf (see STORE.md, "Signing material")
    ```
 
-   To run it on its own instead (a server, under launchd or systemd), use `store/` in this repo:
-   `cp config.example.json config.json`, then `node server.js`; see `store/README.md`.
-
    Put your `.p12` in `~/.config/build-signing/certs` and your profiles in `profiles`. Each app's
-   repository gets a gitignored `build-signing.conf` (from `examples/build-signing.conf.example`)
-   naming its scheme and bundle ID.
+   repository gets a gitignored `build-signing.conf` naming its scheme and bundle ID; **Add a
+   project** writes a minimal one for you. [STORE.md](STORE.md) shows both files.
 
 2. **Let other devices in.** On the Mac, Developer › Devices & signing › **Web UI and other
    devices**: set a password. Apparition on a headset, iPhone or Apple TV connects with it (and so
@@ -70,9 +68,9 @@ access or code changes.
    writes a small one (project, scheme, platform, device; no certificates or passwords) and adds it to
    the clone's local Git exclude. An existing conf is never replaced. For anything unusual,
    **Advanced: register a project by hand** takes the path, branches and one target per device (a
-   platform alias such as `visionOS`, `iOS`, `iPad` or `tvOS`, the device's name as Xcode shows it,
-   and the bundle ID), or edit the Apparition Store's `config.json`
-   (`~/Library/Application Support/Apparition/Store/`).
+   platform alias such as `visionOS`, `iOS`, `iPad` or `tvOS`, the device's name as Apparition lists
+   it (`apparition devices`), and the bundle ID), or edit the Store's `config.json`
+   (`~/Library/Application Support/Apparition/Store/`, keys in [STORE.md](STORE.md)).
 
 ## The Develop screen
 
@@ -105,7 +103,7 @@ dev builds with a debug server; inspecting one asks for approval on the device.
 
 **Devices & signing** (on the Mac) or **Service** (on a device). The devices the Mac can install to
 (simulators are left out) and the connection. On the Mac, **Signing on devices** sends
-build-and-sign's certificates and profiles into Apparition's Signing folder on a paired device, so
+the build-signing folder's certificates and profiles into Apparition's Signing folder on a paired device, so
 Apparition there can sign with your developer certificate instead of an Apple ID. Nothing is
 reinstalled; enter each `.p12`'s password on the device once.
 
@@ -122,16 +120,17 @@ There are two routes, and Apparition picks the first one that works.
    which App IDs it takes; later ones re-sign with that plan and ask nothing. With a free Apple ID the
    app gets the team's suffix on its bundle ID and counts against the App ID limit, like any app
    Apparition signs.
-2. **From the Mac through Xcode's tunnel (secondary).** `build-and-sign` installs it with
-   `devicectl` using the Mac's own certificate. It is the quick way to update a build, the only route
-   that can launch the app from the build, and it keeps the Mac's profile, but the Mac has to reach
-   the device on the network, and Apparition isn't involved. It is also what happens when Apparition
-   is closed: the service lets a device install its own build only while that device's Apparition is
-   open (Apparition names its device on every request and goes quiet when closed), and uses the tunnel
-   otherwise, for builds started from the web page or elsewhere too.
+2. **From the Mac over its own pairing (secondary).** `apparition build` installs it using the
+   Mac's own certificate and profile, through the Mac's pairing with the device (not `devicectl` or
+   Xcode's tunnel). It is the quick way to update a build, the only route that can launch the app
+   from the build, and it keeps the Mac's profile, but the Mac has to reach the device on the
+   network, and the device's Apparition isn't involved. It is also what happens when Apparition is
+   closed: the Store lets a device install its own build only while that device's Apparition is open
+   (Apparition names its device on every request and goes quiet when closed), and installs from the
+   Mac otherwise, for builds started from the web page or elsewhere too.
 
-A target on another device, or a device Apparition can't sign for yet, goes through the tunnel, and
-the page says what would make the first route work. A failed tunnel install keeps its build, so the
+A target on another device, or a device Apparition can't sign for yet, is installed from the Mac, and
+the page says what would make the first route work. A failed Mac install keeps its build, so the
 page offers to install that build here instead. After an install here, Apparition tells the service,
 so the install history on the Mac and in other clients is right.
 
@@ -151,7 +150,7 @@ build for its Apparition to install. Build numbers carry a short tag for the pac
 
 **Update automatically** does the same by itself once the sources have been still for a few
 minutes (`autoUpdate: {"enabled": true, "settleMinutes": 5}`), so a burst of commits across a
-package and an app is one build. Devices in `ledgerOnlyDevices` aren't woken to ask what they
+package and an app is one build. Devices in `ledgerOnlyDevices` aren't asked on their own what they
 have; what the Store installed there stands for them.
 
 ## Linking apps to projects
@@ -189,25 +188,25 @@ Then:
 - **Check first** only tests that the app's data can be reached. It builds and changes nothing.
 - Choosing to discard data skips the backup.
 
-Re-signing replaces the app in place through the Xcode tunnel and moves its data, so it needs the
-device reachable from the Mac; the page says so when it isn't. To change which identity signs the
+Re-signing replaces the app in place over the Mac's pairing with the device and moves its data, so
+it needs the device reachable from the Mac; the page says so when it isn't. To change which identity signs the
 copy on this device, change the app's signer in the Library instead.
 
 ## When something doesn't work
 
 - **"Connect to the build service again."** The password changed or the session was revoked.
   Connect again.
-- **A device is missing from a target.** It isn't paired with the Mac, or Xcode names it
-  differently. The target's device name must match the name Xcode shows.
+- **A device is missing from a target.** It isn't paired with Apparition on the Mac, or Apparition
+  names it differently. The target's device name must match the name `apparition devices` shows.
 - **A build fails.** Read its log in Activity. The same build from a terminal is
-  `build-and-sign` in the project's checkout, which prints the same output.
+  `apparition build` in the project's checkout, which prints the same output.
 - **An app crashed.** Reports can show older crash logs already present in the Store and traces
   uploaded by apps that link DebugTrace. Automatic device crash-log pulling is currently disabled,
   so a new crash may not appear unless the app uploads a trace.
 
 ## Security
 
-The service password protects everything, so use a long one and keep the service on localhost or
+The Store's password protects everything, so use a long one and keep the Store on localhost or
 your tailnet. Apparition keeps the service session in memory (and, on a device, the password in its
 Keychain if you allow it), sends only identifiers to the service and never file paths, and refuses
 redirects. The service decides what is allowed: configured projects, targets, branches and
@@ -220,8 +219,8 @@ Live patching is a **build setting** (`--inject`): the Developer views only togg
 route. Patching itself happens from the Mac, through the `inject` MCP tool or the CLI, so the
 mobile app has no Live tab. The Mac compiles the edited sources and sends them to the app's debug
 server. It needs a patchable build that is running and an app the Mac can find: discovery uses
-Bonjour on the local network, or the session record `build-and-sign --run --mcp` writes after a
-tunnel launch. An app Apparition launched itself leaves neither, so patching one away from the
+Bonjour on the local network, or the session record `apparition build --run --mcp` writes when it
+launches the app. An app launched some other way leaves neither, so patching one away from the
 network the Mac is on is not yet verified.
 
 Build options in the native and desktop Developer views offer **Patch backend** when
@@ -232,7 +231,7 @@ functions or mutation of existing type layouts. Setup and restrictions are in
 [DebugTrace's live-patching guide](../../DebugTrace/Docs/live-patching.md#apparition-native-entry-backend-experimental).
 
 After launching the patchable build, edit its sources on the build Mac and patch that
-project/device. The service's `inject` route (what the MCP tool calls) asks its local
+project/device. The Store's `inject` route asks its local
 Apparition CLI to attach, compile and sign, request device approval, apply and detach.
 It applies changed files from the captured build, including shared packages;
 use the CLI's `--file` option to select files when other edits are present. Patching
@@ -243,13 +242,13 @@ choice appears only for those.
 On the Mac with Xcode, the captured build products and current DebugTrace tools:
 
 ```sh
-build-and-sign --run --mcp --inject-backend apparition
+apparition build --run --mcp --inject-backend apparition
 apparition inject com.example.app --device AVP --file Sources/Update.swift
 apparition inject com.example.app --device AVP --run 'return model.count'
 ```
 
-`DEBUGTRACE_MCP` overrides the CLI's DebugTrace tool path. The Mac service uses its
-`debugtraceTool` setting and `apparitionCli` (default `apparition` on PATH). Install a
+`DEBUGTRACE_MCP` overrides the CLI's DebugTrace tool path. The Store uses its
+`debugtraceTool` setting and `apparitionCli` (default the CLI beside the app). Install a
 CLI built from this version before using the button. Service API:
 `POST /api/service/v1/inject` with `{repo, device, targetPlatform, files?: string[]}`.
 It accepts only configured targets, requires a native service session and permits
@@ -289,7 +288,7 @@ they never change a loaded type's layout. To reproduce on a fresh lab launch:
 ```sh
 SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab \
   BUILD_BUNDLE_ID=com.illixion.apparition.lab \
-  build-and-sign --platform visionOS --device AVP --inject \
+  apparition build --platform visionOS --device AVP --inject \
   --inject-backend apparition --run --mcp
 python3 scripts/test-entry-state.py --device AVP
 ```

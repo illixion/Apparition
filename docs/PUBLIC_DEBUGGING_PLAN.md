@@ -10,7 +10,7 @@ develop it from their own Mac. The DebugTrace parts are generic, so later public
 ## What exists today
 
 - The GitHub Actions IPAs link `DebugTrace`, `DebugTraceServer` and `DebugTraceUI`. The server starts
-  only with a build-and-sign credential or `DEBUGTRACE_SERVER=1`, so in a shipped IPA it never
+  only with an `apparition build` credential or `DEBUGTRACE_SERVER=1`, so in a shipped IPA it never
   listens. `APPARITION_RELEASE` drops only the experiment endpoints and the release-site override.
 - Upload goes to the Apparition Store, which accepts only keys in this Mac's ledger. Public copies have
   no upload URL, so `canUpload` is false and MetricKit reports are never sent.
@@ -115,7 +115,7 @@ answers Longwave. Its service types go into `NSBonjourServices`.
 
 ### Token precedence
 
-Launch env `DEBUGTRACE_TOKEN` > build-and-sign credential > Apparition's paired or password access.
+Launch env `DEBUGTRACE_TOKEN` > `apparition build` credential > Apparition's paired or password access.
 Dev builds behave exactly as now.
 
 ## 3. Where the code goes

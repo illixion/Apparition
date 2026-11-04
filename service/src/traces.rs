@@ -206,7 +206,7 @@ pub fn verify(buf: &[u8], key_dir: &Path) -> Result<Verified, TraceError> {
     }
     let signature_info = manifest.get("signature").filter(|s| !s.is_null() && s.as_bool() != Some(false));
     let (Some(signature_info), Some(sig_entry)) = (signature_info, by_name.get("manifest.sig")) else {
-        return Err(TraceError::new(403, "unsigned trace: only apps built by build-and-sign carry a key; share this one as a file instead"));
+        return Err(TraceError::new(403, "unsigned trace: only apps built by apparition build carry a key; share this one as a file instead"));
     };
     if signature_info.get("algorithm").and_then(Value::as_str) != Some("ed25519") {
         return Err(TraceError::new(400, format!("unsupported signature {}", js(signature_info.get("algorithm")).trim_matches('"'))));

@@ -1243,7 +1243,7 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
     }
     if req.path == "/api/service/connect" && req.method == Method::POST {
         let Some(hash) = &config.password_hash else {
-            return Some(json_reply(409, json!({ "error": "Set a service password with node server.js set-password first." })));
+            return Some(json_reply(409, json!({ "error": "Set a password under Web UI and other devices in Apparition first." })));
         };
         let password = req.json_body().get("password").and_then(Value::as_str).unwrap_or("").to_string();
         return Some(match app.auth.login(&password, hash, None) {

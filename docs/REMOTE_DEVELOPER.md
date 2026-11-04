@@ -103,17 +103,17 @@ project lives on the Mac and the other computer edits it in place. Two ways, bot
 in Apparition:
 
 - **VS Code Remote SSH** (or any editor's remote mode) opens the Mac's checkout. Its terminal, and an
-  agent run in it, are on the Mac, so they build there: `apparition build --run` (or
-  `build-and-sign`), and `inject` sees the files being edited.
+  agent run in it, are on the Mac, so they build there: `apparition build --run`, and `inject` sees
+  the files being edited.
 - **File sharing**: mount the Mac's projects folder over SMB (System Settings › General › Sharing ›
   File Sharing) and edit it with anything. Build on the Mac (`ssh mac 'cd ~/Projects/MyApp &&
   apparition build --run'`), and let an agent here drive the app through `apparition mcp`.
 
-`apparition build` is `build-and-sign` in Rust: the same confs, flags, `build/` folder and report.
-It signs with the conf's certificate and profile through the core's signer (no login keychain),
-keeps the build and its dSYMs in the build store, and installs and launches over Apparition's own
-pairing with the device rather than `devicectl`. A build made elsewhere (xtool) goes through
-`apparition deploy` instead, below.
+`apparition build` is the Store's builder, and the same command the Store queues for the Developer
+tab. It reads the repo's `build-signing.conf`, signs with the conf's certificate and profile through
+the core's signer (no login keychain), keeps the build and its dSYMs in the build store, and
+installs and launches over Apparition's own pairing with the device. A build made elsewhere (xtool)
+goes through `apparition deploy` instead, below.
 
 ## Without a Mac: xtool on Windows or Linux
 
@@ -136,22 +136,23 @@ the paired Mac otherwise. What a PC can't do:
   certificate. Free-account signing needs a Mac's anisette (a paired Mac, or a server with a Mac
   behind it), and an interactive sign-in the Store can't do on its own.
 - **Live patching** (`inject`) compiles with the app's Xcode toolchain; the tool says so.
-- **Let the device fetch a build the PC couldn't install.** A Mac's device reaches its Node
-  build service for that; nothing on a PC answers it yet (it will be the companion channel).
+- **Let the device fetch a build the PC couldn't install.** A Mac's device fetches it from the
+  Store's HTTPS address; nothing on a PC answers that yet (it will be the companion channel).
 - **Attach to an xtool build's debug server.** The Store attaches only to apps whose per-build
-  token it knows, which `build-and-sign` records when it embeds it. An xtool build has none, so
-  `apparition mcp` lists it as not attachable. The fix is for the Store to embed the token when it
-  signs a sent build, which is part of the signing port (phase 5).
+  token it knows, which `apparition build` records when it embeds it. An xtool build has none, so
+  `apparition mcp` lists it as not attachable, and the Store doesn't embed one when it signs a sent
+  build.
 
-## What isn't here yet
+## What it doesn't do
+
+Builds, the Store's own deploy queue, OTA, the AltStore feed, Mac downloads, re-signing and the web
+pages all run in the Store, in the app. What other computers can't do through it:
 
 - **Installing from the Mac covers only what the Mac's signing can.** It signs offline with an
   imported certificate; signing with an Apple ID needs an interactive sign-in (and its two-factor
   step) the Store can't do on its own, so a Mac that only has the Apple ID in the Apparition app
-  leaves the install to the device. Run for real on 2026-11-04: a Windows PC paired, drove MCP and
-  sent a build already signed for a Vision Pro, which the Mac installed (46 MB in 38 s). Signing on
-  the Mac with an imported certificate is tested with a stand-in only.
-- **The device reaching the Mac away from home** still goes through the Store's HTTPS address and
+  leaves the install to the device.
+- **The device reaching the Mac away from home** goes through the Store's HTTPS address and
   password (Developer › Connect), not the channel.
 - **No build tool over MCP.** An agent elsewhere builds through the Mac's shell (Remote SSH, `ssh`),
   not through `apparition mcp`.
@@ -161,7 +162,7 @@ the paired Mac otherwise. What a PC can't do:
   only advertises: an app found by Bonjour gets signed requests (`GET /_nonce`, then
   `Authorization: DebugTrace-HMAC`, a proof over the nonce, method, target and body; the token never
   crosses the network). A build from before that (`txtvers` 1 or 2) is listed as not attachable
-  until it is rebuilt with build-and-sign. Launch records, whose address build-and-sign recorded
-  itself, still use the bearer. What a copied advertisement can still do is answer a request meant
+  until it is rebuilt with `apparition build`. Launch records, whose address `apparition build`
+  recorded itself, still use the bearer. What a copied advertisement can still do is answer a request meant
   for the app with lies, as anything can on a plain-HTTP network: use the tailnet away from home.
   Protocol: DebugTrace `Docs/server-and-security.md`.

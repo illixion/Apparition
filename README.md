@@ -86,8 +86,8 @@ once, to install Apparition.
   while using the app when asked. From a computer,
   `apparition jit <bundle ID> [--attach]` does the same, and `apparition launch <bundle ID>
   --jit --console` launches with JIT, the app's console and environment variables in one go,
-  which is how the [Apparition Store](https://github.com/illixion/Apparition/tree/main/store) build service's **JIT**
-  deploy option and `build-and-sign --jit` launch a fresh build. Tested on Vision Pro with UTM (an
+  which is how the [Apparition Store](docs/STORE.md)'s **JIT**
+  deploy option and `apparition build --jit` launch a fresh build. Tested on Vision Pro with UTM (an
   Alpine VM) and ARMSX2, the PS2 emulator, running GTA San Andreas
   ([video](https://youtu.be/mNR0ik2QfEY)).
 
@@ -154,10 +154,11 @@ certificate you already have from another device.
 
 ## Developer builds and reports
 
-The **Developer** tab, on the Mac and on devices, builds your own Xcode projects through
-[Apparition Store](https://github.com/illixion/Apparition/tree/main/store), an open-source build service you run on your
-Mac. **[docs/DEVELOPER.md](docs/DEVELOPER.md)** explains how the pieces fit, how to set them up
-and what each part of the screen does; this section is the reference.
+The **Developer** tab, on the Mac and on devices, builds your own Xcode projects through the
+Apparition Store, the build service built into the desktop app (`apparition build` is its builder).
+**[docs/DEVELOPER.md](docs/DEVELOPER.md)** explains how the pieces fit, how to set them up
+and what each part of the screen does, and **[docs/STORE.md](docs/STORE.md)** is the Store's
+reference; this section is the summary.
 
 **From Windows, Linux or another Mac**, pair that computer with your Mac for developer access
 (`apparition mac pair <address>`): its agents get the Mac's MCP server with `apparition mcp`, and
@@ -165,20 +166,19 @@ builds made there (xtool, Xcode) go to your devices with `apparition deploy <app
 companion's encrypted channel at home or over Tailscale. See
 **[docs/REMOTE_DEVELOPER.md](docs/REMOTE_DEVELOPER.md)**.
 
-**On a Mac, Apparition runs the service itself.** The app carries Apparition Store
-(`Contents/Resources/service`, put there by `scripts/bundle-service.sh` from the sibling
-checkout's HEAD) and starts it at launch on the Mac's Node.js 18+, as its child
-(`desktop/src/host.rs`): no install, no password, nothing left running after Quit. Its config
-and data are in `~/Library/Application Support/Apparition/Store/` (`service.log`,
-`service.pid`); `{"checkout": "<path>"}` in `host.json` there runs an Apparition Store checkout instead.
-A watchdog starts it again if it exits, so `kill $(cat …/service.pid)` restarts it after an
-edit. The app talks to it with a token it hands over on stdin. Its web pages are off until you
-turn them on with a password (**Devices & signing › Web UI and other devices**); that password
-also lets Apparition on another device connect. **Connect to another Mac** takes a service run on
-its own (`node server.js` under launchd or systemd, with `node server.js set-password`): enter its
-HTTPS address and password. The service needs the `apparition-service` version 1 API.
+**On a Mac, Apparition runs the Store itself.** The Store is Rust, inside the app
+(`apparition-service`, hosted by `desktop/src/host.rs`): it starts at launch in the app's own
+process, with nothing to install and nothing left running after Quit. It listens on `127.0.0.1`
+on the `port` in its `config.json` (8484 by default), and its config and data are in
+`~/Library/Application Support/Apparition/Store/`. The app talks to it with a token it makes at
+launch and keeps in memory. Its web pages are off until you turn them on with a password
+(**Devices & signing › Web UI and other devices**); that password also lets Apparition on another
+device connect. **Connect to another Mac** takes the HTTPS address and password of that Mac's
+Store. The Store speaks the `apparition-service` version 1 API. Builds run `apparition build`,
+which builds with Xcode and installs and launches over Apparition's own pairing with the device,
+never `devicectl`. A standalone server edition of the Store is not part of 1.0.
 
-**Console** on a running app (Reports › Running apps, this Mac's service) opens the service's
+**Console** on a running app (Reports › Running apps, this Mac's Store) opens the Store's
 Debug console in its own window: live log, tuning panels (sliders for `DebugTunables` values and
 panels an agent built), profiler and memory view. A one-time link signs it in, web UI on or off;
 the window has no access to the app.
@@ -200,7 +200,7 @@ for approval on the device; connecting to the service does not grant it.
 profiles and installs it over the copy on a device. The device can't give an installed app back,
 so the Mac signs the build it kept for that install, or, when it kept none, first builds the
 target without installing it (the same build **Build only** makes) and signs that. The Mac
-(`Apparition Store`, `build-and-sign --ipa --profile`) does the work; the view sends a build ID or a
+(the Store, with `apparition build --ipa --profile`) does the work; the view sends a build ID or a
 project and platform, a device name, a profile ID, keep or discard data, and an optional dry run. A profile for the same App ID
 updates in place and keeps the app's data. The device refuses an update to a different App ID, so
 then the Mac copies Documents and Library to `~/.local/state/apparition/resign-backups`, removes the
@@ -213,12 +213,6 @@ Only the service address is remembered on disk. The service password field clear
 connecting; its session credential stays in Rust memory, outside the page. Disconnect
 revokes that session. After quitting Apparition, connect again. This connection is separate
 from the companion relay and does not share its signing credentials.
-
-With the native build prerequisites ready, `node scripts/verify-build-service.cjs` runs a
-real build-only integration check through an isolated authenticated service, then verifies
-the manifest and downloaded artifact. It never installs or launches an app. It uses the
-sibling Apparition Store checkout by default (`APPARITION_STORE_DIR` overrides it), keeps its
-private temporary config/logs under ignored `build/`, and stops its own service afterward.
 
 ## Away from home, over Tailscale
 
@@ -324,10 +318,10 @@ this through an experimental JIT26 command, `x16 = 0x4150` (copy x2 bytes from x
 ### Developer workflow integration (in progress)
 
 The intended product is Apparition for building, installing, running and diagnosing apps.
-The `Apparition Store` Mac service supplies build jobs, artifacts and report storage; its
-`build-and-sign` remains the build executor. DebugTrace stays an independent SDK. The
-existing AltStore feed remains compatible, while an explicit job API will expose build
-progress, errors and cancellation to Apparition. Keep the Node backend initially.
+The Apparition Store, built into the desktop app, supplies build jobs, artifacts and report
+storage, and `apparition build` is the build executor. DebugTrace stays an independent SDK.
+The AltStore feed stays compatible, and the job API exposes build progress, errors and
+cancellation to Apparition.
 
 Implementation order:
 
@@ -366,62 +360,40 @@ Implementation order:
    and verified downloads are now implemented and tested through a real service build.
    Next: remaining installation/session relationships and report patch history. Distinguish
    dirty local iterations from published builds.
-4. **Add Xcode handoff.** The CLI can now retain an existing Xcode product and matching
-   symbols without rebuilding or changing its signature. An optional generated XcodeGen
-   scheme captures source context before building and registers the completed product.
-   Keep debugger ownership explicit:
-   Xcode/LLDB and Apparition must not compete for the same process. JIT preparation
-   and Swift patching remain separately selectable capabilities.
+4. **Add Xcode handoff.** Retaining an existing Xcode product and its symbols without
+   rebuilding or changing its signature, with an optional generated XcodeGen scheme that
+   captures source context before building, is not part of 1.0. Keep debugger ownership
+   explicit when it returns: Xcode/LLDB and Apparition must not compete for the same
+   process. JIT preparation and Swift patching remain separately selectable capabilities.
 5. **Close the reporting loop.** Add reviewed user submissions to Apparition, then
    connect other apps' DebugTrace reports to their exact builds. Add a portable report
    envelope for Rust/Tauri failures, build registration and scoped external submission
    credentials. Keep unverified imports separately classified. Report upload never
    grants live debug access; preserve device approvals for inspection and code changes.
-6. **Consolidate packaging.** Once the connected workflows pass on real devices, move
-   store/bin/build-and-sign into Apparition, manage the service from the desktop app,
-   migrate configs and ledgers, and retain the existing CLI and headless web access.
+6. **Consolidate packaging.** Done for 1.0: the builder is `apparition build`, the Store runs
+   inside the desktop app, and configs and ledgers are read as they were. A standalone
+   server edition is not part of 1.0.
 
 Structural Swift changes need a separate approach: recreate a component with selected
 state migration, or rebuild/relaunch with state restoration. Executable-memory access
 alone cannot change the layout of instances that already exist. A debugger-assisted
 backend must retain per-patch user approval before it becomes a product feature.
 
-### Registering projects and Xcode builds
+### Registering projects
 
 In desktop Apparition's Developer view, use **Register a project** to add an existing
-checkout on the Mac service host. Enter its Mac path, device names, platform aliases and
+checkout on the Mac that runs the Store. Enter its Mac path, device names, platform aliases and
 bundle identifiers; its `build-signing.conf` must already be set up. Registration saves
 the project without building it or changing signing material. Local branch names are
-optional; the current checkout remains available. The Mac service validates the checkout
+optional; the current checkout remains available. The Store validates the checkout
 and updates its configuration atomically, preserving existing settings.
 
-When the device build service is connected, the Library's **Your Projects** group shows the
+When the Store is connected, the Library's **Your Projects** group shows the
 installed debuggable apps a configured project builds, matched by bundle ID. A card offers the
 newest kept build as an update (installed through Apparition's own signing and review), JIT
 launch, and **Open Project**, which opens the project's page on the Developer tab with its
 builds, re-signing and reports. Apps with no configured project match remain in Other Apps. The
-service connection is shared with Developer.
-
-On the Mac with the complete build-tools checkout and Node 18+:
-
-```sh
-apparition xcode register --app /path/to/Products/MyApp.app --project /path/to/repo \
-  --symbols /path/to/Products/MyApp.app.dSYM
-apparition xcode configure --spec project.yml --target MyApp
-```
-
-`configure` writes `project.apparition.yml` and generates a `MyApp (Apparition)` scheme.
-Use that spec for subsequent XcodeGen runs; the original spec stays intact. Set
-`APPARITION_CLI` if the CLI is outside PATH and `APPARITION_BUILD_TOOLS` if the tools
-are outside the packaged location or the checkout behind `build-and-sign` on PATH.
-The scheme performs one normal Xcode build, then retains its artifact and UUID-matched
-symbols in the same registry the developer service exposes. Registration without a
-pre-build context records observed source separately; it cannot establish what source
-was compiled. Unsigned products remain unsigned and need signing before installation.
-
-Registration does not install, launch or attach a debugger. Stop an Xcode debug session
-before asking Apparition to own JIT for that process. This handoff does not replace the
-device's approvals for live inspection or code changes.
+Store connection is shared with Developer.
 
 ### Optimized entry-patch experiment
 
@@ -437,7 +409,7 @@ Build and install the isolated lab, then launch it through Apparition's debugger
 xcodegen
 SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab \
   BUILD_BUNDLE_ID=com.illixion.apparition.lab \
-  ~/bin/build-and-sign --platform iOS --device AVP
+  apparition build --platform iOS --device AVP
 apparition jit com.illixion.apparition.lab --device AVP --wait 60
 xcrun devicectl device copy from --device AVP \
   --domain-type appDataContainer --domain-identifier com.illixion.apparition.lab \
@@ -705,8 +677,8 @@ certificate key as a `.apparitionsigning` file. With the key, Apparition signs w
 certificate as the computer once signed in to the same Apple ID, so the two use one of a free
 account's two certificates instead of one each. For an Apparition installed some other way,
 `apparition signing hand-off --apple-id <email> [--device <name>]` puts the key in its inbox on
-its own. `apparition signing hand-off --build-signing [<dir>]` does the same for `build-and-sign`'s
-signing: every `.p12` under `~/.config/build-signing/certs` and `.mobileprovision` under `profiles`,
+its own. `apparition signing hand-off --build-signing [<dir>]` does the same for the signing
+`apparition build` uses: every `.p12` under `~/.config/build-signing/certs` and `.mobileprovision` under `profiles`,
 sent into Documents/Signing over the device's pairing, so the headset can sign what the Apparition Store
 builds without a reinstall (`--p12 <file>... --profile <file>...` sends files you name). The
 Developer view's **Signing on devices** does it with a button. Apparition on the device asks for
@@ -842,8 +814,7 @@ Keep all three in a user-writable folder. On Linux an AppImage replaces itself a
 its executable permissions. A Debian installation instead asks for system authorization
 through PolicyKit and installs the verified `.deb` with `dpkg`; it needs `pkexec` and a
 desktop authorization agent. If `dpkg` reports missing dependencies, repair them with
-your package manager before retrying. The unpublished Flatpak prototype has no update
-repository and must still be updated manually. Settings, pairings and signing credentials
+your package manager before retrying. Settings, pairings and signing credentials
 stay outside these application packages and are not replaced.
 
 Before signing, the desktop installer and native iPhone/iPad, Vision Pro and Apple TV apps
@@ -918,10 +889,6 @@ as an archive with both and the headless command line. Opening the app again sho
 one, which is also the way back to its window on a Linux desktop with no tray (niri or plain
 GNOME, say).
 
-A Flatpak prototype packages both Linux architectures against a GNOME runtime,
-with the CLI included for diagnostics. See [building and testing the Flatpak](docs/LINUX_FLATPAK.md)
-for bundle creation, NixOS/Fusion USB setup, permissions and current integration gaps.
-
 ## Anisette
 
 Apple sign-in requires an anisette source. Apparition supports anisette from a Mac you own, a paired Mac, its built-in Android provider on supported platforms, or a third-party server you choose. You can also run a local server with Docker using `selfhost/anisette/compose.yaml`.
@@ -981,8 +948,8 @@ looked like the end of that anisette (an HTML `403 Forbidden` from `gsd.apple.co
     scripts/build-core.sh      # builds the Rust core (isideload + idevice) for visionOS and iOS
     scripts/build-core.sh visionos-sim   # adds the visionOS simulator (rustup target add aarch64-apple-visionos-sim)
     xcodegen                   # generates Apparition.xcodeproj from project.yml
-    build-and-sign             # or open Apparition.xcodeproj and Run
-    PLATFORM=iPad build-and-sign --no-mcp    # the lab app on iPad (PLATFORM=iOS for iPhone)
+    apparition build           # or open Apparition.xcodeproj and Run
+    PLATFORM=iPad apparition build --no-mcp    # the lab app on iPad (PLATFORM=iOS for iPhone)
 
 Licensed MIT. Signing (`core/signer`) builds on [apple-codesign](https://github.com/indygreg/apple-platform-rs)
 (MPL-2.0), used unmodified from crates.io.

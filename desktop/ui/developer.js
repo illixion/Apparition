@@ -99,14 +99,14 @@ export class DeveloperView {
     this.connect = element('button', 'button primary', 'Connect');
     this.connect.type = 'submit';
     fields.append(addressLabel, passwordLabel, this.connect);
-    this.hint = element('p', 'hint', 'The password is the one set with node server.js set-password in the Apparition Store. On this Mac, http://localhost:8484 works; elsewhere use its HTTPS address. Apparition forgets the session when it quits.');
+    this.hint = element('p', 'hint', 'The password is the one set under Web UI and other devices in Apparition on that computer. Use its HTTPS address (tailscale serve, say). Apparition forgets the session when it quits.');
     this.fields = fields;
     // Once connected the form folds into one line: where, and a way out.
     this.connected_bar = element('div', 'dev-connected'); this.connected_bar.hidden = true;
     this.connected_label = element('span', 'dev-connected-label selectable');
     this.disconnect = button('Disconnect', () => this.signOut());
     this.connected_bar.append(element('span', 'dot on'), this.connected_label,
-      button('Apparition Store on GitHub', () => this.open('store'), 'button quiet small'), this.disconnect);
+      button('Apparition Store docs', () => this.open('store'), 'button quiet small'), this.disconnect);
     form.append(fields, this.hint, this.connected_bar);
     form.addEventListener('submit', event => { event.preventDefault(); this.signIn(); });
     this.signing = this.signingSection();
@@ -173,15 +173,15 @@ export class DeveloperView {
   introCard() {
     const card = element('section', 'dev-card dev-intro');
     card.append(element('h2', 'small', 'Get started'));
-    card.append(element('p', '', 'Apparition Store is an open-source build service that runs on a Mac with Xcode. It builds your projects and keeps the artifacts. Install through Apparition on the device to sign with that device’s Apple ID or certificate; direct Mac installs use the Mac’s development certificate and profile. The service also collects debug traces and crash reports. Apparition connects to it from this Mac or from a headset, iPhone or Apple TV.'));
+    card.append(element('p', '', 'The Apparition Store is part of Apparition on a Mac with Xcode: it builds your projects and keeps the artifacts. Install through Apparition on the device to sign with that device’s Apple ID or certificate; direct Mac installs use the Mac’s development certificate and profile. The service also collects debug traces and crash reports. Apparition connects to it from this Mac or from a headset, iPhone or Apple TV.'));
     const steps = element('ol', 'dev-steps');
     for (const text of [
-      'Get Apparition Store from GitHub and follow its README. The build host needs macOS, Xcode and Node 18. A paid certificate and development profile are only needed for direct Mac installs; device-side installs use the identity in Apparition on the device.',
-      'Set a service password: node server.js set-password.',
-      'Start it (node server.js, or as a launch agent), then connect below. Register your projects here once connected.',
+      'Install Apparition on a Mac with Xcode and leave it open; the Store runs inside it. A paid certificate and development profile are only needed for direct Mac installs; device-side installs use the identity in Apparition on the device.',
+      'On that Mac, open Developer and turn on Web UI and other devices with a password, which also lets Apparition on other devices connect.',
+      'Connect below, then register your projects here.',
     ]) steps.append(element('li', '', text));
     const links = element('div', 'service-row');
-    links.append(button('Apparition Store on GitHub', () => this.open('store')), button('Developer guide', () => this.open('guide')));
+    links.append(button('Apparition Store docs', () => this.open('store')), button('Developer guide', () => this.open('guide')));
     card.append(steps, links);
     return card;
   }
@@ -191,7 +191,7 @@ export class DeveloperView {
     card.append(element('h2', 'small', 'About Apparition Store'));
     card.append(element('p', '', 'Apparition Store is an open-source build service that runs on a Mac with Xcode. It builds your projects and keeps artifacts. Device-side installs are signed by Apparition on the device; direct Mac installs use the Mac’s development certificate and profile. The service also re-signs apps with another profile and collects debug traces and crash reports.'));
     const links = element('div', 'service-row');
-    links.append(button('Apparition Store on GitHub', () => this.open('store'), 'button quiet small'), button('Developer guide', () => this.open('guide'), 'button quiet small'));
+    links.append(button('Apparition Store docs', () => this.open('store'), 'button quiet small'), button('Developer guide', () => this.open('guide'), 'button quiet small'));
     card.append(links);
     return card;
   }
@@ -540,7 +540,7 @@ export class DeveloperView {
       const chosen = picks.filter(pick => pick.box.checked);
       const first = chosen[0];
       if (!first) return this.addResult.append(element('p', 'status error', 'Choose at least one app to add.'));
-      if (chosen.some(pick => !pick.device.value)) return this.addResult.append(element('p', 'status error', 'Pair a device with this Mac in Xcode (Window > Devices and Simulators) first, then look again.'));
+      if (chosen.some(pick => !pick.device.value)) return this.addResult.append(element('p', 'status error', 'Pair the device with Apparition on this Mac first, then look again.'));
       go.disabled = true;
       try {
         const reply = await this.request('registerProject', {

@@ -152,7 +152,7 @@ async fn apps_are_recognised_by_tag_or_key_id_and_never_show_a_token() {
     assert_eq!(stranger["reason"], "built on another Mac, or before per-build tokens: not in this Mac's key ledger");
     let old = apps.iter().find(|a| a["id"] == "build2").unwrap();
     assert_eq!(old["attachable"], false);
-    assert_eq!(old["reason"], "this build has no command token; rebuild it with build-and-sign");
+    assert_eq!(old["reason"], "this build has no command token; rebuild it with apparition build");
 }
 
 #[tokio::test]
@@ -178,7 +178,7 @@ async fn a_call_reaches_the_app_with_the_ledger_token_and_the_client_name() {
     let (status, _, body) = send(&r.app, "POST", "/api/debug/ghost/call", Some(json!({ "endpoint": "_info" }))).await;
     assert_eq!((status.as_u16(), json_of(&body)["error"]["message"].as_str().unwrap().contains("no longer running")), (404, true));
     let (status, _, body) = send(&r.app, "POST", "/api/debug/build2/call", Some(json!({ "endpoint": "_info" }))).await;
-    assert_eq!((status.as_u16(), json_of(&body)["error"]["message"].as_str()), (403, Some("this build has no command token; rebuild it with build-and-sign")));
+    assert_eq!((status.as_u16(), json_of(&body)["error"]["message"].as_str()), (403, Some("this build has no command token; rebuild it with apparition build")));
 }
 
 #[tokio::test]

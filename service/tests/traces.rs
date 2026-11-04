@@ -155,7 +155,7 @@ async fn the_verifier_gives_the_status_and_text_node_gave() {
     // (case, archive, status Node answered, its error text, or None for an accepted upload)
     let cases: Vec<(&str, Vec<u8>, u16, Option<&str>)> = vec![
         ("not a zip", b"hello".to_vec(), 400, Some("not a readable trace zip: no end-of-central-directory record")),
-        ("unsigned", { let mut s = good_spec(); s.manifest.as_object_mut().unwrap().remove("signature"); archive(&key, s) }, 403, Some("unsigned trace: only apps built by build-and-sign carry a key; share this one as a file instead")),
+        ("unsigned", { let mut s = good_spec(); s.manifest.as_object_mut().unwrap().remove("signature"); archive(&key, s) }, 403, Some("unsigned trace: only apps built by apparition build carry a key; share this one as a file instead")),
         ("wrong format", with(&|s| s.manifest["format"] = json!("debugtrace/2")), 400, Some("unknown trace format \"debugtrace/2\"")),
         ("bad trace id", with(&|s| s.manifest["traceId"] = json!("nope")), 400, Some("manifest has no valid traceId")),
         ("unknown key", with(&|s| s.manifest["signature"]["keyId"] = json!("ghost")), 403, Some("signing key ghost is not in this store's ledger (built on another Mac, or the ledger was cleared)")),

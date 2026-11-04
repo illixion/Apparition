@@ -572,51 +572,6 @@ pub fn sibling_packages(clone: &Path, parent: &Path) -> Vec<String> {
     names
 }
 
-const ENVIRONMENT: &str = "export PATH=\"$PATH:$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin\"\nif [ -z \"$APPARITION_CLI\" ]; then APPARITION_CLI=apparition; fi\n";
-
-/// The optional XcodeGen spec that adds an "<target> (Apparition)" scheme to a project: a
-/// pre-build action capturing the source context and a post-build one registering the product.
-/// The original spec is included, never modified. Returns `{spec, scheme, originalSpec}`; with
-/// `generate`, also runs `xcodegen` on it.
-pub fn configure(spec: &Path, target: &str, output: Option<&Path>, generate: bool) -> Result<Value, String> {
-    let spec = absolute(spec);
-    if target.is_empty() || target.contains(['\r', '\n']) {
-        return Err("Choose an Xcode target.".into());
-    }
-    let root = spec.parent().map(Path::to_path_buf).unwrap_or_default();
-    let output = output.map(absolute).unwrap_or_else(|| root.join("project.apparition.yml"));
-    if output == spec {
-        return Err("The optional spec must be separate from the original.".into());
-    }
-    let before = format!("{ENVIRONMENT}set -e\n\"$APPARITION_CLI\" xcode snapshot --project \"$SRCROOT\" --output \"$DERIVED_FILE_DIR/apparition/source-before.json\"\n");
-    let after = format!("{ENVIRONMENT}set -e\nset -- xcode register --app \"$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME\" --project \"$SRCROOT\" --configuration \"$CONFIGURATION\" --context \"$DERIVED_FILE_DIR/apparition/source-before.json\"\nif [ -d \"$DWARF_DSYM_FOLDER_PATH/$DWARF_DSYM_FILE_NAME\" ]; then set -- \"$@\" --symbols \"$DWARF_DSYM_FOLDER_PATH/$DWARF_DSYM_FILE_NAME\"; fi\n\"$APPARITION_CLI\" \"$@\"\n");
-    let name = format!("{target} (Apparition)");
-    let document = json!({
-        "include": [{ "path": spec.to_string_lossy(), "relativePaths": false }],
-        "schemes": { name.clone(): { "build": {
-            "targets": { target: "all" },
-            "preActions": [{ "name": "Capture Apparition source context", "settingsTarget": target, "script": before }],
-            "postActions": [{ "name": "Register with Apparition", "settingsTarget": target, "script": after }],
-        } } },
-    });
-    let content = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())? + "\n";
-    if output.exists() && fs::read_to_string(&output).ok().as_deref() != Some(content.as_str()) {
-        return Err("The optional spec already exists with different content; choose another output.".into());
-    }
-    if let Some(dir) = output.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    fs::write(&output, content).map_err(|e| e.to_string())?;
-    if generate {
-        let (output_arg, root_arg) = (output.to_string_lossy(), root.to_string_lossy());
-        let ran = run("xcodegen", &["--spec", &output_arg, "--project", &root_arg, "--project-root", &root_arg], None, Duration::from_secs(300));
-        if !matches!(ran, Ok(Some(_))) {
-            return Err("xcodegen failed during Xcode handoff".into());
-        }
-    }
-    Ok(json!({ "spec": output.to_string_lossy(), "scheme": name, "originalSpec": spec.to_string_lossy() }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,33 +891,5 @@ mod tests {
         write(slot.join("App/App.xcodeproj/project.pbxproj"), "isa = XCLocalSwiftPackageReference;\n relativePath = ../Extra;\n");
         write(parent.join("Extra/Package.swift"), "Package()");
         assert_eq!(sibling_packages(&slot.join("App"), &parent), ["Base", "Extra", "Kit"]);
-    }
-
-    #[test]
-    fn the_optional_xcodegen_spec_preserves_the_original_and_scopes_both_actions_to_the_target() {
-        let (_t, root) = scratch();
-        let spec = root.join("project.yml");
-        let original = "name: Fixture\ntargets: {}\n";
-        fs::write(&spec, original).unwrap();
-        let generated = configure(&spec, "Fixture", None, false).unwrap();
-        assert_eq!(fs::read_to_string(&spec).unwrap(), original);
-        let output = PathBuf::from(generated["spec"].as_str().unwrap());
-        let overlay: Value = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
-        assert_eq!(overlay["include"], json!([{ "path": spec, "relativePaths": false }]));
-        let build = &overlay["schemes"]["Fixture (Apparition)"]["build"];
-        assert_eq!(build["preActions"][0]["settingsTarget"], "Fixture");
-        assert_eq!(build["postActions"][0]["settingsTarget"], "Fixture");
-        assert!(build["preActions"][0]["script"].as_str().unwrap().contains("xcode snapshot"));
-        let post = build["postActions"][0]["script"].as_str().unwrap();
-        assert!(post.contains("xcode register"));
-        for word in ["xcodebuild", "--run", "--jit", "codesign"] {
-            assert!(!post.contains(word));
-        }
-        assert_eq!(configure(&spec, "Fixture", None, false).unwrap(), generated);
-        fs::write(&output, "# user modification").unwrap();
-        assert!(configure(&spec, "Fixture", None, false).unwrap_err().contains("different content"));
-        assert_eq!(fs::read_to_string(&output).unwrap(), "# user modification");
-        assert!(configure(&spec, "Fixture", Some(&spec), false).unwrap_err().contains("separate"));
-        assert!(configure(&spec, "A\nB", None, false).unwrap_err().contains("Choose an Xcode target"));
     }
 }

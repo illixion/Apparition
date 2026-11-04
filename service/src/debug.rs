@@ -4,9 +4,9 @@
 //! process that already holds the Mac's Local Network permission, so a LAN app is reached at the
 //! address Bonjour advertises (the Python tool could not, and guessed tailnet names).
 //!
-//! Apps are found two ways. `build-and-sign --run --mcp` records a session in
+//! Apps are found two ways. `apparition build --run --mcp` records a session in
 //! `<state>/sessions/<bundle id>@<device>.json` (URL, the console streamer's pid, inject paths).
-//! And every dev build signed by `build-and-sign` advertises `_debugtrace._tcp` with a random
+//! And every dev build signed by `apparition build` advertises `_debugtrace._tcp` with a random
 //! nonce and a tag over it under the build's command token, so only the key ledger that holds the
 //! token can say which app it is. A page or an agent addresses an app by its build's key id; the
 //! URL comes from discovery and the token from the ledger, never from the caller.
@@ -301,9 +301,9 @@ impl Debug {
                 s.insert("reason".into(), json!(if record.is_null() {
                     "built on another Mac, or before per-build tokens: not in this Mac's key ledger"
                 } else if rec("commandToken").is_some() {
-                    "this build advertises in a form anything on the network can copy, and would be sent its token in the clear; rebuild it with build-and-sign to attach"
+                    "this build advertises in a form anything on the network can copy, and would be sent its token in the clear; rebuild it with apparition build to attach"
                 } else {
-                    "this build has no command token; rebuild it with build-and-sign"
+                    "this build has no command token; rebuild it with apparition build"
                 }));
             }
             sessions.push(s);
@@ -448,7 +448,7 @@ impl Debug {
             app["reason"] = json!(str_of(s, "reason").filter(|r| !r.is_empty()).map(String::from).unwrap_or_else(|| if key_id.is_some() {
                 "no command token for this build in the key ledger".into()
             } else {
-                "launched before per-build keys; relaunch it with build-and-sign".into()
+                "launched before per-build keys; relaunch it with apparition build".into()
             }));
         }
         app
@@ -685,7 +685,7 @@ fn valid_panel_file(name: &str) -> bool {
 /// knew only devicectl and treated those launches as ended until Bonjour recovered them).
 #[cfg(not(unix))]
 fn pid_is_console_streamer(_: Option<i64>) -> bool {
-    // Launch records come from build-and-sign, on a Mac.
+    // Launch records come from apparition build, on a Mac.
     false
 }
 

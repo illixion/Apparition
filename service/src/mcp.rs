@@ -220,9 +220,9 @@ impl Mcp {
             }
             i
         } else if s(session, "source") == Some("bonjour") {
-            json!({ "ready": "unknown", "note": "attached without a launch record; `inject` finds out when called, or relaunch with `build-and-sign --run --mcp --inject`" })
+            json!({ "ready": "unknown", "note": "attached without a launch record; `inject` finds out when called, or relaunch with `apparition build --run --mcp --inject`" })
         } else {
-            json!({ "ready": false, "note": "not launched with --inject; `inject` needs `build-and-sign --run --mcp --inject` from the app's repo" })
+            json!({ "ready": false, "note": "not launched with --inject; `inject` needs `apparition build --run --mcp --inject` from the app's repo" })
         };
         out.insert("inject".into(), inject);
         Value::Object(out)
@@ -231,7 +231,7 @@ impl Mcp {
     async fn tool_apps(&self) -> Value {
         let sessions = self.debug.all_sessions().await;
         if sessions.is_empty() {
-            return text_result(json!({ "apps": [], "hint": "open a dev build signed by build-and-sign on a device on this network, or launch one with `build-and-sign --run --mcp`" }), false);
+            return text_result(json!({ "apps": [], "hint": "open a dev build signed by apparition build on a device on this network, or launch one with `apparition build --run --mcp`" }), false);
         }
         text_result(json!({ "apps": sessions.iter().map(|s| self.describe(s)).collect::<Vec<_>>() }), false)
     }
@@ -243,7 +243,7 @@ impl Mcp {
         let name_of = |x: &Session| s(x, "appName").or(s(x, "bundleId")).unwrap_or("").to_string();
         let Some(app) = app.map(str::trim).filter(|a| !a.is_empty()) else {
             return match sessions.len() {
-                0 => Err(err_hint("no app is running with its debug server", "open a dev build signed by build-and-sign on a device on this network, or launch one with `build-and-sign --run --mcp` (from the app's repo), then call `apps`")),
+                0 => Err(err_hint("no app is running with its debug server", "open a dev build signed by apparition build on a device on this network, or launch one with `apparition build --run --mcp` (from the app's repo), then call `apps`")),
                 1 => Ok(sessions.remove(0)),
                 n => Err(err_hint(format!("{n} apps are running ({})", sessions.iter().map(name_of).collect::<Vec<_>>().join(", ")), "pass `app` with one of those names")),
             };
@@ -287,7 +287,7 @@ impl Mcp {
                 sessions = found;
             }
         } else if sessions.is_empty() {
-            return Err(err_hint("no app is running with its debug server", "open a dev build signed by build-and-sign on a device on this network, or launch one with `build-and-sign --run --mcp` (from the app's repo), then call `apps`"));
+            return Err(err_hint("no app is running with its debug server", "open a dev build signed by apparition build on a device on this network, or launch one with `apparition build --run --mcp` (from the app's repo), then call `apps`"));
         }
         let exact: Vec<&Session> = sessions.iter().filter(|x| keys(x).contains(&wanted)).collect();
         let matches: Vec<&Session> = if exact.is_empty() { sessions.iter().filter(|x| keys(x).iter().any(|k| !k.is_empty() && k.contains(&wanted))).collect() } else { exact };
@@ -311,7 +311,7 @@ impl Mcp {
     async fn request(&self, session: &Session, post: Option<Value>, path: &str) -> Result<(u16, String, Vec<u8>), ToolError> {
         match self.debug.app_request(session, post, path, CALL_TIMEOUT).await {
             Ok(r) => Ok((r.status, r.content_type, r.raw)),
-            Err(e) => Err(err_hint(e, "the app may be suspended or the device asleep; bring it to the foreground, or relaunch with `build-and-sign --run --mcp`")),
+            Err(e) => Err(err_hint(e, "the app may be suspended or the device asleep; bring it to the foreground, or relaunch with `apparition build --run --mcp`")),
         }
     }
 
@@ -327,10 +327,10 @@ impl Mcp {
         let bundle = info.pointer("/data/app/bundleId").and_then(Value::as_str);
         let name = s(&session, "appName").unwrap_or("The app");
         if status == 401 {
-            return Err(err_hint(format!("{name} refused the token"), "the build on the device is not the one the ledger describes; reinstall it with build-and-sign"));
+            return Err(err_hint(format!("{name} refused the token"), "the build on the device is not the one the ledger describes; reinstall it with apparition build"));
         }
         if let Some(b) = bundle.filter(|b| Some(*b) != s(&session, "bundleId")) {
-            return Err(err_hint(format!("{} is now served by {b}, not {}", key.0, s(&session, "bundleId").unwrap_or("")), "relaunch the app with `build-and-sign --run --mcp` to refresh its session"));
+            return Err(err_hint(format!("{} is now served by {b}, not {}", key.0, s(&session, "bundleId").unwrap_or("")), "relaunch the app with `apparition build --run --mcp` to refresh its session"));
         }
         self.verified.lock().unwrap().insert(key);
         Ok(session)
@@ -370,7 +370,7 @@ impl Mcp {
         let session = self.verified(args.get("app").and_then(Value::as_str)).await?;
         let name = s(&session, "appName").unwrap_or("The app").to_string();
         let Some(directory) = s(&session, "injectDir").filter(|d| !d.is_empty()).map(PathBuf::from) else {
-            return Err(err_hint(format!("{name} was not launched for live patching"), "rebuild and relaunch it with `build-and-sign --run --mcp --inject` from the app's repo"));
+            return Err(err_hint(format!("{name} was not launched for live patching"), "rebuild and relaunch it with `apparition build --run --mcp --inject` from the app's repo"));
         };
         let files: Vec<String> = match args.get("files") {
             None | Some(Value::Null) => Vec::new(),
@@ -484,7 +484,7 @@ impl Mcp {
             }
             let (status, reply) = self.app_call(session, "_inject", arguments).await?;
             if deflated && status == 400 && reply.to_string().contains("encoding") {
-                return Err(err_hint(format!("{name}'s patch runtime is too old to take a patch this large"), "relaunch it with `build-and-sign --run --mcp --inject` (that rebuilds the runtime), or inject fewer files at once"));
+                return Err(err_hint(format!("{name}'s patch runtime is too old to take a patch this large"), "relaunch it with `apparition build --run --mcp --inject` (that rebuilds the runtime), or inject fewer files at once"));
             }
             if status >= 400 || reply["ok"] != json!(true) {
                 return Ok(text_result(json!({ "ok": false, "applied": loaded, "failedAt": label, "reply": reply,

@@ -26,7 +26,6 @@ use apparition_core::{
     release,
 };
 use rootcause::prelude::*;
-mod xcode;
 mod inject;
 mod developer;
 mod builder;
@@ -101,21 +100,16 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       wait for its first request before leaving it (default: no limit).
   apparition inject <bundle ID> --device <name or UDID> [--file PATH]... [--run SWIFT]
       Attach, compile and sign patches on this Mac, request device approval, apply, then detach.
-      Requires a live build-and-sign --inject-backend apparition session.
+      Requires a live `apparition build --inject-backend apparition` session.
   apparition certificates --apple-id <email> [--anisette <url>]
   apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing
       one you choose (after you confirm). Revoking a certificate stops the apps signed with
       it until they are signed again: share Apparition's instead (`signing`, below).
-  apparition build [build-and-sign's flags: --run, --log, --mcp, --jit, --inject, --device, ...]
+  apparition build [--run, --log, --mcp, --jit, --inject, --device, --set K=V, ...]
       On a Mac, in a repo with a build-signing.conf: build with Xcode, sign with the conf's
       certificate, keep the build and its dSYMs, install it over this pairing and, with --run,
       launch it the same way. No devicectl, Node or Homebrew bash. `apparition build --help`.
-  apparition xcode register --app PRODUCT.app [--project DIR] [--symbols PRODUCT.app.dSYM]
-  apparition xcode configure --spec project.yml --target TARGET
-      Register Xcode products or generate an optional handoff scheme on a Mac, preserving
-      existing signatures. No rebuild, re-sign, launch or debugger attachment at registration.
-      apparition xcode --help lists the local build-tools setup and source capture command.
 
   Sharing one certificate between your devices and computers. A free account holds two, so
   each Apparition signs with the same one rather than making its own: once one has signed,
@@ -263,7 +257,6 @@ async fn main() -> ExitCode {
         Some("jit") => jit(&args[1..]).await,
         Some("watches") => watches(&args[1..]).await,
         Some("inject") => inject::run(&args[1..]).await,
-        Some("xcode") => xcode::run(&args[1..]).await,
         Some("build") => builder::run(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
         Some("signing") => signing(&args[1..]).await,

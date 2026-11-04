@@ -27,7 +27,7 @@ use tauri_plugin_opener::OpenerExt;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DOWNLOADS: &str = "https://apparition.illixion.com/#download";
 const QUESTIONS: &str = "https://apparition.illixion.com/#faq";
-const STORE: &str = "https://github.com/illixion/Apparition/tree/main/store";
+const STORE: &str = "https://github.com/illixion/Apparition/blob/main/docs/STORE.md";
 const DEVELOPER_GUIDE: &str = "https://github.com/illixion/Apparition/blob/main/docs/DEVELOPER.md";
 /// How long a PIN or 2FA prompt waits for an answer.
 const PROMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
