@@ -63,9 +63,19 @@ tvOS needs a layered top-shelf image. Use the same template approach with a fixe
 
 ## 2. Slots and App IDs
 
-- Each launcher is an app on the device and needs an App ID. On a **free profile** it takes
-  one of the 3 app slots, Apparition included. The confirmation sheet says so up front, and
-  the existing AppLimit card handles the error if it happens anyway.
+- There are two separate free-account limits, and a launcher counts against both:
+  - **App IDs: 10 per 7 days, per account.** Shared by every device. The reassigner below is
+    what keeps launchers affordable here.
+  - **Installed apps: 3 per device**, counting every app signed with a free profile, Apparition
+    included. This limit is installd's, not the developer portal's (the error `AppLimit.swift`
+    parses: "This device has reached the maximum number of installed apps using a free
+    developer profile"). Each device has its own 3, so a launcher on the headset doesn't use a
+    slot on the iPhone.
+
+  The 3-per-device limit is the one that binds: Apparition, UTM and one launcher already
+  fill a headset. On a **paid team** neither limit applies in practice. The confirmation sheet
+  states the cost on a free profile, and the existing AppLimit card handles it if it happens
+  anyway.
 - The **App ID reassigner** (install review, `LibraryModel` ~1690) picks the identity: reuse a
   registered App ID that nothing currently holds before registering a new one. Default new
   IDs to `com.illixion.apparition.launcher.<short hash>.<team>`. Launchers claim nothing for
@@ -119,8 +129,13 @@ apparition://add-launcher
 - Add the `apparition://launch?app=<library id>&jit=1` route in `RootView`'s URL handling,
   backed by `ShortcutActions.launchJIT` (which already checks expiry and busy, and picks the
   companion or LocalDevVPN).
-- Icon: the target app's own icon from its kept IPA, with a small bolt badge so it can't be
-  confused with the app itself.
+- Icon: Apparition's own copy of the app's icon. Download the source listing's `iconURL`
+  (`LibraryModel.iconURL(of:)`) once and cache it next to the kept IPA, so it's there offline
+  and when refresh re-signs the launcher. If the listing has none, take the icon from the IPA:
+  loose PNGs in an iOS IPA, or the `Assets.car` of a visionOS one (reading it is easier than
+  writing one). Add a small bolt badge so the launcher can't be confused with the app itself.
+- For requests from other apps (Raven), the requester always supplies the icon (`icon=` or
+  `icon-data=`). Apparition stores that file, and refresh doesn't fetch it again.
 - After launching, Apparition can step back: on visionOS, dismiss its window once the JIT
   session is attached; the keep-alive session notice (`JITSessionNotice`) stays.
 
