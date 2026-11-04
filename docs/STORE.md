@@ -480,7 +480,9 @@ shows *live* while its app runs.
 
 `inject` applies edited Swift sources to a running app. The Store runs `debugtrace-inject` from the
 app's project root, one patch at a time per app and device, so the project must be the Mac's own
-checkout, edited in place. It needs a build launched with `--inject` that is still running. Through
+checkout, edited in place. It needs a build launched with `--inject` that is still running: the route
+runs `apparition inject --no-launch`, so it never builds or relaunches (the CLI and the MCP `inject`
+tools do, when the app isn't running such a build; the Store's build route is how it builds). Through
 the service API it is `POST /api/service/v1/inject {repo, device, targetPlatform, files?}` (capability
 `entry-patching`): the Store runs `apparition inject` for a configured target, which verifies the
 live session, compiles and signs the patches, asks the device to approve the code change and

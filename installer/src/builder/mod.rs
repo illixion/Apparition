@@ -1000,6 +1000,7 @@ impl Build {
                                 dir: &state.join("debugtrace/sessions"), bundle_id: &bundle_id, app_name: &app_name, device: &device.name,
                                 device_id: &device.udid, url: &url, pid, console_log: &app_log, project_root: &root, token: &token,
                                 key_id: credential.as_ref().map(|c| c.key_id.as_str()), inject_dir: inject_dir.as_deref(),
+                                platform: &platform, jit: o.jit,
                             })?;
                             fs::write(build_dir.join("debug-server.txt"), format!(
                                 "# Debug server for {bundle_id} (this launch only)\nurl: {url}\nagents: use the `apps` MCP tools (apps, help, call, trace); the session is registered\nhelp: curl -s {url}/   (the rest needs the session's bearer token)\n"

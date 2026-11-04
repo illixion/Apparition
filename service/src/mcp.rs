@@ -24,18 +24,28 @@ const MAX_INLINE_REPLY: usize = 60_000;
 const SPILL_TAIL_LINES: usize = 40;
 const CONTROL_KINDS: [&str; 5] = ["slider", "toggle", "choice", "button", "readout"];
 
-/// A failure the model should see, with what to do about it.
-struct ToolError(String, Option<String>);
+/// A failure the model should see, with what to do about it, and for `inject` why: "not-running"
+/// and "not-patchable" are cured by a rebuild and relaunch, "needs-debugger" by Apparition
+/// attaching. `apparition inject` does both.
+struct ToolError(String, Option<String>, Option<&'static str>);
 
 fn err(message: impl Into<String>) -> ToolError {
-    ToolError(message.into(), None)
+    ToolError(message.into(), None, None)
 }
 
 fn err_hint(message: impl Into<String>, hint: impl Into<String>) -> ToolError {
-    ToolError(message.into(), Some(hint.into()))
+    ToolError(message.into(), Some(hint.into()), None)
 }
 
+const DELEGATED_REASONS: [&str; 3] = ["not-running", "not-patchable", "needs-debugger"];
+const DELEGATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
 impl ToolError {
+    fn because(mut self, reason: &'static str) -> Self {
+        self.2 = Some(reason);
+        self
+    }
+
     fn text(&self) -> String {
         match &self.1 {
             Some(h) => format!("{}\nhint: {h}", self.0),
@@ -77,12 +87,13 @@ pub struct Mcp {
     /// Where a reply too big for a tool result, or a file an app returns, is saved when the app's
     /// project root is unknown.
     downloads: PathBuf,
+    cli: Mutex<Option<PathBuf>>,
 }
 
 impl Mcp {
     pub fn new(debug: Arc<Debug>) -> Mcp {
         let home = crate::home();
-        Mcp { debug, spec: serde_json::from_str(TOOLS_JSON).expect("mcp_tools.json"), params: parameter_order(), verified: Mutex::default(), downloads: home.join("Downloads") }
+        Mcp { debug, spec: serde_json::from_str(TOOLS_JSON).expect("mcp_tools.json"), params: parameter_order(), verified: Mutex::default(), downloads: home.join("Downloads"), cli: Mutex::default() }
     }
 
     pub fn instructions(&self) -> &str {
@@ -214,15 +225,15 @@ impl Mcp {
             let mut i = json!({ "ready": true, "note": "launched with --inject: edit Swift files, then call `inject`" });
             if let Some(backend) = std::fs::read_to_string(Path::new(dir).join("modules.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).map(|m| m["backend"].as_str().unwrap_or("dynamic").to_string()) {
                 if backend == "apparition" {
-                    i["note"] = json!("native entry boundaries; use apparition inject on the build Mac, or attach Apparition JIT before MCP inject");
+                    i["note"] = json!("native entry boundaries; `inject` attaches Apparition as its debugger for each patch");
                 }
                 i["backend"] = json!(backend);
             }
             i
         } else if s(session, "source") == Some("bonjour") {
-            json!({ "ready": "unknown", "note": "attached without a launch record; `inject` finds out when called, or relaunch with `apparition build --run --mcp --inject`" })
+            json!({ "ready": "unknown", "note": "attached without a launch record; `inject` finds out when called, and rebuilds and relaunches it with --inject if it has to" })
         } else {
-            json!({ "ready": false, "note": "not launched with --inject; `inject` needs `apparition build --run --mcp --inject` from the app's repo" })
+            json!({ "ready": false, "note": "not launched with --inject; `inject` rebuilds it with --inject and relaunches it first (its state starts over)" })
         };
         out.insert("inject".into(), inject);
         Value::Object(out)
@@ -243,7 +254,7 @@ impl Mcp {
         let name_of = |x: &Session| s(x, "appName").or(s(x, "bundleId")).unwrap_or("").to_string();
         let Some(app) = app.map(str::trim).filter(|a| !a.is_empty()) else {
             return match sessions.len() {
-                0 => Err(err_hint("no app is running with its debug server", "open a dev build signed by apparition build on a device on this network, or launch one with `apparition build --run --mcp` (from the app's repo), then call `apps`")),
+                0 => Err(err_hint("no app is running with its debug server", "open a dev build signed by apparition build on a device on this network, or launch one with `apparition build --run --mcp` (from the app's repo), then call `apps`").because("not-running")),
                 1 => Ok(sessions.remove(0)),
                 n => Err(err_hint(format!("{n} apps are running ({})", sessions.iter().map(name_of).collect::<Vec<_>>().join(", ")), "pass `app` with one of those names")),
             };
@@ -280,14 +291,14 @@ impl Mcp {
                         let mut devices: Vec<String> = sessions.iter().filter_map(|x| s(x, "device").filter(|d| !d.is_empty()).map(String::from)).collect();
                         devices.sort();
                         devices.dedup();
-                        return Err(err_hint(format!("no running app is on a device named '{device}'"), format!("devices with apps running: {}", if devices.is_empty() { "none".into() } else { devices.join(", ") })));
+                        return Err(err_hint(format!("no running app is on a device named '{device}'"), format!("devices with apps running: {}", if devices.is_empty() { "none".into() } else { devices.join(", ") })).because("not-running"));
                     }
                 }
             } else {
                 sessions = found;
             }
         } else if sessions.is_empty() {
-            return Err(err_hint("no app is running with its debug server", "open a dev build signed by apparition build on a device on this network, or launch one with `apparition build --run --mcp` (from the app's repo), then call `apps`"));
+            return Err(err_hint("no app is running with its debug server", "open a dev build signed by apparition build on a device on this network, or launch one with `apparition build --run --mcp` (from the app's repo), then call `apps`").because("not-running"));
         }
         let exact: Vec<&Session> = sessions.iter().filter(|x| keys(x).contains(&wanted)).collect();
         let matches: Vec<&Session> = if exact.is_empty() { sessions.iter().filter(|x| keys(x).iter().any(|k| !k.is_empty() && k.contains(&wanted))).collect() } else { exact };
@@ -305,13 +316,13 @@ impl Mcp {
             }
             return Err(err_hint(format!("'{app}' matches several running apps ({})", matches.iter().map(|m| name_of(m)).collect::<Vec<_>>().join(", ")), "pass the full bundle id"));
         }
-        Err(err_hint(format!("no running app matches '{app}'"), format!("running now: {}; call `apps` for details", sessions.iter().map(name_of).collect::<Vec<_>>().join(", "))))
+        Err(err_hint(format!("no running app matches '{app}'"), format!("running now: {}; call `apps` for details", sessions.iter().map(name_of).collect::<Vec<_>>().join(", "))).because("not-running"))
     }
 
     async fn request(&self, session: &Session, post: Option<Value>, path: &str) -> Result<(u16, String, Vec<u8>), ToolError> {
         match self.debug.app_request(session, post, path, CALL_TIMEOUT).await {
             Ok(r) => Ok((r.status, r.content_type, r.raw)),
-            Err(e) => Err(err_hint(e, "the app may be suspended or the device asleep; bring it to the foreground, or relaunch with `apparition build --run --mcp`")),
+            Err(e) => Err(err_hint(e, "the app may be suspended or the device asleep; bring it to the foreground, or relaunch with `apparition build --run --mcp`").because("not-running")),
         }
     }
 
@@ -330,7 +341,7 @@ impl Mcp {
             return Err(err_hint(format!("{name} refused the token"), "the build on the device is not the one the ledger describes; reinstall it with apparition build"));
         }
         if let Some(b) = bundle.filter(|b| Some(*b) != s(&session, "bundleId")) {
-            return Err(err_hint(format!("{} is now served by {b}, not {}", key.0, s(&session, "bundleId").unwrap_or("")), "relaunch the app with `apparition build --run --mcp` to refresh its session"));
+            return Err(err_hint(format!("{} is now served by {b}, not {}", key.0, s(&session, "bundleId").unwrap_or("")), "relaunch the app with `apparition build --run --mcp` to refresh its session").because("not-running"));
         }
         self.verified.lock().unwrap().insert(key);
         Ok(session)
@@ -362,7 +373,55 @@ impl Mcp {
         Ok(text_result(String::from_utf8_lossy(&raw).into_owned(), status >= 400))
     }
 
+    /// Patches directly when it can. When the app isn't running a patchable build, or its backend
+    /// needs a debugger attached, hands the call to `apparition inject`, which relaunches or
+    /// attaches and then patches (through DebugTrace's tool, told not to hand off again).
     async fn tool_inject(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
+        match self.inject_direct(args).await {
+            Err(e) if e.2.is_some_and(|r| DELEGATED_REASONS.contains(&r)) && cfg!(target_os = "macos") => self.delegate_inject(args, e).await,
+            other => other,
+        }
+    }
+
+    async fn delegate_inject(&self, args: &Map<String, Value>, cause: ToolError) -> Result<Value, ToolError> {
+        let cli = self.cli.lock().unwrap().clone().unwrap_or_else(|| crate::queue::cli(&crate::config::Config::default()));
+        let mut command = tokio::process::Command::new(&cli);
+        command.arg("inject");
+        if let Some(app) = args.get("app").and_then(Value::as_str).filter(|a| !a.is_empty()) {
+            command.arg(app);
+        }
+        match args.get("files") {
+            Some(Value::String(f)) => { command.arg("--file").arg(f); }
+            Some(Value::Array(a)) => for f in a.iter().filter_map(Value::as_str) { command.arg("--file").arg(f); },
+            _ => {}
+        }
+        if let Some(run) = args.get("run").and_then(Value::as_str).filter(|r| !r.is_empty()) {
+            command.arg("--run").arg(run);
+        }
+        if args.get("allowViewTypeChange") == Some(&Value::Bool(true)) {
+            command.arg("--allow-view-type-change");
+        }
+        command.stdin(std::process::Stdio::null()).kill_on_drop(true);
+        let output = match tokio::time::timeout(DELEGATE_TIMEOUT, command.output()).await {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return Err(err_hint(format!("{}; and Apparition's command line, which would rebuild, relaunch or attach, didn't start: {e}", cause.0), format!("expected at {}", cli.display()))),
+            Err(_) => return Err(err(format!("{}; rebuilding or relaunching for `inject` took over 30 minutes and was stopped", cause.0))),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(result) = stdout.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v.get("content").is_some()) {
+            return Ok(result);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr.trim().lines().collect();
+        Ok(text_result(format!("{}, and `apparition inject` could not recover:\n{}", cause.0, lines[lines.len().saturating_sub(40)..].join("\n")), true))
+    }
+
+    /// The command line `inject` hands off to: the Store's own choice, when it serves this.
+    pub fn set_cli(&self, cli: PathBuf) {
+        *self.cli.lock().unwrap() = Some(cli);
+    }
+
+    async fn inject_direct(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
         if !cfg!(target_os = "macos") {
             return Err(err_hint("live patching compiles with the app's own Xcode toolchain, which only a Mac has",
                 "pair this computer with a Mac (`apparition mac pair <address>`) and use its MCP server, with the sources on the Mac"));
@@ -370,7 +429,7 @@ impl Mcp {
         let session = self.verified(args.get("app").and_then(Value::as_str)).await?;
         let name = s(&session, "appName").unwrap_or("The app").to_string();
         let Some(directory) = s(&session, "injectDir").filter(|d| !d.is_empty()).map(PathBuf::from) else {
-            return Err(err_hint(format!("{name} was not launched for live patching"), "rebuild and relaunch it with `apparition build --run --mcp --inject` from the app's repo"));
+            return Err(err_hint(format!("{name} was not launched for live patching"), "rebuild and relaunch it with `apparition build --run --mcp --inject` from the app's repo").because("not-patchable"));
         };
         let files: Vec<String> = match args.get("files") {
             None | Some(Value::Null) => Vec::new(),
@@ -427,7 +486,7 @@ impl Mcp {
                 listed = self.app_call(session, "_patches", json!({})).await?.1;
             }
             if listed.pointer("/data/debuggerAttached") != Some(&json!(true)) {
-                return Err(err_hint("the Apparition entry backend needs its debugger attached", "use apparition inject <bundle-id> --device <device> --file <path>, or run apparition jit <bundle-id> --attach first"));
+                return Err(err_hint("the Apparition entry backend needs its debugger attached", "use apparition inject <bundle-id> --device <device> --file <path>, or run apparition jit <bundle-id> --attach first").because("needs-debugger"));
             }
         }
         let dir = directory.to_string_lossy().into_owned();

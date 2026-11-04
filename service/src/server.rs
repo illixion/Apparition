@@ -1150,6 +1150,7 @@ async fn run_debug(app: &Arc<App>, route: Deferred) -> Response {
             if message.is_array() {
                 return json_reply(200, json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "batches are not supported" } }));
             }
+            app.mcp.set_cli(queue::cli(&app.config()));
             match app.mcp.handle(&message).await {
                 Some(answer) => json_reply(200, answer),
                 None => reply(202, "text/plain", ""),

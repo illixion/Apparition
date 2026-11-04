@@ -78,7 +78,8 @@ impl App {
         let _patching = Patching(&self.patching, key);
         let config = self.config();
         let mut command = tokio::process::Command::new(queue::cli(&config));
-        command.arg("inject").arg(bundle).arg("--device").arg(device);
+        // A patch never builds here: building is the build route's job, with its queue and log.
+        command.arg("inject").arg(bundle).arg("--device").arg(device).arg("--no-launch");
         for file in job["files"].as_array().into_iter().flatten().filter_map(Value::as_str) {
             command.arg("--file").arg(file);
         }

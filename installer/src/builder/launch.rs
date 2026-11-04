@@ -153,6 +153,9 @@ pub struct Session<'a> {
     pub token: &'a str,
     pub key_id: Option<&'a str>,
     pub inject_dir: Option<&'a Path>,
+    /// How it was built and launched, so `apparition inject` can rebuild and relaunch it the same way.
+    pub platform: &'a str,
+    pub jit: bool,
 }
 
 /// The launch record the Store's `apps` tools route by: `<dir>/<bundle id>@<device>.json`.
@@ -160,7 +163,7 @@ pub fn write_session(s: Session) -> Result<PathBuf, String> {
     let mut record = json!({
         "bundleId": s.bundle_id, "appName": s.app_name, "device": s.device, "deviceId": s.device_id,
         "url": s.url, "pid": s.pid, "consoleLog": s.console_log, "projectRoot": s.project_root,
-        "token": s.token, "startedAt": super::utc_now().offset,
+        "token": s.token, "startedAt": super::utc_now().offset, "platform": s.platform, "jit": s.jit,
     });
     if let Some(key) = s.key_id { record["keyId"] = key.into(); }
     if let Some(dir) = s.inject_dir { record["injectDir"] = json!(dir); }
@@ -213,7 +216,7 @@ mod tests {
         let path = write_session(Session {
             dir: &sessions, bundle_id: "com.example.demo", app_name: "Demo", device: "AVP", device_id: "00008112-X",
             url: "http://avp:5000", pid: 42, console_log: Path::new("/p/build/device-console.log"), project_root: Path::new("/p"),
-            token: "t", key_id: Some("k"), inject_dir: None,
+            token: "t", key_id: Some("k"), inject_dir: None, platform: "visionOS", jit: false,
         }).unwrap();
         assert!(path.ends_with("com.example.demo@AVP.json"));
         let record: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

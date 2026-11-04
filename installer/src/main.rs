@@ -101,9 +101,14 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       its running process) and serve its JIT requests until it closes or says it's done. The
       app has to be development-signed (installed by Apparition is). --wait is how long to
       wait for its first request before leaving it (default: no limit).
-  apparition inject <bundle ID> --device <name or UDID> [--file PATH]... [--run SWIFT]
-      Attach, compile and sign patches on this Mac, request device approval, apply, then detach.
-      Requires a live `apparition build --inject-backend apparition` session.
+  apparition inject [<app>] [--device <name or UDID>] [--file PATH]... [--run SWIFT]
+          [--allow-view-type-change] [--no-launch]
+      Patch a running app with the Swift sources edited since its build: compile and sign on
+      this Mac, ask the device to allow it, apply (attaching as its debugger for the Apparition
+      backend). <app> is a bundle ID, a name or name@device from its launch record; without it,
+      the latest app launched for live patching. If the app isn't running a patchable build,
+      it is first rebuilt with --inject as its last launch was and relaunched, which builds the
+      edits in (--no-launch refuses instead).
   apparition certificates --apple-id <email> [--anisette <url>]
   apparition app-ids --apple-id <email> [--anisette <url>]
       What uses up a free account's two certificates and ten App IDs a week, and freeing

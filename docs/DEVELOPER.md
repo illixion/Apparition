@@ -223,6 +223,12 @@ Bonjour on the local network, or the session record `apparition build --run --mc
 launches the app. An app launched some other way leaves neither, so patching one away from the
 network the Mac is on is not yet verified.
 
+`apparition inject` (and the MCP `inject` tools, which hand off to it) gets there by itself: when the
+app isn't running a patchable build, it rebuilds it with `--inject` from its latest session record
+(repo, device, platform, backend, JIT) and relaunches it, which builds the edits in; for the
+Apparition backend it attaches as the debugger for the call. `--no-launch` refuses instead. The
+relaunch needs the device reachable over this Mac's pairing, a headset worn.
+
 Build options in the native and desktop Developer views offer **Patch backend** when
 live patching is enabled. Swift dynamic replacement is the default. The experimental
 **Apparition entry boundaries** backend leaves the rest of the app optimized and uses
@@ -243,7 +249,7 @@ On the Mac with Xcode, the captured build products and current DebugTrace tools:
 
 ```sh
 apparition build --run --mcp --inject-backend apparition
-apparition inject com.example.app --device AVP --file Sources/Update.swift
+apparition inject com.example.app --device AVP --file Sources/Update.swift   # or `inject Example@AVP`, or just `inject`
 apparition inject com.example.app --device AVP --run 'return model.count'
 ```
 
