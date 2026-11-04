@@ -79,6 +79,8 @@ async fn password_login_sets_a_session_that_the_gate_accepts() {
     let f = fixture(json!({ "passwordHash": hash }), false);
     let (status, _, body) = send(&f.app, "GET", "/api/state", &[], None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, ..) = send(&f.app, "GET", "/api/state", &[("cookie", "store_session=bogus")], None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, headers, _) = send(&f.app, "GET", "/", &[], None).await;
     assert_eq!((status, header(&headers, "location")), (StatusCode::FOUND, Some("/login?next=%2F")));
     let (status, ..) = send(&f.app, "POST", "/api/login", &[], Some(json!({ "password": "nope nope" }))).await;
@@ -90,7 +92,7 @@ async fn password_login_sets_a_session_that_the_gate_accepts() {
     let cookie = cookie_of(&headers);
     let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("cookie", &cookie)], None).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({ "required": true, "signedIn": true }));
-    let (status, ..) = send(&f.app, "GET", "/api/state", &[("cookie", &cookie)], None).await;
+    let (status, ..) = send(&f.app, "GET", "/api/crashlogs", &[("cookie", &cookie)], None).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "signed in reaches the (unported) route");
     let (_, headers, _) = send(&f.app, "GET", "/login?next=/builds", &[("cookie", &cookie)], None).await;
     assert_eq!(header(&headers, "location"), Some("/builds"));
@@ -178,8 +180,11 @@ async fn the_service_api_wants_a_bearer_and_only_the_host_reaches_host_routes() 
     let token = serde_json::from_str::<Value>(&body).unwrap()["token"].as_str().unwrap().to_string();
     let bearer = format!("Bearer {token}");
     let device = [("authorization", &*bearer)];
-    let (status, ..) = send(&f.app, "GET", "/api/service/v1/state", &device, None).await;
+    let (status, ..) = send(&f.app, "GET", "/api/service/v1/crashlogs", &device, None).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    let (status, _, body) = send(&f.app, "GET", "/api/service/v1/state", &device, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["authRequired"], true);
     let (status, ..) = send(&f.app, "GET", "/api/service/v1/nonsense", &device, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, ..) = send(&f.app, "GET", "/api/service/v1/host", &device, None).await;

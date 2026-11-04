@@ -16,12 +16,17 @@ only as the fallback until the Rust service passes the parity checklist, then go
 ## Status
 
 - Phase 0 done: crate, config model.
-- Phase 1 in progress: done are auth (byte-compatible with `lib/auth.js`, proven against the real
+- Phase 1 in progress. Done: auth (byte-compatible with `lib/auth.js`, proven against the real
   Node module), the web gate, login/logout/auth, static files with branding, the bearer service
-  API's auth, `/host*`, `/disconnect`, and the one-time `/host-login`. Unported routes answer 501
-  and the capabilities list stays empty until a capability really works. Left in phase 1:
-  `/api/state`, traces, crash logs, artifacts, presence, response diffing against the Node
-  service, and embedding `store/public`.
+  API's auth, `/host*`, `/disconnect`, the one-time `/host-login`, `state.json`, presence and
+  install-mode resolution, git info, and `/api/state` (also `/api/service/v1/state`).
+  `tests/state_parity.rs` starts the real Node store on an identical config, state file and git
+  checkout and compares the two answers; it fails if either side drifts.
+  In `/api/state`, `devices`, `deviceApps`, `debugApps`, `macApps` and the build queue are not
+  ported yet (they need phase 3 and 5), and the parity test leaves out the first three.
+  Left in phase 1: traces (verify, list, files), crash logs, artifacts list, response diffing for
+  those, and embedding `store/public`. Unported routes answer 501 and the capabilities list stays
+  empty until a capability really works.
 
 ## Constraint that does not move
 

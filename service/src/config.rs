@@ -3,6 +3,7 @@
 //! (and ones from newer versions) must not stop this one from starting.
 
 use serde::Deserialize;
+use serde_json::Value;
 use std::path::Path;
 
 #[derive(Debug, Default, Deserialize)]
@@ -18,6 +19,9 @@ pub struct Config {
     #[serde(default)]
     pub repos: Vec<Repo>,
     pub branding: Option<Branding>,
+    /// The file as written, for the parts a client reads back untouched (repos, deploy defaults).
+    #[serde(skip)]
+    pub raw: Value,
 }
 
 /// `{ org, title, icon }`: `title` is the full name, else "<org>'s Apparition Store"; `icon` is
@@ -66,7 +70,33 @@ fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D:
 impl Config {
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+        let mut config: Config = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        config.raw = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(config)
+    }
+
+    /// Devices the store leaves alone on a plain refresh: ledger-only ones without a quiet route.
+    pub fn skipped_devices(&self) -> Vec<String> {
+        let names = |key: &str| -> Vec<String> {
+            self.raw.get(key).and_then(Value::as_array).into_iter().flatten()
+                .filter_map(Value::as_str).filter(|d| !d.is_empty()).map(String::from).collect()
+        };
+        let quiet = names("quietAppsDevices");
+        names("ledgerOnlyDevices").into_iter().filter(|d| !quiet.contains(d)).collect()
+    }
+
+    /// Which deploy-menu checkboxes start ticked: the built-ins, then the top-level
+    /// `deployDefaults`, then the repo's own. Anything not a boolean is ignored.
+    pub fn deploy_defaults(&self, repo: &Value) -> Value {
+        let mut out = serde_json::json!({ "launch": false, "mcp": true, "jit": false, "buildDebug": false, "inject": false });
+        for source in [self.raw.get("deployDefaults"), repo.get("deployDefaults")] {
+            for key in ["launch", "mcp", "jit", "buildDebug", "inject"] {
+                if let Some(b) = source.and_then(|s| s.get(key)).and_then(Value::as_bool) {
+                    out[key] = Value::Bool(b);
+                }
+            }
+        }
+        out
     }
 
     /// The Node store's rule: the web pages are on unless hosted; hosted they need both the switch

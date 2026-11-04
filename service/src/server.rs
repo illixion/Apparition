@@ -5,6 +5,7 @@
 use crate::{
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
+    state::{State as StoreState, hostname},
 };
 use axum::{
     Router,
@@ -48,6 +49,7 @@ pub struct Settings {
 pub struct App {
     settings: Settings,
     auth: Auth,
+    state: StoreState,
     config: Mutex<(Option<SystemTime>, Arc<Config>)>,
     host_sessions: Mutex<HashSet<String>>,
     host_codes: Mutex<HashMap<String, u64>>,
@@ -55,9 +57,11 @@ pub struct App {
 
 pub fn router(settings: Settings) -> std::io::Result<Router> {
     let auth = Auth::open(&settings.data_dir)?;
+    let state = StoreState::load(&settings.data_dir);
     let app = Arc::new(App {
         settings,
         auth,
+        state,
         config: Mutex::new((None, Arc::new(Config::default()))),
         host_sessions: Mutex::default(),
         host_codes: Mutex::default(),
@@ -310,6 +314,10 @@ impl App {
         Ok(())
     }
 
+    fn state_response(&self) -> Response {
+        json_reply(200, self.state.bundle(&self.config(), system_ms(), &hostname()))
+    }
+
     fn host_status(&self) -> Value {
         let config = self.config();
         json!({
@@ -461,6 +469,9 @@ fn dispatch(app: &App, req: &Req) -> Response {
             return res;
         }
     }
+    if req.method == Method::GET && req.path == "/api/state" {
+        return app.state_response();
+    }
     if req.path.starts_with("/api/") {
         return json_reply(501, json!({ "error": NOT_YET }));
     }
@@ -507,9 +518,15 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
     if !is_host && !session {
         return Some(json_reply(401, json!({ "error": "Connect to the build service again." })));
     }
+    // Apparition names its device on every request while it is open, so a build asked for
+    // `install: auto` goes to it and not through the Xcode tunnel; a closed one goes quiet.
+    if let Some(name) = device_header(req.header("x-apparition-device")) {
+        app.state.presence.touch(&name, system_ms());
+    }
     let unknown = || json_reply(404, json!({ "error": "Unknown service operation." }));
     Some(match (req.method.as_str(), suffix) {
         ("GET", "" | "/capabilities") => json_reply(200, capabilities()),
+        ("GET", "/state") => app.state_response(),
         (_, "/host" | "/host/web-ui" | "/host/web-link") if !is_host => unknown(),
         ("GET", "/host") => json_reply(200, app.host_status()),
         ("POST", "/host/web-link") => {
@@ -544,4 +561,13 @@ fn route_matches(pattern: &str, path: &str) -> bool {
         return p.iter().zip(&q).all(|(a, b)| *a == "*" && !b.is_empty() || a == b);
     }
     p.len() == q.len() && p.iter().zip(&q).all(|(a, b)| *a == "*" && !b.is_empty() || a == b)
+}
+
+/// The name a client sends for the device it runs on, percent-encoded because headers are ASCII.
+fn device_header(value: &str) -> Option<String> {
+    if value.is_empty() || value.len() > 400 {
+        return None;
+    }
+    let decoded = percent_decode(&value.replace('+', "%2B"));
+    Some(decoded)
 }
