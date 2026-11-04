@@ -633,8 +633,10 @@ final class ControlServer {
     let recovery: Bool
     let token = UUID().uuidString
     let file: URL
+    let dir: URL
     init(machine: Machine, dir: URL, recovery: Bool) throws {
         self.machine = machine
+        self.dir = dir
         self.recovery = recovery
         file = dir.appendingPathComponent("control.json")
         let parameters = NWParameters.tcp
@@ -882,6 +884,47 @@ final class ControlServer {
                             self.respond(connection, ["ok": true, "phase": self.machine.phase.rawValue])
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
                         }
+                    }
+                    return
+                case "update":
+                    // The app's signed update of the guest's programs (core/src/vm_update.rs), which it wrote into the
+                    // bundle as guest-update: carried to guest-bridge on vsock 6972, which checks and installs it, and
+                    // answered with the guest's reply line. The guest checks the signature; this only carries it.
+                    let package = self.dir.appendingPathComponent("guest-update")
+                    Task { @MainActor in
+                        do {
+                            let channel = try await self.machine.connect(port: 6972)
+                            self.frontDoor?.touch()
+                            let fd = channel.fileDescriptor
+                            let reply = await Task.detached { () -> String in
+                                guard let data = try? Data(contentsOf: package) else { return "error the runner couldn't read the package" }
+                                var timeout = timeval(tv_sec: 120, tv_usec: 0)
+                                setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                                setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                                var sent = 0
+                                while sent < data.count {
+                                    let n = data.withUnsafeBytes { write(fd, $0.baseAddress! + sent, data.count - sent) }
+                                    if n < 0 && errno == EINTR { continue }
+                                    // The guest stops reading at the first thing it refuses: its reply says why.
+                                    if n <= 0 { break }
+                                    sent += n
+                                }
+                                shutdown(fd, SHUT_WR)
+                                var reply = [UInt8](), buffer = [UInt8](repeating: 0, count: 4096)
+                                while reply.count < 65536 {
+                                    let n = read(fd, &buffer, buffer.count)
+                                    if n < 0 && errno == EINTR { continue }
+                                    if n <= 0 { break }
+                                    reply.append(contentsOf: buffer[0..<n])
+                                }
+                                return String(decoding: reply, as: UTF8.self)
+                            }.value
+                            channel.close()
+                            self.frontDoor?.touch()
+                            if reply.hasPrefix("ok") { self.respond(connection, ["ok": true, "reply": reply]) }
+                            else { self.respond(connection, ["ok": false, "error": reply.isEmpty ? "the guest closed the connection without answering"
+                                : "the VM refused the update: " + reply.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "error ", with: "", options: .anchored)]) }
+                        } catch { self.respond(connection, ["ok": false, "error": "couldn't reach the guest's update port: \(error.localizedDescription)"]) }
                     }
                     return
                 case "suspend", "resume":

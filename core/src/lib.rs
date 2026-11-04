@@ -52,6 +52,8 @@ pub mod stay_awake;
 pub mod vm_setup;
 #[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
 pub mod vm;
+#[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
+pub mod vm_update;
 #[cfg(feature = "desktop")]
 pub mod relay;
 #[cfg(feature = "desktop")]

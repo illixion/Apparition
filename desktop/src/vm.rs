@@ -30,9 +30,11 @@ mod mac {
         error: Option<String>,
         /// The job puts newer programs into a VM that is set up, rather than setting one up.
         update: bool,
+        /// ...and hands them to the running VM (signed, seconds), rather than from its recoveryOS.
+        push: bool,
     }
 
-    static JOB: Mutex<Job> = Mutex::new(Job { task: None, last: None, error: None, update: false });
+    static JOB: Mutex<Job> = Mutex::new(Job { task: None, last: None, error: None, update: false, push: false });
 
     fn running() -> bool {
         JOB.lock().unwrap().task.as_ref().is_some_and(|task| !task.inner().is_finished())
@@ -51,6 +53,9 @@ mod mac {
             "ready": status.ready,
             "suspended": status.suspended,
             "outdated": status.outdated,
+            "stale": status.stale,
+            // The update runs while the VM keeps serving.
+            "handingOver": busy && job.push,
             // Also one a terminal's `apparition vm update` runs.
             "updating": status.updating || (busy && job.update),
             "phase": status.live.as_ref().map(|live| if live.recovery { "recovery".to_string() } else { live.phase.clone() }),
@@ -71,8 +76,11 @@ mod mac {
         }
         job.last = None;
         job.error = None;
-        // vm::setup runs the update itself on a VM that is set up with older programs.
-        job.update = vm::outdated(&vm::default_bundle());
+        // vm::setup runs the update itself on a VM that is set up with older programs: from its recoveryOS when an
+        // older app set it up, otherwise handed to it while it runs.
+        let bundle = vm::default_bundle();
+        job.push = !vm::outdated(&bundle) && vm::stale(&bundle);
+        job.update = vm::outdated(&bundle) || job.push;
         let update = job.update;
         job.task = Some(tauri::async_runtime::spawn(async move {
             let options = vm::SetupOptions { bundle: vm::default_bundle(), ipsw: ipsw.map(Into::into), ..Default::default() };
@@ -93,11 +101,13 @@ mod mac {
         Ok(())
     }
 
-    /// At launch: a VM set up by an older app gets this app's programs, in the background (a few minutes from its
-    /// own recoveryOS, no download), so a new app version never means making the VM again. A failure shows in the
-    /// Companion tab, whose button tries again.
+    /// At launch: a VM with other programs than this app's gets this app's, in the background, so a new app version
+    /// never means making the VM again: handed to it signed while it runs (seconds), or, for a VM an older app set
+    /// up, once from its own recoveryOS (a few minutes, no download). A failure shows in the Companion tab, whose
+    /// button tries again.
     pub fn update_if_outdated(app: &AppHandle) {
-        if vm::outdated(&vm::default_bundle()) && !running() {
+        let bundle = vm::default_bundle();
+        if (vm::outdated(&bundle) || vm::stale(&bundle)) && !running() {
             let _ = setup(app.clone(), None);
         }
     }

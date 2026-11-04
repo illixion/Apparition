@@ -34,7 +34,8 @@ BASE='@@BASE@@'
 # 1: the host drives this recoveryOS (no questions; shut down when done so it can go on).
 AUTOMATED='@@AUTOMATED@@'
 # provision: the Apparition app's anisette VM, before its first boot (core/src/vm.rs); setup: everything else, which
-# for the app's VM is also how a newer app puts its programs into a VM that is set up (`apparition vm update`).
+# for the app's VM is also how a newer app puts what only recoveryOS can write into a VM that is set up
+# (`apparition vm update` when core's GUEST_VERSION says so; programs alone reach the running VM signed instead).
 STAGE='@@STAGE@@'
 # 1: the anisette VM the Apparition app runs. Its anisette agent is already in place (the provision stage), so the
 # companion's relay, which a VM used on its own needs, isn't installed.
@@ -115,9 +116,11 @@ plist() { # path label keep-alive program [arguments...]: a root-owned launchd j
   chmod 644 "$path"
 }
 # The programs the host talks to over vsock and their launchd jobs, from the host. The provision stage puts them in,
-# and every setup stage after it puts the host's current ones in again: `apparition vm update` runs one, so a VM that
-# is set up takes a newer app's programs from its own recoveryOS rather than being made again. Everything is
-# downloaded before anything is replaced, so a visit that stops partway leaves the programs that were there.
+# and every setup stage after it puts the host's current ones in again: `apparition vm update --recovery` runs one, so
+# a VM that is set up takes what only recoveryOS can write from there rather than being made again. update-key.pub is
+# the public half of the VM's update key: a newer app's programs reach the running guest signed with it, over vsock
+# 6972 (core/src/vm_update.rs), and only recoveryOS can change which key that is. Everything is downloaded before
+# anything is replaced, so a visit that stops partway leaves the programs that were there.
 appliance_programs() { # name:mode...
   local state="$DATA$bootstrap" stage entry
   stage=$(mktemp -d /tmp/apparition-appliance.XXXXXX)
@@ -152,7 +155,7 @@ if [ "$STAGE" = provision ]; then
   [ "$RECOVERY" = 1 ] && [ -n "$BASE" ] || die "this stage runs in recoveryOS, served by the Mac that runs the VM"
   say "Writing the first-boot setup"
   stage=$(mktemp -d /tmp/apparition-provision.XXXXXX)
-  programs="password:600 first-boot.sh:700 report-status.sh:700 guest-status:755 guest-bridge:755"
+  programs="password:600 first-boot.sh:700 report-status.sh:700 guest-status:755 guest-bridge:755 update-key.pub:600"
   if [ "$KEEP_SSH" = 1 ]; then programs="$programs authorized_keys:600"; fi
   # shellcheck disable=SC2086 # one word per file
   appliance_programs $programs
@@ -209,7 +212,7 @@ fi
 # ------------------------------------------------------------------ Apparition
 if [ "$APPLIANCE" = 1 ] && [ -n "$BASE" ]; then
   say "Installing the programs the host talks to"
-  appliance_programs report-status.sh:700 guest-status:755 guest-bridge:755
+  appliance_programs report-status.sh:700 guest-status:755 guest-bridge:755 update-key.pub:600
 fi
 say "Installing apparition and its anisette helper"
 dest="$DATA/usr/local/apparition"

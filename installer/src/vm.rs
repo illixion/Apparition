@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rootcause::prelude::*;
 
-pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--keep-image] [--public-key <file>] | update | status [--json] | serve | quit | shutdown | force-stop | check | image [--ipsw <file>] | remove
+pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--keep-image] [--public-key <file>] | update [--recovery] | status [--json] | serve | quit | shutdown | force-stop | check | image [--ipsw <file>] | remove
        apparition vm screen | key <chord> | type <file> | click-text <text> [--menubar] | suspend | resume | network on|off   (for looking into a setup)
        every command takes --bundle <dir> (default ~/Library/Application Support/Apparition/anisette.vm)";
 
@@ -13,7 +13,7 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
     use apparition_core::api::vm;
 
     let mut rest: Vec<&str> = Vec::new();
-    let (mut bundle, mut ipsw, mut public_key, mut json, mut menubar, mut keep_image) = (vm::default_bundle(), None, None, false, false, false);
+    let (mut bundle, mut ipsw, mut public_key, mut json, mut menubar, mut keep_image, mut recovery) = (vm::default_bundle(), None, None, false, false, false, false);
     let mut words = args.iter().map(String::as_str);
     while let Some(word) = words.next() {
         let mut path = || words.next().map(PathBuf::from).ok_or_else(|| report!("{word} needs a path"));
@@ -24,6 +24,7 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
             "--json" => json = true,
             "--menubar" => menubar = true,
             "--keep-image" => keep_image = true,
+            "--recovery" => recovery = true,
             other => rest.push(other),
         }
     }
@@ -33,16 +34,18 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
     };
     match rest.as_slice() {
         ["setup"] => {
-            let options = vm::SetupOptions { bundle, ipsw, public_key, keep_image };
+            let options = vm::SetupOptions { bundle, ipsw, public_key, keep_image, recovery: false };
             let url = vm::setup(&options, &say).await?;
             println!("The anisette VM is set up and saved: its anisette is at {url}, and it resumes in a second when asked.");
             println!("Sign-ins here use it when this Mac has no anisette of its own; the app's companion offers it to devices.");
         }
         // Also when its programs are current: putting the same ones in again is how a damaged copy is mended.
         ["update"] => {
-            let url = vm::update(&vm::SetupOptions { bundle, public_key, ..Default::default() }, &say).await?;
-            println!("The anisette VM has this app's programs and is saved again: its anisette is at {url}.");
+            let url = vm::update(&vm::SetupOptions { bundle, public_key, recovery, ..Default::default() }, &say).await?;
+            println!("The anisette VM has this app's programs: its anisette is at {url}.");
         }
+        // Inside the VM, as root, run by guest-bridge for the app's update (core/src/vm_update.rs); not for people.
+        ["guest-apply"] => vm::guest_apply()?,
         ["status"] => {
             let status = vm::status(&bundle).await;
             if json {
@@ -109,7 +112,9 @@ fn describe(status: &apparition_core::api::vm::Status) -> String {
     };
     lines.push(state);
     if status.outdated && !status.updating {
-        lines.push("Its programs are older than this app's: apparition vm update puts the new ones in (a few minutes)".to_string());
+        lines.push("Set up by an older app: apparition vm update puts this app's programs in from its recoveryOS (a few minutes)".to_string());
+    } else if status.stale {
+        lines.push("Its programs differ from this app's: apparition vm update hands them over while it runs (seconds)".to_string());
     }
     lines.push(format!("Disk: {:.1} GB", status.disk_bytes as f64 / 1e9));
     lines.push(format!("{}: {}", status.image, if status.image_cached { "in the cache" } else { "not in the cache" }));

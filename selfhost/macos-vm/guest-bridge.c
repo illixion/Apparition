@@ -6,6 +6,10 @@
 //
 // vsock 6971 sets the clock: the runner sends "<unix seconds>.<microseconds>\n" right after it resumes a suspended VM,
 // whose clock otherwise stands still for as long as it was suspended. Anisette carries the client's time.
+//
+// vsock 6972 takes an update of the guest's programs from the app: the installed `apparition vm guest-apply` runs as
+// root with the connection as its input and output, checks the package's signature against the VM's own update key
+// (put in from recoveryOS) and every file against it, and only then replaces them (core/src/vm_update.rs).
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -19,7 +23,8 @@
 #include <sys/vsock.h>
 #include <unistd.h>
 
-enum { ANISETTE_PORT = 6970, CLOCK_PORT = 6971, LOCAL_WAIT_SECONDS = 90 };
+enum { ANISETTE_PORT = 6970, CLOCK_PORT = 6971, UPDATE_PORT = 6972, LOCAL_WAIT_SECONDS = 90 };
+static const char APPARITION[] = "/usr/local/apparition/apparition";
 
 static int listen_vsock(unsigned port) {
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
@@ -111,14 +116,38 @@ static void set_clock(int fd) {
     write_all(fd, reply, (ssize_t)strlen(reply));
 }
 
+// The update, in a child: the connection becomes its standard input and output. Signals go back to their defaults
+// first, since ignored ones survive exec (an ignored SIGCHLD would break the update's own waiting for launchctl).
+static void run_update(int fd, int anisette, int clock, int update) {
+    pid_t child = fork();
+    if (child == 0) {
+        close(anisette);
+        close(clock);
+        close(update);
+        signal(SIGCHLD, SIG_DFL);
+        signal(SIGPIPE, SIG_DFL);
+        if (dup2(fd, STDIN_FILENO) < 0 || dup2(fd, STDOUT_FILENO) < 0) _exit(1);
+        if (fd > STDOUT_FILENO) close(fd);
+        execl(APPARITION, "apparition", "vm", "guest-apply", (char *)NULL);
+        const char reply[] = "error the guest has no apparition to apply the update with\n";
+        write_all(STDOUT_FILENO, reply, (ssize_t)sizeof(reply) - 1);
+        _exit(127);
+    }
+    close(fd);
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, SIG_IGN);  // children are reaped automatically
-    int anisette = listen_vsock(ANISETTE_PORT), clock = listen_vsock(CLOCK_PORT);
-    if (anisette < 0 || clock < 0) { perror("vsock listen"); return 1; }
-    struct pollfd fds[2] = {{anisette, POLLIN, 0}, {clock, POLLIN, 0}};
+    int anisette = listen_vsock(ANISETTE_PORT), clock = listen_vsock(CLOCK_PORT), update = listen_vsock(UPDATE_PORT);
+    if (anisette < 0 || clock < 0 || update < 0) { perror("vsock listen"); return 1; }
+    struct pollfd fds[3] = {{anisette, POLLIN, 0}, {clock, POLLIN, 0}, {update, POLLIN, 0}};
     for (;;) {
-        if (poll(fds, 2, -1) < 0) { if (errno == EINTR) continue; return 1; }
+        if (poll(fds, 3, -1) < 0) { if (errno == EINTR) continue; return 1; }
+        if (fds[2].revents & POLLIN) {
+            int fd = accept(update, NULL, NULL);
+            if (fd >= 0) run_update(fd, anisette, clock, update);
+        }
         if (fds[1].revents & POLLIN) {
             int fd = accept(clock, NULL, NULL);
             if (fd >= 0) { set_clock(fd); close(fd); }
@@ -130,6 +159,7 @@ int main(void) {
             if (child == 0) {
                 close(anisette);
                 close(clock);
+                close(update);
                 int local = connect_local();
                 if (local >= 0) { pump(fd, local); close(local); }
                 close(fd);
