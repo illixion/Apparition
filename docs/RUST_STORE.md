@@ -80,13 +80,37 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   same entitlements as `build-and-sign`'s, and the Rust-signed WebOverlay ran. Not yet:
   `--distribution`, `EXTRA_ENTITLEMENTS_PLIST` and `ASSOCIATED_DOMAINS` (no repo sets them).
 
+- Updates (phase 5, the queue's first part; the Node store gets none of this, it is going away):
+  - **Build numbers name the packages.** `apparition build` stamps `<sha>[-<packages>][-dirty]`: six hex
+    digits over each local package's folder and commit, so a rebuild for a vergence change is an
+    update to Apparition, AltStore and the page alike (`freshness.js` reads the app SHA out of it).
+  - **What is behind** (`service/src/updates.rs`): for each app on each device, the kept build
+    installed there (by build ID from an install ledger, else by build number) records every source
+    it was built from; a source that moved counts when its commits change what the build compiles
+    (a package's manifest and target folders, the app's anything, less tests and docs). Checked
+    against the real fleet: 35 rows planned in about 2 s, test-only commits ignored.
+  - **Build clones** (`clones.rs`): kept per repo and branch under `data/clones/`, laid out like
+    `~/Projects`, the app at the commit asked for and each package at its checkout's HEAD, committed
+    state only; DerivedData stays, so later builds are incremental. Unused for a week, a clone goes.
+  - **The queue** (`queue.rs`): one build per resolved platform build (`apparition build --plan`;
+    the iPad alias is the iOS build, so 21 updates were 16 builds), installed as signed on each of
+    its devices (`Devices::install_signed`, never re-signed); `maxConcurrentBuilds` (default 2) at
+    once, one per repo and branch; jobs and an install ledger in `data/queue.json` (ids from
+    1000000), so nothing races Node's `state.json`. `autoUpdate: {enabled, settleMinutes}` builds
+    what is behind once its sources have been still that long, and won't retry a failed commit for
+    six hours. Routes `GET /api/updates`, `POST /api/updates/{check,run,auto}`, build log and cancel,
+    the same under `/api/service/v1`; the page's Updates view and `apparition updates` drive them.
+    Run for real 2026-11-04: Raven built from a fresh clone with its three packages, stamped
+    `38ad878-06d7aa`, and kept. Not yet run: an install on a device from the queue (the path is
+    `install_signed_ipa`, the one `apparition build` installs with).
+
 Not done:
 - Phase 2 delivery (OTA, AltSource feed, Mac zips, signed links, trace upload from the web page).
 - Phase 3, the rest: `devices` and `deviceApps` in the web state and `/api/refresh-devices` (the Node build service
   still owns `state.json`), installs of the Store's own builds, JIT, uninstall, containers. The service routes below
   and the Mac-side install of sent builds are done.
-- Phase 4 re-sign. Phase 5, the rest: the queue starting `apparition build`, clones per branch,
-  `macApps`, the parts of `build-and-sign` listed above. Phase 6 desktop wiring,
+- Phase 4 re-sign. Phase 5, the rest: the queue for deploys from the page (`/api/build`, with
+  `--run`, `--mcp`, `--inject`, `--jit`), `macApps`, the parts of `build-and-sign` listed above. Phase 6 desktop wiring,
   hiding the feature off macOS, retiring `store/` and the bundled Node host.
 - Unported routes answer 501 and the capabilities list stays empty until a feature works.
 

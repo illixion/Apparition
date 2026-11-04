@@ -18,6 +18,11 @@ describe('platformStatus', () => {
     const r = status(state({ buildNo: 'abc1234' }));
     assert.equal(r.dot, 'ok'); assert.equal(r.label, 'up to date');
   });
+  test('a build number carrying a packages tag is judged by its app SHA', () => {
+    assert.equal(status(state({ buildNo: 'abc1234-3fa1c2' })).label, 'up to date');
+    assert.equal(status(state({ buildNo: 'abc1234-3fa1c2-dirty' })).label, 'dirty match');
+    assert.equal(status(state({ buildNo: 'def5678-3fa1c2' })).label, 'out of date');
+  });
   test('short SHA on the device matches a full-length HEAD', () => {
     const r = status(state({ buildNo: 'abc1234' }), { ...HEAD, commit: 'abc1234def5678abc1234def5678abc1234def5' });
     assert.equal(r.label, 'up to date');

@@ -533,7 +533,7 @@ impl Queue {
         let mut installs = Vec::new();
         for device in &job.devices {
             let outcome = match &ctx.devices {
-                None => Err(format!("this Store reaches no devices; Apparition on {device} can install it")),
+                None => Err("this Store reaches no devices itself".to_string()),
                 Some(backend) => install_signed(backend.clone(), &kept, device).await,
             };
             let at = system_ms();

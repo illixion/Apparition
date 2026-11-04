@@ -505,12 +505,15 @@ impl App {
                 })
             }
             ["api", "builds", id, "log"] if get => {
+                // The Node store's reply: what follows `offset` (in characters), for a page that
+                // polls the log as it grows. Logs of either store's builds are in the same folder.
                 let id: u64 = id.parse().ok()?;
-                let text = fs::read_to_string(self.queue.log_path(id)).ok();
-                Some(match text {
-                    Some(text) => json_reply(200, json!({ "log": text, "status": self.queue.job(id).map(|j| j.status) })),
-                    None => json_reply(404, json!({ "error": "no log for that build" })),
-                })
+                let text = fs::read_to_string(self.queue.log_path(id)).unwrap_or_default();
+                let offset: usize = req.query.get("offset").and_then(|o| o.parse().ok()).unwrap_or(0);
+                let total = text.chars().count();
+                let chunk: String = text.chars().skip(offset).collect();
+                let status = self.queue.job(id).map(|j| j.status).unwrap_or_else(|| "unknown".into());
+                Some(json_reply(200, json!({ "chunk": chunk, "nextOffset": total, "status": status })))
             }
             ["api", "builds", id, "cancel"] if post => {
                 let id: u64 = id.parse().ok()?;

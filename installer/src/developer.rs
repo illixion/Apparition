@@ -447,3 +447,95 @@ pub fn deploy_signing(args: &[String]) -> Result<(), Error> {
         _ => Err(usage()),
     }
 }
+
+/// `apparition updates`: which installed apps are behind their branch or a local package, from the
+/// Mac's Store, and (`--run`) one build each that brings them up to date.
+pub async fn updates(args: &[String]) -> Result<(), Error> {
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    let mut auto = None;
+    let mut only: Vec<String> = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--run" | "--check" | "--json" | "--local" => {}
+            "--auto" => auto = Some(match rest.next().map(String::as_str) {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return Err(fail("usage: apparition updates --auto on|off")),
+            }),
+            "--only" => only.push(rest.next().ok_or_else(|| fail("--only needs <device>|<bundle id>"))?.clone()),
+            other => return Err(fail(format!("Unknown option: {other}\nusage: apparition updates [--check] [--run [--only <device>|<bundle id>]...] [--auto on|off] [--json] [--local]"))),
+        }
+    }
+    let target = Target::find(has("--local"))?;
+    let call = |method: &'static str, path: &'static str, body: Value| {
+        let target = &target;
+        async move {
+            let bytes = body.to_string();
+            let reply = target.request(method, path, Some("application/json"), Upload::Bytes(if method == "GET" { &[] } else { bytes.as_bytes() })).await?;
+            let value: Value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+            if reply.status == 501 || (reply.status == 404 && value["error"] == "Unknown service operation.") {
+                return Err(fail(format!("{}'s Store doesn't plan updates yet: update the Apparition app there.", target.name())));
+            }
+            if reply.status != 200 {
+                return Err(fail(format!("{} answered HTTP {}: {}", target.name(), reply.status, value["error"].as_str().unwrap_or(""))));
+            }
+            Ok::<Value, Error>(value)
+        }
+    };
+    if let Some(enabled) = auto {
+        let reply = call("POST", "/api/service/v1/updates/auto", json!({ "enabled": enabled })).await?;
+        println!("Automatic updates are {}.", if reply["auto"]["enabled"] == true {
+            format!("on: apps update once their sources have been still for {} minutes", reply["auto"]["settleMinutes"])
+        } else { "off".to_string() });
+        return Ok(());
+    }
+    let report = if has("--check") { call("POST", "/api/service/v1/updates/check", Value::Null).await? } else { call("GET", "/api/service/v1/updates", Value::Null).await? };
+    if has("--run") {
+        let body = if only.is_empty() { json!({}) } else { json!({ "only": only }) };
+        let reply = call("POST", "/api/service/v1/updates/run", body).await?;
+        if has("--json") {
+            println!("{}", serde_json::to_string_pretty(&reply).unwrap_or_default());
+            return Ok(());
+        }
+        let jobs = reply["jobs"].as_array().cloned().unwrap_or_default();
+        if jobs.is_empty() {
+            println!("Nothing to start: everything is up to date, or its builds are already queued.");
+        }
+        for job in jobs {
+            println!("#{} {} [{}] for {}", job["id"], job["repo"].as_str().unwrap_or(""), job["branch"].as_str().unwrap_or(""),
+                job["devices"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+        }
+        println!("Follow them on the Store page's Updates view, or with `apparition updates`.");
+        return Ok(());
+    }
+    if has("--json") {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+        return Ok(());
+    }
+    let rows = report["rows"].as_array().cloned().unwrap_or_default();
+    let behind: Vec<&Value> = rows.iter().filter(|r| r["status"] == "behind").collect();
+    for r in &behind {
+        println!("{} on {} ({}), {}: {} → {}", r["repo"].as_str().unwrap_or(""), r["device"].as_str().unwrap_or(""), r["platform"].as_str().unwrap_or(""),
+            r["branch"].as_str().unwrap_or(""), r["installed"]["buildNo"].as_str().unwrap_or("?"), r["head"].as_str().unwrap_or(""));
+        for reason in r["reasons"].as_array().into_iter().flatten() {
+            let commits = reason["commits"].as_u64().unwrap_or(0);
+            let what = if reason["rewritten"] == true { "history rewritten".to_string() }
+                else if commits == 1 { reason["latest"].as_str().unwrap_or("").to_string() }
+                else { format!("{commits} commits, latest: {}", reason["latest"].as_str().unwrap_or("")) };
+            println!("    {}{}: {what}", reason["source"].as_str().unwrap_or(""), if reason["package"] == true { " (package)" } else { "" });
+        }
+    }
+    let unknown = rows.iter().filter(|r| r["status"] == "unknown").count();
+    let groups = report["groups"].as_array().map(Vec::len).unwrap_or(0);
+    for job in report["builds"].as_array().into_iter().flatten().filter(|b| b["status"] == "running" || b["status"] == "queued") {
+        println!("#{} {} for {}: {}", job["id"], job["repo"].as_str().unwrap_or(""),
+            job["devices"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(", "), job["status"].as_str().unwrap_or(""));
+    }
+    println!("{} behind, {} up to date{} — {groups} build{} would update them{}. Automatic updates are {}.",
+        behind.len(), rows.iter().filter(|r| r["status"] == "current").count(),
+        if unknown > 0 { format!(", {unknown} can't tell") } else { String::new() },
+        if groups == 1 { "" } else { "s" }, if groups > 0 { " (`apparition updates --run`)" } else { "" },
+        if report["auto"]["enabled"] == true { "on" } else { "off" });
+    Ok(())
+}

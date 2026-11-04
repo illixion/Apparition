@@ -96,6 +96,24 @@
   section.traces h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
     letter-spacing: .1em; font-family: var(--mono); font-weight: 600; margin: 0; }
   section.traces .hint { font-size: .74rem; color: var(--dim2); }
+  section.updates { margin-top: 30px; }
+  section.updates .uphead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+  section.updates h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
+    letter-spacing: .1em; font-family: var(--mono); font-weight: 600; margin: 0 0 8px; }
+  section.updates .uphead h3 { margin: 0; }
+  section.updates .hint { font-size: .74rem; color: var(--dim2); }
+  .upauto { display: flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--dim); margin: 0 0 12px; flex-wrap: wrap; }
+  .upauto input[type=number] { width: 58px; background: var(--surface2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 3px 6px; font: inherit; }
+  .upwhy { color: var(--fg); max-width: 520px; }
+  .upwhy .src { font-family: var(--mono); font-size: .74rem; color: var(--info); }
+  .upwhy .pkg { color: var(--warn); }
+  .upwhy div + div { margin-top: 2px; }
+  .upcurrent { margin-top: 12px; font-size: .8rem; color: var(--dim); }
+  .upcurrent summary { cursor: pointer; }
+  .upinstalls { font-size: .72rem; color: var(--dim2); }
+  .upinstalls .bad { color: var(--bad); }
+  @media (max-width: 760px) { .upwhy { max-width: none; } }
   section.traces.dropping { outline: 2px dashed var(--accent); outline-offset: 6px; border-radius: 8px; }
   .tracefiles { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 2px; }
   .tracefiles a { font-family: var(--mono); font-size: .72rem; color: var(--info); text-decoration: none;
@@ -417,6 +435,7 @@
   <nav class="views" aria-label="Views">
     <a href="#deploy" data-view="deploy">Deploy <span class="count" id="fleetcount"></span></a>
     <a href="#debug" data-view="debug">Debug <span class="count livecount" id="livecount"></span></a>
+    <a href="#updates" data-view="updates">Updates <span class="count" id="updatecount"></span></a>
     <a href="#traces" data-view="traces">Traces <span class="count" id="tracecount"></span></a>
     <a href="#history" data-view="history">History</a>
   </nav>
@@ -436,6 +455,29 @@
       <aside class="rail" id="rail" aria-label="Running apps"></aside>
       <div class="console" id="console"></div>
     </div>
+  </section>
+  <section class="view updates" data-view="updates" id="updates">
+    <div class="uphead">
+      <h3>Updates</h3>
+      <span class="hint" id="upsummary">Checking…</span>
+      <span style="margin-left:auto"></span>
+      <button class="ghost" id="upCheck" title="Ask each device what it has installed (devices in ledgerOnlyDevices aren't woken: the install records stand for them)">Check devices</button>
+      <button class="primary" id="upAll" disabled>Update all</button>
+    </div>
+    <p class="tnote">An app is behind when its branch, or a local package it builds against (RAVESDK, vergence…), has commits that change what it compiles; commits to tests and docs don't count. Each build is made once from committed sources in a build clone and installed on every device that runs it, at most a few builds at a time.</p>
+    <label class="upauto"><input type="checkbox" id="upAuto"> Update automatically, once sources have been still for <input type="number" id="upSettle" min="0" max="1440" value="5"> minutes</label>
+    <table>
+      <thead><tr><th>App</th><th>Device</th><th>Installed</th><th>Now</th><th>Why</th><th></th></tr></thead>
+      <tbody id="uplist"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+    </table>
+    <details class="upcurrent"><summary id="upcurrentsum">Up to date</summary>
+      <table><tbody id="upcurrent"></tbody></table>
+    </details>
+    <h3 style="margin-top:26px">Update builds</h3>
+    <table>
+      <thead><tr><th>#</th><th>App</th><th>Ref</th><th>Devices</th><th>Status</th><th>When</th><th>Took</th></tr></thead>
+      <tbody id="upbuilds"><tr><td colspan="7" class="muted">None yet</td></tr></tbody>
+    </table>
   </section>
   <section class="view traces" data-view="traces" id="traces">
     <div class="tracehead">
@@ -795,7 +837,7 @@ pollCrashLogs();
 setInterval(pollCrashLogs, 10000);
 
 // ---- views ----
-const VIEWS = ['deploy', 'debug', 'traces', 'history'];
+const VIEWS = ['deploy', 'debug', 'updates', 'traces', 'history'];
 function route(){
   const [view, arg] = (location.hash.slice(1) || 'deploy').split('/');
   const v = VIEWS.includes(view) ? view : 'deploy';
@@ -808,6 +850,7 @@ function route(){
   route.view = v;
   $('#main').classList.toggle('debugging', v === 'debug');
   $('#refreshdev').hidden = v !== 'deploy';
+  if (v === 'updates') loadUpdates();
   if (v === 'debug') {
     const id = arg ? decodeURIComponent(arg) : null;
     if (id !== D.id) selectApp(id);
@@ -815,6 +858,86 @@ function route(){
   } else stopStream();
 }
 window.addEventListener('hashchange', route);
+
+// ---- updates ----
+// The Rust Store plans these (GET /api/updates): which installed apps are behind their branch
+// or a local package, and the builds that would bring them up to date (one per platform build,
+// installed on each of its devices).
+const U = { report: null, busy: false, error: null };
+function upWhy(r){
+  if (!r.reasons.length) return r.note ? `<span class="muted">${esc(r.note)}</span>` : '';
+  return r.reasons.map(x => `<div><span class="src ${x.package ? 'pkg' : ''}">${esc(x.source)}</span> `
+    + (x.rewritten ? `history rewritten since ${esc(x.from)}`
+       : `${x.commits === 1 ? '' : x.commits + ' commits, latest '}${esc(x.latest)} <span class="muted">${esc(x.from)}→${esc(x.to)}</span>`)
+    + `</div>`).join('') + (r.note ? `<div class="muted">${esc(r.note)}</div>` : '');
+}
+function upBuildOf(r){
+  return (U.report?.builds || []).find(b => (b.status === 'queued' || b.status === 'running') && b.devices.includes(r.device) && b.bundleId === r.bundleId);
+}
+function renderUpdates(){
+  const R = U.report;
+  if (!R) { $('#uplist').innerHTML = `<tr><td colspan="6" class="muted">${esc(U.error || 'Loading…')}</td></tr>`; return; }
+  const behind = R.rows.filter(r => r.status === 'behind');
+  const rest = R.rows.filter(r => r.status !== 'behind' && r.status !== 'missing');
+  const groups = R.groups.length;
+  $('#updatecount').textContent = behind.length || '';
+  $('#upsummary').textContent = behind.length
+    ? `${behind.length} installed app${behind.length === 1 ? '' : 's'} behind · ${groups} build${groups === 1 ? '' : 's'} to bring them up to date`
+    : 'Everything installed is up to date.';
+  const busy = R.builds.some(b => b.status === 'queued' || b.status === 'running');
+  $('#upAll').disabled = U.busy || !groups;
+  $('#upAll').textContent = groups ? `Update all (${groups} build${groups === 1 ? '' : 's'})` : 'Update all';
+  $('#upAuto').checked = !!R.auto.enabled;
+  if (document.activeElement !== $('#upSettle')) $('#upSettle').value = R.auto.settleMinutes;
+  const installed = r => r.installed ? `<span class="mono">${esc(r.installed.buildNo)}</span> <span class="muted">${esc(ago(r.installed.at))}</span>` : '—';
+  $('#uplist').innerHTML = behind.map(r => {
+    const running = upBuildOf(r);
+    return `<tr><td>${esc(r.repo)}</td><td>${esc(r.device)} <span class="muted">${esc(r.platform)}</span></td>
+      <td>${installed(r)}</td><td class="mono">${esc(r.branch)}@${esc(r.head)}</td><td class="upwhy">${upWhy(r)}</td>
+      <td>${running ? `<span class="status ${esc(running.status)}">${esc(running.status)}</span>`
+        : `<button class="icon" data-update="${esc(r.device + '|' + r.bundleId)}" title="Build it and install it on every device this build goes to">Update</button>`}</td></tr>`;
+  }).join('') || `<tr><td colspan="6" class="muted">${R.devices ? 'Nothing is behind.' : 'Nothing is behind. (This Store reaches no devices itself, so builds are kept for Apparition on each device to install.)'}</td></tr>`;
+  $('#upcurrentsum').textContent = `Up to date or unknown (${rest.length})`;
+  $('#upcurrent').innerHTML = rest.map(r => `<tr><td>${esc(r.repo)}</td><td>${esc(r.device)}</td><td>${installed(r)}</td>
+    <td>${r.status === 'unknown' ? '<span class="muted">can’t tell</span>' : 'up to date'}${r.ignoredCommits ? ` <span class="muted">(${r.ignoredCommits} commit${r.ignoredCommits === 1 ? '' : 's'} since change no build input)</span>` : ''}</td>
+    <td class="upwhy">${r.note ? `<span class="muted">${esc(r.note)}</span>` : ''}</td></tr>`).join('');
+  $('#upbuilds').innerHTML = R.builds.map(b => `<tr class="clickable" data-open="${b.id}">
+    <td class="muted">${b.id}</td><td>${esc(b.repo)}${b.auto ? ' <span class="muted">auto</span>' : ''}<div class="upinstalls">${(b.why || []).map(esc).join(' · ')}</div></td>
+    <td class="mono">${esc(b.builtBranch || b.branch)}${b.commit ? '@' + esc(b.commit) : ''}</td>
+    <td>${b.devices.map(d => { const i = (b.installs || []).find(x => x.device === d);
+      return i ? (i.ok ? esc(d) + ' ✓' : `<span class="upinstalls"><span class="bad" title="${esc(i.error || '')}">${esc(d)} ✗</span></span>`) : esc(d); }).join(', ')}</td>
+    <td><span class="status ${esc(b.status)}" title="${esc(b.error || '')}">${esc(b.status)}</span></td>
+    <td class="muted">${ago(b.queuedAt)}</td><td class="muted">${took(b)}</td></tr>`).join('')
+    || '<tr><td colspan="7" class="muted">None yet</td></tr>';
+  if (busy && !U.timer) U.timer = setTimeout(() => { U.timer = null; if (route.view === 'updates') loadUpdates(); }, 5000);
+}
+async function loadUpdates(check){
+  try {
+    const r = await api(check ? '/api/updates/check' : '/api/updates', check ? { method: 'POST' } : undefined);
+    if (r.error || !r.rows) { U.error = r.error === 'Not available in the Rust service yet.' || !r.rows ? 'Updates come from the Apparition Store in the Apparition app.' : r.error; U.report = null; }
+    else { U.report = r; U.error = null; }
+  } catch (e) { U.error = e.message; }
+  renderUpdates();
+}
+async function runUpdates(only){
+  U.busy = true; renderUpdates();
+  try {
+    const r = await api('/api/updates/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(only ? { only } : {}) });
+    if (r.error) toast(r.error);
+    else toast(r.jobs.length ? `Queued ${r.jobs.length} build${r.jobs.length === 1 ? '' : 's'}.` : 'Those builds are already queued.');
+  } finally { U.busy = false; await loadUpdates(); poll(); }
+}
+$('#upCheck').addEventListener('click', async e => { e.target.disabled = true; try { await loadUpdates(true); } finally { e.target.disabled = false; } });
+$('#upAll').addEventListener('click', () => runUpdates(null));
+$('#uplist').addEventListener('click', e => { const b = e.target.closest('[data-update]'); if (b) runUpdates([b.dataset.update]); });
+async function saveAuto(){
+  const r = await api('/api/updates/auto', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: $('#upAuto').checked, settleMinutes: Number($('#upSettle').value) || 0 }) });
+  if (r.error) toast(r.error); else toast(r.auto.enabled ? `Apps update by themselves once sources have been still for ${r.auto.settleMinutes} min.` : 'Automatic updates are off.');
+  loadUpdates();
+}
+$('#upAuto').addEventListener('change', saveAuto);
+$('#upSettle').addEventListener('change', () => { if ($('#upAuto').checked) saveAuto(); });
 
 // ---- live debugging ----
 // D.id is the build's key id: the server maps it to the app's address and

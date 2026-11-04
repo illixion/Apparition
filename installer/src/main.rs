@@ -176,6 +176,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       On the Mac that builds for you: give its Apparition Store a certificate and provisioning
       profiles, once, so it can sign what other computers send and install it without the
       device's Apparition. Kept in the Apparition folder, next to the device pairings.
+  apparition updates [--check] [--run [--only <device>|<bundle id>]...] [--auto on|off] [--json] [--local]
+      Which apps on your devices are behind their branch, or a local package they build against
+      (vergence, RAVESDK...), and why: from the Mac's Store. --check asks the devices first; --run
+      builds each once in a clean clone and installs it on every device that runs it; --auto on
+      lets the Store do that by itself once sources have been still for a few minutes.
   apparition mcp [--local]
       An MCP server on stdin/stdout for agents here: the apps' debug servers the Mac can see
       (apps, help, call, trace, panel), plus deploy for builds made on this computer. Add it
@@ -256,6 +261,7 @@ async fn main() -> ExitCode {
         Some("deploy") => developer::deploy(&args[1..]).await,
         Some("deploy-signing") => developer::deploy_signing(&args[1..]),
         Some("mcp") => developer::mcp(&args[1..]).await,
+        Some("updates") => developer::updates(&args[1..]).await,
         Some("browse") => {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
         }

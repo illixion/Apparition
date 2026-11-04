@@ -27,8 +27,10 @@ function platformStatus(p, g, S, now = Date.now()) {
   const ota = S.ota?.[p.bundleId + '|' + p.platform];
   const isSha = s => /^[0-9a-f]{7,40}$/i.test(s || '');
   const rawBuild = dev?.buildNo || '';
+  // `<sha>[-<packages>][-dirty]`: apparition build adds six hex digits naming the local
+  // packages' commits, so only the leading SHA is the app's own commit.
   const devDirty = /-dirty$/i.test(rawBuild);
-  const devSha = rawBuild.replace(/-dirty$/i, '');
+  const devSha = (/^([0-9a-f]{7,40})(?:-[0-9a-f]{6})?(?:-dirty)?$/i.exec(rawBuild) || [])[1] || rawBuild.replace(/-dirty$/i, '');
   const onSha = isSha(devSha) ? devSha : (led && isSha(led.commit) ? led.commit : '');
   const head = g.commit || '';
   const comparable = isSha(onSha) && isSha(head);

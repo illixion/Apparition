@@ -135,6 +135,25 @@ the page says what would make the first route work. A failed tunnel install keep
 page offers to install that build here instead. After an install here, Apparition tells the service,
 so the install history on the Mac and in other clients is right.
 
+## Keeping every app up to date
+
+The Store's **Updates** view (and `apparition updates` from a terminal, here or on a computer
+paired with the Mac) lists the apps on your devices that are behind, and why: their own branch, or
+a local package they build against. Kept builds record every package's commit, so a commit to
+vergence makes Convolution behind, while a commit that only touches tests or docs doesn't.
+
+**Update all** builds each one once, from committed sources in a build clone (nobody's uncommitted
+edits ship), and installs it on every device that runs it: the iPhone and iPad builds of an app
+are one build. At most two build at once (`maxConcurrentBuilds` in `config.json`), and a clone
+is kept between builds, so the next one is incremental. A device the Mac can't reach keeps the
+build for its Apparition to install. Build numbers carry a short tag for the packages
+(`38ad878-06d7aa`), so a package update shows as an update in Apparition and AltStore too.
+
+**Update automatically** does the same by itself once the sources have been still for a few
+minutes (`autoUpdate: {"enabled": true, "settleMinutes": 5}`), so a burst of commits across a
+package and an app is one build. Devices in `ledgerOnlyDevices` aren't woken to ask what they
+have; what the Store installed there stands for them.
+
 ## Linking apps to projects
 
 An app on the device belongs to a project when its bundle identifier matches a target's, exactly or

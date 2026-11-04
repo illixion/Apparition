@@ -186,8 +186,8 @@ async fn a_package_change_rebuilds_the_app_once_for_both_devices() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     let (_, log) = call(&r.app, "GET", &format!("/api/service/v1/builds/{id}/log"), Value::Null).await;
-    assert_eq!(job["status"], "success", "{job:#}\n{}", log["log"].as_str().unwrap_or(""));
-    assert!(log["log"].as_str().unwrap().contains("Kit: change Sources/Kit/Interpolator.swift"), "{log}");
+    assert_eq!(job["status"], "success", "{job:#}\n{}", log["chunk"].as_str().unwrap_or(""));
+    assert!(log["chunk"].as_str().unwrap().contains("Kit: change Sources/Kit/Interpolator.swift"), "{log}");
     let signed = r.fake.signed.lock().unwrap().clone();
     assert_eq!(signed.iter().map(|(d, _)| d.as_str()).collect::<Vec<_>>(), ["PHONE-1", "PAD-2"], "one build, installed on both");
     assert_eq!(signed[0].1, signed[1].1);
