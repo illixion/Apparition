@@ -233,6 +233,19 @@ pub fn sign_bundle(path: impl Into<PathBuf>, settings: &BundleSigningSettings<'_
     Ok(())
 }
 
+/// Signs one Mach-O file (a dylib) in place with `signer`, for `team_id`, with no entitlements:
+/// how a live patch is signed, since the OS loads into an app only code its team signed.
+pub fn sign_macho(path: impl AsRef<Path>, team_id: &str, signer: &Signer) -> Result<()> {
+    let mut signing = SigningSettings::default();
+    signing.set_signing_key(&signer.key, signer.certificate.clone());
+    for certificate in &signer.chain {
+        signing.chain_certificate(certificate.clone());
+    }
+    signing.set_team_id(team_id);
+    signing.set_code_signature_flags(SettingsScope::Main, CodeSignatureFlags::empty());
+    apple_codesign::UnifiedSigner::new(signing).sign_path_in_place(path.as_ref()).map_err(|e| error("signing", e))
+}
+
 /// Entitlements as XML, keys sorted: the DER form must list keys in order or the OS ignores
 /// all of them ("invalid entitlements blob"), and paid profiles list theirs unsorted.
 fn entitlements_xml(entitlements: &Dictionary) -> Result<String> {

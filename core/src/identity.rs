@@ -1019,6 +1019,22 @@ pub fn sign_offline_keeping(
         }))
 }
 
+/// Signs loose Mach-O files (a live patch's dylibs) in place with an imported certificate, its
+/// chain taken from the imported profile `profile_uuid`, as `build-and-sign --sign-dylib` does.
+pub fn sign_code(data_dir: &Path, identity_id: &str, profile_uuid: &str, files: &[PathBuf]) -> Result<(), Report> {
+    let identity = Identity::load(data_dir, identity_id)?;
+    if not_after(&identity.certificate) < SystemTime::now() {
+        bail!("The certificate expired on {}; import a new one", iso(not_after(&identity.certificate)));
+    }
+    let profile = Profile::all(data_dir).into_iter().find(|p| p.uuid() == profile_uuid)
+        .ok_or_else(|| report!("The profile to sign with isn't imported"))?;
+    let signer = Signer::new(identity.key.clone(), identity.certificate.clone(), chain(&identity.certificate, &profile.parsed)?)?;
+    for file in files {
+        apparition_signer::sign_macho(file, profile.team(), &signer).context(format!("Signing {} failed", file.display()))?;
+    }
+    Ok(())
+}
+
 /// Experiment (profile reuse): signs the app at `app_path` with `profile` as is, keeping the
 /// app's own bundle ID (or `bundle_id`) even though the profile names another App ID. The
 /// signature's application-identifier is the profile's, as build-and-sign does: paid-account

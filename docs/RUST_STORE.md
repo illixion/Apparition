@@ -72,9 +72,11 @@ Done (phase 0 and 1, plus the first-party DebugTrace half of the goal):
   `--run` (a debug session under `MCP_DEFAULT=on`) installed and launched it in 13 s with its console,
   found its debug server and wrote the launch record the `apps` tools attached through; `--run
   --inject` built for patching in 40 s and an `inject` `run` patch applied in 7 s. `--jit` is not run
-  on a device yet. A headset that isn't worn holds launches (`devicectl`'s too); the build says so. Not yet: Mac
-  apps, `--distribution`, `--sign-dylib` (inject's patch signing), `EXTRA_ENTITLEMENTS_PLIST` and
-  `ASSOCIATED_DOMAINS` (no repo sets them), the Store's queue running it.
+  on a device yet. A headset that isn't worn holds launches (`devicectl`'s too); the build says so.
+  `--sign-dylib` signs a live patch through the core (`sign_code`); with `DEBUGTRACE_BAS="apparition build"`
+  (DebugTrace a1cfde5) a patch it signed loaded on the Vision Pro. The Node store runs it for builds
+  and re-signs with `"builder": "apparition"` in `config.json` (off by default). Not yet: Mac apps,
+  `--distribution`, `EXTRA_ENTITLEMENTS_PLIST` and `ASSOCIATED_DOMAINS` (no repo sets them).
 
 Not done:
 - Phase 2 delivery (OTA, AltSource feed, Mac zips, signed links, trace upload from the web page).

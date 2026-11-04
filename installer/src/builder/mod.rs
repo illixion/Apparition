@@ -5,9 +5,11 @@
 //! confs, flags, `build/` layout and report as the script, so the Store and agents can call
 //! either. No Node, Python or Homebrew bash: the confs are read by the system's `/bin/bash`.
 //!
-//! Not here yet (`build-and-sign` still does them): Mac apps, `--distribution`, `--sign-dylib`
-//! (what `inject` signs patches with), and the conf keys `EXTRA_ENTITLEMENTS_PLIST` and
-//! `ASSOCIATED_DOMAINS`, which no repo sets.
+//! `--sign-dylib F...` signs loose Mach-O files with the conf's certificate, which is how `inject`
+//! signs a live patch (`DEBUGTRACE_BAS="apparition build"`).
+//!
+//! Not here yet (`build-and-sign` still does them): Mac apps, `--distribution`, and the conf keys
+//! `EXTRA_ENTITLEMENTS_PLIST` and `ASSOCIATED_DOMAINS`, which no repo sets.
 
 mod bundle;
 mod conf;
@@ -32,6 +34,7 @@ apparition build: build, sign, keep and install the app of the repo you're in (b
   apparition build [--debug] [--no-deploy] [--unsigned] [--sign-only] [--ipa FILE] [--profile FILE]
                    [--platform P] [--device NAME] [--set KEY=VALUE]... [--run] [--log] [--log-all]
                    [--mcp | --no-mcp] [--jit] [--inject] [--inject-backend dynamic|apparition]
+  apparition build --sign-dylib FILE...     sign Mach-O files with the conf's certificate (a live patch)
 
 Reads ~/.config/build-signing/global.conf and the repo's (scripts/)build-signing.conf. Signs with
 the conf's .p12 and profile, keeps the build (and its dSYMs) in the build store, installs it over
@@ -165,6 +168,8 @@ struct Options {
     settings: Vec<String>,
     ipa: Option<PathBuf>,
     profile: Option<PathBuf>,
+    /// `--sign-dylib F...`: sign these Mach-O files and stop.
+    sign_dylibs: Vec<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Option<Options>, String> {
@@ -192,7 +197,11 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--ipa" => { o.ipa = Some(PathBuf::from(value(&mut args, arg)?)); o.sign_only = true; }
             "--profile" => o.profile = Some(PathBuf::from(value(&mut args, arg)?)),
             "--distribution" => return Err("--distribution isn't in `apparition build` yet; use build-and-sign --distribution".into()),
-            "--sign-dylib" => return Err("--sign-dylib isn't in `apparition build` yet; use build-and-sign --sign-dylib".into()),
+            // The last option: it takes the files.
+            "--sign-dylib" => {
+                o.sign_dylibs = args.by_ref().map(PathBuf::from).collect();
+                if o.sign_dylibs.is_empty() { return Err("--sign-dylib needs the files to sign".into()) }
+            }
             other => return Err(format!("Unknown option: {other}")),
         }
     }
@@ -416,6 +425,31 @@ fn signed_items(app: &Path) -> usize {
     count(app) + 1
 }
 
+/// `--sign-dylib`: the files signed in place with the development certificate and the chain of
+/// its profile. Nothing about the identity is printed. No build lock: `inject` signs while a build
+/// may be running, and this writes nothing in `build/`.
+fn sign_dylibs(conf: &Conf, profile: Option<&Path>, files: &[PathBuf]) -> Result<(), String> {
+    let p12_path = conf.get("DEV_P12_PATH").ok_or_else(|| format!("Required variable DEV_P12_PATH is not set in {}", conf.label()))?;
+    let profile = profile.map(Path::to_path_buf).or_else(|| conf.get("DEV_PROFILE_PATH").map(PathBuf::from))
+        .ok_or_else(|| format!("Required variable DEV_PROFILE_PATH is not set in {}", conf.label()))?;
+    for file in files {
+        if !file.is_file() { return Err(format!("not a file: {}", file.display())) }
+    }
+    let work = WorkDir::new()?;
+    let signing = work.0.join("signing");
+    let p12 = fs::read(p12_path).map_err(|e| format!("couldn't read the .p12: {e}"))?;
+    let password = conf.get("DEV_P12_PASSWORD").or(conf.get("P12_PASSWORD")).unwrap_or_default().to_string();
+    let identity = api::import_identity(&signing, &p12, password).map_err(|e| format!("No code-signing identity in {p12_path} (is the password correct?): {}", api::describe(&e)))?;
+    let identity_id = identity["identity"]["id"].as_str().ok_or("the imported certificate has no id")?.to_string();
+    let imported = api::import_profile(&signing, fs::read(&profile).map_err(|e| e.to_string())?, None).map_err(|e| api::describe(&e))?;
+    let uuid = imported["profile"]["uuid"].as_str().ok_or("the profile has no UUID")?.to_string();
+    api::sign_code(&signing, &identity_id, &uuid, files).map_err(|e| api::describe(&e))?;
+    for file in files {
+        println!("signed {}", file.display());
+    }
+    Ok(())
+}
+
 pub async fn run(args: &[String]) -> Result<(), crate::Error> {
     let options = match parse(args) {
         Ok(Some(options)) => options,
@@ -436,7 +470,7 @@ pub async fn run(args: &[String]) -> Result<(), crate::Error> {
                 None => eprintln!("(no specific error line matched — see full log)"),
             }
         }
-        if build.log_file.as_os_str().len() > 0 {
+        if build.log_started {
             eprintln!("Full log: {}", build.log_file.display());
         }
     }
@@ -448,6 +482,8 @@ struct Build {
     log_file: PathBuf,
     /// Whether the failure came from a step that logged (the error excerpt is worth printing).
     show_log: bool,
+    /// Whether this run wrote the log (a failure points at it).
+    log_started: bool,
 }
 
 /// What the report says about the launch.
@@ -471,6 +507,9 @@ impl Build {
         let caller_bundle_id = std::env::var("BUILD_BUNDLE_ID").ok().filter(|v| !v.is_empty());
         let context = [("PROJECT_ROOT", root.display().to_string()), ("BUILD_DIR", build_dir.display().to_string())];
         let mut conf = Conf::load(&root, &conf::default_global(), &context)?;
+        if !o.sign_dylibs.is_empty() {
+            return sign_dylibs(&conf, o.profile.as_deref(), &o.sign_dylibs);
+        }
         let platform = o.platform.clone().or_else(|| conf.get("PLATFORM").map(String::from)).unwrap_or_else(|| "visionOS".into());
         conf.set("PLATFORM", platform.clone());
         if let Some(device) = &o.device { conf.set("DEVICE_NAME", device.clone()); }
@@ -554,6 +593,7 @@ impl Build {
 
         let _lock = BuildLock::acquire(&build_dir, &root)?;
         let log = fs::File::create(&self.log_file).map_err(|e| e.to_string())?;
+        self.log_started = true;
         let work = WorkDir::new()?;
         let build_id = new_build_id();
         let env = conf.environment.clone();
@@ -959,6 +999,9 @@ mod tests {
         assert!(o.sign_only && o.no_deploy && o.unsigned && o.mcp == Some(false));
         assert!(parse(&args(&["--help"])).unwrap().is_none());
         assert!(parse(&args(&["--distribution"])).unwrap_err().contains("build-and-sign --distribution"));
+        let o = parse(&args(&["--profile", "p.mobileprovision", "--sign-dylib", "a.dylib", "b.dylib"])).unwrap().unwrap();
+        assert_eq!(o.sign_dylibs, [PathBuf::from("a.dylib"), PathBuf::from("b.dylib")]);
+        assert!(parse(&args(&["--sign-dylib"])).unwrap_err().contains("needs the files"));
         assert!(parse(&args(&["--bogus"])).unwrap_err().contains("Unknown option"));
         assert!(parse(&args(&["--set"])).unwrap_err().contains("needs a value"));
     }
