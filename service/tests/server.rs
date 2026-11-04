@@ -106,7 +106,7 @@ async fn password_login_sets_a_session_that_the_gate_accepts() {
     let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("cookie", &cookie)], None).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!({ "required": true, "signedIn": true }));
     let (status, ..) = send(&f.app, "GET", "/api/resign/options", &[("cookie", &cookie)], None).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "signed in reaches the (unported) route");
+    assert_eq!(status, StatusCode::OK, "signed in reaches the route");
     let (_, headers, _) = send(&f.app, "GET", "/login?next=/builds", &[("cookie", &cookie)], None).await;
     assert_eq!(header(&headers, "location"), Some("/builds"));
     let (_, headers, _) = send(&f.app, "GET", "/login?next=//evil.test", &[("cookie", &cookie)], None).await;
@@ -143,7 +143,7 @@ async fn hosted_web_pages_are_off_until_the_app_turns_them_on() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body.starts_with("The web UI is off."));
     let (status, ..) = send(&f.app, "GET", "/ota/x.ipa", &[], None).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "machine routes pass the gate");
+    assert_eq!(status, StatusCode::FOUND, "machine routes pass the web-UI gate, then want a signed link or a session");
 
     let host = [("authorization", &*format!("Bearer {TOKEN}"))];
     let (status, _, body) = send(&f.app, "GET", "/api/service/v1/host", &host, None).await;
@@ -194,7 +194,7 @@ async fn the_service_api_wants_a_bearer_and_only_the_host_reaches_host_routes() 
     let bearer = format!("Bearer {token}");
     let device = [("authorization", &*bearer)];
     let (status, ..) = send(&f.app, "GET", "/api/service/v1/resign/options", &device, None).await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(status, StatusCode::OK);
     let (status, _, body) = send(&f.app, "GET", "/api/service/v1/state", &device, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["authRequired"], true);

@@ -3,15 +3,20 @@
 //! so the two answer the same way while both exist. Routes not ported yet answer 501.
 
 use crate::{
+    altsource::{self, AltSource},
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
     artifacts, crashlogs, deploy, devices,
     debug::{self, Debug},
+    macapps::{self, MacBuilds},
     mcp::Mcp,
+    projects,
     queue::{self, Queue},
     state::{State as StoreState, hostname},
     traces,
 };
+mod delivery;
+mod routes;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -34,14 +39,6 @@ const NOT_YET: &str = "Not available in the Rust service yet.";
 const WEB_UI_OFF: &str = "The web UI is off. Turn it on in Apparition: Developer › Devices & signing › Web UI and other devices.";
 const PUBLIC_FILES: [&str; 6] = ["/login.html", "/favicon.svg", "/favicon.ico", "/apple-touch-icon.png", "/mask-icon.svg", "/branding/icon"];
 const SERVICE_PREFIX: &str = "/api/service/v1";
-/// Routes the native clients may call; the rest of the prefix is 404, ported or not.
-const SERVICE_ROUTES: [(&str, &str); 19] = [
-    ("GET", "/state"), ("GET", "/artifacts"), ("POST", "/build"), ("POST", "/inject"), ("POST", "/installs"),
-    ("POST", "/projects"), ("POST", "/projects/discover"), ("GET", "/resign/options"), ("POST", "/resign"),
-    ("GET", "/builds/*/log"), ("GET", "/artifacts/*/manifest"), ("POST", "/builds/*/cancel"), ("GET", "/traces"),
-    ("GET", "/traces/*/files"), ("GET", "/crashlogs"), ("GET", "/crashlogs/*/ips"), ("GET", "/debug/apps"),
-    ("GET", "/debug/*/help"), ("POST", "/debug/*/call"),
-];
 
 pub struct Settings {
     pub config_path: PathBuf,
@@ -82,10 +79,15 @@ impl Settings {
 pub struct App {
     settings: Settings,
     auth: Auth,
-    state: StoreState,
+    state: Arc<StoreState>,
     debug: Arc<Debug>,
     mcp: Mcp,
     queue: Arc<Queue>,
+    alt: AltSource,
+    mac: MacBuilds,
+    deliver: Arc<dyn queue::Deliver>,
+    /// `bundle@device` of the patches in progress: one at a time per app and device.
+    patching: Mutex<HashSet<String>>,
     config: Mutex<(Option<SystemTime>, Arc<Config>)>,
     host_sessions: Mutex<HashSet<String>>,
     host_codes: Mutex<HashMap<String, u64>>,
@@ -103,6 +105,13 @@ enum Deferred {
     Mcp(Value),
     /// Ask the devices what they have installed, then plan.
     UpdatesCheck,
+    /// `POST /api/refresh-devices`: look at the devices in the background.
+    RefreshDevices(bool),
+    /// The AltSource IPA and the Mac zip wait on their builds.
+    AltIpa { path: String, query: HashMap<String, String>, slug: String, commit: String },
+    MacZip { path: String, query: HashMap<String, String>, slug: String, commit: String },
+    /// `POST /api/service/v1/inject`.
+    Inject(Value),
 }
 
 fn defer(route: Deferred) -> Response {
@@ -125,25 +134,108 @@ pub async fn serve_loopback(settings: Settings) -> std::io::Result<(std::net::So
     Ok((address, task))
 }
 
+/// What the AltSource feed and the Mac downloads ask of the Store: the live config, a branch
+/// head and the build queue.
+struct Feeds(std::sync::Weak<App>);
+
+impl Feeds {
+    fn app(&self) -> Option<Arc<App>> {
+        self.0.upgrade()
+    }
+}
+
+fn job_view(job: Option<queue::Job>) -> Option<(String, Option<String>)> {
+    job.map(|j| (j.status, j.error))
+}
+
+impl altsource::Deps for Feeds {
+    fn apps(&self, platform: Option<&str>) -> Vec<altsource::SourceApp> {
+        self.app().map(|a| altsource::source_apps(&a.config().raw, platform)).unwrap_or_default()
+    }
+    fn all_apps(&self) -> Vec<altsource::SourceApp> {
+        self.app().map(|a| altsource::all_source_apps(&a.config().raw)).unwrap_or_default()
+    }
+    fn head(&self, app: &altsource::SourceApp) -> Result<altsource::Head, String> {
+        let (commit, date, subject) = App::branch_head(&app.path, &app.branch)?;
+        Ok(altsource::Head { commit, date, subject })
+    }
+    fn enqueue(&self, app: &altsource::SourceApp, commit: &str) -> u64 {
+        let Some(a) = self.app() else { return 0 };
+        let ctx = a.queue_context();
+        a.queue.enqueue_alt_source(&ctx, &app.repo, &app.branch, &app.platform, app.device.as_deref().unwrap_or(""), &app.bundle_id, &app.slug, commit).id
+    }
+    fn job(&self, id: u64) -> Option<altsource::JobView> {
+        job_view(self.app()?.queue.job(id)).map(|(status, error)| altsource::JobView { status, error })
+    }
+}
+
+impl macapps::Deps for Feeds {
+    fn apps(&self) -> Vec<macapps::MacApp> {
+        self.app().map(|a| macapps::mac_apps(&a.config().raw)).unwrap_or_default()
+    }
+    fn enqueue(&self, app: &macapps::MacApp, commit: &str, branch: &str) -> u64 {
+        let Some(a) = self.app() else { return 0 };
+        let ctx = a.queue_context();
+        a.queue.enqueue_mac(&ctx, &app.repo, branch, &app.platform, &app.bundle_id, &app.slug, commit).id
+    }
+    fn job(&self, id: u64) -> Option<macapps::JobView> {
+        job_view(self.app()?.queue.job(id)).map(|(status, error)| macapps::JobView { status, error })
+    }
+}
+
+/// A finished build is handed to the feed or the Mac downloads here.
+struct Deliveries(std::sync::Weak<App>);
+
+impl queue::Deliver for Deliveries {
+    fn alt_source_built(&self, slug: &str, rev: &str, ipa: &Path) -> Result<(), String> {
+        let app = self.0.upgrade().ok_or("the Store is stopping")?;
+        app.alt.record(slug, rev, ipa).map(|_| ())
+    }
+    fn mac_built(&self, slug: &str, rev: &str, branch: &str, kept: &artifacts::Kept) -> Result<String, String> {
+        let app = self.0.upgrade().ok_or("the Store is stopping")?;
+        let bundle = kept.manifest.pointer("/app/bundleName").and_then(Value::as_str).unwrap_or("");
+        app.mac.record(slug, rev, branch, Path::new(bundle), Some(kept)).map(|e| e.build_no)
+    }
+}
+
 pub fn router(settings: Settings) -> std::io::Result<Router> {
     let auth = Auth::open(&settings.data_dir)?;
-    let state = StoreState::load(&settings.data_dir);
+    let state = Arc::new(StoreState::load(&settings.data_dir));
     let debug = Arc::new(Debug::new(settings.key_dir.clone(), &settings.debug_state_dir, settings.browser.clone(), settings.client_name.clone()));
     let max = Config::load(&settings.config_path).map(|c| queue::max_builds(&c)).unwrap_or(2);
     let queue = Arc::new(Queue::open(&settings.data_dir, max));
-    let app = Arc::new(App {
-        settings,
-        auth,
-        state,
-        queue,
-        mcp: Mcp::new(debug.clone()),
-        debug,
-        config: Mutex::new((None, Arc::new(Config::default()))),
-        host_sessions: Mutex::default(),
-        host_codes: Mutex::default(),
+    let data = settings.data_dir.clone();
+    let mut failed = None;
+    let app = Arc::new_cyclic(|me: &std::sync::Weak<App>| {
+        let feeds = Arc::new(Feeds(me.clone()));
+        let log = |m: &str| eprintln!("{m}");
+        let alt = AltSource::new(data.join("altsource"), feeds.clone()).map(|a| a.with_log(log));
+        let mac = MacBuilds::new(data.join("macapps"), Box::new(Feeds(me.clone()))).map(|m| m.with_log(log));
+        let (alt, mac) = match (alt, mac) {
+            (Ok(a), Ok(m)) => (Some(a), Some(m)),
+            (a, m) => { failed = Some(a.err().or(m.err()).unwrap()); (None, None) }
+        };
+        App {
+            settings, auth, state, queue,
+            alt: alt.unwrap_or_else(|| AltSource::new(std::env::temp_dir().join("apparition-none"), feeds.clone()).unwrap()),
+            mac: mac.unwrap_or_else(|| MacBuilds::new(std::env::temp_dir().join("apparition-none-mac"), Box::new(Feeds(me.clone()))).unwrap()),
+            deliver: Arc::new(Deliveries(me.clone())),
+            patching: Mutex::default(),
+            mcp: Mcp::new(debug.clone()),
+            debug,
+            config: Mutex::new((None, Arc::new(Config::default()))),
+            host_sessions: Mutex::default(),
+            host_codes: Mutex::default(),
+        }
     });
+    if let Some(error) = failed {
+        return Err(error);
+    }
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         runtime.spawn(automatic_updates(Arc::downgrade(&app)));
+        // A first look at the devices, so the page has an inventory to judge freshness by.
+        let (queue, ctx) = (app.queue.clone(), app.queue_context());
+        runtime.spawn(async move { queue.refresh_devices(&ctx, false).await });
     }
     Ok(Router::new().fallback(handle).with_state(app))
 }
@@ -169,7 +261,7 @@ async fn automatic_updates(app: std::sync::Weak<App>) {
         }
         if now - asked > 15 * 60_000 {
             asked = now;
-            app.queue.refresh_inventory(&ctx).await;
+            app.queue.refresh_devices(&ctx, false).await;
         }
         let (q, c) = (app.queue.clone(), ctx.clone());
         let started = tokio::task::spawn_blocking(move || q.auto_tick(&c, settle)).await.unwrap_or_default();
@@ -466,7 +558,7 @@ impl App {
         let config = self.config();
         queue::Context {
             cli: queue::cli(&config), build_store: self.build_store(), devices: self.settings.devices.clone(),
-            node_state: self.settings.data_dir.join("state.json"), config,
+            state: self.state.clone(), deliver: Some(self.deliver.clone()), config,
         }
     }
 
@@ -517,12 +609,10 @@ impl App {
             }
             ["api", "builds", id, "cancel"] if post => {
                 let id: u64 = id.parse().ok()?;
-                if id < queue::FIRST_ID {
-                    return None;
-                }
+                // Builds the Node store made are long over.
                 Some(match self.queue.cancel(id) {
                     Some(job) => json_reply(200, json!({ "ok": true, "job": job })),
-                    None => json_reply(404, json!({ "error": "unknown build" })),
+                    None => json_reply(200, json!({ "ok": false })),
                 })
             }
             _ => None,
@@ -573,7 +663,26 @@ impl App {
         if let Some(res) = self.updates_api(req, &segments) {
             return Some(res);
         }
+        if let Some(res) = self.ota_routes(req).or_else(|| self.mac_api(req, &segments)) {
+            return Some(res);
+        }
+        let post = req.method == Method::POST;
         match segments.as_slice() {
+            ["api", "altsource"] if get => Some(self.alt_source_api(req)),
+            ["api", "build"] if post => {
+                let ctx = self.queue_context();
+                Some(match self.queue.enqueue_deploy(&ctx, &req.json_body()) {
+                    Ok(jobs) => json_reply(200, json!({ "jobs": jobs })),
+                    Err(error) => json_reply(400, json!({ "error": error })),
+                })
+            }
+            ["api", "resign", "options"] if get => Some(self.resign_options()),
+            ["api", "resign"] if post => Some(self.resign(req)),
+            ["api", "refresh-devices"] if post => {
+                // Devices the Store leaves alone on a plain refresh are named in the reply.
+                let force = req.json_body().get("force").and_then(Value::as_bool) == Some(true);
+                Some(defer(Deferred::RefreshDevices(force)))
+            }
             ["api", "debug", "apps"] if get => Some(defer(Deferred::Apps)),
             ["api", "debug", id, action @ ("help" | "call" | "logs" | "panels")] if !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)) => {
                 let id = id.to_string();
@@ -678,7 +787,7 @@ impl App {
     }
 
     fn state_response(&self) -> Response {
-        let mut bundle = self.state.bundle(&self.config(), system_ms(), &hostname());
+        let mut bundle = self.state.bundle(&self.config(), system_ms(), &hostname(), &|repo| json!(self.mac.list(repo)));
         // The queue's own builds beside the Node store's, newest first.
         let jobs = self.queue.jobs();
         let ids = |status: &str| jobs.iter().filter(|j| j.status == status).map(|j| json!(j.id)).collect::<Vec<_>>();
@@ -743,7 +852,9 @@ fn encode_uri_component(s: &str) -> String {
 fn capabilities() -> Value {
     // Only what this service really does. Clients enable features from this list.
     json!({ "protocol": "apparition-service", "version": 1, "hostPlatform": std::env::consts::OS,
-        "capabilities": [], "authentication": "password-session" })
+        "capabilities": ["projects", "devices", "builds", "build-logs", "cancel-builds", "traces", "crash-logs", "debug-endpoints",
+            "artifact-manifests", "artifact-downloads", "project-registration", "project-discovery", "resign", "resign-build", "entry-patching", "install-modes",
+            "report-install"], "authentication": "password-session" })
 }
 
 /// Whether the request carries the service API's bearer: Some(true) for the hosting app's own
@@ -944,11 +1055,24 @@ async fn run_debug(app: &Arc<App>, route: Deferred) -> Response {
         Deferred::Panels(id) => reply_of(app.debug.panels(&id).await),
         Deferred::UpdatesCheck => {
             let ctx = app.queue_context();
-            app.queue.refresh_inventory(&ctx).await;
+            app.queue.refresh_devices(&ctx, false).await;
             let (queue, c) = (app.queue.clone(), ctx);
             let report = tokio::task::spawn_blocking(move || queue.report(&c)).await.unwrap_or(Value::Null);
             json_reply(200, report)
         }
+        Deferred::RefreshDevices(force) => {
+            let config = app.config();
+            let mut configured: Vec<String> = queue::targets(&config).into_iter().map(|t| t.device).collect();
+            configured.sort();
+            configured.dedup();
+            let skipped = if force { Vec::new() } else { let skip = config.skipped_devices(); configured.into_iter().filter(|d| skip.contains(d)).collect() };
+            let (queue, ctx) = (app.queue.clone(), app.queue_context());
+            tokio::spawn(async move { queue.refresh_devices(&ctx, force).await });
+            json_reply(200, json!({ "ok": true, "skipped": skipped }))
+        }
+        Deferred::AltIpa { path, query, slug, commit } => app.serve_alt_ipa(path, query, slug, commit).await,
+        Deferred::MacZip { path, query, slug, commit } => app.serve_mac_zip(path, query, slug, commit).await,
+        Deferred::Inject(job) => app.inject_run(job).await,
         Deferred::Mcp(message) => {
             if message.is_array() {
                 return json_reply(200, json!({ "jsonrpc": "2.0", "id": null, "error": { "code": -32600, "message": "batches are not supported" } }));
@@ -1037,19 +1161,43 @@ fn dispatch(app: &App, req: &Req) -> Response {
         }
     }
 
-    // ---- everything below needs a session (or a signed link, once those are ported) ----
+    // ---- everything below needs a session, or one of the signed links ----
     if req.method == Method::POST && req.path == "/api/traces" {
         return app.receive_trace(req);
     }
-    if machine_route {
-        return json_reply(501, json!({ "error": NOT_YET }));
+    // AltSource: clients have no cookie; the feed has its lasting token, its links their own.
+    if let Some(routed) = app.alt_source_routes(req) {
+        return match routed {
+            Ok(res) => res,
+            Err((slug, commit, path)) => defer(Deferred::AltIpa { path, query: req.query.clone(), slug, commit }),
+        };
     }
-    if !app.signed_in(req) {
+    // installd can't send the cookie, so the OTA files also take a signed `?t=`; so do the Mac
+    // downloads, for a Mac with no session.
+    let ota_signed = req.method == Method::GET && req.path.strip_prefix("/ota/").is_some_and(|rest| {
+        let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b));
+        let name = rest.strip_suffix(".ipa").map(|s| ok(s) && !s.contains('/'))
+            .or_else(|| rest.strip_suffix("/manifest.plist").map(ok)).unwrap_or(false);
+        name && req.query.get("t").is_some_and(|t| app.auth.verify_path(&req.path, t))
+    });
+    let mac_link = app.mac_link_signed(req);
+    let mac_signed = mac_link.as_ref().is_some_and(|m| m.2);
+    if mac_link.is_some() && req.query.contains_key("t") && !mac_signed && !app.signed_in(req) {
+        return text(403, "link expired or not signed");
+    }
+    if !(ota_signed || mac_signed) && !app.signed_in(req) {
         if req.path.starts_with("/api/") {
             return json_reply(401, json!({ "error": "sign in first", "login": "/login" }));
         }
         let target = format!("{}{}", req.path, req.query_string());
         return redirect(&format!("/login?next={}", encode_uri_component(&target)));
+    }
+    if let Some((slug, which, signed)) = mac_link {
+        return if which == "latest" {
+            app.mac_latest(req, &slug, signed)
+        } else {
+            defer(Deferred::MacZip { path: req.path.clone(), query: req.query.clone(), slug, commit: which })
+        };
     }
     if req.method == Method::GET {
         let file = if req.path == "/" { "index.html" } else { &req.path[1..] };
@@ -1142,8 +1290,7 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
         ("GET", "/updates") => app.api(req, "/api/updates").unwrap_or_else(unknown),
         ("POST", "/updates/run" | "/updates/check" | "/updates/auto") => app.api(req, &format!("/api{suffix}")).unwrap_or_else(unknown),
         ("GET", s) if s.starts_with("/builds/") && s.ends_with("/log") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
-        ("POST", s) if s.starts_with("/builds/") && s.ends_with("/cancel") => app.api(req, &format!("/api{s}"))
-            .unwrap_or_else(|| json_reply(501, json!({ "error": NOT_YET }))),
+        ("POST", s) if s.starts_with("/builds/") && s.ends_with("/cancel") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         ("GET", s) if s.starts_with("/traces/") && s.contains("/files/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         (_, "/host" | "/host/web-ui" | "/host/web-link") if !is_host => unknown(),
         ("GET", "/host") => json_reply(200, app.host_status()),
@@ -1165,20 +1312,15 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
             }
             json_reply(200, json!({ "ok": true }))
         }
-        (method, path) if SERVICE_ROUTES.iter().any(|(m, pattern)| *m == method && route_matches(pattern, path)) => {
-            json_reply(501, json!({ "error": NOT_YET }))
-        }
+        ("GET", "/resign/options") => app.api(req, "/api/resign/options").unwrap_or_else(unknown),
+        ("POST", "/resign") => app.api(req, "/api/resign").unwrap_or_else(unknown),
+        ("POST", "/build") => app.service_build(req),
+        ("POST", "/inject") => app.service_inject(req),
+        ("POST", "/installs") => app.service_installs(req),
+        ("POST", "/projects/discover") => app.service_discover(req),
+        ("POST", "/projects") => app.service_register(req),
         _ => unknown(),
     })
-}
-
-/// `*` stands for one path segment; a trailing `/files` also takes what follows it.
-fn route_matches(pattern: &str, path: &str) -> bool {
-    let (p, q): (Vec<&str>, Vec<&str>) = (pattern.split('/').collect(), path.split('/').collect());
-    if pattern.ends_with("/files") && q.len() > p.len() {
-        return p.iter().zip(&q).all(|(a, b)| *a == "*" && !b.is_empty() || a == b);
-    }
-    p.len() == q.len() && p.iter().zip(&q).all(|(a, b)| *a == "*" && !b.is_empty() || a == b)
 }
 
 /// The name a client sends for the device it runs on, percent-encoded because headers are ASCII.

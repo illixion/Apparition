@@ -9,6 +9,10 @@
 
 pub mod artifacts;
 pub mod assets;
+pub mod resign;
+pub mod projects;
+pub mod macapps;
+pub mod altsource;
 pub mod auth;
 pub mod clones;
 pub mod config;

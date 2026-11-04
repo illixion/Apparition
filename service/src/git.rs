@@ -12,6 +12,12 @@ fn git(path: &str, args: &[&str]) -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
+/// `git -C path args`, its trimmed output when it succeeded.
+pub fn run(path: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(path).args(args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 impl GitCache {
     pub fn info(&self, path: &str) -> Value {
         if let Some((at, info)) = self.0.lock().unwrap().get(path) {
