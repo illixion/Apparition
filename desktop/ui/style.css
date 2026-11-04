@@ -942,7 +942,11 @@ details[open] > summary { margin-bottom: .85rem; }
 /* Where anisette comes from, in the header's corner on every screen, so a screenshot says how
    Apparition is set up. Red when the setup isn't supported. */
 .setup-badge {
-  flex: none;
+  /* Shrinks and ends in an ellipsis in a narrow window; the full text is its tooltip. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: .3rem .75rem;
   border: 1px solid var(--line);
   border-radius: 999px;

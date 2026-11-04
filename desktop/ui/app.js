@@ -146,6 +146,7 @@ async function drawSetupBadge() {
   const parts = [`Sign-in anisette: ${anisetteName(choice)}`];
   if (offered) parts.push(offered === "vm" ? "Companion offers: this Mac's anisette VM" : "Companion offers: this Mac's own");
   text.textContent = parts.join(" · ");
+  badge.title = text.textContent;
   const mac = choice === "builtin" || (choice === "vm" && state.vmAnisette) || (choice === "paired" && state.pairedMac);
   badge.className = `setup-badge${mac ? "" : " attention"}`;
   badge.hidden = false;
