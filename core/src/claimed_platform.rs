@@ -88,7 +88,7 @@ impl Claim {
                 let served = if client_info.contains("<Android") { Served::Android } else if client_info.contains("<Windows;") { Served::Windows } else { Served::Mac };
                 Claim {
                     served,
-                    client_info: if served == Served::Mac { MAC_CLIENT_INFO.to_string() } else { client_info.to_string() },
+                    client_info: if served == Served::Mac && client_info.contains("<Mac OS X;") { MAC_CLIENT_INFO.to_string() } else { client_info.to_string() },
                     user_agent: user_agent.to_string(),
                 }
             }
@@ -186,6 +186,12 @@ mod tests {
         assert_eq!(claim.served, Served::Mac);
         // The stale 10.12 client info is replaced by the current Mac's; the server's user agent stays.
         assert_eq!((claim.client_info.as_str(), claim.user_agent.as_str()), (MAC_CLIENT_INFO, "akd/1.0 CFNetwork/811.5.4 Darwin/16.7.0"));
+        // A modern or VM report is not overwritten: an attested VM must claim its real model.
+        let vm = "<VirtualMac2,1> <macOS;27.0;26A428> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        let reported = Claim::from_reply(&json!({ "client_info": vm, "user_agent": "akd/1.0" }), None);
+        assert_eq!((reported.served, reported.client_info.as_str()), (Served::Mac, vm));
+        let modern = Claim::from_reply(&json!({ "client_info": "<MacBookPro18,3> <macOS;15.1;24B83> <com.apple.AuthKit/1 (com.apple.akd/1.0)>", "user_agent": "akd/1.0" }), None);
+        assert!(modern.client_info.contains("<MacBookPro18,3>"));
         let android = Claim::from_reply(&json!({ "client_info": "<Pixel 7> <Android;14;x> <…>", "user_agent": "akd/1.0" }), None);
         assert_eq!(android.served, Served::Android);
     }
