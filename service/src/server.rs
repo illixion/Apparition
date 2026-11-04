@@ -6,6 +6,7 @@ use crate::{
     auth::{Auth, COOKIE, Login, cookie_value, hash_password, system_ms},
     config::Config,
     state::{State as StoreState, hostname},
+    traces,
 };
 use axum::{
     Router,
@@ -44,6 +45,8 @@ pub struct Settings {
     pub public_dir: PathBuf,
     /// The hosting app's token (43 characters). Present means hosted.
     pub host_token: Option<String>,
+    /// Where `build-and-sign` records trace signing keys (`traces::default_key_dir()`).
+    pub key_dir: PathBuf,
 }
 
 pub struct App {
@@ -107,6 +110,10 @@ impl Req {
 }
 
 fn percent_decode(s: &str) -> String {
+    percent_decode_with(s, true)
+}
+
+fn percent_decode_with(s: &str, plus_is_space: bool) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -121,7 +128,7 @@ fn percent_decode(s: &str) -> String {
                 out.push(b'%');
                 i += 1;
             }
-            b'+' => {
+            b'+' if plus_is_space => {
                 out.push(b' ');
                 i += 1;
             }
@@ -314,6 +321,86 @@ impl App {
         Ok(())
     }
 
+    fn traces_dir(&self) -> PathBuf {
+        self.settings.data_dir.join("traces")
+    }
+
+    fn receive_trace(&self, req: &Req) -> Response {
+        let config = self.config();
+        let repo_for_bundle = |bundle: &str| -> Option<String> {
+            config.raw.get("repos")?.as_array()?.iter().find(|r| {
+                ["platforms", "macApps"].iter().filter_map(|k| r.get(k)?.as_array()).flatten().any(|p| p.get("bundleId").and_then(Value::as_str) == Some(bundle))
+            })?.get("name")?.as_str().map(String::from)
+        };
+        let uploader = req.header("tailscale-user-login");
+        let up = traces::Upload {
+            dir: &self.traces_dir(), key_dir: &self.settings.key_dir, now_ms: system_ms(),
+            via_web: req.header("x-debugtrace-source") == "web", uploader: (!uploader.is_empty()).then_some(uploader),
+            repo_for_bundle: &repo_for_bundle,
+        };
+        match traces::receive(&req.body, &up) {
+            Ok((status, meta)) => {
+                if status == 201 {
+                    eprintln!("trace {} from {} ({} bytes)", meta["id"].as_str().unwrap_or(""), meta["app"]["bundleId"].as_str().unwrap_or(""), req.body.len());
+                }
+                json_reply(status, json!({ "ok": true, "trace": meta }))
+            }
+            Err(traces::TraceError(status, message)) => json_reply(status, json!({ "error": message })),
+        }
+    }
+
+    /// The routes behind a session (or the service API's bearer): `path` is `/api/...`.
+    fn api(&self, req: &Req, path: &str) -> Option<Response> {
+        let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        let is_id = |s: &str| s.len() == 36 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b'-');
+        let get = req.method == Method::GET;
+        let traces = self.traces_dir();
+        match segments.as_slice() {
+            ["api", "state"] if get => Some(self.state_response()),
+            ["api", "traces"] if get => Some(json_reply(200, json!({ "traces": traces::list(&traces) }))),
+            ["api", "traces", file] if get && file.strip_suffix(".zip").is_some_and(is_id) => {
+                let id = file.strip_suffix(".zip").unwrap();
+                let Ok(bytes) = fs::read(traces.join(id).join("trace.zip")) else { return Some(json_reply(404, json!({ "error": "unknown trace" }))) };
+                let meta: Value = fs::read_to_string(traces.join(id).join("meta.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+                let app_name = meta["app"]["name"].as_str().unwrap_or("app");
+                let name = safe_slug(&format!("{app_name}-trace-{}.zip", &id[..8]));
+                let res = with_header(reply(200, "application/zip", bytes), "content-disposition", &format!("attachment; filename=\"{name}\""));
+                Some(res)
+            }
+            ["api", "traces", id, "files", rest @ ..] if get && is_id(id) && !rest.is_empty() => {
+                let rel = percent_decode_with(&rest.join("/"), false);
+                let base = traces.join(id).join("files");
+                let file = base.join(&rel);
+                let unknown = || json_reply(404, json!({ "error": "unknown file" }));
+                if !traces::safe_trace_path(&rel) || !file.is_file() {
+                    return Some(unknown());
+                }
+                let Ok(bytes) = fs::read(&file) else { return Some(unknown()) };
+                // Text as text so the browser shows it; anything else downloads. Never rendered
+                // as HTML: the content came from a device.
+                let ext = file.extension().and_then(|e| e.to_str()).map(|e| format!(".{}", e.to_ascii_lowercase())).unwrap_or_default();
+                let is_text = [".txt", ".json", ".jsonl", ".md", ".log", ".csv"].contains(&ext.as_str());
+                let mut res = reply(200, if is_text { "text/plain; charset=utf-8" } else { "application/octet-stream" }, bytes);
+                res = with_header(res, "x-content-type-options", "nosniff");
+                res = with_header(res, "content-security-policy", "default-src 'none'");
+                if !is_text {
+                    let leaf = file.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                    res = with_header(res, "content-disposition", &format!("attachment; filename=\"{}\"", safe_slug(leaf)));
+                }
+                Some(res)
+            }
+            ["api", "traces", id, "delete"] if req.method == Method::POST && is_id(id) => {
+                let dir = traces.join(id);
+                if !dir.exists() {
+                    return Some(json_reply(404, json!({ "error": "unknown trace" })));
+                }
+                let _ = fs::remove_dir_all(dir);
+                Some(json_reply(200, json!({ "ok": true })))
+            }
+            _ => None,
+        }
+    }
+
     fn state_response(&self) -> Response {
         json_reply(200, self.state.bundle(&self.config(), system_ms(), &hostname()))
     }
@@ -375,7 +462,13 @@ fn constant_eq(a: &str, b: &str) -> bool {
 
 async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
-    let body = to_bytes(body, 1_000_000).await.map(|b| b.to_vec()).unwrap_or_default();
+    let upload = parts.method == Method::POST && parts.uri.path() == "/api/traces";
+    let limit = if upload { traces::MAX_UPLOAD } else { 1_000_000 };
+    let body = match to_bytes(body, limit).await {
+        Ok(b) => b.to_vec(),
+        Err(_) if upload => return json_reply(413, json!({ "error": format!("trace is larger than {} MB", traces::MAX_UPLOAD >> 20) })),
+        Err(_) => Vec::new(),
+    };
     let query = parts.uri.query().unwrap_or("").split('&').filter(|p| !p.is_empty()).map(|p| {
         let (k, v) = p.split_once('=').unwrap_or((p, ""));
         (percent_decode(k), percent_decode(v))
@@ -453,6 +546,9 @@ fn dispatch(app: &App, req: &Req) -> Response {
     }
 
     // ---- everything below needs a session (or a signed link, once those are ported) ----
+    if req.method == Method::POST && req.path == "/api/traces" {
+        return app.receive_trace(req);
+    }
     if machine_route {
         return json_reply(501, json!({ "error": NOT_YET }));
     }
@@ -469,8 +565,8 @@ fn dispatch(app: &App, req: &Req) -> Response {
             return res;
         }
     }
-    if req.method == Method::GET && req.path == "/api/state" {
-        return app.state_response();
+    if let Some(res) = app.api(req, &req.path) {
+        return res;
     }
     if req.path.starts_with("/api/") {
         return json_reply(501, json!({ "error": NOT_YET }));
@@ -527,6 +623,8 @@ fn service_api(app: &App, req: &Req) -> Option<Response> {
     Some(match (req.method.as_str(), suffix) {
         ("GET", "" | "/capabilities") => json_reply(200, capabilities()),
         ("GET", "/state") => app.state_response(),
+        ("GET", "/traces") => app.api(req, "/api/traces").unwrap_or_else(unknown),
+        ("GET", s) if s.starts_with("/traces/") && s.contains("/files/") => app.api(req, &format!("/api{s}")).unwrap_or_else(unknown),
         (_, "/host" | "/host/web-ui" | "/host/web-link") if !is_host => unknown(),
         ("GET", "/host") => json_reply(200, app.host_status()),
         ("POST", "/host/web-link") => {
@@ -570,4 +668,19 @@ fn device_header(value: &str) -> Option<String> {
     }
     let decoded = percent_decode(&value.replace('+', "%2B"));
     Some(decoded)
+}
+
+fn safe_slug(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_run = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() || "._-".contains(c) {
+            out.push(c);
+            in_run = false;
+        } else if !in_run {
+            out.push('-');
+            in_run = true;
+        }
+    }
+    out
 }

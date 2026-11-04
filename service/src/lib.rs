@@ -11,4 +11,5 @@ pub mod config;
 pub mod git;
 pub mod install_mode;
 pub mod state;
+pub mod traces;
 pub mod server;

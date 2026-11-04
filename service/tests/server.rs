@@ -28,6 +28,7 @@ fn fixture(config: Value, hosted: bool) -> Fixture {
         data_dir: dir.path().join("data"),
         public_dir: public,
         host_token: hosted.then(|| TOKEN.to_string()),
+        key_dir: dir.path().join("keys"),
     })
     .unwrap();
     Fixture { dir, app }
