@@ -150,7 +150,8 @@ codesign --verify --strict "$STAGE/$APP_NAME.app" \
 echo "▶ Quitting the running app (if any)…"
 # Graceful quit by bundle id, only when it is running, so AppleScript doesn't launch it to
 # quit it. Nothing is killed by name: if it ignores the quit, say so.
-running() { pgrep -x "$APP_NAME" >/dev/null 2>&1; }
+# Matched by the installed binary's path: a bare name also matches the iOS Apparition app in the Simulator.
+running() { pgrep -f "^$DEST/Contents/MacOS/$APP_NAME( |\$)" >/dev/null 2>&1; }
 if running; then
   osascript -e "tell application id \"$BUNDLE_ID\" to quit" 2>/dev/null || true
   for _ in $(seq 1 20); do
@@ -164,8 +165,22 @@ if running; then
 fi
 
 echo "▶ Installing to ${DEST}…"
-rm -rf -- "$DEST"
-ditto "$STAGE/$APP_NAME.app" "$DEST"
+# Swapped in, never removed first: `apparition` on PATH is a link into this bundle, and build-and-sign and
+# every other agent's deploys run through it. A `rm -rf` then `ditto` leaves the link dangling for the whole
+# copy (and for good if the copy fails). Copy beside it, then exchange the two directories in one step.
+NEW="$DEST.new"
+rm -rf -- "$NEW"
+ditto "$STAGE/$APP_NAME.app" "$NEW"
+if [[ -e "$DEST" ]]; then
+  # renamex_np(RENAME_SWAP) exchanges both at once; where it isn't there, fall back to two renames.
+  if /usr/bin/python3 -c 'import ctypes,sys; l=ctypes.CDLL(None, use_errno=True); sys.exit(0 if l.renamex_np(sys.argv[1].encode(), sys.argv[2].encode(), 2)==0 else 1)' "$NEW" "$DEST" 2>/dev/null; then
+    rm -rf -- "$NEW"   # now holds the previous app
+  else
+    mv -- "$DEST" "$DEST.old" && mv -- "$NEW" "$DEST" && rm -rf -- "$DEST.old"
+  fi
+else
+  mv -- "$NEW" "$DEST"
+fi
 
 # The command line on PATH is what build-and-sign, agents' `inject` and the Store's builds run, so
 # keep it the one just installed rather than whatever older copy the link pointed at.
