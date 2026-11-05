@@ -946,8 +946,12 @@ pub fn sign_offline_keeping(
             }
         }
 
-        // Every extension, PlugIns/ and ExtensionKit's Extensions/, needs a profile covering its
-        // (renamed) ID. One no profile covers is removed when the app allows that, else it's an error.
+        // Every extension, PlugIns/ and ExtensionKit's Extensions/, gets a profile covering its
+        // (renamed) ID when one is imported. One no profile covers is removed when the caller asks
+        // for that, else it's signed with the app's own profile and entitlements, as build-and-sign
+        // did: a paid team's profile signs a mismatched bundle ID (see `bundle_id_for`), so an
+        // explicit App ID's profile carries its broadcast extension too (Longwave's
+        // pro.longwave.app.broadcast under pro.longwave.app).
         let mut extensions: Vec<(PathBuf, String)> = app
             .bundle
             .app_extensions()
@@ -965,9 +969,10 @@ pub fn sign_offline_keeping(
                     std::fs::remove_dir_all(&dir)?;
                     stripped.push(dir.file_name().unwrap_or_default().to_string_lossy().to_string());
                 }
-                None => bail!(
-                    "No imported profile covers the extension {id}. Import one for it, use a wildcard profile, or turn on removing extensions."
-                ),
+                None => {
+                    tracing::info!("no imported profile covers the extension {id}; signing it with the app's profile");
+                    by_bundle.push((id, main, signed_entitlements(&dir)));
+                }
             }
         }
         // A watch app and its own extensions go together: one no profile covers takes the whole
