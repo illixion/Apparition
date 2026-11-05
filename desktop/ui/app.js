@@ -1540,7 +1540,9 @@ const companionPanel = /** @type {HTMLElement} */ (document.getElementById("comp
 const tabInstall = /** @type {HTMLButtonElement} */ (document.getElementById("tab-install"));
 const tabCompanion = /** @type {HTMLButtonElement} */ (document.getElementById("tab-companion"));
 const developerView = /** @type {HTMLElement} */ (document.getElementById("view-developer"));
-const tabDeveloper = /** @type {HTMLButtonElement} */ (document.getElementById("tab-developer"));
+// Apps, Debug and Builds are the Developer view's three sections, promoted to the top bar.
+const DEVELOPER_TABS = /** @type {const} */ ({ projects: "tab-apps", debug: "tab-debug", activity: "tab-builds" });
+const developerTabs = Object.fromEntries(Object.entries(DEVELOPER_TABS).map(([section, id]) => [section, /** @type {HTMLButtonElement} */ (document.getElementById(id))]));
 const developer = new DeveloperView(document.getElementById("developer-panel"), invoke);
 /** @type {number|undefined} */ let companionTimer;
 /** What an action in progress, or one that just failed, has to say. @type {{text: string, kind?: "error"|"good"|""}|null} */
@@ -1557,16 +1559,21 @@ const viewsBar = /** @type {HTMLElement} */ (document.querySelector(".views"));
 const modeSwitch = /** @type {HTMLElement} */ (document.getElementById("mode-switch"));
 
 /** The tabs each mode shows, in order. Develop adds the Develop tab and turns Install into Devices. */
-const MODE_TABS = { install: [tabInstall, tabCompanion], develop: [tabDeveloper, tabInstall, tabCompanion] };
+const MODE_TABS = { install: [tabInstall, tabCompanion], develop: [...Object.values(developerTabs), tabInstall, tabCompanion] };
 
-function showView(/** @type {"install"|"companion"|"developer"|"mode"} */ view) {
+function syncDeveloperTabs(/** @type {boolean} */ showing) {
+  for (const [name, tab] of Object.entries(developerTabs)) tab.setAttribute("aria-selected", String(showing && name === developer.section));
+}
+
+function showView(/** @type {"install"|"companion"|"developer"|"mode"} */ view, /** @type {string} */ section = developer.section) {
   const companion = view === "companion";
   modeView.hidden = view !== "mode";
   installView.hidden = view !== "install";
   companionView.hidden = !companion;
   tabInstall.setAttribute("aria-selected", String(view === "install"));
   developerView.hidden = view !== "developer";
-  tabDeveloper.setAttribute("aria-selected", String(view === "developer"));
+  if (view === "developer") developer.select(section);
+  syncDeveloperTabs(view === "developer");
   developer.show(view === "developer");
   tabCompanion.setAttribute("aria-selected", String(companion));
   clearInterval(companionTimer);
@@ -1577,6 +1584,7 @@ function showView(/** @type {"install"|"companion"|"developer"|"mode"} */ view) 
     companionTimer = setInterval(refreshCompanion, 2000);
     companionPanel.focus({ preventScroll: true });
   }
+  developer.placeSetup(companion);
 }
 
 /** Shows the tabs of `mode` and marks the switch. Does not save or navigate. */
@@ -1584,7 +1592,6 @@ function applyMode(/** @type {"install"|"develop"} */ mode) {
   state.useMode = mode;
   document.body.dataset.mode = mode;
   tabInstall.textContent = mode === "develop" ? "Devices" : "Install";
-  tabDeveloper.textContent = "Develop";
   viewsBar.replaceChildren(...MODE_TABS[mode]);
   viewsBar.hidden = modeSwitch.hidden = false;
   for (const button of modeSwitch.querySelectorAll("button")) button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
@@ -1606,9 +1613,17 @@ for (const button of document.querySelectorAll("[data-mode]")) {
   button.addEventListener("click", () => chooseMode(/** @type {any} */ (button).dataset.mode));
 }
 developer.go = () => showView("install");
+developer.onSelect = () => syncDeveloperTabs(!developerView.hidden);
 tabInstall.addEventListener("click", () => showView("install"));
 tabCompanion.addEventListener("click", () => showView("companion"));
-tabDeveloper.addEventListener("click", () => showView("developer"));
+for (const [section, tab] of Object.entries(developerTabs)) tab.addEventListener("click", () => showView("developer", section));
+// A badge on a top tab (running debug apps, builds in progress) comes from the Developer view's data.
+developer.onBadge = (section, count) => {
+  const badge = document.getElementById(section === "debug" ? "debug-count" : "builds-count");
+  if (!badge) return;
+  badge.hidden = !count;
+  badge.textContent = String(count || "");
+};
 
 function buildCompanion() {
   companionPanel.append(template("t-companion"));

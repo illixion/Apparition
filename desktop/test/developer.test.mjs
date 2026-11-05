@@ -270,7 +270,7 @@ test('sections switch one pane at a time, and activity lists running builds firs
   assert.equal(view.panes.projects.hidden, false); assert.equal(view.panes.activity.hidden, true);
   view.select('activity');
   assert.equal(view.panes.projects.hidden, true); assert.equal(view.panes.activity.hidden, false);
-  assert.equal(view.navButtons.activity['aria-selected'], 'true');
+  assert.equal(view.heading.textContent, 'Builds');
   const old = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, repo: 'R', platform: 'iOS', status: 'success' }));
   view.renderJobs([...old.reverse(), { id: 30, repo: 'R', platform: 'iOS', status: 'running' }]);
   const rows = view.items(view.jobs).children;
@@ -292,7 +292,7 @@ test('an unchanged section is not repainted, so what the person opened stays ope
   view.signatures = {};
   view.renderReports(traces, crashes);
   assert.equal(view.items(view.reports).children[0].open, true, 'even a forced repaint restores the open group');
-  assert.equal(view.navButtons.reports.textContent, 'Reports · 2');
+  assert.equal(view.reports.heading.textContent, 'Crashes and traces · 2');
 });
 
 test('a log opens inside the row that asked for it, and Hide closes it', async () => {

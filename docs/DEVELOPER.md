@@ -94,14 +94,14 @@ page, which has a header (the target, a status badge, where it stands) and tabs:
 
 The Library's project cards link into the same page, and to its Reports tab when they show crashes.
 
-**Activity.** The build queue: what is running or queued first, then recent builds, each with its
+**Builds.** The build queue: what is running or queued first, then recent builds, each with its
 log and, while it runs, a Cancel. Builds of one project run one at a time.
 
-**Reports.** Crash logs and DebugTrace traces, grouped by app. Crash logs open symbolicated
-against the symbols the Mac kept for that exact build. On the Mac, this section also lists running
-dev builds with a debug server; inspecting one asks for approval on the device.
+**Debug.** On the Mac, running dev builds with a debug server come first, each with Tune, Log, Profile and
+Memory buttons (the device asks for approval); below them, crash logs and DebugTrace traces grouped by app. Crash logs open symbolicated
+against the symbols the Mac kept for that exact build.
 
-**Devices & signing** (on the Mac) or **Service** (on a device). The devices the Mac can install to
+**Devices** (on the Mac; **Service** on a device). The devices the Mac can install to
 (simulators are left out) and the connection. On the Mac, **Signing on devices** sends
 the build-signing folder's certificates and profiles into Apparition's Signing folder on a paired device, so
 Apparition there can sign with your developer certificate instead of an Apple ID. Nothing is

@@ -717,7 +717,7 @@ impl Mcp {
         };
         written.await.map_err(|e| err(e.to_string()))?;
         Ok(text_result(json!({ "ok": true, "bundleId": bundle, "name": name, "controls": controls.len(), "path": path.display().to_string(),
-            "hint": "the user opens it in the Apparition Store: Debug › the app › Panels (it refreshes on its own)" }), false))
+            "hint": "the user opens it in the Apparition Store: Debug › the app › Tune (it refreshes on its own)" }), false))
     }
 }
 

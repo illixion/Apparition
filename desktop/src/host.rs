@@ -118,25 +118,31 @@ pub async fn host_web_ui(service: tauri::State<'_, BuildService>, enabled: bool,
 /// page over 127.0.0.1 and has no access to the app (no capability names it). `app` is a debug
 /// key id to open straight to that app.
 #[tauri::command]
-pub async fn host_open_console(app: tauri::AppHandle, service: tauri::State<'_, BuildService>, key: Option<String>) -> Result<(), String> {
+pub async fn host_open_console(app: tauri::AppHandle, service: tauri::State<'_, BuildService>, key: Option<String>, tab: Option<String>, title: Option<String>) -> Result<(), String> {
     use tauri::Manager;
     let link = service.host_call("host/web-link", Some(json!({}))).await?;
     let path = link["path"].as_str().filter(|p| p.starts_with("/host-login?code=")).ok_or("The Store didn't give a console link.")?;
     let target = match key.as_deref().filter(|k| !k.is_empty() && k.len() <= 64 && k.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))) {
-        Some(k) => format!("/#debug/{k}"),
+        Some(k) => match tab.as_deref().filter(|t| ["log", "panels", "profile", "memory", "endpoints", "info"].contains(t)) {
+            Some(t) => format!("/#debug/{k}/{t}"),
+            None => format!("/#debug/{k}"),
+        },
         None => "/#debug".to_string(),
     };
     let base = service.local_base().ok_or("Start the Store on this Mac first.")?;
     let next: String = target.bytes().map(|b| if b == b'#' { "%23".to_string() } else if b == b'/' { "/".to_string() } else { (b as char).to_string() }).collect();
     let url = base.join(&format!("{}&next={next}", path.trim_start_matches('/'))).map_err(|_| "Bad console link.")?;
+    // The window carries the app's name, so several Debug windows in Mission Control read as apps.
+    let window_title = title.as_deref().map(str::trim).filter(|t| !t.is_empty() && t.len() <= 80).map_or_else(|| "Apparition Debug".to_string(), |t| format!("{t}: Debug"));
     if let Some(window) = app.get_webview_window("console") {
+        let _ = window.set_title(&window_title);
         window.navigate(url).map_err(|e| e.to_string())?;
         let _ = window.unminimize();
         let _ = window.set_focus();
         return Ok(());
     }
     tauri::WebviewWindowBuilder::new(&app, "console", tauri::WebviewUrl::External(url))
-        .title("Apparition Debug Console")
+        .title(&window_title)
         .inner_size(1100.0, 780.0)
         .min_inner_size(640.0, 480.0)
         .build()

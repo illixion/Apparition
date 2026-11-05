@@ -263,7 +263,7 @@ a device is stale. The **build number** (`CFBundleVersion`) does:
 - `-dirty` means the project or a package had uncommitted changes.
 - A project outside Git has no stamp.
 
-The Deploy view compares the SHA the device reports (the leading part of its build number, falling
+The Apps view compares the SHA the device reports (the leading part of its build number, falling
 back to the install ledger's `commit`) with the repo's HEAD and shows up to date, out of date,
 dirty, or on another branch. When touching version logic, reason about the SHA, not the version
 string.
@@ -442,11 +442,12 @@ symbolicated text and the trace linked by bundle ID, `pid` and time.
 
 Dev builds of apps that link DebugTrace's `DebugTraceServer` start a debug server on every launch
 and advertise it over Bonjour (`_debugtrace._tcp`). The Store browses for them itself, from the
-process that holds the Mac's Local Network permission. The **Debug** view, and the **Console**
-window (Developer › Reports › Running apps), list the ones running on your network. For each one:
-a live tail of its log (filter by level or text, pause), the **Panels** tab, **Profile** and
-**Memory** (views of the app's `_profile` and `_memory`), the generic **Endpoints** browser and
-caller, **Info**, and a button that captures a trace and uploads it here. A device chip in **Deploy**
+process that holds the Mac's Local Network permission. The **Debug** view, and the desktop app's
+**Debug** tab (Running now: **Tune**, **Log**, **Profile** and **Memory** buttons open that view in a window titled
+with the app's name), list the ones running on your network. For each one:
+a live tail of its log (filter by level or text, pause), the **Tune** tab, **Profile** and
+**Memory** (views of the app's `_profile` and `_memory`), **Crashes & traces** for that app, the generic **Endpoints** browser and
+caller, **Info**, and a button that captures a trace and uploads it here. A device chip in **Apps**
 shows *live* while its app runs.
 
 - **Finding and trusting apps.** An app is addressed by its build's key ID. The address comes from
@@ -459,7 +460,7 @@ shows *live* while its app runs.
 - **Prompts.** The first call from a client waits on the device's "Allow debug access?" prompt, and
   `_profile` samples for up to 10 seconds, so the proxy waits up to 90 seconds; a timeout is a 504
   whose hint points at the prompt. Connecting to the Store does not grant debug access.
-- **Panels** turn values an app reads through DebugTrace's `DebugTunables`
+- **Tune** turns values an app reads through DebugTrace's `DebugTunables`
   (`DebugTunables.number("hdr.peakNits", 600, range: 100...2000)`) into sliders, toggles and menus
   that change the running app as they move. Agents save their own panels for what is being tested
   with the `apps` MCP server's `panel` tool, kept in `~/.local/state/debugtrace/panels/<bundleId>/`.
@@ -599,15 +600,15 @@ URLs in a browser. An OTA install can't change an installed app's App ID.
 
 ## The web pages
 
-The Store's pages (Deploy, Debug, Updates, Traces, History) are compiled into the app. They are off
-until you turn them on with a password: Developer › Devices & signing › **Web UI and other devices**
+The Store's pages (Apps, Debug, Builds, Updates, Crashes & traces) are compiled into the app. They are off
+until you turn them on with a password: Settings › Build service and signing › **Web UI and other devices**
 (8 to 256 characters). With them off, every page and cookie route answers 404 saying so, while the
 machine routes still work: signed trace uploads, `/mcp`, and the signed `/ota/`, `/altsource/` and
 `/mac/` downloads. The `/ota` page itself is one of the pages.
 
 The same password lets Apparition on another device connect (`POST /api/service/connect`). The
 Developer tab inside the app doesn't need it: the app talks to the Store with a token only it holds.
-The Debug **Console** window is the same page signed in by a one-time link, with the pages off too.
+The Debug window is the same page signed in by a one-time link, with the pages off too.
 
 ## Security
 
@@ -666,7 +667,7 @@ remote hosts and don't follow redirects. Only the service address is remembered 
 - **Only the app's token** (which `apparition store` on the same computer reads from `developer.json`) reaches `GET /api/service/v1/host` (status) and `POST
   /api/service/v1/host/web-ui {enabled, password?}`, and `POST /api/service/v1/host/web-link`, which
   returns `/host-login?code=...`: a code good once for 60 seconds that becomes an in-memory session
-  cookie (gone when the app quits), which passes the web gate even with the pages off. The Console
+  cookie (gone when the app quits), which passes the web gate even with the pages off. The Debug window
   window uses it. Computers paired for developer access come in with the app's token too, but the
   channel names them (`X-Apparition-Computer`), and the Store gives them what a password session
   gets: builds, deploys, debugging, not the password, the pages or sign-in links. The channel also

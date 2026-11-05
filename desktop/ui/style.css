@@ -257,9 +257,23 @@ code { font: .875em/1.4 var(--mono); }
 }
 .views button[aria-selected="true"] { color: var(--ink); background: var(--surface); }
 .views button:focus-visible { outline: 2px solid var(--lilac); outline-offset: 1px; }
+.tab-count { font: 600 .7rem/1 var(--text); color: var(--ink); background: color-mix(in srgb, var(--glow) 28%, transparent);
+  border-radius: 999px; padding: .2rem .45rem; min-width: 1.1rem; text-align: center; }
+.tab-count[hidden] { display: none; }
+/* Build service settings under Settings: same width and rhythm as the companion groups above them. */
+.developer-panel[data-connected][data-section="debug"] :is(.dev-ready, .dev-connect),
+.developer-panel[data-connected][data-section="activity"] :is(.dev-ready, .dev-connect) { display: none; }
+.dev-setup { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
 .tab-dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--muted); opacity: .55; flex: none; }
 .tab-dot.on { background: var(--glow); box-shadow: 0 0 6px var(--glow-soft); opacity: 1; }
 .views[hidden], .mode-switch[hidden] { display: none; }
+/* Five tabs, the mode switch and the setup badge no longer fit the 780px minimum window side by side. */
+@media (max-width: 62rem) {
+  .views { margin-left: .5rem; }
+  .views button { padding: .45rem .5rem; font-size: .8rem; gap: .3rem; }
+  .mode-switch button { padding: .4rem .55rem; font-size: .75rem; }
+  .brand span { display: none; }
+}
 .companion-state { display: inline-flex; align-items: center; gap: .5rem; margin: .25rem 0 0; color: var(--muted); font-size: .875rem; }
 .companion-state.on { color: var(--ink); }
 

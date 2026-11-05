@@ -175,6 +175,13 @@
   .contabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--dim);
     padding: 9px 10px; font-size: .8rem; }
   .contabs button:hover { color: var(--fg); }
+  .contabs .count { font-family: var(--mono); font-size: .7rem; color: var(--dim2); }
+  #reportpane { padding: 4px 18px 18px; }
+  .reportlist a { color: var(--accent); }
+  .subhead { margin: 18px 0 8px; font-size: .8rem; color: var(--dim); font-weight: 600; text-transform: none; }
+  .reportlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: .82rem; }
+  .reportlist li { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .reportlist .rowlinks { margin-left: auto; display: flex; gap: 10px; }
   .contabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
   .pane { display: none; flex: 1; min-height: 0; }
   .pane.active { display: flex; flex-direction: column; }
@@ -433,14 +440,14 @@
 <header>
   <span class="wordmark">{{BRAND_MARK}} {{BRAND_NAME}}</span>
   <nav class="views" aria-label="Views">
-    <a href="#deploy" data-view="deploy">Deploy <span class="count" id="fleetcount"></span></a>
+    <a href="#deploy" data-view="deploy">Apps <span class="count" id="fleetcount"></span></a>
     <a href="#debug" data-view="debug">Debug <span class="count livecount" id="livecount"></span></a>
+    <a href="#history" data-view="history">Builds</a>
     <a href="#updates" data-view="updates">Updates <span class="count" id="updatecount"></span></a>
-    <a href="#traces" data-view="traces">Traces <span class="count" id="tracecount"></span></a>
-    <a href="#history" data-view="history">History</a>
+    <a href="#traces" data-view="traces">Crashes &amp; traces <span class="count" id="tracecount"></span></a>
   </nav>
   <span class="tools">
-    <button class="ghost" id="refreshdev" title="Ask devicectl for each device's installed apps again. Devices in ledgerOnlyDevices are skipped, since that wakes them; Alt-click reads them too.">↻ devices</button>
+    <button class="ghost" id="refreshdev" title="Check again which apps each device has installed. Devices set to be left asleep are skipped, because asking wakes them; Alt-click checks those too.">↻ devices</button>
     <button class="ghost" id="signout" hidden>Sign out</button>
   </span>
 </header>
@@ -481,7 +488,7 @@
   </section>
   <section class="view traces" data-view="traces" id="traces">
     <div class="tracehead">
-      <h3>Debug traces</h3>
+      <h3>Traces</h3>
       <span class="hint">Uploaded from an app's Debug Trace sheet, or drop a trace .zip here</span>
       <span style="margin-left:auto"></span>
       <button class="ghost" id="traceUploadBtn">Upload trace…</button>
@@ -492,7 +499,7 @@
       <tbody id="tracelist"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
     </table>
     <div class="tracehead" style="margin-top:28px">
-      <h3>Crash logs from devices</h3>
+      <h3>Crash logs</h3>
       <span class="hint">Pulled from each device's crash logs every few minutes, even while it is locked</span>
       <span style="margin-left:auto"></span>
       <button class="ghost" id="crashRefreshBtn">Pull now</button>
@@ -504,7 +511,7 @@
     </table>
   </section>
   <section class="view history" data-view="history">
-    <h3>Build history</h3>
+    <h3>Builds</h3>
     <table>
       <thead><tr><th>#</th><th>App</th><th>Ref</th><th>Device</th><th>Status</th><th>When</th><th>Took</th></tr></thead>
       <tbody id="history"></tbody>
@@ -739,9 +746,11 @@ setInterval(poll, 4000);
 setInterval(pollLog, 1200);
 // ---- debug traces ----
 let traces = [];
+let crashLogs = [];
 const openTraces = new Set();
 async function pollTraces(){ try { traces = (await api('/api/traces')).traces || []; renderTraces(); } catch{} }
 function renderTraces(){
+  renderAppReports();
   const tb = $('#tracelist');
   $('#tracecount').textContent = traces.length || '';
   if (!traces.length) { tb.innerHTML = '<tr><td colspan="6" class="muted">No traces yet.</td></tr>'; return; }
@@ -814,6 +823,7 @@ async function pollCrashLogs(){
       ? `<b>${esc(d)}</b>: ${esc(p.error)} <span class="muted">(${ago(p.polledAt)})</span>`
       : `<b>${esc(d)}</b>: ok <span class="muted">(${ago(p.polledAt)})</span>`).join(' &nbsp;·&nbsp; ');
     const list = r.crashLogs || [];
+    crashLogs = list; renderAppReports();
     if (!list.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">No crash logs yet.</td></tr>'; return; }
     tb.innerHTML = list.map(c => `<tr>
       <td class="mono">${ago(c.capturedAt)}</td>
@@ -837,9 +847,10 @@ pollCrashLogs();
 setInterval(pollCrashLogs, 10000);
 
 // ---- views ----
+const CON_TABS = ['log', 'panels', 'profile', 'memory', 'reports', 'endpoints', 'info'];
 const VIEWS = ['deploy', 'debug', 'updates', 'traces', 'history'];
 function route(){
-  const [view, arg] = (location.hash.slice(1) || 'deploy').split('/');
+  const [view, arg, sub] = (location.hash.slice(1) || 'deploy').split('/');
   const v = VIEWS.includes(view) ? view : 'deploy';
   document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.dataset.view === v));
   document.querySelectorAll('nav.views a').forEach(a => {
@@ -853,7 +864,10 @@ function route(){
   if (v === 'updates') loadUpdates();
   if (v === 'debug') {
     const id = arg ? decodeURIComponent(arg) : null;
-    if (id !== D.id) selectApp(id);
+    // #debug/<app>/<tab> opens that tab (the desktop app's Tune, Log, Profile and Memory buttons use it).
+    const wanted = CON_TABS.includes(sub) ? sub : null;
+    if (id !== D.id) { if (wanted) D.tab = wanted; selectApp(id); }
+    else if (wanted && wanted !== D.tab) showTab(wanted);
     refreshDebugApps();
   } else stopStream();
 }
@@ -957,7 +971,7 @@ async function refreshDebugApps(){
   // access?" on the device, so only a click on an app may make one. Listing
   // apps is discovery only and reaches no app.
   if (!D.id) renderConsole();
-  else renderConsoleHead();
+  else { renderConsoleHead(); renderAppReports(); }
 }
 
 function renderRail(){
@@ -997,9 +1011,10 @@ function renderConsole(){
     <div class="conhead" id="conhead"></div>
     <div class="contabs" role="tablist">
       <button role="tab" data-contab="log" aria-selected="${D.tab==='log'}">Log</button>
-      <button role="tab" data-contab="panels" aria-selected="${D.tab==='panels'}">Panels</button>
+      <button role="tab" data-contab="panels" aria-selected="${D.tab==='panels'}">Tune</button>
       <button role="tab" data-contab="profile" aria-selected="${D.tab==='profile'}">Profile</button>
       <button role="tab" data-contab="memory" aria-selected="${D.tab==='memory'}">Memory</button>
+      <button role="tab" data-contab="reports" aria-selected="${D.tab==='reports'}">Crashes &amp; traces <span class="count" id="appreportcount"></span></button>
       <button role="tab" data-contab="endpoints" aria-selected="${D.tab==='endpoints'}">Endpoints</button>
       <button role="tab" data-contab="info" aria-selected="${D.tab==='info'}">Info</button>
     </div>
@@ -1022,6 +1037,7 @@ function renderConsole(){
     <div class="pane ${D.tab==='panels'?'active':''}" data-pane="panels"><div class="scrollpane" id="panelpane"></div></div>
     <div class="pane ${D.tab==='profile'?'active':''}" data-pane="profile"><div class="scrollpane" id="profpane"></div></div>
     <div class="pane ${D.tab==='memory'?'active':''}" data-pane="memory"><div class="scrollpane" id="mempane"></div></div>
+    <div class="pane ${D.tab==='reports'?'active':''}" data-pane="reports"><div class="scrollpane" id="reportpane"></div></div>
     <div class="pane ${D.tab==='endpoints'?'active':''}" data-pane="endpoints"><div class="endpoints">
       <div class="eplist" id="eplist"><p class="railnote">Loading…</p></div>
       <div class="epdetail" id="epdetail"><div class="emptystate">Pick an endpoint to see its parameters and run it.</div></div>
@@ -1031,6 +1047,7 @@ function renderConsole(){
   setStreamState(D.stream);
   renderProfilePane();
   renderMemoryPane();
+  renderAppReports();
   if (D.tab === 'endpoints') loadHelp();
   if (D.tab === 'info') loadInfo();
   if (D.tab === 'panels') loadPanels(true);
@@ -1933,6 +1950,28 @@ document.addEventListener('click', async e => {
 
 function loadInfo(){ showCall('_info', {}, $('#infopane')); }
 
+// The running app's own crash logs and traces: the same data as the Crashes & traces page, for one bundle id.
+function renderAppReports(){
+  const a = currentApp();
+  const pane = $('#reportpane'), count = $('#appreportcount');
+  if (!pane) return;
+  const mine = a ? { traces: traces.filter(t => t.app?.bundleId === a.bundleId), crashes: crashLogs.filter(c => c.bundleId === a.bundleId) } : { traces: [], crashes: [] };
+  const total = mine.traces.length + mine.crashes.length;
+  if (count) count.textContent = total || '';
+  const crash = c => `<li><span class="mono">${ago(c.capturedAt)}</span> <b>${esc(c.exception || c.termination || 'Crash')}</b>
+    <span class="muted">${esc(c.build || '')} · ${esc(c.device || '')}</span>
+    <span class="rowlinks">${c.symbolicated ? `<a href="/api/crashlogs/${c.id}/symbolicated" target="_blank" rel="noopener">symbolicated</a>` : ''}
+    <a href="/api/crashlogs/${c.id}/ips" target="_blank" rel="noopener">.ips</a></span></li>`;
+  const trace = t => `<li><span class="mono">${ago(t.receivedAt)}</span> <b>${esc(t.note || 'Trace')}</b>
+    <span class="muted">${esc(t.app?.build || '')} · ${esc(t.device?.model || '')}</span>
+    <span class="rowlinks"><a href="/api/traces/${t.id}.zip">download</a> <a href="#traces" data-opentrace="${t.id}">open</a></span></li>`;
+  pane.innerHTML = !total
+    ? `<div class="emptystate">No crash logs or traces for ${esc(a ? (a.appName || a.bundleId) : 'this app')} yet.
+        Capture trace in the header takes one now; a crash adds its report here by itself.</div>`
+    : `<h3 class="subhead">Crash logs · ${mine.crashes.length}</h3><ul class="reportlist">${mine.crashes.map(crash).join('') || '<li class="muted">None.</li>'}</ul>
+       <h3 class="subhead">Traces · ${mine.traces.length}</h3><ul class="reportlist">${mine.traces.map(trace).join('') || '<li class="muted">None.</li>'}</ul>`;
+}
+
 function showTab(name){
   D.tab = name;
   document.querySelectorAll('[data-contab]').forEach(b => b.setAttribute('aria-selected', b.dataset.contab === D.tab));
@@ -1941,6 +1980,7 @@ function showTab(name){
   if (D.tab === 'info') loadInfo();
   if (D.tab === 'profile' || D.tab === 'memory') loadAppIdentity();
   if (D.tab === 'panels') loadPanels(true);
+  if (D.tab === 'reports') renderAppReports();
 }
 
 async function captureTrace(button){

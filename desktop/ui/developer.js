@@ -38,7 +38,14 @@ const ago = ms => {
   return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
 };
 const ACTIVE = ['queued', 'running'];
-export const SECTIONS = [['projects', 'Projects'], ['activity', 'Activity'], ['reports', 'Reports'], ['setup', 'Devices & signing']];
+// The three sections are the desktop's Apps, Debug and Builds tabs. What was "Devices & signing" is
+// the setup pane: it lives under Settings (see placeSetup), so it is not a section here.
+export const SECTIONS = [['projects', 'Apps'], ['debug', 'Debug'], ['activity', 'Builds']];
+const SECTION_INTRO = {
+  projects: ['Apps', 'Build your Xcode projects, install them on your devices and keep them refreshed.'],
+  debug: ['Debug', 'Apps you launched from here with live logs, tunable values, profiling and memory, and the crash logs and traces they left behind.'],
+  activity: ['Builds', 'Every build and install this Mac has run, newest first.'],
+};
 
 // What a job is, in words, from the flags the service sets on it.
 export function jobKind(job) {
@@ -74,8 +81,13 @@ export class DeveloperView {
     this.jobsList = [];
     this.section = 'projects';
     this.showAllJobs = false;
-    root.append(element('h1', '', 'Develop apps'));
-    root.append(element('p', 'lede', 'Build your Xcode projects, install them on your devices and keep them refreshed, with live Swift patching and debugging while they run.'));
+    this.heading = element('h1', '', SECTION_INTRO.projects[0]);
+    this.lede = element('p', 'lede', SECTION_INTRO.projects[1]);
+    root.append(this.heading, this.lede);
+    // Set by the app shell: a count for a top tab, and which section is showing.
+    this.setupWanted = false;
+    this.onBadge = () => {};
+    this.onSelect = () => {};
     // Navigation into the rest of the app (the Devices tab holds pairing and signing).
     this.go = () => {};
     this.readiness = this.readinessCard();
@@ -113,16 +125,11 @@ export class DeveloperView {
     this.note = element('p', 'status'); this.note.setAttribute('role', 'status');
 
     this.content = element('div', 'dev-content'); this.content.hidden = true;
-    this.nav = element('div', 'dev-sections'); this.nav.setAttribute('role', 'tablist');
-    this.nav.setAttribute('aria-label', 'Developer sections');
-    this.navButtons = {};
-    for (const [key, title] of SECTIONS) {
-      const tab = button(title, () => this.select(key), 'dev-section-tab');
-      tab.setAttribute('role', 'tab');
-      this.navButtons[key] = tab; this.nav.append(tab);
-    }
     this.panes = {};
-    for (const [key] of SECTIONS) { this.panes[key] = element('div', 'dev-pane'); this.panes[key].setAttribute('role', 'tabpanel'); }
+    for (const [key] of [...SECTIONS, ['setup']]) { this.panes[key] = element('div', 'dev-pane'); this.panes[key].setAttribute('role', 'tabpanel'); }
+    // Build service settings (Web UI, signing hand-off, about) sit under Settings, in the same group style.
+    this.panes.setup.className = 'dev-pane dev-setup';
+    this.panes.setup.hidden = true;
 
     this.resign = this.resignSection();
     this.projects = this.block('Projects', 'Select device targets, choose a branch, then install or build only. Install builds and installs it there; Build only keeps a signed IPA to download or re-sign. Device-side installs retain an unsigned IPA for Apparition to sign on the device.');
@@ -149,19 +156,22 @@ export class DeveloperView {
     this.artifacts.hidden = true;
     this.panes.projects.append(this.resign, this.projects, this.addProject, this.registration, this.artifacts);
 
-    this.jobs = this.block('Builds', 'Newest first. Builds for one project run one at a time.');
+    this.jobs = this.block('Recent builds', 'Builds for one project run one at a time.');
     this.panes.activity.append(this.jobs);
 
-    this.reports = this.block('Crash logs and traces', 'Pulled from your devices and uploaded by apps that link DebugTrace, grouped by app.');
-    this.debug = this.block('Running apps', 'Dev builds with a debug server that are running now. Inspecting one asks for approval on the device. Console opens its live log, tuning panels (sliders for values an app reads through DebugTunables, and panels an agent built), profiler and memory view.');
-    this.panes.reports.append(this.reports, this.debug);
+    this.reports = this.block('Crashes and traces', 'Pulled from your devices and uploaded by apps that link DebugTrace, grouped by app.');
+    this.debug = this.block('Running now', 'Dev builds with a debug server that are open on a device. Each opens its live log, tuning sliders (values an app reads through DebugTunables, and panels an agent built), profiler and memory view. The device asks you to allow each new client.');
+    this.panes.debug.append(this.debug, this.reports);
 
     this.devices = this.block('Devices', 'Devices this Mac can install to. Simulators are not listed.', true);
+    this.panes.projects.append(this.devices);
     this.about = this.aboutSection();
-    this.panes.setup.append(this.devices, this.about);
+    const setupHead = element('div', 'dev-block-head');
+    setupHead.append(element('h2', 'small', 'Build service and signing'), element('p', 'hint', 'How this Mac builds and signs for your devices, and who else can reach it.'));
+    this.panes.setup.append(setupHead);
 
     this.buildViewer();
-    this.content.append(this.nav, ...SECTIONS.map(([key]) => this.panes[key]));
+    this.content.append(...SECTIONS.map(([key]) => this.panes[key]));
     this.webUi = this.webUiSection();
     root.append(this.hostCard, this.intro, form, this.note, this.content, this.signing);
     this.select('projects');
@@ -308,11 +318,27 @@ export class DeveloperView {
   open(which) { this.invoke('open_developer_link', { which }).catch(error => this.status(String(error?.message || error), true)); }
 
   select(key) {
+    if (!this.panes[key] || key === 'setup') key = 'projects';
     this.section = key;
-    for (const [name] of SECTIONS) {
-      this.panes[name].hidden = name !== key;
-      this.navButtons[name].setAttribute('aria-selected', String(name === key));
-    }
+    for (const [name] of SECTIONS) this.panes[name].hidden = name !== key;
+    // Setup status (Ready to build?, the service bar) belongs to Apps; Debug and Builds lead with their own content.
+    if (this.root.dataset) this.root.dataset.section = key;
+    this.heading.textContent = SECTION_INTRO[key][0];
+    this.lede.textContent = SECTION_INTRO[key][1];
+    this.onSelect(key);
+  }
+
+  // The build service's own settings show under Settings, below the companion's. The pane is a
+  // child of this view, so it is moved into whichever page is showing it.
+  placeSetup(inSettings) {
+    this.setupWanted = inSettings;
+    const host = globalThis.document?.getElementById?.('companion-panel');
+    const show = inSettings && this.connected && document.body.dataset.mode === 'develop' && !!host;
+    // Before "At login" and "Quitting", which close the page; the companion's own groups come first.
+    const closing = show && host.querySelectorAll ? [...host.querySelectorAll('h2')].find(h => h.textContent === 'At login')?.closest('.group') : null;
+    if (show && this.panes.setup.parentElement !== host) { if (closing) closing.before(this.panes.setup); else host.append(this.panes.setup); }
+    else if (!show && this.panes.setup.parentElement === host) this.content.append(this.panes.setup);
+    this.panes.setup.hidden = !show;
   }
 
   // Send build-and-sign's certificates and profiles to Apparition on a paired device, through
@@ -609,7 +635,8 @@ export class DeveloperView {
   block(title, hint, grid = false) {
     const node = element('section', 'dev-block');
     const head = element('div', 'dev-block-head');
-    head.append(element('h2', 'small', title));
+    node.heading = element('h2', 'small', title);
+    head.append(node.heading);
     if (hint) head.append(element('p', 'hint', hint));
     node.append(head, element('div', grid ? 'service-items dev-grid' : 'service-items'));
     return node;
@@ -656,8 +683,10 @@ export class DeveloperView {
       this.webUi.hidden = !this.local;
       if (this.local) this.loadWebUi();
       this.content.hidden = false;
+      if (this.root.dataset) this.root.dataset.connected = '1';
       // Signing hand-off moves into its section once there is one to put it in.
       this.panes.setup.append(this.webUi, this.signing, this.about);
+      this.placeSetup(this.setupWanted);
       this.signatures = {};
       this.status('');
       this.show(true);
@@ -666,9 +695,11 @@ export class DeveloperView {
   async signOut() {
     clearInterval(this.timer);
     this.connected = false;
+    this.placeSetup(this.setupWanted);
     this.projectList.reset();
     this.epoch += 1;
     this.content.hidden = true;
+    if (this.root.dataset) delete this.root.dataset.connected;
     this.fields.hidden = this.hint.hidden = this.intro.hidden = false;
     this.connected_bar.hidden = true;
     this.root.append(this.signing);
@@ -826,7 +857,7 @@ export class DeveloperView {
     const reports = [...bundleIds].reduce((sum, id) => {
       const c = this.reportCounts?.[id]; return c ? { crashes: sum.crashes + c.crashes, traces: sum.traces + c.traces } : sum;
     }, { crashes: 0, traces: 0 });
-    if (reports.crashes || reports.traces) footer.append(button(`${plural(reports.crashes, 'crash')} · ${plural(reports.traces, 'trace')}`, () => this.select('reports'), 'button quiet small'));
+    if (reports.crashes || reports.traces) footer.append(button(`${plural(reports.crashes, 'crash')} · ${plural(reports.traces, 'trace')}`, () => this.select('debug'), 'button quiet small'));
     const kept = this.artifactList.filter(a => bundleIds.has(a.app?.bundleId) || bundleIds.has(a.app?.originalBundleId));
     if (kept.length) {
       const list = element('details', 'dev-kept');
@@ -885,7 +916,7 @@ export class DeveloperView {
     const active = jobs.filter(job => ACTIVE.includes(job.status));
     const finished = jobs.filter(job => !ACTIVE.includes(job.status));
     const shown = this.showAllJobs ? finished : finished.slice(0, 8);
-    if (this.navButtons) this.navButtons.activity.textContent = active.length ? `Activity · ${active.length} running` : 'Activity';
+    this.onBadge('activity', active.length);
     this.paint('jobs', JSON.stringify([jobs, this.showAllJobs, this.viewKey(), Math.floor(Date.now() / 60000)]), () => {
       const rows = [...active, ...shown].map(job => this.jobRow(job));
       if (finished.length > shown.length) rows.push(button(`Show ${finished.length - shown.length} older`, () => { this.showAllJobs = true; this.renderJobs(this.jobsList); }));
@@ -972,7 +1003,7 @@ export class DeveloperView {
     const signature = JSON.stringify([sources, traces.status, crashes.status, this.viewKey(), [...this.expandedGroups], Math.floor(Date.now() / 60000)]);
     // The tab's count is part of the page chrome, so it follows the data even when the list is unchanged.
     const total = (sources[0]?.traces?.length || 0) + (sources[1]?.crashLogs?.length || 0);
-    if (this.navButtons) this.navButtons.reports.textContent = total ? `Reports · ${total}` : 'Reports';
+    this.reports.heading.textContent = total ? `Crashes and traces · ${total}` : 'Crashes and traces';
     this.paint('reports', signature, () => {
       if (crashes.status === 'fulfilled') {
         const sorted = [...(crashes.value.crashLogs || [])].sort((a, b) => (b.capturedAt || 0) - (a.capturedAt || 0));
@@ -1034,6 +1065,7 @@ export class DeveloperView {
   }
   renderDebug(result) {
     const apps = result.status === 'fulfilled' ? result.value : null;
+    this.onBadge('debug', (apps?.apps || []).filter(app => app.attachable).length);
     this.paint('debug', JSON.stringify([result.status, apps, this.viewKey()]), () => {
       const rows = [];
       if (result.status === 'fulfilled') {
@@ -1043,24 +1075,29 @@ export class DeveloperView {
           const main = element('div', 'dev-item-main');
           main.append(element('span', 'dot on'), element('span', 'dev-item-text', `${app.appName || app.bundleId} · ${app.device || ''}`));
           const actions = element('div', 'dev-job-actions');
-          const inspect = this.viewButton(rowId, 'info', 'Inspect', 'Hide',
+          // This Mac's service: the debug workspace (live log, tuning sliders, profile, memory) in a window,
+          // opened on the tab the button names.
+          if (this.local && app.id) {
+            const open = (label, tab, cls) => {
+              const control = button(label, () => this.invoke('host_open_console', { key: app.id, tab, title: app.appName || app.bundleId })
+                .catch(error => this.status(String(error?.message || error), true)), cls);
+              control.disabled = !app.attachable;
+              return control;
+            };
+            actions.append(open('Tune', 'panels', 'button primary small'), open('Log', 'log', 'button quiet small'),
+              open('Profile', 'profile', 'button quiet small'), open('Memory', 'memory', 'button quiet small'));
+          }
+          const inspect = this.viewButton(rowId, 'info', 'Info', 'Hide',
             { title: app.appName || app.bundleId, operation: 'debugCall', args: { id: app.id, endpoint: '_info', arguments: {} } });
           inspect.disabled = !app.attachable;
           actions.append(inspect);
-          // This Mac's service: its Debug console (live log, tuning panels, profile, memory) in a window.
-          if (this.local && app.id) {
-            const consoleButton = button('Console', () => this.invoke('host_open_console', { key: app.id })
-              .catch(error => this.status(String(error?.message || error), true)), 'button quiet small');
-            consoleButton.disabled = !app.attachable;
-            actions.append(consoleButton);
-          }
           main.append(actions);
           row.append(main); this.host(rowId, row);
           rows.push(row);
         }
         if (result.value.error) rows.push(element('p', 'hint', String(result.value.error)));
       } else rows.push(element('p', 'error', 'Running apps could not be loaded.'));
-      this.items(this.debug).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No debug apps running.')]));
+      this.items(this.debug).replaceChildren(...(rows.length ? rows : [element('p', 'hint', 'No debug apps running. Launch a dev build from Apps with Debug on (build-and-sign --run --mcp does the same from a terminal) and it appears here.')]));
     });
   }
 }

@@ -185,14 +185,15 @@ never `devicectl`. Without the app, `apparition store serve` runs the same Store
 `apparition store` does everything the Developer tab does from a terminal, on this computer's Store, a paired Mac's,
 or, after `apparition store login <address>`, another computer's by its password ([docs/STORE.md](docs/STORE.md)).
 
-**Console** on a running app (Reports › Running apps, this Mac's Store) opens the Store's
-Debug console in its own window: live log, tuning panels (sliders for `DebugTunables` values and
-panels an agent built), profiler and memory view. A one-time link signs it in, web UI on or off;
+**Debug** is the desktop app's second tab. Each running dev build (this Mac's Store) has **Tune**, **Log**,
+**Profile** and **Memory** buttons that open the Store's debug view on that tab in its own window, titled
+with the app's name: sliders for `DebugTunables` values and panels an agent built, the live log, a profiler and
+a memory view. A one-time link signs it in, web UI on or off;
 the window has no access to the app.
 
-The tab has four sections: **Projects**, **Activity** (the build queue and logs), **Reports**
-(crash logs, traces and, on the Mac, running debug apps, grouped by app) and **Devices &
-signing** (**Service** on a device). Each project lists its targets, one per device it installs
+The develop tabs are **Apps** (projects and the devices they install to), **Debug** (running debug apps, then crash
+logs and traces grouped by app), **Builds** (the build queue and logs), Devices and Settings (the build service's
+Web UI, signing hand-off and About sit under Build service and signing). Each project lists its targets, one per device it installs
 on, with what the Mac installed there and whether the device is reachable; each target has
 **Install on _device_**, **Build only** and **Re-sign…**. Launch, debug access, live patching
 and Debug configuration are the project's **Build options**. The device list leaves out
