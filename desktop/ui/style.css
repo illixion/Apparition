@@ -711,6 +711,7 @@ details[open] > summary { margin-bottom: .85rem; }
 
 .file-row { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; }
 .paired-mac { display: flex; flex-direction: column; gap: .6rem; }
+.server-config { display: flex; flex-direction: column; gap: .6rem; margin-top: .6rem; }
 .file-name { font-size: .9rem; color: var(--muted); overflow-wrap: anywhere; }
 
 .signed {

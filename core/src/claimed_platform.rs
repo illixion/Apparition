@@ -100,11 +100,21 @@ impl Claim {
 /// The claim for the server at `url`. Provider failures must stop sign-in before Apple
 /// is contacted; guessing Android would hide a failed secure companion connection.
 pub async fn claim_for(url: &str) -> Result<Claim, Report> {
+    fetch_claim(url, "the companion anisette provider", "Companion anisette provider").await
+}
+
+/// The claim for the third-party anisette server at `url`, to check it before signing in with it: what
+/// it says it serves, which is what a sign-in through it claims to be.
+pub async fn claim_for_server(url: &str) -> Result<Claim, Report> {
+    fetch_claim(url, "the anisette server", "The anisette server").await
+}
+
+async fn fetch_claim(url: &str, who: &str, subject: &str) -> Result<Claim, Report> {
     let response = reqwest::Client::new()
         .get(format!("{}/v3/client_info", url.trim_end_matches('/')))
         .timeout(std::time::Duration::from_secs(20))
-        .send().await.context("Couldn't reach the companion anisette provider")?
-        .error_for_status().context("Companion anisette provider refused client info")?;
+        .send().await.context(format!("Couldn't reach {who}"))?
+        .error_for_status().context(format!("{subject} refused client info"))?;
     let implementation = response.headers().get("implementation-version")
         .and_then(|value| value.to_str().ok()).map(str::to_string);
     let reply = response.json::<serde_json::Value>().await.context("Invalid anisette client info")?;

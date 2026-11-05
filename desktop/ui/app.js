@@ -121,12 +121,35 @@ async function receiveNearby(root) {
   }
 }
 
+/**
+ * The third-party anisette server's address a sign-in choice names, or "" when it names none ("builtin",
+ * "vm", "paired", nothing). Docker's old default isn't carried over: Apparition no longer provides a server.
+ */
+function serverAddressOf(/** @type {string|null|undefined} */ choice) {
+  const text = (choice ?? "").trim();
+  return !text || text === "builtin" || text === "vm" || text === "paired" || /^https?:\/\/localhost:6969\/?$/i.test(text) ? "" : text;
+}
+
+/** The host of a server's address, for a badge. */
+function serverHost(/** @type {string} */ address) {
+  try {
+    return new URL(address).host || address;
+  } catch {
+    return address;
+  }
+}
+
 /** What the anisette choice `choice` is, in a word or three. */
 function anisetteName(/** @type {string} */ choice) {
   if (choice === "builtin") return "this Mac's own";
   if (choice === "vm") return state.vmAnisette ? "this Mac's anisette VM" : "anisette VM (not set up)";
   if (choice === "paired") return state.pairedMac ? `paired Mac (${state.pairedMac.macName})` : "paired Mac (not paired)";
-  return choice.trim() ? "your own server" : "none";
+  return choice.trim() ? `third-party server (${serverHost(choice.trim())})` : "none";
+}
+
+/** What the companion offers (`companion_status`'s `anisette.offered`), in a word or three. */
+function offeredName(/** @type {string} */ offered) {
+  return offered === "vm" ? "this Mac's anisette VM" : offered === "server" ? "a third-party server" : "this Mac's own";
 }
 
 /** The anisette a sign-in uses when nothing was chosen: this Mac's own, else its anisette VM, else the paired Mac's. */
@@ -144,7 +167,7 @@ async function drawSetupBadge() {
   const choice = state.anisetteChoice ?? state.settings?.anisette ?? defaultAnisette();
   const offered = state.companion?.relay?.running ? state.companion?.anisette?.offered : null;
   const parts = [`Sign-in anisette: ${anisetteName(choice)}`];
-  if (offered) parts.push(offered === "vm" ? "Companion offers: this Mac's anisette VM" : "Companion offers: this Mac's own");
+  if (offered) parts.push(`Companion offers: ${offeredName(offered)}`);
   text.textContent = parts.join(" · ");
   badge.title = text.textContent;
   const mac = choice === "builtin" || (choice === "vm" && state.vmAnisette) || (choice === "paired" && state.pairedMac);
@@ -574,9 +597,9 @@ function signing() {
   // Apple ID
   appleForm.email.value = state.settings.email ?? "";
   const savedAnisette = state.settings.anisette;
-  const isServer = (/** @type {string|null|undefined} */ choice) => !!choice && choice !== "builtin" && choice !== "paired" && choice !== "vm";
-  // Docker's old default isn't carried over: Apparition no longer provides a server.
-  appleForm.anisette.value = isServer(savedAnisette) && !/^https?:\/\/localhost:6969\/?$/i.test(savedAnisette) ? savedAnisette : "";
+  appleForm.anisette.value = serverAddressOf(savedAnisette);
+  // A server set up on the Companion tab comes here too, so it isn't typed twice.
+  if (!appleForm.anisette.value) appleForm.anisette.value = state.companion?.anisette?.server ?? "";
   const sourceSelect = /** @type {HTMLSelectElement} */ (appleForm.elements.namedItem("source"));
   const builtinOption = /** @type {HTMLOptionElement} */ ($(appleForm, "source-builtin"));
   // This Mac's own is offered only where macOS gives it.
@@ -585,11 +608,12 @@ function signing() {
   const vmOption = /** @type {HTMLOptionElement} */ ($(appleForm, "source-vm"));
   vmOption.hidden = vmOption.disabled = !state.vmAnisette;
   // Nothing saved comes back as null, so `!= null` (not `!== undefined`).
-  const initial = savedAnisette != null && isServer(savedAnisette) && appleForm.anisette.value ? "server"
+  const initial = serverAddressOf(savedAnisette) ? "server"
     : savedAnisette === "builtin" && state.builtinAnisette ? "builtin"
     : savedAnisette === "vm" && state.vmAnisette ? "vm"
     : savedAnisette === "paired" ? "paired"
-    : defaultAnisette() || "paired";
+    // With no Mac of any kind set up, a server the Companion tab already has is the way to go on.
+    : defaultAnisette() || (appleForm.anisette.value ? "server" : "paired");
   sourceSelect.value = initial === "server" ? "server" : initial;
   const macStatus = $(appleForm, "paired-mac-status");
   const macPairRow = $(appleForm, "paired-mac-pair");
@@ -609,7 +633,8 @@ function signing() {
     $(appleForm, "anisette-builtin-hint").hidden = source !== "builtin";
     $(appleForm, "anisette-vm-hint").hidden = source !== "vm";
     $(appleForm, "anisette-paired").hidden = source !== "paired";
-    for (const role of ["anisette-server", "anisette-server-hint"]) $(appleForm, role).hidden = source !== "server";
+    for (const role of ["anisette-server", "anisette-server-hint", "anisette-server-check-row", "anisette-server-status"]) $(appleForm, role).hidden = source !== "server";
+    if (source !== "server") setStatus($(appleForm, "anisette-server-status"), "");
     appleForm.anisette.required = source === "server";
     drawPairedMac();
   };
@@ -621,7 +646,20 @@ function signing() {
     drawSource();
     chooseAnisette();
   });
-  appleForm.anisette.addEventListener("input", chooseAnisette);
+  const serverStatus = $(appleForm, "anisette-server-status");
+  appleForm.anisette.addEventListener("input", () => {
+    setStatus(serverStatus, "");
+    chooseAnisette();
+  });
+  $(appleForm, "anisette-server-check").addEventListener("click", (event) =>
+    checkAnisetteServer(appleForm.anisette.value, /** @type {HTMLButtonElement} */ (event.currentTarget), serverStatus));
+  // No Mac: the way on is a third-party server.
+  $(appleForm, "use-server").addEventListener("click", () => {
+    sourceSelect.value = "server";
+    drawSource();
+    chooseAnisette();
+    appleForm.anisette.focus();
+  });
   drawSource();
   chooseAnisette();
   // Pairing with a Mac: the code comes as an event while the Mac's person allows this computer.
@@ -870,6 +908,27 @@ function signing() {
 function platformMatches(/** @type {string[]|undefined} */ platforms) {
   const names = { visionOS: ["xrOS", "visionOS"], iOS: ["iOS"], tvOS: ["tvOS"] }[state.device?.platform ?? "visionOS"] ?? [];
   return (platforms ?? []).some((p) => names.includes(p));
+}
+
+/**
+ * Asks the third-party anisette server at `address` what it is (no Apple ID is used) and says so in `status`.
+ * Whether Apple accepts what it serves is Apple's to say, and it changes that without notice: only a sign-in settles it.
+ */
+async function checkAnisetteServer(/** @type {string} */ address, /** @type {HTMLButtonElement} */ button, /** @type {HTMLElement} */ status) {
+  if (!address.trim()) return setStatus(status, "Type the anisette server's address first.", "error");
+  setBusy(button, true);
+  setStatus(status, "Asking the server…");
+  try {
+    const found = await invoke("check_anisette_server", { address });
+    const serves = /** @type {Record<string, string>} */ ({ mac: "a Mac's anisette", android: "Android's anisette", windows: "Windows' anisette" })[found.platform] ?? found.platform;
+    const mac = found.platform === "mac";
+    const note = mac ? "Apple accepts a Mac's for developer access." : "Apple may refuse it for developer access; signing in is the only way to know.";
+    setStatus(status, `It answers, and serves ${serves}${found.model ? ` (${found.model})` : ""}. ${note}`, mac ? "good" : "");
+  } catch (error) {
+    setStatus(status, messageOf(error), "error");
+  } finally {
+    setBusy(button, false);
+  }
 }
 
 function signInError(/** @type {any} */ error, /** @type {string} */ anisette = "") {
@@ -1486,6 +1545,12 @@ const developer = new DeveloperView(document.getElementById("developer-panel"), 
 /** @type {number|undefined} */ let companionTimer;
 /** What an action in progress, or one that just failed, has to say. @type {{text: string, kind?: "error"|"good"|""}|null} */
 let companionNote = null;
+/** The third-party server's address is being chosen or edited, though the companion doesn't offer it (yet). */
+let serverEditing = false;
+/** The address field holds what the person typed, which a refresh mustn't overwrite. */
+let serverDirty = false;
+/** What the last Check of the server found. @type {{text: string, kind?: string}|null} */
+let serverNote = null;
 
 const modeView = /** @type {HTMLElement} */ (document.getElementById("view-mode"));
 const viewsBar = /** @type {HTMLElement} */ (document.querySelector(".views"));
@@ -1565,10 +1630,36 @@ function buildCompanion() {
   companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((input) =>
     input.addEventListener("change", () => {
       const mode = /** @type {HTMLInputElement} */ (input).value;
+      serverNote = null;
+      // A third-party server needs its address first: choosing it opens the address, and "Offer this
+      // server" is what starts offering it (so a typo is never offered, and what was on stays on).
+      serverEditing = mode === "server";
+      if (serverEditing) return refreshCompanion();
       const note = mode === "builtin" ? "Starting this Mac's anisette…" : mode === "vm" ? "Offering the anisette VM's…" : "";
       companionCall("companion_set_anisette", { mode }, note);
     }),
   );
+  const serverAddress = /** @type {HTMLInputElement} */ ($(companionPanel, "server-address"));
+  serverAddress.addEventListener("input", () => {
+    serverDirty = true;
+    serverNote = null;
+  });
+  $(companionPanel, "server-use").addEventListener("click", async () => {
+    serverNote = null;
+    await companionCall("companion_set_anisette", { mode: "server", server: serverAddress.value }, "Offering that server's anisette…");
+    // Done unless it was refused (the note says why, and the address stays to be fixed).
+    if (!companionNote) {
+      serverEditing = false;
+      serverDirty = false;
+      refreshCompanion();
+    }
+  });
+  $(companionPanel, "server-check").addEventListener("click", async (event) => {
+    const note = document.createElement("p");
+    await checkAnisetteServer(serverAddress.value, /** @type {HTMLButtonElement} */ (event.currentTarget), note);
+    serverNote = { text: note.textContent ?? "", kind: note.className.replace("status", "").trim() };
+    refreshCompanion();
+  });
   // The anisette VM: one button, then progress until it is set up (vm.rs does the work, resumable).
   const vmRun = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-setup-run"));
   const startVm = async (/** @type {string|null} */ ipsw) => {
@@ -1867,13 +1958,24 @@ function drawCompanion(/** @type {any} */ status) {
     : "only a Mac does";
   companionPanel.querySelectorAll('input[name="anisette-mode"]').forEach((el) => {
     const input = /** @type {HTMLInputElement} */ (el);
-    input.checked = input.value === anisette.mode;
+    input.checked = input.value === (serverEditing ? "server" : anisette.mode);
     // Offering anisette goes through the relay's advertisement, so it needs the relay.
     input.disabled = !status.relay.on;
   });
+  // The third-party server's address: shown while it is offered or being chosen. It keeps what the person
+  // is typing; otherwise it follows the companion's, or the one the sign-in already has.
+  const serverConfig = $(companionPanel, "server-config");
+  serverConfig.hidden = !(serverEditing || anisette.mode === "server");
+  const serverAddress = /** @type {HTMLInputElement} */ ($(companionPanel, "server-address"));
+  if (!serverDirty && document.activeElement !== serverAddress) {
+    serverAddress.value = anisette.server || serverAddressOf(state.settings?.anisette);
+  }
+  /** @type {HTMLButtonElement} */ ($(companionPanel, "server-use")).disabled = !status.relay.on;
+  const serverShown = serverNote ?? (serverEditing && companionNote?.kind === "error" ? companionNote : null);
+  setStatus($(companionPanel, "server-status"), serverShown?.text ?? "", serverShown?.kind ?? "");
 
   const pairing = status.pairing;
-  const builtin = anisette.mode === "builtin" || anisette.mode === "vm";
+  const builtin = anisette.mode === "builtin" || anisette.mode === "vm" || anisette.mode === "server";
   $(companionPanel, "access").hidden = !builtin;
   const accessPill = $(companionPanel, "access-pill");
   accessPill.textContent = "Encrypted · paired devices only";
@@ -1913,11 +2015,15 @@ function drawCompanion(/** @type {any} */ status) {
     ?? anisette.error
     ?? (!status.relay.on
       ? "Turn the relay on to offer anisette."
-      : anisette.offered === "builtin"
-        ? "Offering this Mac's own anisette to paired devices and computers."
-        : anisette.offered === "vm"
-          ? "Offering the anisette VM's to paired devices and computers."
-          : "");
+      : serverEditing && anisette.mode !== "server"
+        ? "Not offering the server yet: give its address and choose Offer this server. What was offered stays on until then."
+        : anisette.offered === "builtin"
+          ? "Offering this Mac's own anisette to paired devices and computers."
+          : anisette.offered === "vm"
+            ? "Offering the anisette VM's to paired devices and computers."
+            : anisette.offered === "server"
+              ? `Passing ${serverHost(anisette.server ?? "")}'s anisette to paired devices and computers.`
+              : "");
   const kind = companionNote?.kind ?? (anisette.error ? "error" : anisette.offered ? "good" : "");
   setStatus($(companionPanel, "anisette-status"), text, kind);
   drawVm();

@@ -90,7 +90,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Apple Watch and its App ID isn't spent.
       Signing in to Apple needs anisette data from a Mac you own: this Mac's own (macOS 26 or
       earlier, or a macOS VM set up for it), else the Mac this computer is paired with
-      (`apparition anisette pair`). --anisette <url> uses an anisette v3 server you run instead.
+      (`apparition anisette pair`). --anisette <url> uses a third-party anisette v3 server instead.
   apparition sign <app.ipa or .deb> [--device <name or UDID>] [--keep-extensions] [--no-watch]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
       Sign for a paired device without reaching it and install nothing. With an Apple ID,

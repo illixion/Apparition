@@ -449,6 +449,18 @@ pub fn forget_paired_mac(state: Shared<'_>) -> bool {
     api::paired_mac::forget(&api::anisette_dir(&state.store.apple_id_dir()))
 }
 
+/// Asks the third-party anisette server at `address` what it is, without an Apple ID: reachable, and what a
+/// sign-in through it would claim to be (`{platform, model}`, platform being `mac`, `android` or `windows`).
+/// For checking a setup before relying on it: whether Apple then accepts what the server serves is up to Apple,
+/// which changes it without notice, so only a sign-in settles that.
+#[tauri::command]
+pub async fn check_anisette_server(address: String) -> Result<Value, Failure> {
+    let address = apparition_core::anisette::normalize_server_address(&address)?;
+    let claim = apparition_core::claimed_platform::claim_for_server(&address).await?;
+    let model = claim.client_info.split('>').next().unwrap_or_default().trim_start_matches('<').to_string();
+    Ok(json!({ "address": address, "platform": claim.served.name(), "model": model }))
+}
+
 /// What the VM setup server is waiting on: where to reach it from the VM.
 #[derive(serde::Serialize)]
 pub struct VmSetup {
@@ -518,7 +530,7 @@ pub async fn apple_id_sign_in(
     anisette: String,
 ) -> Result<Value, Failure> {
     let email = email.trim().to_string();
-    let anisette = anisette.trim().to_string();
+    let mut anisette = anisette.trim().to_string();
     if !email.contains('@') {
         return Err("Enter the email address of your Apple ID.".into());
     }
@@ -535,8 +547,9 @@ pub async fn apple_id_sign_in(
         if !api::vm::default_bundle().join("ready").exists() {
             return Err("Set up the anisette VM first (Companion tab).".into());
         }
-    } else if !(anisette.starts_with("http://") || anisette.starts_with("https://")) {
-        return Err("The anisette server's address starts with http:// or https://.".into());
+    } else {
+        // A third-party anisette server: kept in its normal form, which is what the settings remember.
+        anisette = apparition_core::anisette::normalize_server_address(&anisette)?;
     }
     let state = state.inner().clone();
     blocking(move || {

@@ -1,7 +1,8 @@
 //! The companion: what a computer runs for Apparition on a device. The relay (`relay.rs`), and,
 //! on a Mac that gives its own anisette, that anisette for the device to sign in to Apple with,
 //! served on loopback and reached only through the encrypted channel by paired devices and
-//! computers (companion_channel.rs). A computer that isn't such a Mac offers the relay alone.
+//! computers (companion_channel.rs). Any computer can instead offer a third-party anisette server
+//! the person gave the address of, passed through the same way (`anisette::remote`).
 //!
 //! The command line (`apparition relay`) and the desktop app both run this.
 
@@ -29,6 +30,8 @@ pub enum AnisetteSource {
     Builtin,
     /// This Mac's anisette VM (vm.rs), for a Mac on macOS 27: the VM's own, served the same way from here.
     Vm,
+    /// A third-party anisette server at an address the person gave, passed through the same way, on any computer.
+    Server,
 }
 
 pub struct Companion {
@@ -44,8 +47,8 @@ pub struct Companion {
     /// This Mac's Apparition Store, for computers granted `developer`.
     #[cfg(feature = "desktop")]
     developer: crate::companion_channel::DeveloperTarget,
-    #[cfg(all(feature = "anisette", target_os = "macos"))]
-    builtin: tokio::sync::Mutex<Option<crate::anisette::Server>>,
+    /// The server on loopback that the channel reaches, and the third-party address it passes through, if it does.
+    served: tokio::sync::Mutex<Option<(crate::anisette::Server, Option<String>)>>,
     source: Mutex<Option<AnisetteSource>>,
     anisette_port: u16,
 }
@@ -105,8 +108,7 @@ impl Companion {
             paired_path,
             #[cfg(feature = "desktop")]
             developer,
-            #[cfg(all(feature = "anisette", target_os = "macos"))]
-            builtin: Default::default(),
+            served: Default::default(),
             source: Mutex::new(None),
             anisette_port,
         })
@@ -177,11 +179,11 @@ impl Companion {
     pub async fn share_builtin_anisette(&self) -> Result<(), Report> {
         #[cfg(all(feature = "anisette", target_os = "macos"))]
         {
-            self.share(AnisetteSource::Builtin, None).await
+            self.share(AnisetteSource::Builtin, Offer::Native).await
         }
         #[cfg(not(all(feature = "anisette", target_os = "macos")))]
         {
-            bail!("Only a Mac on macOS 26 or earlier, or a macOS VM prepared for it, offers its anisette to devices. Pair your device with that Mac's Apparition instead.")
+            bail!("Only a Mac on macOS 26 or earlier, or a macOS VM prepared for it, offers its own anisette to devices. Pair your device with that Mac's Apparition instead, or offer a third-party anisette server.")
         }
     }
 
@@ -190,24 +192,42 @@ impl Companion {
     /// Mac's own. The VM resumes on the first request and suspends itself when idle.
     #[cfg(all(feature = "anisette", target_os = "macos"))]
     pub async fn share_vm_anisette(&self, bundle: PathBuf) -> Result<(), Report> {
-        self.share(AnisetteSource::Vm, Some(bundle)).await
+        self.share(AnisetteSource::Vm, Offer::Vm(bundle)).await
     }
 
-    #[cfg(all(feature = "anisette", target_os = "macos"))]
-    async fn share(&self, source: AnisetteSource, bundle: Option<PathBuf>) -> Result<(), Report> {
-        let mut served = self.builtin.lock().await;
-        if served.is_none() || self.anisette() != Some(source) {
-            // One port: a server from the other source makes way first.
+    /// Passes the third-party anisette server at `address` (see [`crate::anisette::normalize_server_address`])
+    /// through to paired devices on the encrypted channel, from any computer. The server isn't asked for anything
+    /// until a device uses it; [`crate::check_anisette`] says whether it answers.
+    pub async fn share_server_anisette(&self, address: &str) -> Result<(), Report> {
+        let address = crate::anisette::normalize_server_address(address).map_err(|why| report!("{why}"))?;
+        self.share(AnisetteSource::Server, Offer::Server(address)).await
+    }
+
+    async fn share(&self, source: AnisetteSource, offer: Offer) -> Result<(), Report> {
+        let mut served = self.served.lock().await;
+        let address = match &offer {
+            Offer::Server(address) => Some(address.clone()),
+            #[cfg(all(feature = "anisette", target_os = "macos"))]
+            _ => None,
+        };
+        // Serving already the same thing: nothing to restart.
+        let unchanged = self.anisette() == Some(source) && served.as_ref().is_some_and(|(_, serving)| *serving == address);
+        if !unchanged {
+            // One port: a server for another source, or another address, makes way first.
             served.take();
             let port = self.anisette_port;
             let bind = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             let devices = self.devices.clone();
             let access: crate::anisette::Access = Some(Arc::new(move |token: &str| devices.accepts(token)));
-            let started = match (source, bundle) {
-                (AnisetteSource::Vm, Some(bundle)) => crate::anisette::start_vm(bind, access, bundle).await,
-                _ => crate::anisette::start(bind, access).await,
+            let started = match offer {
+                #[cfg(all(feature = "anisette", target_os = "macos"))]
+                Offer::Native => crate::anisette::start(bind, access).await,
+                #[cfg(all(feature = "anisette", target_os = "macos"))]
+                Offer::Vm(bundle) => crate::anisette::start_vm(bind, access, bundle).await,
+                Offer::Server(address) => crate::anisette::start_remote(bind, access, &address).await,
             };
-            *served = Some(started.context(format!("Couldn't serve anisette on port {port}. If another program uses that port, stop it."))?);
+            let started = started.context(format!("Couldn't serve anisette on port {port}. If another program uses that port, stop it."))?;
+            *served = Some((started, address));
         }
         *self.source.lock().unwrap() = Some(source);
         self.relay.set_anisette(Some(self.anisette_port));
@@ -217,10 +237,7 @@ impl Companion {
 
     /// Stops serving anisette, whichever it was.
     pub async fn stop_builtin_anisette(&self) {
-        #[cfg(all(feature = "anisette", target_os = "macos"))]
-        {
-            self.builtin.lock().await.take();
-        }
+        self.served.lock().await.take();
         if self.anisette().is_some() {
             *self.source.lock().unwrap() = None;
             self.relay.set_anisette(None);
@@ -228,6 +245,16 @@ impl Companion {
         self.update_pairing();
     }
 
+}
+
+/// What [`Companion::share`] serves.
+enum Offer {
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
+    Native,
+    #[cfg(all(feature = "anisette", target_os = "macos"))]
+    Vm(PathBuf),
+    /// The third-party server at this (normalised) address.
+    Server(String),
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -332,7 +359,6 @@ impl PairedDevices {
         self.file.lock().unwrap().host_id.clone()
     }
 
-    #[cfg(all(feature = "anisette", target_os = "macos"))]
     fn accepts(&self, token: &str) -> bool {
         !token.is_empty() && self.file.lock().unwrap().devices.iter().any(|device| device.token == token)
     }

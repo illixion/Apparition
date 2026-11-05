@@ -443,7 +443,7 @@ async fn start_adapter(paired: PairedMac, channel_port: u16, connector: Arc<SslC
 pub async fn adapter_url(dir: &Path) -> Result<String, Report> {
     static ADAPTER: tokio::sync::Mutex<Option<Adapter>> = tokio::sync::Mutex::const_new(None);
     let Some(paired) = load(dir) else {
-        bail!("This computer isn't paired with a Mac. Pair it with your Mac (or a macOS VM) running Apparition, or give the address of an anisette server you run.");
+        bail!("This computer isn't paired with a Mac. Pair it with your Mac (or a macOS VM) running Apparition, or give the address of a third-party anisette server.");
     };
     let (_, channel_port) = ports(&paired.host, paired.relay_port).await.context(Unreachable).or_else(|error| {
         // The Mac's own address didn't answer the relay: try the others it gave when pairing.

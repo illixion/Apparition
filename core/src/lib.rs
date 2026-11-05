@@ -38,7 +38,7 @@ mod launch;
 mod tunnel;
 pub mod watch;
 pub mod stop;
-#[cfg(all(feature = "anisette", target_os = "macos"))]
+#[cfg(feature = "anisette-server")]
 pub mod anisette;
 #[cfg(feature = "desktop")]
 pub mod companion;
@@ -315,7 +315,7 @@ pub fn native_anisette() -> bool {
 
 /// The anisette to use when the person names none, for the Apple ID folder `data_dir`: this
 /// Mac's own when it gives it, else its anisette VM when one is set up, else the Mac this computer is paired with,
-/// else `None` (pair with a Mac, or give an anisette server's address).
+/// else `None` (pair with a Mac, or give a third-party anisette server's address).
 pub fn default_anisette(data_dir: &std::path::Path) -> Option<&'static str> {
     if native_anisette() {
         return Some(BUILTIN_ANISETTE);
@@ -333,7 +333,7 @@ pub fn default_anisette(data_dir: &std::path::Path) -> Option<&'static str> {
 }
 
 /// What to say when [`default_anisette`] has none.
-pub const NO_ANISETTE: &str = "Apparition gets its anisette from a Mac you own: this Mac on macOS 26 or earlier, or a Mac (or macOS VM on your Mac) running Apparition that this computer is paired with. Pair with it, or give the address of an anisette server you run.";
+pub const NO_ANISETTE: &str = "Apparition gets its anisette from a Mac you own: this Mac on macOS 26 or earlier, or a Mac (or macOS VM on your Mac) running Apparition that this computer is paired with. Pair with it, or give the address of a third-party anisette server (it signs in only if Apple accepts what it serves).";
 
 /// What Apple's `-80045` ("This action cannot be completed at this time") means here.
 pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition claims what the anisette server says it makes, and this server's anisette doesn't match that. Use a Mac's own anisette: this Mac's, or a Mac this computer is paired with.";
@@ -395,7 +395,7 @@ async fn builtin_address() -> Result<String, Report> {
     }
     #[cfg(not(all(feature = "anisette", target_os = "macos")))]
     {
-        bail!("Only a Mac makes its own anisette. Pair this computer with your Mac (or a macOS VM) running Apparition, or give the address of an anisette server you run.")
+        bail!("Only a Mac makes its own anisette. Pair this computer with your Mac (or a macOS VM) running Apparition, or give the address of a third-party anisette server.")
     }
 }
 

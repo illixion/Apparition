@@ -45,6 +45,9 @@ pub enum AnisetteMode {
     Builtin,
     /// This Mac's anisette VM (the Companion tab sets it up), the same way: for a Mac on macOS 27.
     Vm,
+    /// A third-party anisette server at the address in `Settings::anisette_server`, passed through the same way.
+    /// The one mode every computer has, so a Windows or Linux PC (or a Mac with no anisette of its own) can offer it.
+    Server,
     /// The Docker server this app used to offer: read as `Off`, since only a Mac's own anisette
     /// is offered now.
     #[serde(other)]
@@ -56,6 +59,9 @@ pub enum AnisetteMode {
 struct Settings {
     relay: bool,
     anisette: AnisetteMode,
+    /// The third-party anisette server's address (`AnisetteMode::Server`), kept while another mode is chosen so
+    /// switching back needs no retyping.
+    anisette_server: Option<String>,
     auto_updates: bool,
     /// Announce this computer over mDNS, so Find Companion lists it. Off, devices type its
     /// address; ones that already have it keep connecting as before.
@@ -66,7 +72,7 @@ impl Default for Settings {
     fn default() -> Self {
         // The relay is what Apparition on a device needs to do anything, so it's on unless
         // turned off; serving anisette to the network is a choice the user makes.
-        Self { relay: true, anisette: AnisetteMode::Off, auto_updates: false, advertise: true }
+        Self { relay: true, anisette: AnisetteMode::Off, anisette_server: None, auto_updates: false, advertise: true }
     }
 }
 
@@ -182,6 +188,10 @@ impl CompanionState {
             AnisetteMode::Vm => companion.share_vm_anisette(api::vm::default_bundle()).await.map_err(|error| error.to_string()),
             #[cfg(not(target_os = "macos"))]
             AnisetteMode::Vm => Err("The anisette VM runs only on a Mac.".to_string()),
+            AnisetteMode::Server => match settings.anisette_server.as_deref() {
+                Some(address) => companion.share_server_anisette(address).await.map_err(|error| error.to_string()),
+                None => Err("Give the anisette server's address.".to_string()),
+            },
             AnisetteMode::Off | AnisetteMode::Retired => {
                 companion.stop_builtin_anisette().await;
                 Ok(())
@@ -243,7 +253,9 @@ impl CompanionState {
             },
             "anisette": {
                 "mode": match settings.anisette { AnisetteMode::Retired => AnisetteMode::Off, mode => mode },
-                "offered": offered.map(|source| match source { AnisetteSource::Builtin => "builtin", AnisetteSource::Vm => "vm" }),
+                "offered": offered.map(|source| match source { AnisetteSource::Builtin => "builtin", AnisetteSource::Vm => "vm", AnisetteSource::Server => "server" }),
+                // The third-party server's address, whichever mode is chosen.
+                "server": settings.anisette_server,
                 "port": ports().1,
                 "builtinAvailable": api::builtin_anisette_available(),
                 // This Mac gives its own anisette (macOS 26 or earlier, or a VM set up for it).
@@ -259,7 +271,7 @@ impl CompanionState {
             },
             "pairing": {
                 // Anisette for paired devices only.
-                "required": matches!(settings.anisette, AnisetteMode::Builtin | AnisetteMode::Vm),
+                "required": matches!(settings.anisette, AnisetteMode::Builtin | AnisetteMode::Vm | AnisetteMode::Server),
                 "port": running.as_ref().map(|c| c.pairing_port()),
                 "channelPort": running.as_ref().map(|c| c.channel_port()),
                 "devices": running.as_ref().map(|c| c.devices.list()).unwrap_or_default(),
@@ -289,6 +301,7 @@ impl CompanionState {
         let anisette = match running.as_ref().and_then(|c| c.anisette()) {
             Some(AnisetteSource::Builtin) => "Anisette: offered from this Mac".to_string(),
             Some(AnisetteSource::Vm) => "Anisette: offered from this Mac's VM".to_string(),
+            Some(AnisetteSource::Server) => "Anisette: offered from a third-party server".to_string(),
             None => "Anisette: not offered".to_string(),
         };
         if let Some(tray) = &*self.tray.lock().unwrap() {
@@ -481,7 +494,14 @@ pub async fn companion_set_relay(state: Shared<'_>, on: bool) -> Result<Value, F
 }
 
 #[tauri::command]
-pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode) -> Result<Value, Failure> {
+pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode, server: Option<String>) -> Result<Value, Failure> {
+    // The third-party server's address: checked and kept in its normal form. Only its syntax is checked here;
+    // `check_anisette_server` asks whether it answers.
+    if mode == AnisetteMode::Server {
+        let address = server.or_else(|| state.settings.lock().unwrap().anisette_server.clone()).unwrap_or_default();
+        let address = apparition_core::anisette::normalize_server_address(&address).map_err(Failure::new)?;
+        state.settings.lock().unwrap().anisette_server = Some(address);
+    }
     if mode == AnisetteMode::Builtin && !tokio::task::spawn_blocking(api::native_anisette).await.unwrap_or(false) {
         return Err("Only a Mac on macOS 26 or earlier, or a macOS VM set up for it, offers its own anisette. Pair your devices with that Mac's Apparition instead.".into());
     }
@@ -554,6 +574,19 @@ mod tests {
         assert!(!old.relay);
         // The Docker server it offered is retired: nothing is offered in its place.
         assert_eq!(old.anisette, AnisetteMode::Retired);
+    }
+
+    #[test]
+    fn a_third_party_server_is_a_mode_of_its_own_and_its_address_is_kept() {
+        let settings: Settings = serde_json::from_str(r#"{"anisette":"server","anisetteServer":"https://ani.example.com"}"#).unwrap();
+        assert_eq!(settings.anisette, AnisetteMode::Server);
+        assert_eq!(settings.anisette_server.as_deref(), Some("https://ani.example.com"));
+        // Settings from before it existed have none, and keep every other default.
+        let old: Settings = serde_json::from_str(r#"{"anisette":"builtin"}"#).unwrap();
+        assert_eq!(old.anisette, AnisetteMode::Builtin);
+        assert!(old.anisette_server.is_none());
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(written["anisette"], "server");
     }
 
     #[test]

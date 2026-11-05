@@ -43,13 +43,14 @@ macOS on your own Mac, as Xcode does. That Mac is either
 
 Windows and Linux computers, and devices away from home, pair with that Mac for it over an
 encrypted channel. Apparition doesn't provide anisette, and doesn't run Apple code made for other
-platforms to stand in for a Mac. An anisette server you give by address works only when what it
-serves is a Mac's anisette: Apple refuses developer access to any other (`-80046`), so a server
-made from another platform's libraries won't sign apps. Some public servers do serve a Mac's, but
-you don't control them and Apple changes what it accepts without notice; Apparition doesn't
-provide or recommend one, and a Mac you own is the supported setup. Without a Mac, only a paid
-developer account's own certificate and profile sign apps (they need no sign-in). The Apple ID is
-yours too: use a spare one for sideloading if you can.
+platforms to stand in for a Mac. **Without a Mac you can still start with a third-party anisette
+server**, one you run or someone else's, given by address (Settings > Anisette for your devices, or
+the sign-in's Anisette data), on any computer. Whether it works is Apple's to say and Apple changes
+what it accepts without notice: it gives developer access to a Mac's anisette, and a server made
+from another platform's libraries may be refused (`-80046`). Some public servers do serve a Mac's;
+you don't control them, and Apparition doesn't provide or recommend one. A Mac you own stays the
+supported setup. Without either, only a paid developer account's own certificate and profile sign
+apps (they need no sign-in). The Apple ID is yours too: use a spare one for sideloading if you can.
 
 **JIT needs no particular computer.** Apparition on the device is the app's debugger. It only
 needs a way back to the device's own services, which the device won't connect to directly: a
