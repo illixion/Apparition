@@ -433,6 +433,11 @@ impl AppleAccount {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
         info!("Trusted device 2FA request answered {}: {}", status, describe_body(&body));
+        // Keep the raw response for diagnosing Apple's non-plist/web-page responses. This is
+        // written to apparition-core.log, which is already the app's private Documents log.
+        if !body.trim().is_empty() {
+            info!("Trusted device 2FA response body begin\n{}\nTrusted device 2FA response body end", body);
+        }
         if !status.is_success() {
             bail!("Trusted device 2FA request failed: HTTP {}", status);
         }
