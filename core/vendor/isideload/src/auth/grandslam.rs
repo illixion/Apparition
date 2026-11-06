@@ -287,6 +287,7 @@ impl GrandSlam {
             .add_root_certificate(cert)
             .add_root_certificate(cert_g3)
             .http1_title_case_headers()
+            .cookie_store(true)
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)
             // An edge that doesn't answer is given up on, and another tried (edge.rs).
