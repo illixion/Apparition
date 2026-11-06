@@ -118,6 +118,18 @@ impl GrandSlam {
         Ok(builder)
     }
 
+    /// A GET against Apple's authenticated `/auth` endpoints. These speak JSON and must not
+    /// inherit the plist content negotiation used by GrandSlam's SRP endpoints.
+    pub fn get_auth(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
+        let mut headers = Self::base_headers(&self.client_info, true)?;
+        headers.remove(reqwest::header::CONTENT_TYPE);
+        headers.insert("X-Apple-Client-App-Name", HeaderValue::from_static("Messages"));
+        headers.insert("X-Apple-I-Client-Bundle-Id", HeaderValue::from_static("com.apple.MobileSMS"));
+        headers.insert("X-Apple-AK-Context-Type", HeaderValue::from_static("imessage"));
+        headers.insert("Accept-Language", HeaderValue::from_static("en-US,en;q=0.9"));
+        Ok(self.client.get(url).headers(headers))
+    }
+
     pub fn get_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
         let builder = self
             .client

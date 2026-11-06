@@ -425,7 +425,7 @@ impl AppleAccount {
 
         let res = self
             .grandslam_client
-            .get(&request_code_url)?
+            .get_auth(&request_code_url)?
             .headers(self.build_2fa_headers(&anisette_data).await?)
             .send()
             .await
