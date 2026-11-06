@@ -105,10 +105,15 @@ impl GrandSlam {
     }
 
     pub fn get(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
+        // `get` is used for the authenticated 2FA web endpoints, not GrandSlam plist
+        // workaround belongs on plist traffic and makes these endpoints return the
+        // Apple Auth web application instead of triggering the trusted-device push.
+        let mut headers = Self::base_headers(&self.client_info, false)?;
+        headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
         let builder = self
             .client
             .get(url)
-            .headers(Self::base_headers(&self.client_info, false)?);
+            .headers(headers);
 
         Ok(builder)
     }
