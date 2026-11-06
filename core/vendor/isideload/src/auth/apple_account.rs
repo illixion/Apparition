@@ -439,8 +439,11 @@ impl AppleAccount {
         let request_host = request_code_url.split('/').nth(2).unwrap_or("<unknown>");
         let request_path = reqwest::Url::parse(&request_code_url).map(|url| url.path().to_string()).unwrap_or_default();
         let request_header_present = |name: &str| request_headers.contains_key(name);
+        let mut request_header_names: Vec<String> = request_headers.keys().map(ToString::to_string).collect();
+        request_header_names.sort();
+        let request_header_names = request_header_names.join(",");
         info!(
-            "Trusted device 2FA response metadata: request={request_host}{request_path}, final={}{}, content-type={content_type:?}, location={}, set-cookie={}, scnt={}, session-token={}, id-session={}, auth-attributes={}, anisette-headers={}/{}/{}/{}/{}/{}, context=messages-browser-full",
+            "Trusted device 2FA response metadata: request={request_host}{request_path}, final={}{}, content-type={content_type:?}, location={}, set-cookie={}, scnt={}, session-token={}, id-session={}, auth-attributes={}, anisette-headers={}/{}/{}/{}/{}/{}, anisette-header-names={request_header_names}, context=messages-browser-full",
             final_url.host_str().unwrap_or("<unknown>"), final_url.path(),
             header_present("location"), header_present("set-cookie"), header_present("scnt"),
             header_present("x-apple-session-token"), header_present("x-apple-id-session-id"),
