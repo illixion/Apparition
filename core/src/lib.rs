@@ -527,6 +527,11 @@ pub async fn sign_in(
     sign_in_with_proxy(email, password, anisette_url, None, data_dir, two_factor).await
 }
 
+/// The anisette address as a log line: the host of a server, never its path or query.
+fn anisette_label(address: &str) -> String {
+    reqwest::Url::parse(address).ok().and_then(|url| url.host_str().map(|host| format!("server {host}"))).unwrap_or_else(|| "built in".to_string())
+}
+
 /// Sign in with an optional device-local CONNECT adapter. Apple TLS remains in this process.
 async fn sign_in_with_proxy(
     email: &str,
@@ -544,6 +549,9 @@ async fn sign_in_with_proxy(
     // Claim the platform the anisette was made on, or Apple refuses the sign-in (claimed_platform).
     let claim = claimed_platform::claim_for(&anisette_url).await?;
     let served = claim.served;
+    // Which anisette and which claimed platform: the first things to know when Apple refuses or
+    // stays quiet. The address is a host or "built in", never a credential.
+    tracing::info!("Sign-in: anisette {} claims {:?}", anisette_label(&anisette_url), served);
     let after_sign_in = claim.after_sign_in();
     let anisette = claimed_platform::ClaimedPlatform::new(
         RemoteV3AnisetteProvider::new(&anisette_url, Box::new(FileStorage::open(
@@ -1006,14 +1014,36 @@ pub unsafe extern "C" fn apparition_string_free(string: *mut c_char) {
 /// certificate, whose name on a free account is the Apple ID's email address.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_init_logging(log_path: *const c_char) {
+    let Ok(path) = (unsafe { text(log_path) }) else { return };
+    init_logging(std::path::Path::new(&path), true);
+}
+
+/// Past this size the log is moved to `<name>.1` (replacing the one before) at the next launch.
+const LOG_ROTATE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// [`apparition_init_logging`] for Rust callers (the desktop app and the command line). The file
+/// is appended to, so an attempt from an earlier launch is still there, and one session line marks
+/// each launch. `idevice_debug` adds idevice's debug output, which includes the device's whole app
+/// list, so only the iPhone/iPad/Vision app asks for it.
+pub fn init_logging(path: &std::path::Path, idevice_debug: bool) {
+    use std::io::Write;
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{filter::Targets, prelude::*};
 
-    let Ok(path) = (unsafe { text(log_path) }) else { return };
-    let Ok(file) = std::fs::File::create(path) else { return };
+    if let Some(folder) = path.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    if std::fs::metadata(path).is_ok_and(|meta| meta.len() > LOG_ROTATE_BYTES) {
+        let mut older = path.as_os_str().to_owned();
+        older.push(".1");
+        let _ = std::fs::rename(path, older);
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) else { return };
+    let program = std::env::current_exe().ok().and_then(|exe| exe.file_name().map(|name| name.to_string_lossy().into_owned())).unwrap_or_default();
+    let _ = writeln!(file, "---- {program} started ({} {}) ----", std::env::consts::OS, std::env::consts::ARCH);
     let targets = Targets::new()
         .with_default(LevelFilter::INFO)
-        .with_target("idevice", LevelFilter::DEBUG)
+        .with_target("idevice", if idevice_debug { LevelFilter::DEBUG } else { LevelFilter::INFO })
         .with_target("apple_codesign", LevelFilter::ERROR);
     let _ = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(Mutex::new(file)).with_ansi(false).with_filter(targets))

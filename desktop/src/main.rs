@@ -24,6 +24,8 @@ use tauri::Manager;
 
 fn main() {
     apparition_core::api::init();
+    // Sign-in and install progress, kept across launches: `<data>/Apparition Installer/apparition-core.log`.
+    apparition_core::init_logging(&apparition_core::api::DeviceStore::default().dir.join("apparition-core.log"), false);
     let state = Arc::new(flow::State::new());
     let companion_state = Arc::new(companion::CompanionState::new(&apparition_core::api::DeviceStore::default()));
     let cleanup = state.clone();

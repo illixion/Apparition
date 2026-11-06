@@ -255,9 +255,11 @@ fn ask_secret(prompt: &str) -> String {
 #[tokio::main]
 async fn main() -> ExitCode {
     api::init();
-    // APPARITION_LOG=<file>: isideload's progress (info and up, no secrets), for diagnosing sign-in.
-    if let Some(path) = std::env::var_os("APPARITION_LOG").and_then(|path| path.into_string().ok()).and_then(|path| std::ffi::CString::new(path).ok()) {
-        unsafe { apparition_core::apparition_init_logging(path.as_ptr()) };
+    // The log sits beside the desktop app's, so one file tells what either did. APPARITION_LOG=<file>
+    // picks another and adds idevice's debug output; the content is safe to send (no secrets).
+    match std::env::var_os("APPARITION_LOG") {
+        Some(path) => apparition_core::init_logging(std::path::Path::new(&path), true),
+        None => apparition_core::init_logging(&api::DeviceStore::default().dir.join("apparition-core.log"), false),
     }
     // What a cancelled or killed run left in the temp folder (a .p12's key among it).
     scratch::sweep();

@@ -255,6 +255,7 @@ impl AppleAccount {
                     })
                     .await?;
                     self.last_error = None;
+                    info!("2FA prompt answered: {}", answer_label(&response));
                     match response {
                         TwoFactorCallbackResponse::SubmitCode(code) => {
                             self.login_state = self
@@ -302,6 +303,7 @@ impl AppleAccount {
                     })
                     .await?;
                     self.last_error = None;
+                    info!("2FA prompt answered: {}", answer_label(&response));
                     match response {
                         TwoFactorCallbackResponse::SubmitCode(code) => {
                             self.login_state = self
@@ -361,6 +363,7 @@ impl AppleAccount {
                     })
                     .await?;
                     self.last_error = None;
+                    info!("2FA prompt answered: {}", answer_label(&response));
                     match response {
                         TwoFactorCallbackResponse::SubmitCode(_) => {
                             bail!("Cannot submit code without knowing which method to use");
@@ -420,14 +423,19 @@ impl AppleAccount {
             .grandslam_client
             .get_url("trustedDeviceSecondaryAuth")?;
 
-        self.grandslam_client
+        let res = self
+            .grandslam_client
             .get(&request_code_url)?
             .headers(self.build_2fa_headers(&anisette_data).await?)
             .send()
             .await
-            .context("Failed to request trusted device 2fa")?
-            .error_for_status()
-            .context("Trusted device 2FA request failed")?;
+            .context("Failed to request trusted device 2fa")?;
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        info!("Trusted device 2FA request answered {}: {}", status, describe_body(&body));
+        if !status.is_success() {
+            bail!("Trusted device 2FA request failed: HTTP {}", status);
+        }
 
         info!("Trusted device 2FA request sent");
 
@@ -524,6 +532,7 @@ impl AppleAccount {
             .context("Failed to request SMS 2FA")?;
 
         let status = res.status();
+        info!("SMS 2FA request to number {} answered {}", id, status);
         let text = if status.is_success() {
             String::new()
         } else {
@@ -923,6 +932,12 @@ impl AppleAccount {
             .context("Failed to parse proof login response")?;
 
         debug!("Login step 2 completed");
+        info!(
+            "Sign-in answered: au={:?} hsc={:?} ec={:?}",
+            status.get("au").and_then(|v| v.as_string()),
+            status.get("hsc").and_then(|v| v.as_signed_integer()),
+            status.get("ec").and_then(|v| v.as_signed_integer()),
+        );
 
         if let Some(plist::Value::String(s)) = status.get("au") {
             return Ok(match s.as_str() {
@@ -1191,5 +1206,31 @@ fn censor_email(email: &str) -> String {
         }
     } else {
         "***".to_string()
+    }
+}
+
+fn answer_label(response: &TwoFactorCallbackResponse) -> &'static str {
+    match response {
+        TwoFactorCallbackResponse::SubmitCode(_) => "code submitted",
+        TwoFactorCallbackResponse::SendSms(_) => "send by SMS",
+        TwoFactorCallbackResponse::SendToDevices => "send to trusted devices",
+        TwoFactorCallbackResponse::ResendCode => "resend",
+        TwoFactorCallbackResponse::Abort => "cancelled",
+    }
+}
+
+/// A response body for the log: empty, or the keys of its plist with `ec` and `em`, or its size.
+fn describe_body(body: &str) -> String {
+    if body.trim().is_empty() {
+        return "empty body".to_string();
+    }
+    match plist::from_bytes::<Dictionary>(body.as_bytes()) {
+        Ok(dict) => {
+            let keys: Vec<&str> = dict.keys().map(String::as_str).collect();
+            let ec = dict.get("ec").and_then(|v| v.as_signed_integer());
+            let em = dict.get("em").and_then(|v| v.as_string());
+            format!("plist keys {keys:?}, ec={ec:?}, em={em:?}")
+        }
+        Err(_) => format!("{} bytes, not a plist", body.len()),
     }
 }
