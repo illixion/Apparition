@@ -127,6 +127,12 @@ impl GrandSlam {
         headers.insert("X-Apple-I-Client-Bundle-Id", HeaderValue::from_static("com.apple.MobileSMS"));
         headers.insert("X-Apple-AK-Context-Type", HeaderValue::from_static("imessage"));
         headers.insert("Accept-Language", HeaderValue::from_static("en-US,en;q=0.9"));
+        headers.insert("User-Agent", HeaderValue::from_static("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"));
+        let messages_client_info = self.client_info.client_info.replace(
+            "com.apple.akd/1.0",
+            "com.apple.MobileSMS/1262.500.151.1.2",
+        );
+        headers.insert("X-Mme-Client-Info", HeaderValue::from_str(&messages_client_info)?);
         Ok(self.client.get(url).headers(headers))
     }
 
