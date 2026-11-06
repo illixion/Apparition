@@ -978,6 +978,12 @@ impl AppleAccount {
             status.get("ec").and_then(|v| v.as_signed_integer()),
         );
 
+        if status.get("hsc").and_then(plist::Value::as_signed_integer) == Some(409) {
+            info!("2FA code already sent");
+            self.update_trusted_numbers().await;
+            return Ok(LoginState::NeedsDevice2FAVerification);
+        }
+
         if let Some(plist::Value::String(s)) = status.get("au") {
             return Ok(match s.as_str() {
                 "trustedDeviceSecondaryAuth" => LoginState::NeedsDevice2FA,
@@ -992,11 +998,6 @@ impl AppleAccount {
         if let Some(plist::Value::Integer(hsc)) = status.get("hsc") {
             match hsc.as_signed() {
                 Some(200) => {}
-                Some(409) => {
-                    info!("2FA code already sent");
-                    self.update_trusted_numbers().await;
-                    return Ok(LoginState::NeedsDevice2FAVerification);
-                }
                 Some(code) => {
                     warn!("Unknown status code {}: {:?}", code, status);
                 }
