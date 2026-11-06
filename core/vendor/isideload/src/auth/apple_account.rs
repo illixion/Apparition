@@ -464,6 +464,15 @@ impl AppleAccount {
             info!("Trusted device 2FA response body begin\n{}\nTrusted device 2FA response body end", body);
         }
         if !status.is_success() {
+            if status == reqwest::StatusCode::PRECONDITION_FAILED
+                && self.trusted_phone_numbers.as_ref().is_some_and(|numbers| !numbers.is_empty())
+            {
+                self.last_error = Some(
+                    "Apple didn't send a trusted-device notification. Choose a trusted phone number to continue by SMS.".to_string(),
+                );
+                info!("Apple returned phone options instead of a trusted-device push; offering SMS");
+                return Ok(());
+            }
             bail!("Trusted device 2FA request failed: HTTP {}", status);
         }
 
