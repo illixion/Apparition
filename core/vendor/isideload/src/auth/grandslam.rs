@@ -127,6 +127,27 @@ impl GrandSlam {
         headers.insert("X-Apple-I-Client-Bundle-Id", HeaderValue::from_static("com.apple.MobileSMS"));
         headers.insert("X-Apple-AK-Context-Type", HeaderValue::from_static("imessage"));
         headers.insert("Accept-Language", HeaderValue::from_static("en-US,en;q=0.9"));
+        for (name, value) in [
+            ("X-Apple-I-Locale", "en_US"),
+            ("X-Apple-I-TimeZone", "Europe/Riga"),
+            ("X-Apple-I-TimeZone-Offset", "120"),
+            ("X-MMe-Country", "LV"),
+            ("X-Apple-Requested-Partition", "0"),
+            ("X-Apple-I-Device-Configuration-Mode", "0"),
+            ("X-Apple-I-DeviceUserMode", "0"),
+            ("X-Apple-Security-Upgrade-Context", "com.apple.authkit.generic"),
+            ("X-Apple-I-CDP-Status", "false"),
+            ("X-Apple-I-CDP-Circle-Status", "false"),
+            ("X-Apple-I-OT-Status", "false"),
+            ("X-Apple-I-ICSCREC", "true"),
+            ("X-Apple-I-PRK-Gen", "true"),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Mode", "cors"),
+            ("Sec-Fetch-Dest", "empty"),
+            ("X-Apple-I-CFU-State", "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIHBsaXN0IFBVQkxJQyAiLS8vQXBwbGUvL0RURCBQTElTVCAxLjAvL0VOIiAiaHR0cDovL3d3dy5hcHBsZS5jb20vRFREcy9Qcm9wZXJ0eUxpc3QtMS4wLmR0ZCI+CjxwbGlzdCB2ZXJzaW9uPSIxLjAiPgo8YXJyYXkvPgo8L3BsaXN0Pgo="),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
         headers.insert("User-Agent", HeaderValue::from_static("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"));
         let messages_client_info = self.client_info.client_info.replace(
             "com.apple.akd/1.0",

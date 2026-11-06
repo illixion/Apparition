@@ -423,10 +423,11 @@ impl AppleAccount {
             .grandslam_client
             .get_url("trustedDeviceSecondaryAuth")?;
 
+        let request_headers = self.build_2fa_headers(&anisette_data).await?;
         let res = self
             .grandslam_client
             .get_auth(&request_code_url)?
-            .headers(self.build_2fa_headers(&anisette_data).await?)
+            .headers(request_headers.clone())
             .send()
             .await
             .context("Failed to request trusted device 2fa")?;
@@ -437,12 +438,16 @@ impl AppleAccount {
         let header_present = |name: &str| res.headers().contains_key(name);
         let request_host = request_code_url.split('/').nth(2).unwrap_or("<unknown>");
         let request_path = reqwest::Url::parse(&request_code_url).map(|url| url.path().to_string()).unwrap_or_default();
+        let request_header_present = |name: &str| request_headers.contains_key(name);
         info!(
-            "Trusted device 2FA response metadata: request={request_host}{request_path}, final={}{}, content-type={content_type:?}, location={}, set-cookie={}, scnt={}, session-token={}, id-session={}, auth-attributes={}",
+            "Trusted device 2FA response metadata: request={request_host}{request_path}, final={}{}, content-type={content_type:?}, location={}, set-cookie={}, scnt={}, session-token={}, id-session={}, auth-attributes={}, anisette-headers={}/{}/{}/{}/{}/{}, context=messages-browser-full",
             final_url.host_str().unwrap_or("<unknown>"), final_url.path(),
             header_present("location"), header_present("set-cookie"), header_present("scnt"),
             header_present("x-apple-session-token"), header_present("x-apple-id-session-id"),
             header_present("x-apple-auth-attributes"),
+            request_header_present("x-apple-i-md"), request_header_present("x-apple-i-md-m"),
+            request_header_present("x-apple-i-md-lu"), request_header_present("x-apple-i-md-rinfo"),
+            request_header_present("x-mme-device-id"), request_header_present("x-apple-identity-token"),
         );
         let body = res.text().await.unwrap_or_default();
         info!("Trusted device 2FA request answered {}: {}", status, describe_body(&body));
