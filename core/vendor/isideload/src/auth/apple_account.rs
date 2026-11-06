@@ -424,9 +424,12 @@ impl AppleAccount {
             .get_url("trustedDeviceSecondaryAuth")?;
 
         let request_headers = self.build_2fa_headers(&anisette_data).await?;
+        let carries_baa = request_headers
+            .keys()
+            .any(|name| name.as_str().starts_with("x-apple-baa-"));
         let res = self
             .grandslam_client
-            .get_auth(&request_code_url)?
+            .get_auth(&request_code_url, carries_baa)?
             .headers(request_headers.clone())
             .send()
             .await
@@ -442,8 +445,9 @@ impl AppleAccount {
         let mut request_header_names: Vec<String> = request_headers.keys().map(ToString::to_string).collect();
         request_header_names.sort();
         let request_header_names = request_header_names.join(",");
+        let request_profile = if carries_baa { "native-authkit" } else { "messages-browser" };
         info!(
-            "Trusted device 2FA response metadata: request={request_host}{request_path}, final={}{}, content-type={content_type:?}, location={}, set-cookie={}, scnt={}, session-token={}, id-session={}, auth-attributes={}, anisette-headers={}/{}/{}/{}/{}/{}, anisette-header-names={request_header_names}, context=messages-browser-full",
+            "Trusted device 2FA response metadata: request={request_host}{request_path}, final={}{}, content-type={content_type:?}, location={}, set-cookie={}, scnt={}, session-token={}, id-session={}, auth-attributes={}, anisette-headers={}/{}/{}/{}/{}/{}, anisette-header-names={request_header_names}, context={request_profile}",
             final_url.host_str().unwrap_or("<unknown>"), final_url.path(),
             header_present("location"), header_present("set-cookie"), header_present("scnt"),
             header_present("x-apple-session-token"), header_present("x-apple-id-session-id"),
