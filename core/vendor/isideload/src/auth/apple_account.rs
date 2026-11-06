@@ -423,7 +423,15 @@ impl AppleAccount {
             .grandslam_client
             .get_url("trustedDeviceSecondaryAuth")?;
 
-        let request_headers = self.build_2fa_headers(&anisette_data).await?;
+        let mut request_headers = self.build_2fa_headers(&anisette_data).await?;
+        let baa_headers: Vec<_> = request_headers
+            .keys()
+            .filter(|name| name.as_str().starts_with("x-apple-baa-"))
+            .cloned()
+            .collect();
+        for name in baa_headers {
+            request_headers.remove(name);
+        }
         let res = self
             .grandslam_client
             .get_auth(&request_code_url)?
