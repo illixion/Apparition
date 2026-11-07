@@ -465,6 +465,31 @@ pub async fn serve(bundle: &Path) -> Result<String, Report> {
     live.anisette.ok_or_else(|| report!("The anisette VM is busy ({}); try again when it's done", if live.recovery { "in recoveryOS" } else { "running for setup" }))
 }
 
+/// Puts the VM's window on screen for someone to use, starting or resuming the VM if needed: signing in to an Apple
+/// Account in its System Settings, for one. It stays running while shown; closing the window (or [`hide`]) puts it out
+/// of sight again. The account is `apparition`, with [`password`].
+pub async fn show(bundle: &Path) -> Result<(), Report> {
+    serve(bundle).await?;
+    control(bundle, "show", &[], Duration::from_secs(60)).await?;
+    Ok(())
+}
+
+/// Takes the VM's window off screen again; the VM carries on serving and suspends when idle.
+pub async fn hide(bundle: &Path) -> Result<(), Report> {
+    if live(bundle).await.is_some() {
+        control(bundle, "hide", &[], Duration::from_secs(10)).await?;
+    }
+    Ok(())
+}
+
+/// The VM account's (`apparition`) password, for logging in to it by hand. Never makes one: only setup does.
+pub fn password(bundle: &Path) -> Result<String, Report> {
+    if !bundle.join("credentials.txt").exists() {
+        bail!("The anisette VM isn't set up yet");
+    }
+    credentials(bundle)
+}
+
 /// The runner's own operations, for looking into a setup (`apparition vm screen`, `key`, `type`, ...): reading and
 /// typing into the VM's window, suspending, resuming, its network. Not its lifecycle, which has its own functions.
 pub async fn operate(bundle: &Path, operation: &str, extra: &[(&str, &str)]) -> Result<Value, Report> {

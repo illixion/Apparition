@@ -113,6 +113,8 @@ fn main() {
             vm::vm_setup,
             vm::vm_cancel,
             vm::vm_check,
+            vm::vm_show,
+            vm::vm_copy_password,
             vm::vm_remove,
         ])
         .setup(move |app| {

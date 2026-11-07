@@ -241,6 +241,13 @@ final class Delegate: NSObject, VZVirtualMachineDelegate, NSApplicationDelegate 
     }
 }
 
+/// Turns closing the window into hiding it.
+final class WindowCloser: NSObject, NSWindowDelegate {
+    let hide: () -> Void
+    init(hide: @escaping () -> Void) { self.hide = hide }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { hide(); return false }
+}
+
 struct RunnerError: LocalizedError {
     let errorDescription: String?
     init(_ text: String) { errorDescription = text }
@@ -269,6 +276,8 @@ struct RunnerError: LocalizedError {
     private var waiters: [CheckedContinuation<Void, Error>] = []
     /// Why this VM can't be saved, if it can't: a configuration VZ can't save, or recoveryOS (which is never resumed).
     var unsaveable: String?
+    /// Its window is on screen for someone to use (`show`): the idle suspend leaves it running meanwhile.
+    var attended = false
     private var quitting = false
 
     nonisolated static func savedState(_ dir: URL) -> URL { dir.appendingPathComponent("suspended.vzvmsave") }
@@ -811,6 +820,27 @@ final class ControlServer {
                                                          "w": $0.box.width, "h": $0.box.height] }]
     }
 
+    /// The window for a person to use the VM (signing in to an Apple Account in System Settings, say), or out of
+    /// sight again. The appliance runs as an accessory app with its window off screen: shown, it becomes a regular
+    /// app (Dock icon, keyboard) and the idle suspend waits; hidden, it goes back, and the idle clock starts over.
+    @MainActor func setShown(_ show: Bool) {
+        guard let window = view?.window else { return }
+        machine.attended = show
+        if show {
+            if hiddenPolicy == nil { hiddenPolicy = NSApp.activationPolicy() }
+            NSApp.setActivationPolicy(.regular)
+            if !window.isVisible { window.center() }
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(view)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            window.orderOut(nil)
+            if let policy = hiddenPolicy { NSApp.setActivationPolicy(policy); hiddenPolicy = nil }
+            frontDoor?.touch()
+        }
+    }
+    private var hiddenPolicy: NSApplication.ActivationPolicy?
+
     func receive(_ connection: NWConnection, data: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] chunk, _, complete, error in
             guard let self else { connection.cancel(); return }
@@ -856,6 +886,16 @@ final class ControlServer {
                     // Validate the whole string before sending any events.
                     let strokes = try text.map { try self.stroke($0) }
                     for stroke in strokes { try self.send(code: stroke.0, flags: stroke.1); Thread.sleep(forTimeInterval: 0.01) }
+                case "show", "hide":
+                    let show = request["operation"] == "show"
+                    Task { @MainActor in
+                        do {
+                            if show { try await self.machine.running() }
+                            self.setShown(show)
+                            self.respond(connection, self.state())
+                        } catch { self.respond(connection, ["ok": false, "error": "show failed: \(error.localizedDescription)"]) }
+                    }
+                    return
                 case "network-on": MainActor.assumeIsolated { self.vm?.networkDevices.first?.attachment = self.machine.attachment }
                 case "network-off": self.vm?.networkDevices.first?.attachment = nil
                 case "shutdown":
@@ -947,7 +987,7 @@ final class ControlServer {
     func state() -> [String: Any] {
         var reply: [String: Any] = ["ok": true, "state": vm?.state.rawValue ?? -1, "phase": MainActor.assumeIsolated { machine.phase.rawValue },
                                     "network": vm?.networkDevices.first?.attachment != nil, "running": vm?.state == .running,
-                                    "recovery": recovery]
+                                    "recovery": recovery, "shown": MainActor.assumeIsolated { machine.attended }]
         if let frontDoor { reply["anisette"] = "http://127.0.0.1:\(frontDoor.port)" }
         return reply
     }
@@ -974,7 +1014,7 @@ final class ControlServer {
     if base > 0 && machine.unsaveable == nil {
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
             MainActor.assumeIsolated {
-                guard machine.phase == .running, let idle = door.idle(), idle >= idlePeriod else { return }
+                guard machine.phase == .running, !machine.attended, let idle = door.idle(), idle >= idlePeriod else { return }
                 Task { do { try await machine.suspend() } catch { print("SUSPEND FAILED: \(error.localizedDescription)") } }
             }
         }
@@ -1046,6 +1086,9 @@ final class ControlServer {
     win.title = recovery ? "Apparition — Recovery" : "Apparition macOS 26"
     win.contentView = view
     win.makeFirstResponder(view)
+    // Serving, closing a window someone showed hides it again; the appliance carries on (quitting stays `vm quit`).
+    let closer = serving ? WindowCloser { MainActor.assumeIsolated { control.setShown(false) } } : nil
+    win.delegate = closer
     if background && serving {
         // The appliance has nothing to show: its window stays off screen (`apparition vm screen` still captures it).
     } else if background {
@@ -1062,7 +1105,7 @@ final class ControlServer {
             do { try machine.boot(recovery: false) } catch { fail("boot failed: \(error)") }
         }
     }
-    withExtendedLifetime((control, status, statusListener, machine, observers)) { app.run() }
+    withExtendedLifetime((control, status, statusListener, machine, observers, closer)) { app.run() }
 }
 
 // MARK: main

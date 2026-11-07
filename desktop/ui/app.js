@@ -1709,6 +1709,28 @@ function buildCompanion() {
     setBusy(vmCheck, false);
     refreshCompanion();
   });
+  // The VM's own window, to use it by hand (an Apple Account sign-in in its System Settings, say).
+  const vmShow = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-show"));
+  vmShow.addEventListener("click", async () => {
+    setBusy(vmShow, true);
+    try {
+      await invoke("vm_show");
+      vmNote = { text: "The VM's window is open. Its account is apparition (Copy its password). It keeps running while the window is open; closing it hides the VM again." };
+    } catch (error) {
+      vmNote = { text: messageOf(error), kind: "error" };
+    }
+    setBusy(vmShow, false);
+    refreshCompanion();
+  });
+  $(companionPanel, "vm-password").addEventListener("click", async () => {
+    try {
+      await invoke("vm_copy_password");
+      vmNote = { text: "Copied the password of the VM's account (apparition) to the clipboard.", kind: "good" };
+    } catch (error) {
+      vmNote = { text: messageOf(error), kind: "error" };
+    }
+    refreshCompanion();
+  });
   // Removing takes a second click: it deletes 30 GB that took 45 minutes to make.
   const vmRemove = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-remove"));
   let removeArmed = 0;
@@ -1891,6 +1913,8 @@ function drawVm() {
   $(companionPanel, "vm-pick").hidden = busy || vm.ready || vm.installed || vm.imageCached;
   $(companionPanel, "vm-cancel").hidden = !busy;
   $(companionPanel, "vm-check").hidden = busy || !vm.ready;
+  $(companionPanel, "vm-show").hidden = busy || !vm.ready;
+  $(companionPanel, "vm-password").hidden = busy || !vm.ready;
   $(companionPanel, "vm-remove").hidden = busy || !vm.exists;
   const disk = vm.diskBytes ? ` It takes ${(vm.diskBytes / 1e9).toFixed(1)} GB of disk.` : "";
   const text = vmNote?.text
