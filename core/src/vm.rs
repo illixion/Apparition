@@ -467,7 +467,7 @@ pub async fn serve(bundle: &Path) -> Result<String, Report> {
 
 /// Puts the VM's window on screen for someone to use, starting or resuming the VM if needed: signing in to an Apple
 /// Account in its System Settings, for one. It stays running while shown; closing the window (or [`hide`]) puts it out
-/// of sight again. The account is `apparition`, with [`password`].
+/// of sight again. The account is `apparition`; [`type_password`] logs in to it.
 pub async fn show(bundle: &Path) -> Result<(), Report> {
     serve(bundle).await?;
     control(bundle, "show", &[], Duration::from_secs(60)).await?;
@@ -482,12 +482,26 @@ pub async fn hide(bundle: &Path) -> Result<(), Report> {
     Ok(())
 }
 
-/// The VM account's (`apparition`) password, for logging in to it by hand. Never makes one: only setup does.
-pub fn password(bundle: &Path) -> Result<String, Report> {
+/// Types the VM account's (`apparition`) password and Return into the VM's window: the login screen or any password
+/// prompt in front. Only into a window someone has shown ([`show`]), and without bringing it forward: the keys go to
+/// the VM's view directly, so whatever app the person is typing in keeps the keyboard. Typed in pieces, as recoveryOS
+/// needs, so none are dropped. The password goes from the bundle to the runner and never anywhere a person or a log
+/// sees it. Never makes one: only setup does.
+pub async fn type_password(bundle: &Path) -> Result<(), Report> {
     if !bundle.join("credentials.txt").exists() {
         bail!("The anisette VM isn't set up yet");
     }
-    credentials(bundle)
+    let shown = match live(bundle).await {
+        Some(_) => control(bundle, "status", &[], Duration::from_secs(10)).await?.get("shown").and_then(Value::as_bool) == Some(true),
+        None => false,
+    };
+    if !shown {
+        bail!("Show the VM first: the password is typed into its window");
+    }
+    control(bundle, "resume", &[], Duration::from_secs(60)).await?;
+    type_slowly(bundle, &credentials(bundle)?).await?;
+    control(bundle, "type", &[("text", "\n")], Duration::from_secs(10)).await?;
+    Ok(())
 }
 
 /// The runner's own operations, for looking into a setup (`apparition vm screen`, `key`, `type`, ...): reading and

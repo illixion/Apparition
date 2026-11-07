@@ -135,18 +135,9 @@ mod mac {
         Ok(())
     }
 
-    /// Onto the clipboard from here, so the password never passes through the web view.
-    pub fn copy_password() -> Result<(), Failure> {
-        let password = vm::password(&vm::default_bundle())?;
-        let mut copy = std::process::Command::new("/usr/bin/pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|error| Failure::new(format!("Couldn't copy the password: {error}")))?;
-        let written = copy.stdin.as_mut().map(|stdin| std::io::Write::write_all(stdin, password.as_bytes()));
-        let finished = copy.wait();
-        if !matches!(written, Some(Ok(()))) || !finished.is_ok_and(|status| status.success()) {
-            return Err("Couldn't copy the password.".into());
-        }
+    /// Typed into the VM's window by the runner, so the password never passes through the web view.
+    pub async fn type_password() -> Result<(), Failure> {
+        vm::type_password(&vm::default_bundle()).await?;
         Ok(())
     }
 
@@ -223,11 +214,11 @@ pub async fn vm_show() -> Result<(), Failure> {
     Err("The anisette VM needs a Mac with Apple silicon.".into())
 }
 
-/// Copies the VM account's password to the clipboard, for logging in to its window.
+/// Types the VM account's password and Return into its window (shown first): logs in to it.
 #[tauri::command]
-pub fn vm_copy_password() -> Result<(), Failure> {
+pub async fn vm_type_password() -> Result<(), Failure> {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return mac::copy_password();
+    return mac::type_password().await;
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
     Err("The anisette VM needs a Mac with Apple silicon.".into())
 }

@@ -1715,20 +1715,23 @@ function buildCompanion() {
     setBusy(vmShow, true);
     try {
       await invoke("vm_show");
-      vmNote = { text: "The VM's window is open. Its account is apparition (Copy its password). It keeps running while the window is open; closing it hides the VM again." };
+      vmNote = { text: "The VM's window is open. Its account is apparition (Type its password logs in). It keeps running while the window is open; closing it hides the VM again." };
     } catch (error) {
       vmNote = { text: messageOf(error), kind: "error" };
     }
     setBusy(vmShow, false);
     refreshCompanion();
   });
-  $(companionPanel, "vm-password").addEventListener("click", async () => {
+  const vmPassword = /** @type {HTMLButtonElement} */ ($(companionPanel, "vm-password"));
+  vmPassword.addEventListener("click", async () => {
+    setBusy(vmPassword, true);
     try {
-      await invoke("vm_copy_password");
-      vmNote = { text: "Copied the password of the VM's account (apparition) to the clipboard.", kind: "good" };
+      await invoke("vm_type_password");
+      vmNote = { text: "Typed the password of the VM's account (apparition) into its window.", kind: "good" };
     } catch (error) {
       vmNote = { text: messageOf(error), kind: "error" };
     }
+    setBusy(vmPassword, false);
     refreshCompanion();
   });
   // Removing takes a second click: it deletes 30 GB that took 45 minutes to make.

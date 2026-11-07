@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use rootcause::prelude::*;
 
 pub const USAGE: &str = "usage: apparition vm setup [--ipsw <file>] [--keep-image] [--public-key <file>] | update [--recovery] | status [--json] | serve | quit | shutdown | force-stop | check | image [--ipsw <file>] | remove
-       apparition vm show | hide | password   (the VM's window, to use it by hand; password copies the account's to the clipboard)
+       apparition vm show | hide | type-password   (the VM's window, to use it by hand; type-password logs in to it)
        apparition vm screen | key <chord> | type <file> | click-text <text> [--menubar] | suspend | resume | network on|off   (for looking into a setup)
        every command takes --bundle <dir> (default ~/Library/Application Support/Apparition/anisette.vm)";
 
@@ -78,18 +78,13 @@ pub async fn run(args: &[String]) -> Result<(), Report> {
         }
         ["show"] => {
             vm::show(&bundle).await?;
-            println!("The VM's window is open (account: apparition; `apparition vm password` copies its password). Closing the window hides it again.");
+            println!("The VM's window is open (account: apparition; `apparition vm type-password` logs in). Closing the window hides it again.");
         }
         ["hide"] => vm::hide(&bundle).await?,
-        // To the clipboard, never the terminal: it stays out of scrollback and logs.
-        ["password"] => {
-            let password = vm::password(&bundle)?;
-            let mut copy = std::process::Command::new("/usr/bin/pbcopy").stdin(std::process::Stdio::piped()).spawn().context("running pbcopy")?;
-            std::io::Write::write_all(copy.stdin.as_mut().ok_or_else(|| report!("pbcopy has no input"))?, password.as_bytes())?;
-            if !copy.wait()?.success() {
-                bail!("pbcopy failed");
-            }
-            println!("Copied the VM account's password to the clipboard (account: apparition).");
+        // Typed into the VM itself: the password never reaches the terminal or the clipboard.
+        ["type-password"] => {
+            vm::type_password(&bundle).await?;
+            println!("Typed the VM account's password and Return into its window.");
         }
         ["screen"] => {
             let reply = vm::operate(&bundle, "screen", &[]).await?;
