@@ -33,6 +33,7 @@ pub struct AppleAccount {
     pub anisette_generator: AnisetteDataGenerator,
     pub grandslam_client: Arc<GrandSlam>,
     pub trusted_phone_numbers: Option<Vec<TrustedNumber>>,
+    auto_sms_number: Option<u32>,
     login_state: LoginState,
     debug: bool,
     last_error: Option<String>,
@@ -177,6 +178,7 @@ impl AppleAccount {
             debug,
             login_state: LoginState::NeedsLogin,
             trusted_phone_numbers: None,
+            auto_sms_number: None,
             last_error: None,
             err_429_retries,
             code_after_login: false,
@@ -240,6 +242,15 @@ impl AppleAccount {
                 }
                 LoginState::NeedsDevice2FA => {
                     self.update_trusted_numbers().await;
+                    if let Some(id) = self.auto_sms_number {
+                        info!("Apple has no trusted device for this sign-in and texted the code; not asking for a push");
+                        self.last_error = Some(
+                            "Apple has no trusted device to send a code to, so it sent one by SMS. Enter the code from the text message."
+                                .to_string(),
+                        );
+                        self.login_state = LoginState::NeedsSMS2FAVerification(id);
+                        continue;
+                    }
                     let sms_number = self
                         .send_trusted_device_2fa()
                         .await
@@ -326,6 +337,9 @@ impl AppleAccount {
                             self.login_state = LoginState::NeedsSMS2FA(id);
                         }
                         TwoFactorCallbackResponse::SendToDevices => {
+                            // Asked for explicitly: try the push even though Apple said it has
+                            // no trusted device.
+                            self.auto_sms_number = None;
                             self.login_state = LoginState::NeedsDevice2FA;
                         }
                         TwoFactorCallbackResponse::Abort => {
@@ -780,6 +794,21 @@ impl AppleAccount {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
             && let Some(numbers) = json.get("trustedPhoneNumbers")
         {
+            let no_trusted_devices = json.get("noTrustedDevices").and_then(serde_json::Value::as_bool);
+            let default_number = json.get("trustedPhoneNumber");
+            let default_sms_id = default_number
+                .filter(|n| n.get("pushMode").and_then(serde_json::Value::as_str) == Some("sms"))
+                .and_then(|n| n.get("id"))
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|id| u32::try_from(id).ok());
+            let mut keys: Vec<&str> = json.as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+            keys.sort_unstable();
+            info!(
+                "Auth state (status {status}): noTrustedDevices={no_trusted_devices:?}, default SMS number id={default_sms_id:?}, keys={keys:?}"
+            );
+            if no_trusted_devices == Some(true) {
+                self.auto_sms_number = default_sms_id;
+            }
             let numbers: Vec<TrustedNumber> = serde_json::from_value(numbers.clone())
                 .context("Failed to parse trusted phone numbers")?;
             debug!(
