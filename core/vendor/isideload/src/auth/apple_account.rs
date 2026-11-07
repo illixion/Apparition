@@ -455,7 +455,7 @@ impl AppleAccount {
         info!("Trusted device 2FA request answered {}: {}", status, describe_body(&body));
 
         let phone_options = status == reqwest::StatusCode::PRECONDITION_FAILED
-            || (status.is_success() && !body.trim().is_empty());
+            || (status.is_success() && body_flag(&body, "noTrustedDevices") == Some(true));
         if phone_options {
             let has_numbers = self
                 .trusted_phone_numbers
