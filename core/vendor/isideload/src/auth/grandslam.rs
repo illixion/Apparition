@@ -105,59 +105,12 @@ impl GrandSlam {
     }
 
     pub fn get(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
-        // `get` is used for the authenticated 2FA web endpoints, not GrandSlam plist
-        // workaround belongs on plist traffic and makes these endpoints return the
-        // Apple Auth web application instead of triggering the trusted-device push.
-        let mut headers = Self::base_headers(&self.client_info, false)?;
-        headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
         let builder = self
             .client
             .get(url)
-            .headers(headers);
+            .headers(Self::base_headers(&self.client_info, false)?);
 
         Ok(builder)
-    }
-
-    /// A GET against Apple's authenticated `/auth` endpoints. These speak JSON and must not
-    /// inherit the plist content negotiation used by GrandSlam's SRP endpoints.
-    pub fn get_auth(&self, url: &str, carries_baa: bool) -> Result<reqwest_middleware::RequestBuilder, Report> {
-        let mut headers = Self::base_headers(&self.client_info, true)?;
-        headers.remove(reqwest::header::CONTENT_TYPE);
-        if carries_baa {
-            return Ok(self.client.get(url).headers(headers));
-        }
-        headers.insert("X-Apple-Client-App-Name", HeaderValue::from_static("Messages"));
-        headers.insert("X-Apple-I-Client-Bundle-Id", HeaderValue::from_static("com.apple.MobileSMS"));
-        headers.insert("X-Apple-AK-Context-Type", HeaderValue::from_static("imessage"));
-        headers.insert("Accept-Language", HeaderValue::from_static("en-US,en;q=0.9"));
-        for (name, value) in [
-            ("X-Apple-I-Locale", "en_US"),
-            ("X-Apple-I-TimeZone", "Europe/Riga"),
-            ("X-Apple-I-TimeZone-Offset", "120"),
-            ("X-MMe-Country", "LV"),
-            ("X-Apple-Requested-Partition", "0"),
-            ("X-Apple-I-Device-Configuration-Mode", "0"),
-            ("X-Apple-I-DeviceUserMode", "0"),
-            ("X-Apple-Security-Upgrade-Context", "com.apple.authkit.generic"),
-            ("X-Apple-I-CDP-Status", "false"),
-            ("X-Apple-I-CDP-Circle-Status", "false"),
-            ("X-Apple-I-OT-Status", "false"),
-            ("X-Apple-I-ICSCREC", "true"),
-            ("X-Apple-I-PRK-Gen", "true"),
-            ("Sec-Fetch-Site", "same-origin"),
-            ("Sec-Fetch-Mode", "cors"),
-            ("Sec-Fetch-Dest", "empty"),
-            ("X-Apple-I-CFU-State", "PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIHBsaXN0IFBVQkxJQyAiLS8vQXBwbGUvL0RURCBQTElTVCAxLjAvL0VOIiAiaHR0cDovL3d3dy5hcHBsZS5jb20vRFREcy9Qcm9wZXJ0eUxpc3QtMS4wLmR0ZCI+CjxwbGlzdCB2ZXJzaW9uPSIxLjAiPgo8YXJyYXkvPgo8L3BsaXN0Pgo="),
-        ] {
-            headers.insert(name, HeaderValue::from_static(value));
-        }
-        headers.insert("User-Agent", HeaderValue::from_static("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)"));
-        let messages_client_info = self.client_info.client_info.replace(
-            "com.apple.akd/1.0",
-            "com.apple.MobileSMS/1262.500.151.1.2",
-        );
-        headers.insert("X-Mme-Client-Info", HeaderValue::from_str(&messages_client_info)?);
-        Ok(self.client.get(url).headers(headers))
     }
 
     pub fn get_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
@@ -317,7 +270,6 @@ impl GrandSlam {
             .add_root_certificate(cert)
             .add_root_certificate(cert_g3)
             .http1_title_case_headers()
-            .cookie_store(true)
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)
             // An edge that doesn't answer is given up on, and another tried (edge.rs).

@@ -423,56 +423,41 @@ impl AppleAccount {
             .grandslam_client
             .get_url("trustedDeviceSecondaryAuth")?;
 
-        let request_headers = self.build_2fa_headers(&anisette_data).await?;
-        let carries_baa = request_headers
-            .keys()
-            .any(|name| name.as_str().starts_with("x-apple-baa-"));
         let res = self
             .grandslam_client
-            .get_auth(&request_code_url, carries_baa)?
-            .headers(request_headers.clone())
+            .get(&request_code_url)?
+            .headers(self.build_2fa_headers(&anisette_data).await?)
             .send()
             .await
             .context("Failed to request trusted device 2fa")?;
         let status = res.status();
-        let final_url = res.url();
-        let content_type = res.headers().get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok()).unwrap_or("<missing>");
-        let header_present = |name: &str| res.headers().contains_key(name);
-        let request_host = request_code_url.split('/').nth(2).unwrap_or("<unknown>");
-        let request_path = reqwest::Url::parse(&request_code_url).map(|url| url.path().to_string()).unwrap_or_default();
-        let request_header_present = |name: &str| request_headers.contains_key(name);
-        let mut request_header_names: Vec<String> = request_headers.keys().map(ToString::to_string).collect();
-        request_header_names.sort();
-        let request_header_names = request_header_names.join(",");
-        let request_profile = if carries_baa { "native-authkit" } else { "messages-browser" };
-        info!(
-            "Trusted device 2FA response metadata: request={request_host}{request_path}, final={}{}, content-type={content_type:?}, location={}, set-cookie={}, scnt={}, session-token={}, id-session={}, auth-attributes={}, anisette-headers={}/{}/{}/{}/{}/{}, anisette-header-names={request_header_names}, context={request_profile}",
-            final_url.host_str().unwrap_or("<unknown>"), final_url.path(),
-            header_present("location"), header_present("set-cookie"), header_present("scnt"),
-            header_present("x-apple-session-token"), header_present("x-apple-id-session-id"),
-            header_present("x-apple-auth-attributes"),
-            request_header_present("x-apple-i-md"), request_header_present("x-apple-i-md-m"),
-            request_header_present("x-apple-i-md-lu"), request_header_present("x-apple-i-md-rinfo"),
-            request_header_present("x-mme-device-id"), request_header_present("x-apple-identity-token"),
-        );
         let body = res.text().await.unwrap_or_default();
         info!("Trusted device 2FA request answered {}: {}", status, describe_body(&body));
-        // Keep the raw response for diagnosing Apple's non-plist/web-page responses. This is
-        // written to apparition-core.log, which is already the app's private Documents log.
-        if !body.trim().is_empty() {
-            info!("Trusted device 2FA response body begin\n{}\nTrusted device 2FA response body end", body);
-        }
-        if !status.is_success() {
-            if status == reqwest::StatusCode::PRECONDITION_FAILED
-                && self.trusted_phone_numbers.as_ref().is_some_and(|numbers| !numbers.is_empty())
-            {
+
+        let phone_options = status == reqwest::StatusCode::PRECONDITION_FAILED
+            || (status.is_success() && !body.trim().is_empty());
+        if phone_options {
+            let has_numbers = self
+                .trusted_phone_numbers
+                .as_ref()
+                .is_some_and(|numbers| !numbers.is_empty());
+            info!(
+                "Apple answered the trusted-device request with phone options, no push (phone-options marker: {}); trusted numbers available: {}",
+                body.contains("phone/options") || body.contains("phoneNumberVerification"),
+                has_numbers
+            );
+            if has_numbers {
                 self.last_error = Some(
-                    "Apple didn't send a trusted-device notification. Choose a trusted phone number to continue by SMS.".to_string(),
+                    "Apple didn't send a code to your devices. Choose a trusted phone number to get one by SMS."
+                        .to_string(),
                 );
-                info!("Apple returned phone options instead of a trusted-device push; offering SMS");
                 return Ok(());
             }
+            if !status.is_success() {
+                bail!("Apple didn't send a trusted-device code and listed no trusted phone numbers (HTTP {})", status);
+            }
+            // 2xx with a body and no numbers to offer: fall through to the code prompt, as before.
+        } else if !status.is_success() {
             bail!("Trusted device 2FA request failed: HTTP {}", status);
         }
 
@@ -978,12 +963,6 @@ impl AppleAccount {
             status.get("ec").and_then(|v| v.as_signed_integer()),
         );
 
-        if status.get("hsc").and_then(plist::Value::as_signed_integer) == Some(409) {
-            info!("2FA code already sent");
-            self.update_trusted_numbers().await;
-            return Ok(LoginState::NeedsDevice2FAVerification);
-        }
-
         if let Some(plist::Value::String(s)) = status.get("au") {
             return Ok(match s.as_str() {
                 "trustedDeviceSecondaryAuth" => LoginState::NeedsDevice2FA,
@@ -998,6 +977,11 @@ impl AppleAccount {
         if let Some(plist::Value::Integer(hsc)) = status.get("hsc") {
             match hsc.as_signed() {
                 Some(200) => {}
+                Some(409) => {
+                    info!("2FA code already sent");
+                    self.update_trusted_numbers().await;
+                    return Ok(LoginState::NeedsDevice2FAVerification);
+                }
                 Some(code) => {
                     warn!("Unknown status code {}: {:?}", code, status);
                 }

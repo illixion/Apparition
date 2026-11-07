@@ -26,7 +26,7 @@ fs-storage = []
 idevice = { version = "0.1.61", optional = true, default-features = false, features = ["ring", "afc", "installation_proxy", "remote_pairing", "rsd"]}
 plist = "1.8"
 plist-macro = "0.1.4"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "gzip", "rustls-no-provider", "http2", "charset", "system-proxy", "cookies"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "gzip", "rustls-no-provider", "http2", "charset", "system-proxy"] }
 thiserror = "2.0.17"
 async-trait = "0.1.89"
 serde = "1.0.228"
