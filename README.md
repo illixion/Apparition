@@ -23,7 +23,7 @@ two jobs that nothing else can, and everything else works without one:
 
 | What | Needs | Without a Mac |
 |---|---|---|
-| Signing with a free Apple ID | A Mac's anisette: your Mac, a macOS VM on it, or a server backed by a Mac | A paid account's certificate and profile, which need no sign-in |
+| Signing with a free Apple ID | A Mac's anisette: a Mac on macOS 26 or earlier (best), a macOS VM on an Apple-silicon Mac on macOS 27 (SMS codes only), or a third-party server | A paid account's certificate and profile, which need no sign-in |
 | Building your own apps with Xcode, and live patching (`inject`) | A Mac with Xcode | [xtool](https://github.com/xtool-org/xtool) builds on Linux, and on Windows through WSL; `apparition deploy` installs it and `apparition mcp` debugs it from the PC ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) |
 | Installing, refreshing, JIT, the companion | Nothing in particular | Any computer (macOS, Windows, Linux), or the device itself with LocalDevVPN |
 
@@ -33,13 +33,26 @@ devices through it ([remote development](docs/REMOTE_DEVELOPER.md)).
 
 **Signing with a free Apple ID needs a Mac.** Apple gives the developer
 access that signing needs only to a sign-in with a Mac's anisette, so Apparition gets it from
-macOS on your own Mac, as Xcode does. That Mac is either
+macOS on your own Mac, as Xcode does. In order of preference:
 
-- your Mac on **macOS 26 or earlier**, which needs no setup, or
-- a **macOS virtual machine** on your Mac, which is the way on macOS 27, where macOS keeps its
-  anisette to itself. On Apple silicon the app sets one up and runs it for you (Companion ›
-  **Set up the anisette VM**, or `apparition vm setup`); you can also make one in UTM
-  ([how](selfhost/macos-vm/README.md)).
+1. **A Mac on macOS 26 or earlier: the best way.** It needs no setup and the sign-in behaves exactly
+   as Xcode's, including the 2FA prompt on your other Apple devices. **Every Intel Mac is in this
+   group**, because macOS 26 is the last release for Intel, so an old Intel MacBook that stays
+   awake makes a good always-on companion. An Apple-silicon Mac that hasn't moved to macOS 27 is
+   in it too.
+2. **An Apple-silicon Mac on macOS 27, which keeps its anisette to itself.** There are two ways
+   around that:
+   - a small **macOS virtual machine** on it (Companion › **Set up the anisette VM**, or
+     `apparition vm setup`; or make one in UTM, [how](selfhost/macos-vm/README.md)). It costs no security
+     on the Mac you use, but **Apple never prompts your devices for a sign-in made through a VM**:
+     you get the 2FA code by SMS to your trusted phone number only
+     ([details](selfhost/macos-vm/README.md#known-limitation-sign-ins-through-the-vm-get-sms-not-a-device-prompt));
+   - or turning **SIP and AMFI off** on the Mac itself, which keeps the device prompt but lowers
+     that Mac's security. Apparition doesn't do this for you and recommends against it on a Mac
+     you use for anything else.
+3. **A third-party anisette server**, given by address, on any computer, with no Mac at all.
+   Apparition supports using one, but doesn't provide or recommend one; whether it works is
+   Apple's to say.
 
 Windows and Linux computers, and devices away from home, pair with that Mac for it over an
 encrypted channel. Apparition doesn't provide anisette, and doesn't run Apple code made for other
@@ -246,7 +259,8 @@ Sharing or a game streaming PC from anywhere, for example with
    checks that the same computer answers there.
 3. Under Anisette, choose Use Companion's Anisette: Apparition reaches it at the same Tailscale
    address, so signing in works away from home too. Anisette comes only from a Mac (see
-   [Anisette](#anisette)): use your Mac, or a macOS VM on it, as this companion, or pair the
+   [Anisette](#anisette)): use your Mac (a Mac on macOS 26 or earlier, Intel included, is best;
+   a macOS VM gives SMS codes only), or a third-party server, as this companion, or pair the
    device with the Mac as a second companion for signing in.
 4. Keep Tailscale connected on the device when a refresh or a Shortcuts automation runs.
    Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion
