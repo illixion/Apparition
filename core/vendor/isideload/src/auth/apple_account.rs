@@ -240,10 +240,14 @@ impl AppleAccount {
                 }
                 LoginState::NeedsDevice2FA => {
                     self.update_trusted_numbers().await;
-                    self.send_trusted_device_2fa()
+                    let sms_number = self
+                        .send_trusted_device_2fa()
                         .await
                         .context("Failed to complete trusted device 2FA")?;
-                    self.login_state = LoginState::NeedsDevice2FAVerification;
+                    self.login_state = match sms_number {
+                        Some(id) => LoginState::NeedsSMS2FAVerification(id),
+                        None => LoginState::NeedsDevice2FAVerification,
+                    };
                 }
                 LoginState::NeedsDevice2FAVerification => {
                     let response = two_factor_callback(TwoFactorCallbackParams {
@@ -410,7 +414,9 @@ impl AppleAccount {
         Ok(pet)
     }
 
-    async fn send_trusted_device_2fa(&mut self) -> Result<(), Report> {
+    /// Asks Apple to push a code to the trusted devices. Returns the id of the phone number
+    /// Apple texted the code to instead, when it has no trusted device to push to.
+    async fn send_trusted_device_2fa(&mut self) -> Result<Option<u32>, Report> {
         debug!("Trusted device 2FA required");
 
         let anisette_data = self
@@ -441,17 +447,28 @@ impl AppleAccount {
                 .trusted_phone_numbers
                 .as_ref()
                 .is_some_and(|numbers| !numbers.is_empty());
+            let no_trusted_devices = body_flag(&body, "noTrustedDevices");
+            let sms_number = default_sms_number_id(&body);
             info!(
-                "Apple answered the trusted-device request with phone options, no push (phone-options marker: {}); trusted numbers available: {}",
+                "Apple answered the trusted-device request with phone options, no push (phone-options marker: {}, noTrustedDevices: {:?}, default SMS number id: {:?}); trusted numbers available: {}",
                 body.contains("phone/options") || body.contains("phoneNumberVerification"),
+                no_trusted_devices,
+                sms_number,
                 has_numbers
             );
+            if let Some(id) = sms_number {
+                self.last_error = Some(
+                    "Apple has no trusted device to send a code to, so it sent one by SMS. Enter the code from the text message."
+                        .to_string(),
+                );
+                return Ok(Some(id));
+            }
             if has_numbers {
                 self.last_error = Some(
                     "Apple didn't send a code to your devices. Choose a trusted phone number to get one by SMS."
                         .to_string(),
                 );
-                return Ok(());
+                return Ok(None);
             }
             if !status.is_success() {
                 bail!("Apple didn't send a trusted-device code and listed no trusted phone numbers (HTTP {})", status);
@@ -463,7 +480,7 @@ impl AppleAccount {
 
         info!("Trusted device 2FA request sent");
 
-        Ok(())
+        Ok(None)
     }
 
     async fn verify_trusted_device_2fa(&mut self, code: String) -> Result<LoginState, Report> {
@@ -1243,6 +1260,35 @@ fn answer_label(response: &TwoFactorCallbackResponse) -> &'static str {
     }
 }
 
+fn default_sms_number_id(body: &str) -> Option<u32> {
+    let start = body.find("\"trustedPhoneNumber\"")?;
+    let rest = &body[start..];
+    let object = &rest[..rest.find('}')?];
+    if !object.contains("\"sms\"") {
+        return None;
+    }
+    let after_id = &object[object.find("\"id\"")? + 4..];
+    let digits: String = after_id
+        .trim_start_matches(|c: char| c == ':' || c.is_whitespace())
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// A JSON boolean `"key": true|false` anywhere in the body, if present.
+fn body_flag(body: &str, key: &str) -> Option<bool> {
+    let at = body.find(&format!("\"{key}\""))? + key.len() + 2;
+    let value = body[at..].trim_start_matches(|c: char| c == ':' || c.is_whitespace());
+    if value.starts_with("true") {
+        Some(true)
+    } else if value.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// A response body for the log: empty, or the keys of its plist with `ec` and `em`, or its size.
 fn describe_body(body: &str) -> String {
     if body.trim().is_empty() {
@@ -1256,5 +1302,33 @@ fn describe_body(body: &str) -> String {
             format!("plist keys {keys:?}, ec={ec:?}, em={em:?}")
         }
         Err(_) => format!("{} bytes, not a plist", body.len()),
+    }
+}
+
+#[cfg(test)]
+mod phone_options_tests {
+    use super::{body_flag, default_sms_number_id};
+
+    const JSON_412: &str = r#"{
+  "trustedPhoneNumbers" : [ { "numberWithDialCode" : "+1 ••• ••• ••12", "pushMode" : "sms", "id" : 1 } ],
+  "noTrustedDevices" : true,
+  "trustedPhoneNumber" : { "nonFTEU" : true, "lastTwoDigits" : "12", "pushMode" : "sms", "id" : 3 }
+}"#;
+    const PAGE: &str = r#"<script type="application/json">{"direct":{"noTrustedDevices":true,"trustedPhoneNumber":{"nonFTEU":true,"lastTwoDigits":"34","pushMode":"sms","id":2},"authInitialRoute":"auth/verify/phone/options"}}</script>"#;
+
+    #[test]
+    fn finds_the_default_sms_number_in_both_shapes() {
+        assert_eq!(default_sms_number_id(JSON_412), Some(3));
+        assert_eq!(default_sms_number_id(PAGE), Some(2));
+        assert_eq!(body_flag(JSON_412, "noTrustedDevices"), Some(true));
+        assert_eq!(body_flag(PAGE, "noTrustedDevices"), Some(true));
+    }
+
+    #[test]
+    fn no_default_number_without_sms_push_mode() {
+        let voice = r#"{"trustedPhoneNumber":{"pushMode":"voice","id":4}}"#;
+        assert_eq!(default_sms_number_id(voice), None);
+        assert_eq!(default_sms_number_id(""), None);
+        assert_eq!(body_flag("{}", "noTrustedDevices"), None);
     }
 }
