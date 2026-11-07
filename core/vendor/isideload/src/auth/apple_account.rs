@@ -458,7 +458,7 @@ impl AppleAccount {
             );
             if let Some(id) = sms_number {
                 self.last_error = Some(
-                    "Apple has no trusted device to send a code to, so it sent one by SMS. Enter the code from the text message."
+                    "Apple has no trusted device to send a code to, so it sent one by SMS. If two texts arrive, enter the code from the newest one."
                         .to_string(),
                 );
                 return Ok(Some(id));
