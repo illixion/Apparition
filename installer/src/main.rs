@@ -88,7 +88,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       profile. Installing Apparition also puts the certificate in its Files inbox
       (--no-handoff skips that). --no-watch leaves the app's watch app out: nothing goes to the
       Apple Watch and its App ID isn't spent.
-      Signing in to Apple needs anisette data from a Mac you own: this Mac's own (macOS 26 or
+      Signing in to Apple needs anisette data from a Mac you own: this Mac's own (macOS 15 or
       earlier, or a macOS VM set up for it), else the Mac this computer is paired with
       (`apparition anisette pair`). --anisette <url> uses a third-party anisette v3 server instead.
   apparition sign <app.ipa or .deb> [--device <name or UDID>] [--keep-extensions] [--no-watch]
@@ -150,7 +150,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Forget a paired device (remove the computer from its Remote Devices list too).
   apparition relay [--port <port>] [--no-mdns] [--anisette builtin|none] [--no-prompt]
       Be the companion for Apparition on your devices: relay its connection back to the
-      device (port 49160), and on a Mac that gives its own anisette (macOS 26 or earlier, or a
+      device (port 49160), and on a Mac that gives its own anisette (macOS 15 or earlier, or a
       macOS VM set up for it), offer that anisette (builtin, the default there; none offers
       nothing). Runs until Ctrl-C. Anisette goes only to devices and computers paired with this
       Mac: one asks to pair (port 49161), both show a six-digit code, and you answer in this
@@ -163,12 +163,12 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       List the devices and computers paired to use this Mac's anisette, or unpair one.
   apparition anisette pair <address>[:<port>]
       Pair this computer with a Mac running `apparition relay` or the Apparition app with its
-      anisette offered: your own Mac on macOS 26 or earlier, or a macOS VM on your Mac
+      anisette offered: your own Mac on macOS 15 or earlier, or a macOS VM on your Mac
       (selfhost/macos-vm/README.md). Both show a six-digit code; allow this computer on the Mac if
       they match. Sign-ins here then use that Mac's anisette, over the encrypted channel.
   apparition mac pair <address>[:<port>] [--developer-only | --anisette-only]
       Pair this computer with the Mac you build and deploy on: one approval there gives it
-      developer access to that Mac's Apparition Store and, from a Mac on macOS 26 or earlier,
+      developer access to that Mac's Apparition Store and, from a Mac on macOS 15 or earlier,
       its anisette. Requests go over the companion's encrypted channel, at home over the LAN
       and away over your tailnet. `apparition mac status | forget`.
   apparition deploy <app.ipa> [--device <name>] [--keep] [--local]

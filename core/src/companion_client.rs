@@ -3,7 +3,7 @@
 //!
 //! Only a Mac makes the anisette Apple gives the Xcode token to, so a computer that isn't one (or
 //! a Mac on macOS 27, whose anisette macOS keeps to itself) pairs with a Mac running Apparition:
-//! the person's own Mac on macOS 26 or earlier, or a macOS VM prepared for it
+//! the person's own Mac on macOS 15 or earlier, or a macOS VM prepared for it
 //! (selfhost/macos-vm/README.md). Pairing is the devices' numeric comparison: both screens show a
 //! six-digit code and the person allows this computer on the Mac. The Mac then mints a token for
 //! this computer alone, kept in `paired-mac.json` (readable only by its owner).
@@ -196,7 +196,7 @@ async fn ports(host: &str, relay_port: u16) -> Result<(Option<u16>, Option<u16>)
 }
 
 /// What a companion that doesn't offer anisette is.
-const NOT_A_MAC: &str = "That computer's Apparition doesn't offer anisette. Pair with a Mac on macOS 26 or earlier, or a macOS VM set up for it (selfhost/macos-vm/README.md), with Apparition's companion running and offering this Mac's anisette.";
+const NOT_A_MAC: &str = "That computer's Apparition doesn't offer anisette. Pair with a Mac on macOS 15 or earlier, or a macOS VM set up for it (selfhost/macos-vm/README.md), with Apparition's companion running and offering this Mac's anisette.";
 
 /// Pairs this computer with the Mac at `address` (`host` or `host:port`, the companion's relay
 /// port, 49160 by default). `show_code` gets the six-digit code ("123 456") to show while the
@@ -234,7 +234,7 @@ pub async fn pair_for(dir: &Path, address: &str, access: Access, show_code: impl
     let (pairing_port, _) = ports(&host, relay_port).await.context(Unreachable)?;
     let Some(pairing_port) = pairing_port else {
         if access == Access::Anisette { bail!("{NOT_A_MAC}") }
-        bail!("That computer's Apparition isn't offering pairing. Open Apparition on the Mac: it offers its Apparition Store, and on macOS 26 or earlier its anisette, while it runs.")
+        bail!("That computer's Apparition isn't offering pairing. Open Apparition on the Mac: it offers its Apparition Store, and on macOS 15 or earlier its anisette, while it runs.")
     };
     let device_id = load(dir).map(|paired| paired.device_id).unwrap_or_else(pairing::new_token);
     let mut stream = connect(&host, pairing_port).await.context(Unreachable)?;
