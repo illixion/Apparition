@@ -333,7 +333,7 @@ pub fn default_anisette(data_dir: &std::path::Path) -> Option<&'static str> {
 }
 
 /// What to say when [`default_anisette`] has none.
-pub const NO_ANISETTE: &str = "Apparition gets its anisette from a Mac you own: this Mac on macOS 15 or earlier (best, Intel Macs included; macOS 26 is untested), or a Mac (or macOS VM on your Mac, which gets SMS codes only) running Apparition that this computer is paired with. Pair with it, or give the address of a third-party anisette server (it signs in only if Apple accepts what it serves).";
+pub const NO_ANISETTE: &str = "Apparition gets its anisette from a Mac you own: this Mac on macOS 26 or earlier (best, Intel Macs included), or a Mac (or macOS VM on your Mac, which gets SMS codes only) running Apparition that this computer is paired with. Pair with it, or give the address of a third-party anisette server (it signs in only if Apple accepts what it serves).";
 
 /// What Apple's `-80045` ("This action cannot be completed at this time") means here.
 pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition claims what the anisette server says it makes, and this server's anisette doesn't match that. Use a Mac's own anisette: this Mac's, or a Mac this computer is paired with.";

@@ -183,7 +183,7 @@ impl Companion {
         }
         #[cfg(not(all(feature = "anisette", target_os = "macos")))]
         {
-            bail!("Only a Mac on macOS 15 or earlier, or a macOS VM prepared for it, offers its own anisette to devices. Pair your device with that Mac's Apparition instead, or offer a third-party anisette server.")
+            bail!("Only a Mac on macOS 26 or earlier, or a macOS VM prepared for it, offers its own anisette to devices. Pair your device with that Mac's Apparition instead, or offer a third-party anisette server.")
         }
     }
 

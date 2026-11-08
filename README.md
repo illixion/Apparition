@@ -23,7 +23,7 @@ two jobs that nothing else can, and everything else works without one:
 
 | What | Needs | Without a Mac |
 |---|---|---|
-| Signing with a free Apple ID | A Mac's anisette: a Mac on macOS 15 or earlier (best, SIP stays on), a Mac on macOS 27 with SIP and AMFI off (works, not recommended; macOS 26 untested), a macOS 26 VM on an Apple-silicon Mac (SMS codes only), or a third-party server | A paid account's certificate and profile, which need no sign-in |
+| Signing with a free Apple ID | A Mac's anisette: a Mac on macOS 26 or earlier (best, SIP stays on), a Mac on macOS 27 with SIP and AMFI off (works, not recommended), a macOS 26 VM on an Apple-silicon Mac (SMS codes only), or a third-party server | A paid account's certificate and profile, which need no sign-in |
 | Building your own apps with Xcode, and live patching (`inject`) | A Mac with Xcode | [xtool](https://github.com/xtool-org/xtool) builds on Linux, and on Windows through WSL; `apparition deploy` installs it and `apparition mcp` debugs it from the PC ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) |
 | Installing, refreshing, JIT, the companion | Nothing in particular | Any computer (macOS, Windows, Linux), or the device itself with LocalDevVPN |
 
@@ -35,15 +35,15 @@ devices through it ([remote development](docs/REMOTE_DEVELOPER.md)).
 access that signing needs only to a sign-in with a Mac's anisette, so Apparition gets it from
 macOS on your own Mac, as Xcode does. In order of preference:
 
-1. **A Mac on macOS 15 (Sequoia) or earlier: the best way.** It needs no setup and no change to the
-   Mac's security (SIP stays on), and the sign-in behaves exactly as Xcode's, including the 2FA
-   push on your other Apple devices, with SMS offered as well. This is the tested setup: an Intel MacBook on macOS 15.8.
+1. **A Mac on macOS 26 (Tahoe) or earlier: the best way.** It needs no setup and no change to the
+   Mac's security (SIP and AMFI stay on), and the sign-in behaves exactly as Xcode's, including the 2FA
+   push on your other Apple devices, with SMS offered as well. The tested real Mac is an Intel MacBook
+   on macOS 15.8. macOS 26 was checked in a stock macOS 26.6.2 guest with SIP and AMFI on (2026-11-08):
+   a program with no entitlements got the anisette from AOSKit, where macOS 27.2 gives it nothing. Real
+   macOS 26 hardware hasn't been run, but real hardware isn't a VM, so it is expected to get the push.
    **Intel Macs never get macOS 27**, and many stop at macOS 15, so an old Intel MacBook that stays
-   awake makes a good always-on companion. **macOS 27 needs SIP and AMFI off** (below), and **macOS 26
-   (Tahoe) on a real Mac hasn't been tested** (a macOS 26 *VM* has, below): it may work with SIP on as
-   macOS 15 does, or need the same reduced security as macOS 27, so hold a Mac on macOS 15 if you can,
-   and treat macOS 26 like the second group until it has been tested.
-2. **A Mac on macOS 26 or 27, where macOS keeps its anisette to itself (27 for certain, 26 untested).**
+   awake makes a good always-on companion. **macOS 27 needs SIP and AMFI off** (below).
+2. **A Mac on macOS 27, where macOS keeps its anisette to itself.**
    There are two ways around that:
    - a small **macOS virtual machine** on it (Companion › **Set up the anisette VM**, or
      `apparition vm setup`; or make one in UTM, [how](selfhost/macos-vm/README.md)). It costs no security
@@ -145,7 +145,7 @@ once, to install Apparition.
      Trust and enter its passcode if it asks. There's no code to type. You only need the cable
      until the device trusts the computer: after that, pairing it again works over Wi-Fi.
 3. Sign in with your Apple ID, or choose your own certificate and profile, and install. On a
-   Mac on macOS 15 or earlier the anisette is the Mac's own; elsewhere choose From my paired
+   Mac on macOS 26 or earlier the anisette is the Mac's own; elsewhere choose From my paired
    Mac and pair with your Mac's Apparition first (see [Requirements](#requirements)).
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
    signing it used.
@@ -266,7 +266,7 @@ Sharing or a game streaming PC from anywhere, for example with
    checks that the same computer answers there.
 3. Under Anisette, choose Use Companion's Anisette: Apparition reaches it at the same Tailscale
    address, so signing in works away from home too. Anisette comes only from a Mac (see
-   [Anisette](#anisette)): use your Mac (a Mac on macOS 15 or earlier, Intel included, is best;
+   [Anisette](#anisette)): use your Mac (a Mac on macOS 26 or earlier, Intel included, is best;
    a macOS VM gives SMS codes only), or a third-party server, as this companion, or pair the
    device with the Mac as a second companion for signing in.
 4. Keep Tailscale connected on the device when a refresh or a Shortcuts automation runs.

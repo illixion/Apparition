@@ -7,13 +7,13 @@ ended with Apple accepting the anisette. This document is the scope that got it 
 
 ## What the person sees
 
-On a Mac that has no anisette of its own (macOS 27, or 26 if it needs the same, with SIP and AMFI on), the desktop app's Companion tab offers
+On a Mac that has no anisette of its own (macOS 27, with SIP and AMFI on), the desktop app's Companion tab offers
 **Set up the anisette VM** (and "Use a restore image I have…"). One click, a progress bar, and about 11 minutes
 of waiting with the restore image on the Mac, 45 with its 20 GB download. No UTM, no Terminal, no typing in
 recoveryOS, no administrator password. Once set up, the companion offers it ("This Mac's anisette VM"), the sign-in
 form offers it, and the group shows whether it runs or is saved, with Check with Apple and Remove.
 
-Devices need no change. They pair with the Mac's companion exactly as they do with a Mac on macOS 15 or earlier or a
+Devices need no change. They pair with the Mac's companion exactly as they do with a Mac on macOS 26 or earlier or a
 Windows PC; the VM sits behind the companion as its anisette source (see "Reaching the VM").
 
 ## What exists and works (verified on macOS 26.6.2 guests, 2026-11-04)
