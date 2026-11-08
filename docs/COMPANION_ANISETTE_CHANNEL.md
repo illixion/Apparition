@@ -49,7 +49,7 @@ and a fake Apple certificate (rejected before credentials are sent).
 
 ## Computers as clients
 
-A computer that isn't a Mac giving its own anisette (Windows, Linux, macOS 27) pairs with the Mac
+A computer that isn't a Mac giving its own anisette (Windows, Linux, a Mac on macOS 26 or 27 with SIP on) pairs with the Mac
 the same way a device does, through `core/src/companion_client.rs`: the same numeric pairing on
 49161 (requesting `anisette`), the token kept in `paired-mac.json` (mode 0600), and the same
 TLS-PSK identify on 49162. Signing in, it serves the v3 protocol on a loopback port and carries
