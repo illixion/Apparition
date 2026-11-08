@@ -13,7 +13,7 @@ of waiting with the restore image on the Mac, 45 with its 20 GB download. No UTM
 recoveryOS, no administrator password. Once set up, the companion offers it ("This Mac's anisette VM"), the sign-in
 form offers it, and the group shows whether it runs or is saved, with Check with Apple and Remove.
 
-Devices need no change. They pair with the Mac's companion exactly as they do with a Mac on macOS 26 or a
+Devices need no change. They pair with the Mac's companion exactly as they do with a Mac on macOS 15 or earlier or a
 Windows PC; the VM sits behind the companion as its anisette source (see "Reaching the VM").
 
 ## What exists and works (verified on macOS 26.6.2 guests, 2026-11-04)

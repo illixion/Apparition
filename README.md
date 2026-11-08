@@ -23,7 +23,7 @@ two jobs that nothing else can, and everything else works without one:
 
 | What | Needs | Without a Mac |
 |---|---|---|
-| Signing with a free Apple ID | A Mac's anisette: a Mac on macOS 15 or earlier (best), a macOS VM on an Apple-silicon Mac on macOS 27 (SMS codes only), or a third-party server | A paid account's certificate and profile, which need no sign-in |
+| Signing with a free Apple ID | A Mac's anisette: a Mac on macOS 15 or earlier (best), a macOS 26 VM on an Apple-silicon Mac on macOS 27 (SMS codes only), or a third-party server | A paid account's certificate and profile, which need no sign-in |
 | Building your own apps with Xcode, and live patching (`inject`) | A Mac with Xcode | [xtool](https://github.com/xtool-org/xtool) builds on Linux, and on Windows through WSL; `apparition deploy` installs it and `apparition mcp` debugs it from the PC ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) |
 | Installing, refreshing, JIT, the companion | Nothing in particular | Any computer (macOS, Windows, Linux), or the device itself with LocalDevVPN |
 
@@ -37,9 +37,9 @@ macOS on your own Mac, as Xcode does. In order of preference:
 
 1. **A Mac on macOS 15 (Sequoia) or earlier: the best way.** It needs no setup and no change to the
    Mac's security (SIP stays on), and the sign-in behaves exactly as Xcode's, including the 2FA
-   prompt on your other Apple devices. This is the tested setup: an Intel MacBook on macOS 15.8.
+   push on your other Apple devices, with SMS offered as well. This is the tested setup: an Intel MacBook on macOS 15.8.
    **Intel Macs never get macOS 27**, and many stop at macOS 15, so an old Intel MacBook that stays
-   awake makes a good always-on companion. **macOS 26 (Tahoe) isn't verified yet**: it may need
+   awake makes a good always-on companion. **macOS 26 (Tahoe) as the Mac itself isn't verified yet** (a macOS 26 *VM* is, below): it may need
    the same reduced security as macOS 27 (SIP and AMFI off, below), so hold a Mac on macOS 15 there
    if you can, and treat macOS 26 like the second group until it has been tested.
 2. **A Mac on macOS 26 or 27, where macOS keeps its anisette to itself (27 for certain, 26 untested).**
@@ -47,7 +47,9 @@ macOS on your own Mac, as Xcode does. In order of preference:
    - a small **macOS virtual machine** on it (Companion › **Set up the anisette VM**, or
      `apparition vm setup`; or make one in UTM, [how](selfhost/macos-vm/README.md)). It costs no security
      on the Mac you use, but **Apple never prompts your devices for a sign-in made through a VM**:
-     you get the 2FA code by SMS to your trusted phone number only
+     you get the 2FA code by SMS to your trusted phone number only, where a real Mac's sign-in
+     gets the push on your devices and offers SMS too. The VM's guest is macOS 26.6.2, and that
+     setup is verified
      ([details](selfhost/macos-vm/README.md#known-limitation-sign-ins-through-the-vm-get-sms-not-a-device-prompt));
    - or turning **SIP and AMFI off** on the Mac itself, which keeps the device prompt but lowers
      that Mac's security. Apparition doesn't do this for you and recommends against it on a Mac
