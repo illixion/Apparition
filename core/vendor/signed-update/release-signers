@@ -1,0 +1,2 @@
+# Throwaway: lets the doc example compile. An app compiles in its own release-signers file.
+test@example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPDFLEggFzedj9nvz0wl9AoPGXFFbT9XfgEWrAY0l7pa example

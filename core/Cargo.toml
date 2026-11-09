@@ -14,6 +14,9 @@ crate-type = ["staticlib", "rlib"]
 idevice-ffi = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065", default-features = false, features = ["ring", "core_device", "debug_proxy", "rsd", "remote_pairing", "tcp", "tunnel_tcp_stack", "afc", "house_arrest", "installation_proxy", "usbmuxd", "pair", "companion_proxy"] }
 # isideload 0.5.0 vendored with our changes (code_after_login, signing with signer/, ...); with local compatibility patches.
+# Release verification (SSHSIG, SHA256SUMS, versions), shared with the other apps; no HTTP here, the
+# core fetches on its own. Vendored: see scripts/vendor-signed-update.sh.
+signed-update = { path = "vendor/signed-update", default-features = false }
 isideload = { path = "vendor/isideload", default-features = false, features = ["install", "tokio-mt"] }
 rootcause = "0.12.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }

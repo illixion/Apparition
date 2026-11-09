@@ -23,11 +23,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use base64::prelude::*;
 use rootcause::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 
 use crate::{identity::optional, reply, runtime, text};
 
@@ -79,7 +78,7 @@ pub struct Asset {
 #[derive(Debug, Clone)]
 pub struct Verified {
     pub release: Release,
-    /// The comment of the key that signed it ("ixion@YubiKey5-gpg").
+    /// The principal of the key that signed it ("releases@apparition.illixion.com").
     pub signer: String,
     sums: BTreeMap<String, String>,
 }
@@ -344,154 +343,22 @@ async fn download_one(
     Ok(())
 }
 
-/// Whether dotted version `candidate` is newer than `current` ("0.10.0" > "0.9.2").
-/// Anything after a '-' or '+' is ignored.
-pub fn is_newer(candidate: &str, current: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> {
-        v.split(['-', '+']).next().unwrap_or("").split('.').map(|p| p.parse().unwrap_or(0)).collect()
-    };
-    let (a, b) = (parts(candidate), parts(current));
-    for i in 0..a.len().max(b.len()) {
-        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
-        if x != y {
-            return x > y;
-        }
-    }
-    false
-}
+pub use signed_update::is_newer;
 
-/// `sha256sum`/`shasum -a 256` output: `<hex>  <name>` per line (a `*` before the name, for
-/// binary mode, is allowed). Name -> lowercase hex.
+/// `sha256sum`/`shasum -a 256` output: `<hex>  <name>` per line. Name -> lowercase hex.
 pub fn parse_sums(text: &str) -> Result<BTreeMap<String, String>, Report> {
-    let mut sums = BTreeMap::new();
-    for line in text.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
-        let (hash, name) = line.split_once(char::is_whitespace).ok_or_else(|| report!("bad SHA256SUMS line: {line}"))?;
-        let name = name.trim_start().trim_start_matches('*');
-        if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) || name.is_empty() {
-            bail!("bad SHA256SUMS line: {line}");
-        }
-        if sums.insert(name.to_string(), hash.to_ascii_lowercase()).is_some() {
-            bail!("SHA256SUMS lists {name} twice");
-        }
-    }
-    if sums.is_empty() {
-        bail!("SHA256SUMS is empty");
-    }
-    Ok(sums)
+    signed_update::parse_sums(text).map_err(|e| report!("{e}"))
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// MARK: SSHSIG
-//
-// OpenSSH's PROTOCOL.sshsig. The signature file (armored) is
-//   "SSHSIG" | u32 version | str publickey | str namespace | str reserved | str hash | str signature
-// and what the key signs is
-//   "SSHSIG" | str namespace | str reserved | str hash | str H(message)
-// where str is a big-endian u32 length and the bytes. Only ed25519 keys are accepted.
-
-struct Reader<'a>(&'a [u8]);
-
-impl<'a> Reader<'a> {
-    fn take(&mut self, n: usize) -> Result<&'a [u8], Report> {
-        if self.0.len() < n {
-            bail!("truncated SSH signature");
-        }
-        let (head, rest) = self.0.split_at(n);
-        self.0 = rest;
-        Ok(head)
-    }
-    fn u32(&mut self) -> Result<u32, Report> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().unwrap()))
-    }
-    fn string(&mut self) -> Result<&'a [u8], Report> {
-        let n = self.u32()? as usize;
-        self.take(n)
-    }
-}
-
-fn ssh_string(bytes: &[u8]) -> Vec<u8> {
-    let mut out = (bytes.len() as u32).to_be_bytes().to_vec();
-    out.extend_from_slice(bytes);
-    out
-}
-
-/// The ed25519 keys in an allowed_signers (or authorized_keys) text: (key blob, comment).
-fn signer_keys(signers: &str) -> Vec<(Vec<u8>, String)> {
-    signers
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            let i = parts.iter().position(|p| *p == "ssh-ed25519")?;
-            let blob = BASE64_STANDARD.decode(parts.get(i + 1)?).ok()?;
-            Some((blob, parts[i + 2..].join(" ")))
-        })
-        .collect()
-}
-
-/// Verifies a detached, armored SSHSIG over `data` made under `namespace` by one of
-/// `signers`, and returns that signer's comment. Any shortfall is an error.
+/// Verifies a detached, armored SSHSIG over `data` made under `namespace` by one of `signers`, and
+/// returns that signer's principal. The verification itself is the signed-update crate's, shared
+/// with the other apps' updaters.
 pub fn verify_sshsig(data: &[u8], armored: &str, namespace: &str, signers: &str) -> Result<String, Report> {
-    let body = armored
-        .split("-----BEGIN SSH SIGNATURE-----")
-        .nth(1)
-        .and_then(|rest| rest.split("-----END SSH SIGNATURE-----").next())
-        .ok_or_else(|| report!("not an SSH signature"))?;
-    let blob = BASE64_STANDARD
-        .decode(body.split_whitespace().collect::<String>())
-        .map_err(|_| report!("the SSH signature is damaged"))?;
-    let mut r = Reader(&blob);
-    if r.take(6)? != b"SSHSIG" {
-        bail!("not an SSHSIG signature");
-    }
-    if r.u32()? != 1 {
-        bail!("unsupported SSHSIG version");
-    }
-    let public_key = r.string()?;
-    let signed_namespace = r.string()?;
-    let reserved = r.string()?;
-    let hash_name = r.string()?;
-    let signature = r.string()?;
-
-    if signed_namespace != namespace.as_bytes() {
-        bail!("signed for \"{}\", not \"{namespace}\"", String::from_utf8_lossy(signed_namespace));
-    }
-    let digest = match hash_name {
-        b"sha512" => Sha512::digest(data).to_vec(),
-        b"sha256" => Sha256::digest(data).to_vec(),
-        other => bail!("unsupported SSHSIG hash {}", String::from_utf8_lossy(other)),
-    };
-    let signers = signer_keys(signers);
-    let (_, signer) = signers
-        .iter()
-        .find(|(key, _)| key == public_key)
-        .ok_or_else(|| report!("signed by a key that isn't a pinned release signer"))?;
-
-    let mut key = Reader(public_key);
-    if key.string()? != b"ssh-ed25519" {
-        bail!("the signing key isn't ed25519");
-    }
-    let key: [u8; 32] = key.string()?.try_into().map_err(|_| report!("bad ed25519 key"))?;
-    let mut sig = Reader(signature);
-    if sig.string()? != b"ssh-ed25519" {
-        bail!("the signature isn't ed25519");
-    }
-    let sig: [u8; 64] = sig.string()?.try_into().map_err(|_| report!("bad ed25519 signature"))?;
-
-    let mut message = b"SSHSIG".to_vec();
-    message.extend(ssh_string(signed_namespace));
-    message.extend(ssh_string(reserved));
-    message.extend(ssh_string(hash_name));
-    message.extend(ssh_string(&digest));
-    ed25519_dalek::VerifyingKey::from_bytes(&key)
-        .map_err(|_| report!("bad ed25519 key"))?
-        .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
-        .map_err(|_| report!("the release signature doesn't verify"))?;
-    Ok(signer.clone())
+    signed_update::verify_sshsig(data, armored, namespace, signers).map_err(|e| report!("{e}"))
 }
 
 // MARK: C ABI (the app's self-update)
@@ -668,7 +535,7 @@ mod tests {
             return;
         };
 
-        assert_eq!(verify_sshsig(sums.as_bytes(), &signature, NAMESPACE, &signers).unwrap(), "test@signer");
+        assert_eq!(verify_sshsig(sums.as_bytes(), &signature, NAMESPACE, &signers).unwrap(), "releases@apparition.illixion.com");
         // Tampered data, another namespace, an unpinned key.
         assert!(verify_sshsig(b"other", &signature, NAMESPACE, &signers).is_err());
         assert!(verify_sshsig(sums.as_bytes(), &signature, "file", &signers).is_err());
@@ -692,29 +559,9 @@ mod tests {
 
     #[test]
     fn pinned_signers_parse() {
-        let keys = signer_keys(SIGNERS);
+        let keys = signed_update::signer_keys(SIGNERS);
         assert_eq!(keys.len(), 2);
         assert!(keys.iter().all(|(blob, _)| blob.len() == 51));
-    }
-
-    #[test]
-    fn versions() {
-        assert!(is_newer("0.10.0", "0.9.2"));
-        assert!(is_newer("1.0", "0.99.99"));
-        assert!(!is_newer("0.2.0", "0.2.0"));
-        assert!(!is_newer("0.2.0-abc", "0.2.0"));
-        assert!(!is_newer("0.1.9", "0.2"));
-    }
-
-    #[test]
-    fn sums() {
-        let hash = "AB".repeat(32);
-        let parsed = parse_sums(&format!("{hash}  a.ipa\n{hash} *b.zip\n")).unwrap();
-        assert_eq!(parsed["a.ipa"], "ab".repeat(32));
-        assert!(parsed.contains_key("b.zip"));
-        assert!(parse_sums("").is_err());
-        assert!(parse_sums(&format!("{hash}  a\n{hash}  a\n")).is_err());
-        assert!(parse_sums("xyz  a\n").is_err());
     }
 
     #[test]

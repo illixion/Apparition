@@ -186,6 +186,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "signed-update",
  "tar",
  "tempfile",
  "tokio",
@@ -4474,6 +4475,18 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "signed-update"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "libc",
+ "sha2 0.10.9",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
