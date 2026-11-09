@@ -253,6 +253,9 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.windows) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    env:
+      # OpenSSL's /Gs0 is miscompiled by MSVC on ARM64 (scripts/package-release.sh says why).
+      CPPFLAGS: /Gs
     defaults:
       run:
         shell: bash

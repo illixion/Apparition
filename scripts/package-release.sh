@@ -466,7 +466,11 @@ if has windows; then
   for arch in ${WINDOWS_ARCHS:-x86_64}; do
     case "$arch" in
       x86_64) target=x86_64-pc-windows-gnu ;;
-      arm64) target=aarch64-pc-windows-msvc ;;
+      # MSVC's ARM64 compiler miscompiles OpenSSL under the /Gs0 its VC-WIN64-ARM config passes
+      # (a __chkstk call before the link register is saved in tls_parse_all_extensions, so every
+      # TLS server handshake crashes: openssl/openssl#26239). /Gs in CPPFLAGS lands after those
+      # flags, and no other build reads it (cc-rs would hand a plain CFLAGS to ring's clang).
+      arm64) target=aarch64-pc-windows-msvc; export CPPFLAGS="${CPPFLAGS:-/Gs}" ;;
       *) echo "error: WINDOWS_ARCHS takes x86_64 and arm64, not $arch" >&2; exit 2 ;;
     esac
     echo "==> installer and desktop app for Windows ($arch)"
