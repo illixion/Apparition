@@ -131,8 +131,13 @@ fn main() {
             }
             Ok(())
         })
-        // Closing the window keeps the companion running; Quit is in the tray menu.
+        // Closing the main window keeps the companion running; Quit is in the tray menu. Only the
+        // main window: this handler sees every window, and the Store's Debug console ("console")
+        // must close like any other, not be vetoed while it hides the main window instead.
         .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 companion::hide_window(window.app_handle());
