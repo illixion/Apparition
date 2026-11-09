@@ -493,9 +493,12 @@ if has windows; then
     zip_path="$OUT/Apparition-Installer-$VERSION-windows-$arch.zip"
     if command -v zip >/dev/null; then
       (cd "$WORK/windows-$arch" && zip -qX "$zip_path" "${entries[@]}")
-    else
+    elif command -v 7z >/dev/null; then
       # Git Bash on Windows has no zip; the GitHub images have 7-Zip. Flat files either way.
       (cd "$WORK/windows-$arch" && 7z a -tzip -bso0 -bsp0 "$(cygpath -w "$zip_path")" "${entries[@]}")
+    else
+      # Windows' own, for a PC with neither.
+      (cd "$WORK/windows-$arch" && powershell.exe -NoProfile -Command "Compress-Archive -Path $(printf "'%s'," "${entries[@]}" | sed 's/,$//') -DestinationPath '$(cygpath -w "$zip_path")'")
     fi
   done
 fi
