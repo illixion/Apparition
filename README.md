@@ -816,7 +816,9 @@ core and nowhere else.
 
 Desktop update checks are **off by default**, including for existing installations.
 Choose automatic checks on step 6, **Done**, or with the **Companion > Updates** toggle.
-When enabled, the app contacts apparition.illixion.com on launch and every six hours of
+When enabled, the app contacts apps.illixion.com (which only redirects, to wherever the release is
+hosted: GitHub Releases, or a self-hosted copy while GitHub is down; GitHub directly if that domain
+is down) on launch and every six hours of
 wall-clock time (a laptop that slept past a check catches up on wake), including while
 running from the tray, for releases hosted on GitHub. A failed check retries after 15 minutes. When off, **Get started**
 offers a one-time check without enabling future checks; declining makes no update request.
@@ -830,8 +832,17 @@ builds are never replaced.
 Updates use the existing GitHub Releases assets and release workflow: the pinned release
 keys must verify the YubiKey-signed `SHA256SUMS` SSH signature, then the downloaded file must
 match that signed hash **before it is extracted or installed**. Version, OS, architecture
-and package format are bound to the signed filename; older or equal versions are refused.
-An app-only release does not hide a newer desktop release.
+and package format are bound to the signed filename; older or equal versions are refused. Where the
+files are served from proves nothing, so a mirror or redirect can be added or swapped without a new
+release. Finding, verifying and downloading a release is the
+[signed-update](https://github.com/illixion/signed-update) crate (vendored in
+`core/vendor/signed-update`, refreshed by `scripts/vendor-signed-update.sh`; its
+`docs/PROTOCOL.md` has the protocol and the redirects); the status, the schedule and the install
+steps below stay here.
+
+The check reads the newest release's manifest (GitHub's `releases/latest`), so an app-only release
+(IPAs and no installers) offers the desktop app nothing until the next full release: a copy older
+than the last full release is not shown that release in between.
 
 On macOS the whole ad-hoc-signed `.app` (including its CLI and entitled anisette helper) is
 staged beside the installed app, its code-signing seal is checked, and the bundles are

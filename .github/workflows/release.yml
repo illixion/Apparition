@@ -9,6 +9,11 @@
 # the attested commit's dependencies and rebuilds the macOS files from it on another Mac, and signs
 # nothing unless they come out the same as these.
 #
+# The desktop app's updater (signed-update, vendored in core/vendor/signed-update) reads the signed
+# manifest from the GitHub release, through apps.illixion.com's redirects: so the owner attaches
+# SHA256SUMS and SHA256SUMS.sig to the release (the release command does), and a release is offered to
+# the desktop app only once it is published.
+#
 # Run it by hand (Actions > Release build > Run workflow) or by pushing a v<version> tag. The
 # version must already be committed in project.yml, installer/Cargo.toml and desktop/Cargo.toml.
 #

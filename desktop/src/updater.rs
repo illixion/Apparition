@@ -1,5 +1,11 @@
 //! Desktop updates use the same pinned SSHSIG manifest as device installs. The package is
 //! hashed before extraction or execution; OS code signing is not a substitute for that trust.
+//!
+//! Finding and downloading a release is the signed-update crate's (apps.illixion.com's redirects
+//! first, GitHub Releases after; its docs/PROTOCOL.md). What stays here is the app's own: the status
+//! the window shows, the schedule, and putting the file in place (a sealed .app, the Windows helper,
+//! an AppImage, a .deb). The macOS swap is not the crate's `install_bundle`, because it also has to
+//! replace an app the person renamed.
 
 use std::{
     path::{Path, PathBuf},
@@ -45,7 +51,7 @@ pub struct Status {
 
 pub struct Updates {
     status: Mutex<Status>,
-    candidate: Mutex<Option<(release::Verified, release::Asset)>>,
+    candidate: Mutex<Option<signed_update::Update>>,
     /// Held by a check or an installation, so neither sees the other's half-published state.
     operation: tokio::sync::Mutex<()>,
     installing: AtomicBool,
@@ -162,6 +168,17 @@ fn installation(app: &AppHandle) -> Result<Installation, Report> {
     ))
 }
 
+/// Where official desktop releases come from: apps.illixion.com, which only redirects to wherever
+/// the release is hosted (GitHub normally), then GitHub directly in case that domain is down. Neither
+/// is trusted: the manifest must be signed by a key in `release-signers` (the signed-update crate,
+/// docs/PROTOCOL.md there).
+fn update_config() -> signed_update::Config {
+    signed_update::Config::new("Apparition", release::NAMESPACE, release::signers())
+        .source(signed_update::Source::apps("apparition"))
+        .source(signed_update::Source::github("illixion/Apparition"))
+        .user_agent(format!("Apparition/{VERSION}"))
+}
+
 fn publish(app: &AppHandle, status: Status) {
     *app.state::<Updates>().status.lock().unwrap() = status.clone();
     companion::update_available(app, status.version.as_deref());
@@ -201,22 +218,26 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), Report> {
     }
     let installation = installation(app)?;
     // Keep an already announced update (and its badge) on transient network failures.
-    let candidate = release::latest_installer(
-        release::SITE,
-        installer_platform(),
-        installation.extension(),
+    let candidate = signed_update::check(
+        &update_config(),
         VERSION,
+        &format!(
+            "Apparition-Installer-{{version}}-{}.{}",
+            installer_platform(),
+            installation.extension()
+        ),
     )
-    .await;
+    .await
+    .map_err(|error| report!("{error}"));
     state.schedule(if candidate.is_ok() {
         CHECK_INTERVAL
     } else {
         RETRY_INTERVAL
     });
     let candidate = candidate?;
-    if let Some((verified, asset)) = candidate {
+    if let Some(update) = candidate {
         let mut status = Status {
-            version: Some(verified.release.version.clone()),
+            version: Some(update.version.clone()),
             phase: "available",
             message: match &installation {
                 Installation::Unsupported(reason) => reason.to_string(),
@@ -236,7 +257,7 @@ async fn check(app: &AppHandle, manual: bool) -> Result<(), Report> {
             status.phase = "error";
             status.message = previous.message;
         }
-        *state.candidate.lock().unwrap() = Some((verified, asset));
+        *state.candidate.lock().unwrap() = Some(update);
         publish(app, status);
     } else {
         // Nothing newer (or a listed update was withdrawn): no banner, no badge.
@@ -315,13 +336,13 @@ pub async fn install_update(app: AppHandle) -> Result<(), Failure> {
     if let Installation::Unsupported(reason) = installation {
         return Err(Failure::new(reason));
     }
-    let (verified, asset) = state
+    let update = state
         .candidate
         .lock()
         .unwrap()
         .clone()
         .ok_or_else(|| Failure::new("Check for updates first."))?;
-    if !release::is_newer(&verified.release.version, VERSION) {
+    if !release::is_newer(&update.version, VERSION) {
         return Err(Failure::new("Refusing to install an older version."));
     }
     let mut status = state.status.lock().unwrap().clone();
@@ -332,11 +353,11 @@ pub async fn install_update(app: AppHandle) -> Result<(), Failure> {
         let scratch = tempfile::Builder::new()
             .prefix("apparition-update-")
             .tempdir()?;
-        let package = release::download(&verified, &asset, scratch.path(), |_, _| {}).await?;
+        let package = update.download(scratch.path(), |_| {}).await?;
         status.phase = "installing";
         status.message = "Signature and SHA-256 verified. Installing...".into();
         publish(&app, status.clone());
-        let version = verified.release.version.clone();
+        let version = update.version.clone();
         let finish = tauri::async_runtime::spawn_blocking(move || {
             let finish = install(&installation, &package, &version)?;
             #[cfg(windows)]
