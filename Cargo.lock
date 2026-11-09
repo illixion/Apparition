@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "apparition-desktop"
-version = "0.4.5"
+version = "1.0.0"
 dependencies = [
  "apparition-core",
  "apparition-service",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "apparition-installer"
-version = "0.4.5"
+version = "1.0.0"
 dependencies = [
  "apparition-core",
  "apparition-service",
