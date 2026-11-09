@@ -25,6 +25,7 @@ pub fn install_bundle(package: &Path, bundle: &Path) -> Result<()> {
     use std::process::Command;
 
     let parent = bundle.parent().ok_or("no app folder")?;
+    remove_stale_staging(parent);
     let staged = tempfile::Builder::new()
         .prefix(".update-")
         .tempdir_in(parent)
@@ -57,6 +58,23 @@ pub fn install_bundle(package: &Path, bundle: &Path) -> Result<()> {
         fail!("Couldn't exchange the app bundles: {}", std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Staging folders an install left when it was killed (power cut, force quit) before cleaning up:
+/// each is a whole copy of the app. Only ones a day old, so a concurrent install keeps its own.
+#[cfg(target_os = "macos")]
+fn remove_stale_staging(parent: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+    for entry in entries.flatten() {
+        let stale = entry.file_name().to_string_lossy().starts_with(".update-")
+            && entry.file_type().is_ok_and(|t| t.is_dir())
+            && entry.metadata().and_then(|m| m.modified()).is_ok_and(|m| {
+                m.elapsed().is_ok_and(|age| age > std::time::Duration::from_secs(24 * 60 * 60))
+            });
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

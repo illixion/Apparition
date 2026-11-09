@@ -172,11 +172,19 @@ fn installation(app: &AppHandle) -> Result<Installation, Report> {
 /// the release is hosted (GitHub normally), then GitHub directly in case that domain is down. Neither
 /// is trusted: the manifest must be signed by a key in `release-signers` (the signed-update crate,
 /// docs/PROTOCOL.md there).
+///
+/// apps.illixion.com is reached only privately (`Privacy::Ech`: its HTTPS record over DNS-over-HTTPS
+/// to 1.1.1.1 by IP, then Encrypted Client Hello), so a network log shows neither the lookup nor the
+/// name; where that is blocked it is skipped, never asked in the clear, and GitHub is asked instead.
+/// Always on: the fallback costs nothing but the skipped source. The other TLS in this process keeps
+/// ring, which `api::init` installs as the default before anything connects (`ech` compiles
+/// rustls's aws-lc-rs provider in too, which only the private client uses).
 fn update_config() -> signed_update::Config {
     signed_update::Config::new("Apparition", release::NAMESPACE, release::signers())
         .source(signed_update::Source::apps("apparition"))
         .source(signed_update::Source::github("illixion/Apparition"))
         .user_agent(format!("Apparition/{VERSION}"))
+        .privacy(signed_update::Privacy::Ech)
 }
 
 fn publish(app: &AppHandle, status: Status) {
@@ -526,9 +534,13 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
         bail!("Rename the desktop executable to Apparition.exe before updating");
     }
     let mut files = Vec::new();
-    // Extract only the expected files, not paths supplied by the archive.
+    // Extract only the expected files, not paths supplied by the archive. The ARM64 build (MSVC)
+    // links the WebView2 loader in, so only the x86_64 one (mingw) ships WebView2Loader.dll.
     for name in ["WebView2Loader.dll", "apparition-cli.exe", "Apparition.exe"] {
-        let mut entry = zip.by_name(name)?;
+        let mut entry = match zip.by_name(name) {
+            Err(zip::result::ZipError::FileNotFound) if name == "WebView2Loader.dll" => continue,
+            entry => entry?,
+        };
         let mut file = std::fs::File::create(unpacked.join(name))?;
         std::io::copy(&mut entry, &mut file)?;
         file.sync_all()?;
@@ -899,18 +911,14 @@ mod tests {
         let installed = dir.path().join("Apparition.exe");
         let current = std::env::current_exe().unwrap();
         std::fs::copy(&current, &installed).unwrap();
-        let loader = current.parent().unwrap().join("WebView2Loader.dll");
-        let loader = if loader.exists() {
-            loader
-        } else {
-            current
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("WebView2Loader.dll")
-        };
-        std::fs::copy(&loader, dir.path().join("WebView2Loader.dll")).unwrap();
+        // Beside a mingw build; an MSVC build (ARM64) links the loader in and has none.
+        let loader = [current.parent().unwrap(), current.parent().unwrap().parent().unwrap()]
+            .map(|d| d.join("WebView2Loader.dll"))
+            .into_iter()
+            .find(|p| p.exists());
+        if let Some(loader) = &loader {
+            std::fs::copy(loader, dir.path().join("WebView2Loader.dll")).unwrap();
+        }
         std::fs::write(dir.path().join("apparition-cli.exe"), b"old CLI").unwrap();
         let download = tempfile::tempdir().unwrap();
         let archive = download.path().join("update.zip");
@@ -920,12 +928,14 @@ mod tests {
                 .unwrap();
             zip.write_all(new_exe).unwrap();
         }
-        zip.start_file(
-            "WebView2Loader.dll",
-            zip::write::SimpleFileOptions::default(),
-        )
-        .unwrap();
-        zip.write_all(&std::fs::read(&loader).unwrap()).unwrap();
+        if let Some(loader) = &loader {
+            zip.start_file(
+                "WebView2Loader.dll",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(&std::fs::read(loader).unwrap()).unwrap();
+        }
         zip.finish().unwrap();
         assert!(
             Command::new(&installed)

@@ -36,7 +36,9 @@ fn ssh_string(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// The ed25519 keys in an allowed_signers text: (key blob, principal). A line without a principal
-/// (an authorized_keys line) gives its comment instead.
+/// (an authorized_keys line) gives its comment instead. A line with options between the principal
+/// and the key (`namespaces=`, `valid-before=`, `cert-authority`) pins nothing: those limits aren't
+/// implemented here, and ignoring them would trust the key more widely than the file says.
 pub fn signer_keys(signers: &str) -> Vec<(Vec<u8>, String)> {
     signers
         .lines()
@@ -45,6 +47,9 @@ pub fn signer_keys(signers: &str) -> Vec<(Vec<u8>, String)> {
         .filter_map(|line| {
             let parts: Vec<&str> = line.split_whitespace().collect();
             let i = parts.iter().position(|p| *p == "ssh-ed25519")?;
+            if i > 1 {
+                return None;
+            }
             let blob = BASE64_STANDARD.decode(parts.get(i + 1)?).ok()?;
             let principal = if i > 0 { parts[..i].join(" ") } else { parts[i + 2..].join(" ") };
             Some((blob, principal))
@@ -76,6 +81,9 @@ pub fn verify_sshsig(data: &[u8], armored: &str, namespace: &str, signers: &str)
     let reserved = r.string()?;
     let hash_name = r.string()?;
     let signature = r.string()?;
+    if !r.0.is_empty() {
+        fail!("the SSH signature has trailing data");
+    }
 
     if signed_namespace != namespace.as_bytes() {
         fail!("signed for \"{}\", not \"{namespace}\"", String::from_utf8_lossy(signed_namespace));

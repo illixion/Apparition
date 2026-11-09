@@ -6,7 +6,10 @@
 #   Apparition-<version>-<visionOS|iOS|tvOS>.ipa            unsigned; signed on install
 #   Apparition-Installer-<version>-macos-universal.zip      arm64 + x86_64: the desktop app
 #                                                           and the command line
-#   Apparition-Installer-<version>-windows-x86_64.zip       the same two for Windows
+#   Apparition-Installer-<version>-windows-<arch>.zip       the same two for Windows: x86_64
+#                                                           here, arm64 with WINDOWS_ARCHS=arm64
+#                                                           on a Windows ARM PC (CI's
+#                                                           windows-11-arm)
 #   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, built in Docker: the
 #                                                           static command line, and the
 #                                                           desktop app as an AppImage and a .deb
@@ -23,7 +26,8 @@
 #   scripts/package-release.sh 0.2.0 --only-app     # just the IPAs
 #   scripts/package-release.sh 0.2.0 --parts app,macos,windows,linux   # any of these (CI builds
 #                                                    # them on separate runners); LINUX_ARCHS
-#                                                    # narrows linux to x86_64 or arm64
+#                                                    # narrows linux to x86_64 or arm64, and
+#                                                    # WINDOWS_ARCHS picks windows' (x86_64)
 #
 # The version has to be committed first, in every place that carries it: MARKETING_VERSION
 # in project.yml, and `version` in installer/Cargo.toml and desktop/Cargo.toml (the desktop
@@ -45,6 +49,12 @@
 # aarch64-apple-darwin, x86_64-apple-darwin and x86_64-pc-windows-gnu (with mingw-w64 from
 # Homebrew), the Tauri CLI for the desktop app (scripts/install-tauri-cli.sh), and Docker for
 # --linux.
+#
+# Windows on ARM is built natively, as `WINDOWS_ARCHS=arm64 scripts/package-release.sh <version>
+# --parts windows` in Git Bash on a Windows ARM PC: aarch64-pc-windows-msvc, with the Visual Studio
+# C++ tools and LLVM's clang on PATH (ring and aws-lc compile their C and assembly with it there).
+# mingw has no ARM64 toolchain. The MSVC build links the WebView2 loader in, so that zip has no
+# WebView2Loader.dll.
 #
 # The Linux desktop app is built in an image made from scripts/desktop-linux.Dockerfile
 # (Ubuntu 22.04 with WebKitGTK and the Tauri CLI), tagged per architecture and reused.
@@ -453,16 +463,36 @@ elif has macos; then
 fi
 
 if has windows; then
-  echo "==> installer and desktop app for Windows (x86_64)"
-  cargo build -q --release --locked --target x86_64-pc-windows-gnu "${both[@]}"
-  mkdir -p "$WORK/windows"
-  # Windows is case-insensitive: apparition.exe collides with the desktop's Apparition.exe.
-  cp "target/x86_64-pc-windows-gnu/release/$bin.exe" "$WORK/windows/$bin-cli.exe"
-  cp "target/x86_64-pc-windows-gnu/release/apparition-app.exe" "$WORK/windows/$app_name.exe"
-  cp "target/x86_64-pc-windows-gnu/release/WebView2Loader.dll" "$WORK/windows/"
-  readme "$WORK/windows" "$bin-cli.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have). Keep WebView2Loader.dll beside it. The command line is $bin-cli.exe; its name must differ from the desktop app on Windows."
-  (cd "$WORK/windows" && zip -qX "$OUT/Apparition-Installer-$VERSION-windows-x86_64.zip" "$bin-cli.exe" "$app_name.exe" WebView2Loader.dll README.txt)
-
+  for arch in ${WINDOWS_ARCHS:-x86_64}; do
+    case "$arch" in
+      x86_64) target=x86_64-pc-windows-gnu ;;
+      arm64) target=aarch64-pc-windows-msvc ;;
+      *) echo "error: WINDOWS_ARCHS takes x86_64 and arm64, not $arch" >&2; exit 2 ;;
+    esac
+    echo "==> installer and desktop app for Windows ($arch)"
+    cargo build -q --release --locked --target "$target" "${both[@]}"
+    mkdir -p "$WORK/windows-$arch"
+    # Windows is case-insensitive: apparition.exe collides with the desktop's Apparition.exe.
+    cp "target/$target/release/$bin.exe" "$WORK/windows-$arch/$bin-cli.exe"
+    cp "target/$target/release/apparition-app.exe" "$WORK/windows-$arch/$app_name.exe"
+    entries=("$bin-cli.exe" "$app_name.exe")
+    keep="The command line is $bin-cli.exe; its name must differ from the desktop app on Windows."
+    # The mingw build loads WebView2 through this DLL; the MSVC one links the loader in.
+    if [[ -f "target/$target/release/WebView2Loader.dll" ]]; then
+      cp "target/$target/release/WebView2Loader.dll" "$WORK/windows-$arch/"
+      entries+=(WebView2Loader.dll)
+      keep="Keep WebView2Loader.dll beside it. $keep"
+    fi
+    readme "$WORK/windows-$arch" "$bin-cli.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have). $keep"
+    entries+=(README.txt)
+    zip_path="$OUT/Apparition-Installer-$VERSION-windows-$arch.zip"
+    if command -v zip >/dev/null; then
+      (cd "$WORK/windows-$arch" && zip -qX "$zip_path" "${entries[@]}")
+    else
+      # Git Bash on Windows has no zip; the GitHub images have 7-Zip. Flat files either way.
+      (cd "$WORK/windows-$arch" && 7z a -tzip -bso0 -bsp0 "$(cygpath -w "$zip_path")" "${entries[@]}")
+    fi
+  done
 fi
 
 failed=0

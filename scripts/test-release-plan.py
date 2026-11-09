@@ -29,6 +29,7 @@ class ReleasePlanTests(unittest.TestCase):
         result = module.plan(self.root, "v0.4.4", "")
         self.assertEqual(result["parts"], "app")
         self.assertEqual(result["linux"], [])
+        self.assertEqual(result["windows"], [])
         self.assertEqual([part["part"] for part in result["apple"]], ["app"])
 
     def test_full_tag_selects_every_part(self):
@@ -45,6 +46,13 @@ class ReleasePlanTests(unittest.TestCase):
         self.versions("0.4.3", "0.4.4")
         self.assertEqual(module.plan(self.root, "v0.4.4", "")["parts"], "macos,windows,linux")
         self.assertEqual(module.plan(self.root, "0.4.4", "linux")["apple"], [])
+        self.assertEqual(module.plan(self.root, "0.4.4", "linux")["windows"], [])
+
+    def test_windows_builds_both_architectures(self):
+        self.versions("0.4.3", "0.4.4")
+        result = module.plan(self.root, "0.4.4", "windows")
+        self.assertEqual([part["targets"] for part in result["apple"]], ["x86_64-pc-windows-gnu"])
+        self.assertEqual(result["windows"], [dict(arch="arm64", runner="windows-11-arm", version="0.4.4")])
 
     def test_unknown_version_fails(self):
         for version in ("0.4.5", "bad"):
@@ -58,6 +66,7 @@ class ReleasePlanTests(unittest.TestCase):
         versions = {part["part"]: part["version"] for part in result["apple"]}
         self.assertEqual(versions, {"app": "0.4.4", "macos": "0.4.3", "windows": "0.4.3"})
         self.assertEqual({arch["version"] for arch in result["linux"]}, {"0.4.3"})
+        self.assertEqual({arch["version"] for arch in result["windows"]}, {"0.4.3"})
         self.assertEqual(module.plan(self.root, "v0.4.4", "")["warm"], "false")
 
 

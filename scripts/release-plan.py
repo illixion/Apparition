@@ -50,7 +50,11 @@ def matrix(selected, versions, warm):
     linux = [dict(arch="x86_64", runner="ubuntu-24.04", version=versions["installers"]),
              dict(arch="arm64", runner="ubuntu-24.04-arm", version=versions["installers"])] \
         if "linux" in selected else []
-    return dict(parts=",".join(selected), warm=json.dumps(warm), apple=apple, linux=linux)
+    # The "windows" part's other half: Windows on ARM, built natively (mingw, which the x86_64
+    # build on a Mac uses, has no ARM64 toolchain).
+    windows = [dict(arch="arm64", runner="windows-11-arm", version=versions["installers"])] \
+        if "windows" in selected else []
+    return dict(parts=",".join(selected), warm=json.dumps(warm), apple=apple, linux=linux, windows=windows)
 
 
 if __name__ == "__main__":

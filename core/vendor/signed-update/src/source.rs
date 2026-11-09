@@ -13,12 +13,33 @@
 pub struct Source {
     latest: String,
     files: String,
+    concealed: bool,
 }
 
 impl Source {
     /// A source from two URL prefixes (a trailing `/` is added). `files` may hold `{version}`.
     pub fn new(latest: impl Into<String>, files: impl Into<String>) -> Self {
-        Self { latest: slash(latest.into()), files: slash(files.into()) }
+        Self { latest: slash(latest.into()), files: slash(files.into()), concealed: false }
+    }
+
+    /// Marks this source's host as one a network shouldn't see you talk to. With
+    /// [`Privacy::Ech`] it is reached only over DNS-over-HTTPS and Encrypted Client Hello, and
+    /// skipped (never reached in the clear) when that isn't possible. [`Source::apps`] is concealed.
+    pub fn concealed(mut self) -> Self {
+        self.concealed = true;
+        self
+    }
+
+    #[cfg_attr(not(feature = "http"), allow(dead_code))]
+    pub(crate) fn is_concealed(&self) -> bool {
+        self.concealed
+    }
+
+    /// The host, normalised as [`normal_host`] does: what a request's host is matched against. The
+    /// port is left out on purpose, so a redirect to another port of a concealed host is concealed too.
+    #[cfg(feature = "http")]
+    pub(crate) fn host(&self) -> Option<String> {
+        reqwest::Url::parse(&self.latest).ok()?.host_str().map(normal_host)
     }
 
     /// GitHub Releases of `repo` ("illixion/vergence"), tagged `v<version>`. `latest` is GitHub's
@@ -37,7 +58,7 @@ impl Source {
 
     /// apps.illixion.com's redirects for `app`: `/<app>/latest/*` and `/<app>/releases/<version>/*`.
     pub fn apps(app: &str) -> Self {
-        Self::mirror("https://apps.illixion.com", app)
+        Self::mirror("https://apps.illixion.com", app).concealed()
     }
 
     /// Any host that serves `<base>/<app>/latest/<file>` and `<base>/<app>/releases/<version>/<file>`
@@ -58,11 +79,32 @@ impl Source {
     }
 }
 
+/// A host name the way two spellings of it compare equal: lowercase, without the trailing dot of a
+/// fully qualified name (`APPS.illixion.com.` is apps.illixion.com, and must be concealed as one).
+#[cfg(feature = "http")]
+pub(crate) fn normal_host(host: &str) -> String {
+    host.trim_end_matches('.').to_ascii_lowercase()
+}
+
 fn slash(mut url: String) -> String {
     if !url.ends_with('/') {
         url.push('/');
     }
     url
+}
+
+/// How much of the network an update check may show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Privacy {
+    /// Ordinary requests with the system's DNS.
+    #[default]
+    Off,
+    /// A [concealed](Source::concealed) source is reached only through DNS-over-HTTPS (by IP, so no
+    /// name is sent) and Encrypted Client Hello, so a network log shows a lookup of nothing and a
+    /// connection to Cloudflare's shared ECH name, not apps.illixion.com. If the resolver, the ECH
+    /// config or the handshake is blocked, that source is skipped and the next one asked: it is
+    /// never reached in the clear. Needs the `ech` feature; without it concealed sources are skipped.
+    Ech,
 }
 
 /// What an updater trusts and where it looks.
@@ -80,6 +122,11 @@ pub struct Config {
     pub sources: Vec<Source>,
     /// Sent with every request.
     pub user_agent: String,
+    /// What a check may show a network; see [`Privacy`].
+    pub privacy: Privacy,
+    /// DNS-over-HTTPS endpoints for [`Privacy::Ech`], asked in order. By IP, so reaching them sends
+    /// no name: a certificate for the IP is what is checked.
+    pub doh: Vec<String>,
 }
 
 impl Config {
@@ -90,7 +137,19 @@ impl Config {
             signers: signers.into(),
             sources: Vec::new(),
             user_agent: format!("{product}-updater"),
+            privacy: Privacy::Off,
+            doh: vec!["https://1.1.1.1/dns-query".into(), "https://1.0.0.1/dns-query".into()],
         }
+    }
+
+    pub fn privacy(mut self, privacy: Privacy) -> Self {
+        self.privacy = privacy;
+        self
+    }
+
+    pub fn doh(mut self, endpoints: Vec<String>) -> Self {
+        self.doh = endpoints;
+        self
     }
 
     pub fn source(mut self, source: Source) -> Self {
@@ -118,6 +177,23 @@ mod tests {
         );
         let odd = Source::github_tagged("illixion/Longwave", "{version}-abc");
         assert!(odd.file_url("0.1.0", "x").ends_with("/download/0.1.0-abc/x"));
+    }
+
+    #[test]
+    fn apps_is_concealed_and_others_are_not() {
+        assert!(Source::apps("x").is_concealed());
+        assert!(!Source::github("o/r").is_concealed());
+        assert!(!Source::mirror("https://self.example", "x").is_concealed());
+        assert!(Source::mirror("https://self.example", "x").concealed().is_concealed());
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn hosts_compare_without_case_port_or_trailing_dot() {
+        assert_eq!(Source::apps("x").host().as_deref(), Some("apps.illixion.com"));
+        assert_eq!(Source::new("http://127.0.0.1:8080/a/", "http://127.0.0.1:8080/b/").host().as_deref(), Some("127.0.0.1"));
+        assert_eq!(Source::mirror("https://APPS.illixion.com.", "x").host().as_deref(), Some("apps.illixion.com"));
+        assert_eq!(normal_host("Apps.Illixion.COM."), "apps.illixion.com");
     }
 
     #[test]

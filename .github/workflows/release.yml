@@ -67,6 +67,7 @@ jobs:
       warm: ${{ steps.plan.outputs.warm }}
       apple: ${{ steps.plan.outputs.apple }}
       linux: ${{ steps.plan.outputs.linux }}
+      windows: ${{ steps.plan.outputs.windows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: plan
@@ -239,10 +240,57 @@ jobs:
           path: Apparition/build/release/*/*
           if-no-files-found: error
 
+  # The "windows" part's ARM64 half, natively on Windows on ARM (the x86_64 half is cross-compiled
+  # on a Mac, in the apple matrix): aarch64-pc-windows-msvc, with the image's Visual Studio and
+  # LLVM, whose clang ring and aws-lc need on this target.
+  windows:
+    name: Windows ${{ matrix.arch }} installer
+    needs: plan
+    if: needs.plan.outputs.windows != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.windows) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: Apparition
+          fetch-depth: 0 # the build number is the commit count
+      - name: Toolchain pins
+        run: grep -E '^[A-Z_]+=' Apparition/scripts/release-toolchain | tee -a "$GITHUB_ENV"
+      - name: Tools
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target aarch64-pc-windows-msvc
+          rustup default "$RUST_TOOLCHAIN"
+          printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: Apparition
+          key: windows-${{ matrix.arch }}
+          cache-on-failure: true
+          cache-bin: false
+          save-if: ${{ env.SAVE_CACHE == 'true' }}
+      - name: Build
+        working-directory: Apparition
+        env:
+          WINDOWS_ARCHS: ${{ matrix.arch }}
+        run: scripts/package-release.sh "${{ matrix.version }}" --parts windows
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: needs.plan.outputs.warm != 'true'
+        with:
+          name: windows-${{ matrix.arch }}
+          path: Apparition/build/release/*/*
+          if-no-files-found: error
+
   attest:
     name: Attest
     # Parts that weren't asked for are skipped, which would skip this too without the condition.
-    needs: [plan, apple, linux]
+    needs: [plan, apple, linux, windows]
     if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && needs.plan.outputs.warm != 'true' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -255,7 +303,7 @@ jobs:
           path: files
           # The build jobs' own artifacts, nothing another action uploaded (a Docker build
           # record failed its digest check every time).
-          pattern: "{apple,linux}-*"
+          pattern: "{apple,linux,windows}-*"
           merge-multiple: true
       - name: List
         run: |

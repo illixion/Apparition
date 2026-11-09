@@ -1,2 +1,3 @@
-# Throwaway: lets the doc example compile. An app compiles in its own release-signers file.
-test@example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPDFLEggFzedj9nvz0wl9AoPGXFFbT9XfgEWrAY0l7pa example
+# Throwaway (a key made for this file, its private half discarded): lets the doc example compile.
+# An app compiles in its own release-signers file.
+test@example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ8qs+pOpJxYWyxifDvk2+iCeK08uT/YjckUSHXtTrge example

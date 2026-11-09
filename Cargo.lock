@@ -6556,9 +6556,12 @@ dependencies = [
  "ed25519-dalek",
  "libc",
  "reqwest 0.12.28",
+ "rustls",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
  "tracing",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
