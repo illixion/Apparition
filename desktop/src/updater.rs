@@ -1010,4 +1010,64 @@ mod tests {
         }
         panic!("Windows left a locked-executable cleanup helper behind");
     }
+
+    /// The release rehearsal: this build's own update config and code, against the real published
+    /// release, as an older copy would see it. It finds the newest release through
+    /// apps.illixion.com (privately) or GitHub, checks its signature, downloads and hash-checks
+    /// this platform's file, and on macOS swaps it into a scratch Apparition.app with the real
+    /// installer. Needs the network:
+    ///
+    ///   cargo test -p apparition-desktop live_release -- --ignored --nocapture
+    ///   APPARITION_LIVE_FROM=0.4.4 APPARITION_LIVE_EXPECT=0.4.5 cargo test ...   # pin both ends
+    ///
+    /// Run it before a release (the published one must still be found), and after publishing
+    /// (with APPARITION_LIVE_EXPECT set to the new version) to see what every installed copy sees.
+    #[test]
+    #[ignore = "needs the network and a published release"]
+    fn live_release_rehearsal() {
+        let from = std::env::var("APPARITION_LIVE_FROM").unwrap_or_else(|_| "0.0.1".into());
+        let pattern = format!(
+            "Apparition-Installer-{{version}}-{}.{}",
+            installer_platform(),
+            if cfg!(target_os = "linux") { "AppImage" } else { "zip" }
+        );
+        tauri::async_runtime::block_on(async {
+            let config = update_config();
+            let update = signed_update::check(&config, &from, &pattern)
+                .await
+                .expect("a signed release list from some source")
+                .unwrap_or_else(|| panic!("no release newer than {from} with {pattern}"));
+            eprintln!("found {} ({}), signed by {}", update.version, update.name, update.signer);
+            if let Ok(expect) = std::env::var("APPARITION_LIVE_EXPECT") {
+                assert_eq!(update.version, expect, "the newest published release");
+            }
+            assert!(
+                signed_update::check(&config, &update.version, &pattern).await.unwrap().is_none(),
+                "the newest release is offered to itself"
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let package = update.download(dir.path(), |_| {}).await.expect("a download that hashes as signed");
+            eprintln!("downloaded {} ({} bytes)", package.display(), std::fs::metadata(&package).unwrap().len());
+            #[cfg(target_os = "macos")]
+            {
+                let installed = dir.path().join("Apps/Apparition.app");
+                std::fs::create_dir_all(installed.join("Contents")).unwrap();
+                std::fs::write(installed.join("Contents/old"), b"the copy being replaced").unwrap();
+                install_mac(&package, &installed).expect("the macOS swap");
+                assert!(!installed.join("Contents/old").exists());
+                let info = std::fs::read_to_string(installed.join("Contents/Info.plist")).unwrap();
+                assert!(info.contains(&format!("<string>{}</string>", update.version)), "Info.plist names {}", update.version);
+                assert!(
+                    std::process::Command::new("/usr/bin/codesign")
+                        .args(["--verify", "--deep", "--strict"])
+                        .arg(&installed)
+                        .status()
+                        .unwrap()
+                        .success(),
+                    "the installed bundle's seal"
+                );
+                eprintln!("installed into {}", installed.display());
+            }
+        });
+    }
 }
