@@ -255,7 +255,7 @@ jobs:
     timeout-minutes: 90
     env:
       # OpenSSL's /Gs0 is miscompiled by MSVC on ARM64 (scripts/package-release.sh says why).
-      CPPFLAGS: /Gs
+      CPPFLAGS: -Gs
     defaults:
       run:
         shell: bash
