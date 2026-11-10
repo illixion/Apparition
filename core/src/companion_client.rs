@@ -240,22 +240,26 @@ pub async fn pair_for(dir: &Path, address: &str, access: Access, show_code: impl
     let mut stream = connect(&host, pairing_port).await.context(Unreachable)?;
 
     let mine = Exchange::new();
-    let committed = pairing::commitment(&mine.public_key(), &mine.nonce).to_vec();
+    let device_name = crate::relay::machine_name();
+    let requested = access.requested();
+    let committed = pairing::commitment(Namespace::APPARITION, &mine.public_key(), &mine.nonce,
+        &device_id, &device_name, Some(&requested), None).to_vec();
     let commit = Message::Commit {
         headset_id: device_id.clone(),
-        headset_name: crate::relay::machine_name(),
+        headset_name: device_name.clone(),
         commitment: committed.clone(),
-        requested: Some(access.requested()),
+        requested: Some(requested.clone()),
         ssh_public_key: None,
     };
-    stream.write_all(&commit.framed()).await?;
+    stream.write_all(&commit.framed()?).await?;
     let mut buffer = Vec::new();
     let Message::MacHello { mac_id, mac_name, public_key: host_key, nonce: host_nonce } = next(&mut stream, &mut buffer, CONNECT * 2).await? else {
         bail!("The Mac answered the pairing out of turn");
     };
-    stream.write_all(&Message::Reveal { public_key: mine.public_key().to_vec(), nonce: mine.nonce.to_vec() }.framed()).await?;
+    stream.write_all(&Message::Reveal { public_key: mine.public_key().to_vec(), nonce: mine.nonce.to_vec() }.framed()?).await?;
     let agreement = pairing::agree(
         Namespace::APPARITION, &mine, &host_key, &committed, &mine.public_key(), &mine.nonce, &host_key, &host_nonce,
+        &mac_id, &mac_name, &device_id, &device_name, Some(&requested), None,
     )
     .ok_or_else(|| report!("The Mac's pairing keys aren't valid"))?;
     show_code(&agreement.display_code());
@@ -268,7 +272,7 @@ pub async fn pair_for(dir: &Path, address: &str, access: Access, show_code: impl
         Ok(_) => bail!("The Mac answered the pairing out of turn"),
         Err(error) => return Err(error.context("The Mac didn't answer: allow this computer there within two minutes").into_dynamic()),
     };
-    if grant.mac_id != mac_id {
+    if grant.mac_id != mac_id || grant.mac_name != mac_name {
         bail!("The Mac's answer names another computer");
     }
     let grants = grant.grants.clone().unwrap_or_else(anisette_only);
@@ -277,7 +281,7 @@ pub async fn pair_for(dir: &Path, address: &str, access: Access, show_code: impl
     }
     let paired = PairedMac {
         mac_id,
-        mac_name: if grant.mac_name.is_empty() { mac_name } else { grant.mac_name },
+        mac_name: grant.mac_name,
         host,
         relay_port,
         addresses: grant.addresses,

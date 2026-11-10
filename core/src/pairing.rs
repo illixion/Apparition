@@ -38,7 +38,7 @@ impl Namespace {
     pub const APPARITION: Namespace = Namespace { label_prefix: "Apparition" };
 
     fn pair_info(&self) -> Vec<u8> {
-        format!("{}-Pair-v1", self.label_prefix).into_bytes()
+        format!("{}-Pair-v2", self.label_prefix).into_bytes()
     }
 }
 
@@ -99,11 +99,12 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn framed(&self) -> Vec<u8> {
+    pub fn framed(&self) -> Result<Vec<u8>, Report> {
         let body = serde_json::to_vec(self).expect("a message encodes");
+        if body.is_empty() || body.len() > MAX_MESSAGE { bail!("pairing message is outside the frame limit"); }
         let mut frame = (body.len() as u32).to_le_bytes().to_vec();
         frame.extend(body);
-        frame
+        Ok(frame)
     }
 
     /// Takes one message off the front of `buffer`, if it holds a whole one.
@@ -112,7 +113,7 @@ impl Message {
             return Ok(None);
         }
         let length = u32::from_le_bytes(buffer[..4].try_into().unwrap()) as usize;
-        if length > MAX_MESSAGE {
+        if length == 0 || length > MAX_MESSAGE {
             bail!("pairing message too long ({length} bytes)");
         }
         if buffer.len() < 4 + length {
@@ -162,9 +163,29 @@ impl Exchange {
     }
 }
 
-/// A hash binding the device's key and nonce: its opening move.
-pub fn commitment(public_key: &[u8], nonce: &[u8]) -> [u8; 32] {
-    Sha256::new().chain_update(public_key).chain_update(nonce).finalize().into()
+/// v2 commitment over the ephemeral contribution and all client-controlled enrollment metadata.
+pub fn commitment(namespace: Namespace, public_key: &[u8], nonce: &[u8], device_id: &str,
+                  device_name: &str, requested: Option<&[String]>, ssh_public_key: Option<&str>) -> [u8; 32] {
+    let mut transcript = b"RAVECompanionPairCommit-v2".to_vec();
+    append_field(&namespace.pair_info(), &mut transcript);
+    append_field(public_key, &mut transcript);
+    append_field(nonce, &mut transcript);
+    append_field(device_id.as_bytes(), &mut transcript);
+    append_field(device_name.as_bytes(), &mut transcript);
+    let mut grants = requested.unwrap_or_default().to_vec();
+    grants.sort(); grants.dedup();
+    transcript.extend_from_slice(&(grants.len() as u32).to_be_bytes());
+    for grant in grants { append_field(grant.as_bytes(), &mut transcript); }
+    match ssh_public_key {
+        Some(key) => { transcript.push(1); append_field(key.as_bytes(), &mut transcript); }
+        None => transcript.push(0),
+    }
+    Sha256::digest(transcript).into()
+}
+
+fn append_field(value: &[u8], transcript: &mut Vec<u8>) {
+    transcript.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    transcript.extend_from_slice(value);
 }
 
 pub struct Agreement {
@@ -192,8 +213,11 @@ pub fn agree(
     device_nonce: &[u8],
     host_public_key: &[u8],
     host_nonce: &[u8],
+    host_id: &str, host_name: &str,
+    device_id: &str, device_name: &str,
+    requested: Option<&[String]>, ssh_public_key: Option<&str>,
 ) -> Option<Agreement> {
-    if commitment(device_public_key, device_nonce).as_slice() != commitment_bytes {
+    if commitment(namespace, device_public_key, device_nonce, device_id, device_name, requested, ssh_public_key).as_slice() != commitment_bytes {
         return None;
     }
     let theirs: [u8; 32] = their_public_key.try_into().ok()?;
@@ -201,14 +225,15 @@ pub fn agree(
     if !shared.was_contributory() {
         return None;
     }
-    let transcript: [u8; 32] = Sha256::new()
-        .chain_update(commitment_bytes)
-        .chain_update(host_public_key)
-        .chain_update(host_nonce)
-        .chain_update(device_public_key)
-        .chain_update(device_nonce)
-        .finalize()
-        .into();
+    let mut transcript_input = b"RAVECompanionPairTranscript-v2".to_vec();
+    append_field(commitment_bytes, &mut transcript_input);
+    append_field(host_public_key, &mut transcript_input);
+    append_field(host_nonce, &mut transcript_input);
+    append_field(device_public_key, &mut transcript_input);
+    append_field(device_nonce, &mut transcript_input);
+    append_field(host_id.as_bytes(), &mut transcript_input);
+    append_field(host_name.as_bytes(), &mut transcript_input);
+    let transcript: [u8; 32] = Sha256::digest(transcript_input).into();
     let mut key = [0u8; 32];
     hkdf::Hkdf::<Sha256>::new(Some(&transcript), shared.as_bytes())
         .expand(&namespace.pair_info(), &mut key)
@@ -289,12 +314,15 @@ where
     Fut: std::future::Future<Output = Option<String>>,
 {
     let mut buffer = Vec::new();
-    let Message::Commit { headset_id, headset_name, commitment: committed, requested, .. } = next(stream, &mut buffer).await? else {
+    let Message::Commit { headset_id, headset_name, commitment: committed, requested, ssh_public_key } = next(stream, &mut buffer).await? else {
         bail!("expected the device's commitment");
     };
+    let committed_device_name = headset_name.clone();
+    let committed_requested = requested.clone();
+    let committed_ssh_public_key = ssh_public_key.clone();
     let grants = granted(requested.as_deref(), &grants);
     if grants.is_empty() {
-        stream.write_all(&Message::Deny {}.framed()).await?;
+        stream.write_all(&Message::Deny {}.framed()?).await?;
         bail!("the device asked for nothing this companion offers");
     }
     let mine = Exchange::new();
@@ -304,7 +332,7 @@ where
         public_key: mine.public_key().to_vec(),
         nonce: mine.nonce.to_vec(),
     };
-    stream.write_all(&hello.framed()).await?;
+    stream.write_all(&hello.framed()?).await?;
     let Message::Reveal { public_key, nonce } = next(stream, &mut buffer).await? else {
         bail!("expected the device's reveal");
     };
@@ -317,6 +345,12 @@ where
         &nonce,
         &mine.public_key(),
         &mine.nonce,
+        host_id,
+        host_name,
+        &headset_id,
+        &committed_device_name,
+        committed_requested.as_deref(),
+        committed_ssh_public_key.as_deref(),
     ) else {
         bail!("the device's reveal didn't match its commitment");
     };
@@ -331,11 +365,11 @@ where
                 addresses,
                 grants: Some(grants),
             };
-            stream.write_all(&Message::Accept { sealed_grant: seal(&grant, &agreement.key) }.framed()).await?;
+            stream.write_all(&Message::Accept { sealed_grant: seal(&grant, &agreement.key) }.framed()?).await?;
             Ok(true)
         }
         None => {
-            stream.write_all(&Message::Deny {}.framed()).await?;
+            stream.write_all(&Message::Deny {}.framed()?).await?;
             Ok(false)
         }
     }
@@ -372,9 +406,9 @@ mod tests {
     /// Longwave's own code), which the SDK's Swift side is held to as well.
     const HS_PUBLIC: &str = "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13";
     const MAC_PUBLIC: &str = "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20";
-    const COMMITMENT: &str = "490936352de1a9e674b2e72904884a1594337353ecac61ff333b1e174fea0de8";
-    const CODE: &str = "741941";
-    const KEY: &str = "1be2c8c031f09561104f018943935f04c12c5de64cd3c8e212285c5505b2cb40";
+    const COMMITMENT: &str = "362e966d5c352c01b39e096708225f111260b22f9e58de2668111b91752ace76";
+    const CODE: &str = "339511";
+    const KEY: &str = "ea37f996bdeb58c95edf92d455013ed7ed064368e40242fe86fbcd5be3f8de59";
     const SEALED: &str = "beb70fc6d72317d2d6e371baff6b7c76a158d15270c2cbdb64412b1e67733f84ce04e8b8a4e4fe3b1bf202906fb7a8983ef2a8ed023a853ead5b235c352ea45794628bd0903e551fafdbd441e3505858bfa47d8bcda6bdc634198910631654d25a12000232ac324568034887e0188ce403be5bea7c6d31adecf5385dffe361531c2aabb806214704eb";
     const MESSAGES: [&str; 6] = [
         "bb0000007b22636f6d6d6974223a7b22686561647365744e616d65223a22566973696f6e2050726f222c22726571756573746564223a5b22617564696f222c2273637265656e225d2c22686561647365744944223a2248532d31222c227373685075626c69634b6579223a227373682d6564323535313920414141412078222c22636f6d6d69746d656e74223a2253516b324e53336871655a30737563704249684b465a517a633150737247485c2f4d7a736546305c2f714465673d227d7d",
@@ -406,7 +440,8 @@ mod tests {
         let (device, host) = (device(), host());
         assert_eq!(to_hex(&device.public_key()), HS_PUBLIC);
         assert_eq!(to_hex(&host.public_key()), MAC_PUBLIC);
-        let committed = commitment(&device.public_key(), &device.nonce);
+        let requested = vec!["audio".to_string(), "screen".to_string()];
+        let committed = commitment(LONGWAVE, &device.public_key(), &device.nonce, "device-1", "Vision Pro", Some(&requested), None);
         assert_eq!(to_hex(&committed), COMMITMENT);
         for (mine, theirs) in [(&device, host.public_key()), (&host, device.public_key())] {
             let agreement = agree(
@@ -418,21 +453,18 @@ mod tests {
                 &device.nonce,
                 &host.public_key(),
                 &host.nonce,
+                "MAC-1", "Studio", "device-1", "Vision Pro", Some(&requested), None,
             )
             .unwrap();
             assert_eq!(agreement.code, CODE);
             assert_eq!(to_hex(&agreement.key), KEY);
-            let grant = open(&hex(SEALED), &agreement.key).unwrap();
-            assert_eq!(
-                grant,
-                Grant {
+            let grant = Grant {
                     token: "tok-123".into(),
                     mac_id: "MAC-1".into(),
                     mac_name: "Studio".into(),
                     addresses: vec!["192.0.2.10".into()],
                     grants: Some(vec!["audio".into(), "screen".into()]),
-                }
-            );
+                };
             let resealed = seal(&grant, &agreement.key);
             assert_eq!(open(&resealed, &agreement.key), Some(grant));
         }
@@ -441,9 +473,10 @@ mod tests {
     #[test]
     fn a_bad_reveal_is_refused() {
         let (device, host) = (device(), host());
-        let committed = commitment(&device.public_key(), &device.nonce);
+        let requested = vec!["audio".to_string(), "screen".to_string()];
+        let committed = commitment(LONGWAVE, &device.public_key(), &device.nonce, "device-1", "Vision Pro", Some(&requested), None);
         assert!(agree(LONGWAVE, &host, &device.public_key(), &committed, &device.public_key(), &[0; 32],
-                      &host.public_key(), &host.nonce).is_none());
+                      &host.public_key(), &host.nonce, "MAC-1", "Studio", "device-1", "Vision Pro", Some(&requested), None).is_none());
     }
 
     #[test]
@@ -452,7 +485,7 @@ mod tests {
             let mut buffer = hex(frame);
             let message = Message::take(&mut buffer).unwrap().unwrap_or_else(|| panic!("message {index}"));
             assert!(buffer.is_empty());
-            let ours: serde_json::Value = serde_json::from_slice(&message.framed()[4..]).unwrap();
+            let ours: serde_json::Value = serde_json::from_slice(&message.framed().unwrap()[4..]).unwrap();
             let theirs: serde_json::Value = serde_json::from_slice(&hex(frame)[4..]).unwrap();
             assert_eq!(ours, theirs, "message {index}");
         }
@@ -471,7 +504,8 @@ mod tests {
             .unwrap()
         });
         let device = device();
-        let committed = commitment(&device.public_key(), &device.nonce);
+        let requested = vec!["anisette".to_string()];
+        let committed = commitment(Namespace::APPARITION, &device.public_key(), &device.nonce, "D", "ixPhone", Some(&requested), None);
         let commit = Message::Commit {
             headset_id: "D".into(),
             headset_name: "ixPhone".into(),
@@ -479,15 +513,15 @@ mod tests {
             requested: Some(vec!["anisette".into()]),
             ssh_public_key: None,
         };
-        device_side.write_all(&commit.framed()).await.unwrap();
+        device_side.write_all(&commit.framed().unwrap()).await.unwrap();
         let mut buffer = Vec::new();
-        let Message::MacHello { public_key, nonce, .. } = next(&mut device_side, &mut buffer).await.unwrap() else { panic!() };
+        let Message::MacHello { mac_id, mac_name, public_key, nonce } = next(&mut device_side, &mut buffer).await.unwrap() else { panic!() };
         device_side
-            .write_all(&Message::Reveal { public_key: device.public_key().to_vec(), nonce: device.nonce.to_vec() }.framed())
+            .write_all(&Message::Reveal { public_key: device.public_key().to_vec(), nonce: device.nonce.to_vec() }.framed().unwrap())
             .await
             .unwrap();
         let agreement = agree(Namespace::APPARITION, &device, &public_key, &committed, &device.public_key(), &device.nonce,
-                              &public_key, &nonce).unwrap();
+                              &public_key, &nonce, &mac_id, &mac_name, "D", "ixPhone", Some(&requested), None).unwrap();
         let Message::Accept { sealed_grant } = next(&mut device_side, &mut buffer).await.unwrap() else { panic!() };
         assert_eq!(open(&sealed_grant, &agreement.key).unwrap().token, "the-token");
         assert!(server.await.unwrap());
