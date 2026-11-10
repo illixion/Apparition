@@ -1,3 +1,4 @@
+import RAVESupport
 import RAVEUI
 import SwiftUI
 
@@ -32,6 +33,7 @@ struct SettingsView: View {
                 notificationsSection
                 #endif
                 advancedSection
+                Section { RAVESupportCard(RAVESupportConfig(appName: "Apparition", appID: "com.illixion.apparition")) }
                 aboutSection
             }
             .raveScreenTitle("Settings")

@@ -38,6 +38,9 @@ targets:
         product: DebugTraceUI
       - package: RAVESDK
         product: RAVEUI
+      # One-time "Hi, I'm Ixion" sponsor card (welcome sheet and the About section).
+      - package: RAVESDK
+        product: RAVESupport
       # Pairing and TLS-PSK anisette channel to the desktop companion.
       - package: RAVESDK
         product: RAVECompanion

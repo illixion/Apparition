@@ -1,6 +1,7 @@
 import DebugTrace
 import DebugTraceServer
 import DebugTraceUI
+import RAVESupport
 import SwiftUI
 
 @main
@@ -52,6 +53,7 @@ struct ApparitionApp: App {
         WindowGroup {
             RootView(model: model, account: account, library: library, companions: companions)
                 .debugApprovalPrompts()
+                .raveSupportWelcome(RAVESupportConfig(appName: "Apparition", appID: "com.illixion.apparition"))
                 .task { await library.scheduleRefreshIfNeeded() }
                 // Asked at first launch, while Apparition is in front: the first update may be found
                 // by a Shortcuts run nobody is watching. Skipped when Settings turned it off.
