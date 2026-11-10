@@ -270,7 +270,9 @@ pub async fn pair_for(dir: &Path, address: &str, access: Access, show_code: impl
         }
         Ok(Message::Deny {}) => bail!("The Mac declined the pairing"),
         Ok(_) => bail!("The Mac answered the pairing out of turn"),
-        Err(error) => return Err(error.context("The Mac didn't answer: allow this computer there within two minutes").into_dynamic()),
+        Err(error) => return Err(error.context(
+            "Pairing could not be completed. Make sure both apps are up to date, then try again. If they already are, approve the request on the Mac within two minutes",
+        ).into_dynamic()),
     };
     if grant.mac_id != mac_id || grant.mac_name != mac_name {
         bail!("The Mac's answer names another computer");

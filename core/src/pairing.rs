@@ -352,7 +352,7 @@ where
         committed_requested.as_deref(),
         committed_ssh_public_key.as_deref(),
     ) else {
-        bail!("the device's reveal didn't match its commitment");
+        bail!("the pairing proof didn't verify. Make sure both apps are up to date and try again");
     };
     let name: String = headset_name.chars().filter(|c| !c.is_control()).take(64).collect();
     let request = Request { device_id: headset_id, device_name: name, code: agreement.display_code(), peer, grants: grants.clone() };
