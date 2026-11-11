@@ -110,3 +110,15 @@ compiles unchanged against zip 9.
 A twelfth change: developer-services requests send `Content-Type` and `Accept` as
 `text/x-xml-plist` (`src/dev/developer_session.rs`). These requests POST XML property lists, and
 Apple's `listTeams` endpoint returned HTTP 415 when the media type was omitted.
+
+A thirteenth change: GrandSlam normalizes `gsService` URLs ending in `/grandslam/GsService2` to
+`/grandslam/GsService2/`, sends `Content-Type: text/xml; charset=UTF-8` over HTTP/1.1
+(`.http1_only()`), and logs redacted outgoing headers and non-200 responses (`src/auth/grandslam.rs`,
+`src/auth/edge.rs`). Apple's edge WAF began returning bare HTML `403 Forbidden` on exact
+`POST /grandslam/GsService2` paths without a trailing slash while accepting `/grandslam/GsService2/`.
+
+A fourteenth change: `RemoteV3AnisetteProvider` normalizes URLs without upgrading schemes, sets
+connect/request timeouts, performs `/v3/client_info` pre-flight validation, and `AnisetteData`
+injects `X-Apple-I-MD-RINFO`, `X-Apple-I-Client-Time`, `X-Apple-I-TimeZone`, and `X-Apple-Locale`
+while validating critical headers before sending GrandSlam requests (`src/anisette/mod.rs`,
+`src/anisette/remote_v3/mod.rs`).

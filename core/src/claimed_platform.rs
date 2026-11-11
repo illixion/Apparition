@@ -113,13 +113,17 @@ impl Claim {
 /// The claim for the server at `url`. A server that doesn't answer is taken to be an Android one;
 /// the sign-in then fails on the server, not here.
 pub async fn claim_for(url: &str) -> Claim {
+    let normalized = isideload::anisette::remote_v3::RemoteV3AnisetteProvider::normalize_url(url);
     let reply = async {
+        let endpoint = format!("{normalized}/v3/client_info");
+        tracing::debug!(anisette_url = %normalized, endpoint = %endpoint, "Probing Anisette server platform claim");
         let response = reqwest::Client::new()
-            .get(format!("{}/v3/client_info", url.trim_end_matches('/')))
+            .get(&endpoint)
             .timeout(std::time::Duration::from_secs(20))
             .send()
             .await
             .ok()?;
+        tracing::debug!(anisette_url = %normalized, status = %response.status(), "Anisette server /v3/client_info status");
         let implementation = response.headers().get("implementation-version").and_then(|value| value.to_str().ok()).map(str::to_string);
         Some((response.json::<serde_json::Value>().await.ok()?, implementation))
     };
@@ -149,6 +153,7 @@ impl<P: AnisetteProvider + Send + Sync> AnisetteProvider for ClaimedPlatform<P> 
     }
 
     async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
+        let _ = self.inner.get_client_info().await?;
         Ok(AnisetteClientInfo { client_info: self.claim.client_info.clone(), user_agent: self.claim.user_agent.clone() })
     }
 
