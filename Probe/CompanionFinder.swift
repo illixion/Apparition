@@ -106,7 +106,7 @@ final class CompanionFinder {
         guard case let .hostPort(host, port) = connection.currentPath?.remoteEndpoint else {
             throw IDevice.ProbeError("no address for \(name)")
         }
-        // An address's description carries its interface ("172.20.48.198%en0"); the relay
+        // An address's description carries its interface ("192.0.2.10%en0"); the relay
         // setting wants the bare address.
         func bare(_ address: Any) -> String {
             String("\(address)".split(separator: "%", maxSplits: 1).first ?? "")

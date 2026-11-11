@@ -290,7 +290,6 @@ pub fn native_anisette() -> bool {
 
 /// What Apple's `-80045` ("This action cannot be completed at this time") means here.
 pub const REFUSED_ANISETTE: &str = "Apple refused the sign-in (-80045): since 12 October 2026 it turns away anisette that doesn't match the device the sign-in says it is. Apparition claims what the anisette server says it makes (Android for Dadoum's anisette-v3-server), and this server's anisette doesn't match that. Use the built-in anisette, Apparition's companion, or another anisette-v3 server.";
-/// Apple took the password but refused the Xcode sign-in for anisette from the Android libraries.
 pub const REFUSED_ANDROID_ANISETTE: &str = "Apple took the password but refused the Xcode sign-in (-80046) for anisette made by Apple's Android libraries, which the built-in anisette uses off a Mac and Dadoum's anisette-v3-server runs, even asked for as a Mac. Use a Mac's own anisette (Apparition on a Mac with macOS 26 or earlier, or its companion) or an anisette-v3 server that doesn't use those libraries.";
 
 /// Where the built-in anisette keeps its libraries and working files, for the Apple ID folder
@@ -525,9 +524,6 @@ pub async fn sign_in(
     claim_after_sign_in(&mut account);
     let session = match developer_session_with_retry(&mut account).await {
         Ok(session) => session,
-        // Claiming Android, a sign-in Apple doesn't trust yet got no 2FA step and no Xcode
-        // token (-22411) until the code it pushes to the trusted devices was checked: sign in
-        // again, which pushes one, and check it (vendor/isideload, code_after_login).
         Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-22411) => {
             account.grandslam_client = signing_in.clone();
             account.code_after_login = true;

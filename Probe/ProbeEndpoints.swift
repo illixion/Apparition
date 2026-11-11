@@ -98,7 +98,7 @@ enum ProbeEndpoints {
                 return DeviceAppsReply(outcome: outcome, fetchedAt: model.deviceAppsFetchedAt, apps: model.deviceApps)
             },
                         .command("setRelay", "Set the companion relay (ip:port), or clear it with an empty string",
-                     parameters: [.string("relay", "e.g. 172.20.48.198:49160", required: true)]) { args in
+                     parameters: [.string("relay", "e.g. 192.0.2.10:49160", required: true)]) { args in
                 model.setRelay(try args.requireString("relay"))
                 return state(model)
             },

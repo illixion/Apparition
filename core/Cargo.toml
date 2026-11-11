@@ -13,7 +13,7 @@ crate-type = ["staticlib", "rlib"]
 # Linked here, rather than as a second static library, so the app carries one Rust runtime.
 idevice-ffi = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065", default-features = false, features = ["ring", "core_device", "debug_proxy", "rsd", "remote_pairing", "tcp", "tunnel_tcp_stack", "afc", "house_arrest", "installation_proxy", "usbmuxd", "pair"] }
-# isideload 0.5.0 vendored with our changes (code_after_login, signing with signer/, ...); see vendor/isideload/VENDORED.md.
+# isideload 0.5.0 vendored with our changes (code_after_login, signing with signer/, ...); with local compatibility patches.
 isideload = { path = "vendor/isideload", default-features = false, features = ["install", "tokio-mt"] }
 rootcause = "0.12.0"
 rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
@@ -61,10 +61,6 @@ desktop = ["dep:dirs", "dep:mdns-sd", "tokio/time", "tokio/net", "tokio/io-util"
 # Anisette without Docker, on macOS and Linux (see anisette/mod.rs).
 anisette = ["dep:libc", "dep:axum", "tokio/net", "tokio/time", "tokio/sync"]
 
-# One sign-in, then the Xcode token request in several variants (what Apple's refusals depend on).
-[[example]]
-name = "apptoken_probe"
-required-features = ["anisette"]
 
 [[example]]
 name = "grandslam_init_probe"

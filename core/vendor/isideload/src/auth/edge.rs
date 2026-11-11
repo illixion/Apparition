@@ -7,9 +7,6 @@
 //! attempts is which address the connection goes to. The connection still names the host, so TLS
 //! checks the certificate exactly as before.
 //!
-//! Why it exists (2026-10-29): which edge `gsd.apple.com` resolved to depended on the resolver
-//! asking, and one of them (17.171.11.101, what Cloudflare's 1.1.1.1 always gave) answered every
-//! GrandSlam request with that 403. The cause turned out to be an edge WAF rule on the request's
 //! `Content-Type` (see `grandslam.rs`), which was on some edges first and on all of them a day
 //! later; with the right content type no edge refuses, and this layer does nothing. It stays as the
 //! general answer to one edge misbehaving, whatever the reason.
@@ -499,8 +496,6 @@ mod tests {
     }
 
     /// Against Apple: 17.171.11.101 answered 403 to every request with the legacy `text/x-xml-plist`
-    /// Content-Type on 2026-10-29 and, a day later, so did every other edge. With `text/xml` (what
-    /// GrandSlam sends now) that same edge answers, and nothing is avoided.
     ///
     ///     cargo test -p isideload --lib content_type_clears -- --ignored
     #[test]

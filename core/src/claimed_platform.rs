@@ -1,21 +1,3 @@
-//! Which device the sign-in says it comes from (`X-Mme-Client-Info`), matched to the anisette.
-//!
-//! Since 2026-10-12 Apple refuses sign-in (`-80045`) when the anisette's platform and the
-//! claimed one differ. isideload always claims a Mac (`<Mac15,7> <macOS;27.0;…>`), while nearly
-//! every anisette server, the built-in one off a Mac included, makes Android anisette with Apple
-//! Music's libraries. Tested 2026-10-13 with a made-up account, same anisette and request: the
-//! Android platform in the claim (`<…><Android; …>`) is accepted, macOS gets `-80045`; the
-//! program named at the end (`com.apple.akd`, `com.apple.android.music`) and the User-Agent
-//! make no difference. A Mac's own anisette (anisette::native) is accepted claiming macOS.
-//!
-//! So the claim follows the server. Apparition's own says what it serves (`/v3/client_info`
-//! carries `apparition_anisette`). Dadoum's anisette-v3-server (`Implementation-Version:
-//! anisette-v3-server v2.2.2`; ani.sidestore.io, our selfhost compose) runs the Android libraries
-//! but reports a Mac's client info, so it gets the Android claim. Any other server is claimed as
-//! it reports itself, as isideload does: jkcoxson's native-c one (ani.jkcoxson.com,
-//! ani.iloader.app) reports a Mac and Apple refuses provisioning claiming Android (401). Checked
-//! 2026-10-24 with a made-up account, each claim on each: only these choices got past anisette.
-
 use std::sync::Arc;
 
 use isideload::anisette::{AnisetteClientInfo, AnisetteDataResponse, AnisetteProvider};
@@ -57,7 +39,6 @@ impl Served {
 /// What a sign-in through one server claims to be (`X-Mme-Client-Info` and User-Agent).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
-    /// Android or not, for what Apple does differently then (the Xcode token: `after_sign_in`).
     pub served: Served,
     pub client_info: String,
     pub user_agent: String,
@@ -68,13 +49,6 @@ impl Claim {
         Claim { served, client_info: served.client_info().to_string(), user_agent: USER_AGENT.to_string() }
     }
 
-    /// What to claim once Apple has taken the password, for the Xcode token and the developer
-    /// requests made with it, when that differs from the sign-in's claim. Claiming Android, Apple
-    /// refuses the Xcode token (-80046, since about 2026-10-22) but issues it claiming a Mac,
-    /// whatever made the anisette. Checked 2026-10-24 on one account with
-    /// examples/apptoken_probe.rs: an Android-claimed sign-in, then the token request claiming
-    /// Android (with or without Xcode's headers, naming Xcode, `svct` Xcode) got -80046 and
-    /// claiming a Mac got the token. An iCloud token was issued claiming Android.
     pub fn after_sign_in(&self) -> Option<AnisetteClientInfo> {
         (self.served == Served::Android)
             .then(|| AnisetteClientInfo { client_info: MAC_CLIENT_INFO.to_string(), user_agent: USER_AGENT.to_string() })

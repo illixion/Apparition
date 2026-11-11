@@ -1,4 +1,5 @@
 .DS_Store
+Thumbs.db
 build/
 *.xcodeproj
 DerivedData/
@@ -6,3 +7,17 @@ xcuserdata/
 core/target/
 installer/target/
 /target/
+*.log
+*.ipa
+*.deb
+*.p12
+*.pfx
+*.mobileprovision
+*.apparitionsigning
+*.apparitionkey
+.env
+.env.*
+storage.json
+devices.json
+desktop.json
+companion.json

@@ -272,8 +272,6 @@ if has macos; then
   mkdir -p "$WORK/macos"
   xcrun lipo -create -output "$WORK/macos/$bin" \
     target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
-  # This Mac's anisette on macOS 27 (core/src/anisette/native.rs): AuthKit's private entitlements,
-  # so macOS runs it only with SIP and AMFI off. It sits next to whatever uses it.
   helper=apparition-anisette-helper
   xcrun lipo -create -output "$WORK/macos/$helper" \
     target/aarch64-apple-darwin/release/$helper target/x86_64-apple-darwin/release/$helper

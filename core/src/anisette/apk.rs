@@ -33,7 +33,6 @@ const ABI: &str = "x86_64";
 pub(crate) const SERVICES: &str = "libstoreservicescore.so";
 pub(crate) const CORE: &str = "libCoreADI.so";
 
-/// A library of the Apple Music APK that Apple's CDN served on 2026-10-29, and its SHA-256.
 struct Known {
     abi: &'static str,
     name: &'static str,

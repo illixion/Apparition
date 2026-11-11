@@ -1,26 +1,3 @@
-//! The anisette v3 protocol, served from the loaded ADI libraries.
-//!
-//! This is the protocol isideload's `RemoteV3AnisetteProvider` speaks (MIT licensed, a dependency
-//! of this crate), so what it expects is what's implemented, and a server of another make
-//! (the Docker image the Companion runs) answers the same requests:
-//!
-//! - `GET /v3/client_info`: the `client_info` and `user_agent` strings to send to Apple;
-//! - `GET /v3/provisioning_session` (WebSocket): provisions a device, with the client making the
-//!   requests to Apple. The server asks, in turn, for the identifier (16 bytes), Apple's
-//!   `spim`, and Apple's `ptm` and `tk`, and answers with the `cpim` and the resulting `adi.pb`;
-//! - `POST /v3/get_headers`: for an identifier and its `adi.pb`, the `X-Apple-I-MD`,
-//!   `X-Apple-I-MD-M` and `X-Apple-I-MD-RINFO` headers.
-//!
-//! The server keeps nothing between requests: the client stores its `adi.pb` and identifier. Each
-//! request gets a folder of its own for the library to read and write, removed afterwards.
-//!
-//! Facts taken from the Dadoum `anisette-v3-server` (no licence stated; behaviour only): the
-//! ADI identifier is the UUID made of the client's 16 bytes, written in capitals, cut to 16
-//! characters; `X-Apple-I-MD-RINFO` is the constant 17106176.
-//!
-//! `/v3/client_info` also says what this server serves (`apparition_anisette`: `mac` or
-//! `android`), with the matching client info, which the sign-in claims (see claimed_platform).
-
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -153,10 +130,6 @@ impl Drop for Scratch {
 
 async fn client_info(State(shared): State<Arc<Shared>>) -> Json<Value> {
     use crate::claimed_platform::{Served, USER_AGENT};
-    // AuthKit's whole set of headers, from the helper, is claimed as this Mac (see
-    // `native::client_info`): a VM is refused claiming another. AOSKit's two headers keep the
-    // usual Mac claim, which a real Mac's sign-in gets through with more often (2026-10-30: 6 of
-    // 10 init requests answered 503 claiming an Intel MacBook Pro as it was, 1 of 6 as Mac15,7).
     #[cfg(target_os = "macos")]
     if shared.native && super::native::source() == Some(super::native::Source::Helper) {
         let (client_info, user_agent) = super::native::client_info();
