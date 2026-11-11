@@ -871,7 +871,7 @@ function signInError(/** @type {any} */ error, /** @type {boolean} */ usingServe
   if (/-80045/.test(message)) return message;
   if (!usingServer && /anisette|connect|dns|resolve|refused/i.test(message))
     return `Couldn't sign in. Check the internet connection (Apparition fetches Apple's anisette libraries on first use).\n\n${message}`;
-  if (usingServer && (/anisette/i.test(message) || /connect|dns|resolve|refused/i.test(message)))
+  if (usingServer && (/anisette/i.test(message) || (/connect|dns|resolve|refused/i.test(message) && !/\.apple\.com/i.test(message))))
     return `Couldn't sign in. Check that the anisette server is running and its address is right.\n\n${message}`;
   return message;
 }

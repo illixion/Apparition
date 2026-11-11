@@ -68,7 +68,7 @@ required-features = ["anisette"]
 
 [[example]]
 name = "grandslam_init_probe"
-required-features = ["desktop", "anisette"]
+required-features = ["desktop"]
 
 [dev-dependencies]
 rand = "0.8"
