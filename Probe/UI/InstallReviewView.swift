@@ -96,6 +96,8 @@ struct InstallReviewView: View {
                         Text(profileDetail(option)).font(.caption).foregroundStyle(.secondary)
                         if option.uuid == review.profile, review.profileSource == "hint" {
                             Text("The profile this app's build was made for, or the one chosen for it before.").font(.caption)
+                        } else if option.uuid == review.profile, review.profileSource == "installed" {
+                            Text("For the same App ID as the copy on this \(ThisDevice.noun), so it installs as an update of it.").font(.caption)
                         }
                     }
                     LabeledContent("Bundle ID", value: target)

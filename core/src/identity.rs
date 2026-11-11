@@ -951,6 +951,9 @@ pub struct ProfileHint {
     /// The keychain groups the Mac would sign with (the profile's own, a wildcard's `TEAM.*`),
     /// kept when the app has no signature of its own to take them from.
     pub keychain_groups: Option<Vec<String>>,
+    /// A preference, not a requirement: the App ID of the copy already installed. When no profile
+    /// matches it, the best match is used instead of failing. Matching it is reported as `installed`.
+    pub soft: Option<bool>,
 }
 
 impl ProfileHint {
@@ -971,17 +974,18 @@ fn resolve_profile<'a>(usable: &'a [Profile], original: &str, asked: Option<&Dic
             return Ok((found, "hint"));
         }
         let team_ok = |p: &Profile| hint.team.as_deref().is_none_or(|team| p.team() == team);
+        let soft = hint.soft == Some(true);
         if usable.iter().any(|p| team_ok(p)) {
             if let Some(pattern) = &hint.app_id_pattern
                 && let Some(found) = usable.iter().filter(|p| team_ok(p) && &p.app_id_pattern() == pattern).max_by_key(|p| (p.get_task_allow(), p.expires()))
             {
-                return Ok((found, "hint"));
+                return Ok((found, if soft { "installed" } else { "hint" }));
             }
-            bail!(
+            if !soft { bail!(
                 "This app is signed with the profile {}{}, which isn't imported here or doesn't list this device. Send it from the Mac with Signing on devices, or choose another profile in Review Install Options.",
                 hint.name.as_deref().or(hint.uuid.as_deref()).unwrap_or("it was built for"),
                 hint.app_id_pattern.as_deref().map(|p| format!(" (App ID {p})")).unwrap_or_default()
-            );
+            ); }
         }
     }
     best_profile(usable, original, asked).map(|p| (p, "automatic")).ok_or_else(|| report!("No imported profile can sign this app on this device"))
@@ -1557,6 +1561,12 @@ mod local {
         // Same team, nothing matching: an error, not the wildcard.
         hint.app_id_pattern = Some("com.example.not-imported".into());
         assert!(resolve_profile(&usable, &app, None, Some(&hint)).is_err());
+        // The installed copy's App ID is only a preference.
+        let soft = ProfileHint { app_id_pattern: Some("com.example.not-imported".into()), team: Some(explicit.team().into()), soft: Some(true), ..Default::default() };
+        assert_eq!(resolve_profile(&usable, &app, None, Some(&soft)).unwrap().1, "automatic");
+        let soft = ProfileHint { app_id_pattern: Some(explicit.app_id_pattern()), soft: Some(true), ..Default::default() };
+        let (found, source) = resolve_profile(&usable, &app, None, Some(&soft)).unwrap();
+        assert_eq!((found.app_id_pattern(), source), (explicit.app_id_pattern(), "installed"));
         // Another team's hint doesn't apply to this certificate.
         hint.team = Some("OTHERTEAM1".into());
         assert_eq!(resolve_profile(&usable, &app, None, Some(&hint)).unwrap().1, "automatic");

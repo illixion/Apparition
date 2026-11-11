@@ -1378,6 +1378,8 @@ pub unsafe extern "C" fn apparition_list_apps(
                         "debuggable": entitlement("get-task-allow").and_then(plist::Value::as_boolean).unwrap_or(false),
                         "teamId": entitlement("com.apple.developer.team-identifier").and_then(plist::Value::as_string),
                         "signer": string(&info, "SignerIdentity"),
+                        // TEAM.com.example.app: which App ID's profile signed it, for re-signing it the same way.
+                        "applicationIdentifier": entitlement("application-identifier").and_then(plist::Value::as_string),
                     }))
                 })
                 .collect();

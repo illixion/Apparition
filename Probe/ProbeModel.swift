@@ -219,6 +219,8 @@ final class ProbeModel {
         let debuggable: Bool
         let teamId: String?
         let signer: String?
+        /// `TEAM.com.example.app`: the App ID whose profile signed it (nil in listings saved before it was read).
+        var applicationIdentifier: String? = nil
     }
 
     private struct StoredApps: Codable {

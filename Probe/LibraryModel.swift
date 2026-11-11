@@ -65,6 +65,8 @@ final class LibraryModel {
         var appIdPattern: String?
         var team: String?
         var keychainGroups: [String]?
+        /// Only a preference (the installed copy's App ID): the core falls back to its best match.
+        var soft: Bool?
         var json: String? { (try? JSONEncoder().encode(self)).flatMap { String(data: $0, encoding: .utf8) } }
         var label: String { [name, appIdPattern.map { "App ID \($0)" }].compactMap { $0 }.joined(separator: " · ") }
     }
@@ -534,6 +536,21 @@ final class LibraryModel {
     /// The app on the device with this bundle ID, as the last app listing has it.
     func installedOnDevice(_ bundleId: String) -> ProbeModel.DeviceApp? {
         probe.deviceApps.first { $0.bundleId == bundleId }
+    }
+
+    /// The profile to sign `record` with: its own, else a preference for the App ID of the copy
+    /// already on the device. A record from before profiles were kept then re-signs the way that
+    /// copy was signed (an explicit profile for another App ID, say) instead of guessing a
+    /// wildcard, which installd refuses as an upgrade (MismatchedApplicationIdentifierEntitlement).
+    private func profileHint(for record: InstalledApp) async -> ProfileHint? {
+        if let hint = record.profileHint { return hint }
+        let target = record.reviewedBundleId ?? record.installedBundleId ?? record.id
+        if installedOnDevice(target)?.applicationIdentifier == nil {
+            _ = await probe.listApps(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort)
+        }
+        guard let identifier = installedOnDevice(target)?.applicationIdentifier,
+              let dot = identifier.firstIndex(of: ".") else { return nil }
+        return ProfileHint(appIdPattern: String(identifier[identifier.index(after: dot)...]), team: String(identifier[..<dot]), soft: true)
     }
 
     /// Copies one installed app's data to another's, nothing more (the debug endpoint's use).
@@ -1167,7 +1184,7 @@ final class LibraryModel {
         } else {
             // An imported certificate signs on its own: no sign-in, no anisette, no slots.
             signed = await SigningStore.signFile(signingPath, identityId: signer, udid: udid, stripExtensions: record.selectedExtensions == nil && record.stripExtensions,
-                                                 profile: record.profileHint)
+                                                 profile: await profileHint(for: record))
         }
         guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
             if signed["code"] as? String == "sharedCertificate" {
@@ -1222,6 +1239,12 @@ final class LibraryModel {
         }
         if let target = main?.bundleId, let team = main?.profileTeam {
             assignments.complete(target: target, team: team)
+        }
+        // Keep the profile that worked, so later refreshes don't depend on the device's listing.
+        if signer != SigningStore.appleID, record.profileHint == nil, let uuid = signed["profile"] as? String,
+           let profile = signing.profiles.first(where: { $0.uuid == uuid }) {
+            record.profileHint = ProfileHint(uuid: uuid, name: profile.name, appIdPattern: profile.appIdPattern, team: profile.teamId)
+            record.profileChosenBy = "automatic"
         }
         // A bare Watch app isn't on the iPhone: only its watch record says where it is.
         record.installedBundleId = watchOnly ? nil : main?.bundleId
@@ -1742,7 +1765,7 @@ extension LibraryModel {
         if !appleID {
             guard let udid = await deviceUDID() else { throw IDevice.ProbeError(noUDIDReason) }
             let data = AccountModel.dataDir.path
-            let hint = record.profileHint?.json
+            let hint = await profileHint(for: record)?.json
             certificatePlan = await Task.detached { AccountModel.call(apparition_offline_install_plan(data, path, signer, udid, hint)) }.value
             guard certificatePlan["ok"] as? Bool == true else { throw IDevice.ProbeError(certificatePlan["error"] as? String ?? "Could not resolve provisioning profile") }
         }
@@ -1877,7 +1900,7 @@ extension LibraryModel {
     /// ID or a copy from the same team, which updates in place and keeps its data. Anything else
     /// (another team's copy, data under another ID, an ID taken by another app) shows the review.
     static func unattendedDecision(_ review: InstallReview) -> InstallDecision? {
-        guard !review.appleID, review.profileSource == "hint",
+        guard !review.appleID, review.profileSource == "hint" || review.profileSource == "installed",
               let option = review.profiles.first(where: { $0.uuid == review.profile }) else { return nil }
         let target = option.target
         let extensions = review.inventory.extensions.map(\.id)
