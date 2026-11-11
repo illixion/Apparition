@@ -86,10 +86,13 @@ impl GrandSlam {
     }
 
     pub fn get_url(&self, key: &str) -> Result<String, Report> {
-        let url = self
+        let mut url = self
             .url_bag
             .get_string(key)
             .context("Unable to find key in URL bag")?;
+        if key == "gsService" && url.ends_with("/grandslam/GsService2") {
+            url.push('/');
+        }
         Ok(url)
     }
 
@@ -147,6 +150,28 @@ impl GrandSlam {
         Ok(builder)
     }
 
+    fn redact_headers(headers: &HeaderMap) -> std::collections::BTreeMap<String, String> {
+        headers
+            .iter()
+            .map(|(k, v)| {
+                let name = k.as_str();
+                let lower = name.to_ascii_lowercase();
+                let val = if lower.contains("token")
+                    || lower.contains("password")
+                    || lower.contains("secret")
+                    || lower == "security-code"
+                    || lower == "authorization"
+                    || lower == "x-apple-i-md"
+                {
+                    "[REDACTED]".to_string()
+                } else {
+                    v.to_str().unwrap_or("<non-ascii>").to_string()
+                };
+                (name.to_string(), val)
+            })
+            .collect()
+    }
+
     pub async fn plist_request(
         &self,
         url: &str,
@@ -154,13 +179,20 @@ impl GrandSlam {
         additional_headers: Option<HeaderMap>,
         retry_limit: Option<u32>,
     ) -> Result<Dictionary, Report> {
+        let mut logged_headers = Self::base_headers(&self.client_info, false)?;
+        let extra_headers = additional_headers
+            .clone()
+            .unwrap_or_else(reqwest::header::HeaderMap::new);
+        logged_headers.extend(extra_headers.clone());
+        debug!(
+            url = %url,
+            outgoing_headers = ?Self::redact_headers(&logged_headers),
+            "Sending GrandSlam plist request"
+        );
+
         let result = self
             .post(url)?
-            .headers(
-                additional_headers
-                    .clone()
-                    .unwrap_or_else(reqwest::header::HeaderMap::new),
-            )
+            .headers(extra_headers)
             .body(plist_to_xml_string(body))
             .send()
             .await
@@ -186,12 +218,28 @@ impl GrandSlam {
             }
         }
 
+        let status = result.status();
+        let resp_headers = result.headers().clone();
+        let status_err = result.error_for_status_ref().err();
         let resp = result
-            .error_for_status()
-            .context("Received error response from grandslam")?
             .text()
             .await
             .context("Failed to read grandslam response as text")?;
+
+        if status != reqwest::StatusCode::OK {
+            warn!(
+                url = %url,
+                status = %status,
+                response_headers = ?resp_headers,
+                error_xml = %resp,
+                "GrandSlam returned non-200 status code"
+            );
+        }
+        if let Some(err) = status_err {
+            Err(err)
+                .context("Received error response from grandslam")
+                .attach_with(|| resp.clone())?;
+        }
 
         let dict: Dictionary = plist::from_bytes(resp.as_bytes())
             .context("Failed to parse grandslam response plist")
@@ -215,7 +263,10 @@ impl GrandSlam {
     ) -> Result<reqwest::header::HeaderMap, Report> {
         let mut headers = reqwest::header::HeaderMap::new();
         if !sms {
-            headers.insert("Content-Type", HeaderValue::from_static("text/xml"));
+            headers.insert(
+                "Content-Type",
+                HeaderValue::from_static("text/xml; charset=UTF-8"),
+            );
             headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
         } else {
             headers.insert("Content-Type", HeaderValue::from_static("application/json"));
@@ -264,6 +315,7 @@ impl GrandSlam {
         let client = ClientBuilder::new()
             .add_root_certificate(cert)
             .add_root_certificate(cert_g3)
+            .http1_only()
             .http1_title_case_headers()
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)
