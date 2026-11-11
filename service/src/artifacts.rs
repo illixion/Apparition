@@ -67,11 +67,16 @@ pub fn list_builds(store: &Path, limit: usize) -> Vec<Value> {
         let source = m.get("source").filter(|s| !s.is_null()).map(|s| json!({
             "stable": s.get("stable"), "anyDirty": s.pointer("/before/anyDirty"), "fingerprint": s.pointer("/before/fingerprint"),
         }));
-        builds.push(json!({
+        let mut entry = json!({
             "buildId": m["buildId"], "createdAt": m.get("createdAt"), "project": m.get("project"),
             "platform": m.get("platform"), "configuration": m.get("configuration"), "app": m.get("app"),
             "artifact": m["artifact"], "origin": m.get("origin").cloned().unwrap_or(Value::Null), "source": source,
-        }));
+        });
+        // An unsigned build's profile, for the device that signs it (only builds that have one).
+        if let Some(signing) = m.get("signing").filter(|s| s.is_object()) {
+            entry["signing"] = signing.clone();
+        }
+        builds.push(entry);
     }
     builds
 }

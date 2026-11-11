@@ -1239,10 +1239,11 @@ pub unsafe extern "C" fn apparition_sign(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_offline_install_plan(data: *const c_char, path: *const c_char,
-    identity: *const c_char, udid: *const c_char) -> *mut c_char {
+    identity: *const c_char, udid: *const c_char, hint: *const c_char) -> *mut c_char {
     reply((|| {
-        identity::offline_install_plan(&PathBuf::from(unsafe { text(data) }?), PathBuf::from(unsafe { text(path) }?),
-            &unsafe { text(identity) }?, &unsafe { text(udid) }?, identity::Platform::THIS)
+        let hint = if hint.is_null() { None } else { identity::ProfileHint::parse(&unsafe { text(hint) }?)? };
+        identity::offline_install_plan_hinted(&PathBuf::from(unsafe { text(data) }?), PathBuf::from(unsafe { text(path) }?),
+            &unsafe { text(identity) }?, &unsafe { text(udid) }?, hint.as_ref(), identity::Platform::THIS)
     })())
 }
 

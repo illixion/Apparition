@@ -50,6 +50,23 @@ final class LibraryModel {
         /// can remove it there too (a watch app installed this way isn't tied to its iPhone app).
         var watchAppId: String?
         var watchUDIDs: [String]?
+        /// The profile an imported certificate signs it with: the one its build was made for, the
+        /// one chosen at review, or the one Apparition picked (`profileChosenBy`: build, person,
+        /// automatic). A build's wins over an automatic pick, never over a person's.
+        var profileHint: ProfileHint?
+        var profileChosenBy: String?
+    }
+
+    /// Which provisioning profile signs an app (`ProfileHint` in core/src/identity.rs): by UUID,
+    /// else the same App ID and team, so a renewed profile still matches.
+    struct ProfileHint: Codable, Sendable, Equatable {
+        var uuid: String?
+        var name: String?
+        var appIdPattern: String?
+        var team: String?
+        var keychainGroups: [String]?
+        var json: String? { (try? JSONEncoder().encode(self)).flatMap { String(data: $0, encoding: .utf8) } }
+        var label: String { [name, appIdPattern.map { "App ID \($0)" }].compactMap { $0 }.joined(separator: " · ") }
     }
 
     /// Apparition's own refreshes: it re-signs and reinstalls itself (`refreshSelf`).
@@ -625,7 +642,8 @@ final class LibraryModel {
     }
 
     @discardableResult
-    private func installKept(_ app: IncomingApp, source: String, buildId: String?, signer: String?, takeOver: String?, reviewing: Review) async -> String? {
+    private func installKept(_ app: IncomingApp, source: String, buildId: String?, signer: String?, takeOver: String?, reviewing: Review,
+                             signing: ProfileHint? = nil) async -> String? {
         installErrors[app.bundleId] = nil
         defer {
             let failed = "install \(app.name): error: "
@@ -643,9 +661,14 @@ final class LibraryModel {
             if let buildId { record.storeBuildId = buildId }
             if let signer { record.signWith = signer }
             if let takeOver { record.takeOver = takeOver }
+            // The profile the build was made for, unless a person chose another for this app.
+            if let signing, record.profileChosenBy != "person" {
+                record.profileHint = signing
+                record.profileChosenBy = "build"
+            }
             let planned = existing?.reviewedBundleId != nil && existing?.needsInstallReview != true
             if reviewing == .always || !planned {
-                guard try await self.reviewInstall(&record) else { return "cancelled" }
+                guard try await self.reviewInstall(&record, unattended: reviewing == .unlessPlanned) else { return "cancelled" }
             }
             if let old = existing?.ipaFile, old != app.ipaFile {
                 try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(old))
@@ -674,14 +697,14 @@ final class LibraryModel {
     /// nothing of its own: the review of App IDs appears only the first time, and nothing is shown
     /// for an app that is already planned. `buildId` is the kept build, remembered so a newer one
     /// reads as an update.
-    func installProjectBuild(_ file: URL, project: String, buildId: String) async -> ProjectInstall {
+    func installProjectBuild(_ file: URL, project: String, buildId: String, signing: ProfileHint? = nil) async -> ProjectInstall {
         guard !busy else { return .failed("Apparition is busy with another install.") }
         let app: IncomingApp
         do { app = try await keepAppFile(file, fileName: file.lastPathComponent) }
         catch { return .failed("\(error)") }
         account.refreshDownloads()
         guard let outcome = await installKept(app, source: Self.projectSource(project), buildId: buildId,
-                                              signer: nil, takeOver: nil, reviewing: .unlessPlanned) else {
+                                              signer: nil, takeOver: nil, reviewing: .unlessPlanned, signing: signing) else {
             return .failed("Apparition is busy with another install.")
         }
         if outcome.hasPrefix("ok") { return .installed(app.name) }
@@ -930,11 +953,23 @@ final class LibraryModel {
     }
 
     /// Chooses what signs an app from its next refresh on (nil: the default).
+    /// Chooses what signs an app, and opens its review so the change (and the profile, for a
+    /// certificate) is settled now rather than failing the next refresh.
     func setSigner(_ signer: String?, for id: String) {
         guard !busy, let index = installed.firstIndex(where: { $0.id == id }) else { return }
+        guard installed[index].signWith != signer else {
+            Task { await reviewInstalledApp(id) }
+            return
+        }
         installed[index].signWith = signer
         installed[index].needsInstallReview = true
+        // A profile picked for the old certificate needn't fit the new one; the build's still applies.
+        if installed[index].profileChosenBy != "build" {
+            installed[index].profileHint = nil
+            installed[index].profileChosenBy = nil
+        }
         save()
+        Task { await reviewInstalledApp(id) }
     }
 
     /// The source's listing for an installed app (icon, newest version), if its source is still added.
@@ -1131,7 +1166,8 @@ final class LibraryModel {
             }
         } else {
             // An imported certificate signs on its own: no sign-in, no anisette, no slots.
-            signed = await SigningStore.signFile(signingPath, identityId: signer, udid: udid, stripExtensions: record.selectedExtensions == nil && record.stripExtensions)
+            signed = await SigningStore.signFile(signingPath, identityId: signer, udid: udid, stripExtensions: record.selectedExtensions == nil && record.stripExtensions,
+                                                 profile: record.profileHint)
         }
         guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
             if signed["code"] as? String == "sharedCertificate" {
@@ -1653,16 +1689,42 @@ extension LibraryModel {
         let reserved: Set<String>
         let extensionOwners: [String: String]
         let dataSource: String?
+        /// For an imported certificate: every profile it can sign this app with here, and the
+        /// one it would use (`profile`), with how that was decided (`hint`: the build's or the
+        /// app's chosen profile; `automatic`: the best match).
+        var profiles: [ProfileOption] = []
+        var profile: String?
+        var profileSource: String?
+    }
+    /// One profile an imported certificate can sign the app with, from `apparition_offline_install_plan`.
+    struct ProfileOption: Decodable, Identifiable, Hashable {
+        var id: String { uuid }
+        let uuid: String
+        let name: String
+        let teamId: String
+        let appIdPattern: String
+        let kind: String?
+        let debuggable: Bool
+        let expires: String?
+        /// Entitlements only an explicit App ID grants (increased memory limit and the like).
+        let grants: [String]
+        /// The bundle ID the app is installed under with it, and the extensions it covers.
+        let target: String
+        let supportedExtensions: [String]
+        var hint: ProfileHint { ProfileHint(uuid: uuid, name: name, appIdPattern: appIdPattern, team: teamId) }
     }
     struct InstallDecision {
         let target: String
         let extensions: [String]
         let discard: Bool
+        var profile: String? = nil
     }
 
     /// Every foreground install reviews the downloaded archive, including updates and file imports.
     /// Refreshes use the persisted plan without presenting UI or enabling newly added extensions.
-    private func reviewInstall(_ record: inout InstalledApp) async throws -> Bool {
+    /// `unattended` (a project build arriving from the Mac): skips the sheet when nothing in it
+    /// needs a person, see `unattendedDecision`.
+    private func reviewInstall(_ record: inout InstalledApp, unattended: Bool = false) async throws -> Bool {
         guard !removedWhileBusy.contains(record.id) else { return false }
         let signer = signing.signer(for: record)
         let appleID = signer == SigningStore.appleID
@@ -1680,7 +1742,8 @@ extension LibraryModel {
         if !appleID {
             guard let udid = await deviceUDID() else { throw IDevice.ProbeError(noUDIDReason) }
             let data = AccountModel.dataDir.path
-            certificatePlan = await Task.detached { AccountModel.call(apparition_offline_install_plan(data, path, signer, udid)) }.value
+            let hint = record.profileHint?.json
+            certificatePlan = await Task.detached { AccountModel.call(apparition_offline_install_plan(data, path, signer, udid, hint)) }.value
             guard certificatePlan["ok"] as? Bool == true else { throw IDevice.ProbeError(certificatePlan["error"] as? String ?? "Could not resolve provisioning profile") }
         }
         let signingTeam = appleID ? team : certificatePlan["team"] as? String ?? ""
@@ -1726,19 +1789,35 @@ extension LibraryModel {
         let target = appleID ? (record.assignedTeam == team ? record.assignedBundleId : nil) ?? previousAssignment?.target ?? "\(inventory.id).\(team)" : (certificatePlan["target"] as? String ?? inventory.id)
         let supported = Set(certificatePlan["supportedExtensions"] as? [String] ?? [])
         let unsupported = Set(inventory.extensions.filter { appleID ? $0.extensionKit : !supported.contains($0.id) }.map(\.id))
-        let review = InstallReview(inventory: inventory, appleID: appleID, target: target,
+        let profiles = (certificatePlan["profiles"]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+            .flatMap { try? JSONDecoder().decode([ProfileOption].self, from: $0) } ?? []
+        let resolved = certificatePlan["profile"] as? [String: Any]
+        var review = InstallReview(inventory: inventory, appleID: appleID, target: target,
             selected: record.selectedExtensions ?? (record.installedBundleId == nil ? [] : inventory.extensions.filter { !record.stripExtensions || !$0.extensionKit }.map(\.id)), unsupported: unsupported, candidates: ids?.appIds ?? [], available: ids?.availableQuantity, signingTeam: signingTeam,
             installed: probe.deviceApps, owners: owners, reserved: reserved, extensionOwners: extensionOwners,
             dataSource: record.takeOver ?? record.installedBundleId ?? previousAssignment.flatMap { installedOnDevice($0.target)?.bundleId } ?? installedOnDevice("\(inventory.id).\(team)")?.bundleId)
+        review.profiles = profiles
+        review.profile = resolved?["uuid"] as? String
+        review.profileSource = resolved?["source"] as? String
         guard !removedWhileBusy.contains(record.id) else { return false }
-        let decision = await withCheckedContinuation { continuation in
-            reviewContinuation = continuation
-            installReview = review
+        let decision: InstallDecision?
+        if unattended, let automatic = Self.unattendedDecision(review) {
+            log.notice("install \(record.name, privacy: .public): signing plan from the build's profile, no review needed")
+            decision = automatic
+        } else {
+            decision = await withCheckedContinuation { continuation in
+                reviewContinuation = continuation
+                installReview = review
+            }
         }
         guard let decision, !removedWhileBusy.contains(record.id) else { return false }
+        // A certificate's plan is the chosen profile's: its bundle ID and the extensions it covers.
+        let option = appleID ? nil : profiles.first { $0.uuid == decision.profile }
+        if !appleID, option == nil { throw IDevice.ProbeError("The chosen profile is no longer available") }
+        let allowed = option.map { choice in Set(inventory.extensions.map(\.id).filter { choice.supportedExtensions.contains($0) }) }
         guard !reserved.contains(decision.target),
-              (decision.target == target || (appleID && ids?.appIds.contains(where: { $0.identifier == decision.target }) == true)),
-              decision.extensions.allSatisfy({ id in inventory.extensions.contains { $0.id == id && !unsupported.contains(id) } }) else {
+              (decision.target == (option?.target ?? target) || (appleID && ids?.appIds.contains(where: { $0.identifier == decision.target }) == true)),
+              decision.extensions.allSatisfy({ id in inventory.extensions.contains { $0.id == id } && (allowed.map { $0.contains(id) } ?? !unsupported.contains(id)) }) else {
             throw IDevice.ProbeError("The chosen signing plan is no longer available")
         }
         for child in decision.extensions {
@@ -1771,6 +1850,17 @@ extension LibraryModel {
         record.signWith = signer
         record.selectedExtensions = decision.extensions
         record.discardDestinationData = decision.discard
+        if let option {
+            if option.uuid != review.profile {
+                record.profileHint = option.hint
+                record.profileChosenBy = "person"
+            } else if review.profileSource != "hint" {
+                // Kept so refreshes sign with the same one. A hint that resolved stays as it is
+                // (with a build's keychain groups), since it resolves the same way next time.
+                record.profileHint = option.hint
+                record.profileChosenBy = "automatic"
+            }
+        }
         assignments.reserve(InstallAssignment(source: record.id, bundleId: inventory.id, name: record.name,
             team: signingTeam, target: decision.target, extensions: decision.extensions))
         upsert(record)
@@ -1779,6 +1869,23 @@ extension LibraryModel {
         try JSONEncoder().encode(stored).write(to: Self.stateURL, options: .atomic)
         guard StateVault.sync().failed.isEmpty else { throw IDevice.ProbeError("Could not preserve the App ID assignment in the device vault") }
         return true
+    }
+
+    /// The plan for a project build arriving unattended (bas, Update all), when nothing in the
+    /// review needs a person: an imported certificate (no App IDs to spend) using the profile the
+    /// build was made for, every extension covered, and either nothing installed under that bundle
+    /// ID or a copy from the same team, which updates in place and keeps its data. Anything else
+    /// (another team's copy, data under another ID, an ID taken by another app) shows the review.
+    static func unattendedDecision(_ review: InstallReview) -> InstallDecision? {
+        guard !review.appleID, review.profileSource == "hint",
+              let option = review.profiles.first(where: { $0.uuid == review.profile }) else { return nil }
+        let target = option.target
+        let extensions = review.inventory.extensions.map(\.id)
+        guard extensions.allSatisfy(option.supportedExtensions.contains),
+              review.owners[target] == nil, !review.reserved.contains(target) else { return nil }
+        if let installed = review.installed.first(where: { $0.bundleId == target }), installed.teamId != option.teamId { return nil }
+        if let source = review.dataSource, source != target { return nil }
+        return InstallDecision(target: target, extensions: extensions, discard: false, profile: option.uuid)
     }
 
     func reviewInstalledApp(_ id: String) async {

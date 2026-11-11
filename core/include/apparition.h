@@ -105,6 +105,11 @@ char *apparition_sign_offline_keeping_id(const char *data_dir, const char *app_p
 char *apparition_sign_offline(const char *data_dir, const char *app_path, const char *identity_id,
                               const char *profile_uuid, const char *udid, bool strip_extensions,
                               const char *previous_app);
+// apparition_sign_offline with hint (JSON as for apparition_offline_install_plan, nullable)
+// naming the main app's profile instead of a UUID that must match exactly.
+char *apparition_sign_offline_hinted(const char *data_dir, const char *app_path, const char *identity_id,
+                                     const char *hint, const char *udid, bool strip_extensions,
+                                     const char *previous_app);
 // Handles from idevice's tunnel_create_rppairing; borrowed, not freed.
 char *apparition_install(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                      const char *app_path);
@@ -215,6 +220,9 @@ char *apparition_install_inventory(const char *path);
 char *apparition_select_extensions(const char *path, const char *selected);
 char *apparition_sign_assigned(const char *path, const char *udid, const char *name, const char *target);
 
-char *apparition_offline_install_plan(const char *data, const char *path, const char *identity, const char *udid);
+// {target, team, supportedExtensions, profile, profiles}. hint (nullable): JSON {uuid, name,
+// appIdPattern, team, keychainGroups}, the profile the build was made for or the one chosen.
+char *apparition_offline_install_plan(const char *data, const char *path, const char *identity, const char *udid,
+                                      const char *hint);
 
 #endif

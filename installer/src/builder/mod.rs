@@ -431,6 +431,23 @@ fn profile_keychain_groups(profile: &[u8]) -> Option<plist::Dictionary> {
     Some(kept)
 }
 
+/// What the device should sign an `--unsigned` build with, from the conf's profile: its UUID, and
+/// its App ID and team so a renewed copy (new UUID) still matches. Without it the device can only
+/// guess, and an unsigned app has no signature to say it needs an explicit App ID's entitlements.
+fn signing_hint(profile: &[u8]) -> Option<serde_json::Value> {
+    let plist = profile_plist(profile)?;
+    let team = plist.get("TeamIdentifier")?.as_array()?.first()?.as_string()?.to_string();
+    let entitlements = plist.get("Entitlements")?.as_dictionary()?;
+    let identifier = entitlements.get("application-identifier")?.as_string()?;
+    let pattern = identifier.strip_prefix(&format!("{team}.")).unwrap_or(identifier);
+    let groups: Vec<String> = entitlements.get("keychain-access-groups").and_then(plist::Value::as_array)
+        .map(|g| g.iter().filter_map(|v| v.as_string().map(String::from)).collect()).unwrap_or_default();
+    Some(serde_json::json!({
+        "uuid": plist.get("UUID")?.as_string()?, "name": plist.get("Name").and_then(plist::Value::as_string),
+        "appIdPattern": pattern, "team": team, "keychainGroups": groups,
+    }))
+}
+
 /// Every bundle and library signed inside `app`: frameworks, dylibs, extensions, watch apps, itself.
 fn signed_items(app: &Path) -> usize {
     fn count(dir: &Path) -> usize {
@@ -928,6 +945,7 @@ impl Build {
             store: &store, app: &app, artifact: &artifact, project: &root, before, after, build_id: &build_id,
             key_id: credential.as_ref().map(|c| c.key_id.as_str()), platform: &platform, configuration: o.config,
             original_bundle_id: &original_bundle_id, symbols: symbols.as_deref(),
+            signing: if o.unsigned && !mac { profile_path.as_ref().and_then(|p| fs::read(p).ok()).as_deref().and_then(signing_hint) } else { None },
         }).map_err(|e| format!("Build manifest: {e}"))?;
         // Said now, not only in the report: the Store ties the kept build to its job by this line.
         println!("  {:<12} {build_id}", "Build ID:");

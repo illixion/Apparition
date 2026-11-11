@@ -168,6 +168,8 @@ pub struct Publish<'a> {
     pub configuration: &'a str,
     pub original_bundle_id: &'a str,
     pub symbols: Option<&'a Path>,
+    /// For an unsigned build, the profile the device should sign it with (`signing_hint`).
+    pub signing: Option<Value>,
 }
 
 /// Copies the artifact into the build store under its digest and writes its manifest, all
@@ -234,6 +236,7 @@ pub fn publish(p: Publish) -> Result<PathBuf, String> {
             "symbols": symbols,
             "source": source,
             "origin": { "kind": if p.before.is_some() && p.after.is_some() { "build-and-sign" } else { "resign" } },
+            "signing": p.signing,
         });
         let mut file = super::private_file(&stage.join("manifest.json"))?;
         std::io::Write::write_all(&mut file, serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?.as_bytes()).map_err(|e| e.to_string())?;

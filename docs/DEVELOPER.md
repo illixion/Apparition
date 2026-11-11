@@ -120,6 +120,17 @@ There are two routes, and Apparition picks the first one that works.
    which App IDs it takes; later ones re-sign with that plan and ask nothing. With a free Apple ID the
    app gets the team's suffix on its bundle ID and counts against the App ID limit, like any app
    Apparition signs.
+
+   With an imported certificate, the build names the profile the conf signs it with on the Mac
+   (`DEV_PROFILE_PATH`), and the device signs with that one: by UUID, or a renewed profile for the
+   same App ID and team. An unsigned build has no signature to guess from, so without this a
+   wildcard would win over an explicit profile for another App ID and the app would lose that
+   profile's entitlements (the increased memory limit, say). If the device lacks the profile, the
+   install fails and says to send it with **Signing on devices**. Such a build installs with no
+   review when nothing in it needs a person: the copy on the device is from the same team and
+   bundle ID (an in-place update that keeps its data) or there is none, and the profile covers
+   every extension. The review shows the profile, the App ID it was made for and what it grants,
+   and lets you pick another; that choice then wins over the build's.
 2. **From the Mac over its own pairing (secondary).** `apparition build` installs it using the
    Mac's own certificate and profile, through the Mac's pairing with the device (not `devicectl` or
    Xcode's tunnel). It is the quick way to update a build, the only route that can launch the app

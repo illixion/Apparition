@@ -339,6 +339,19 @@ impl Profile {
             "identityIds": identities.iter().filter(|i| certificates.contains(&i.id)).map(|i| i.id.clone()).collect::<Vec<_>>(),
         })
     }
+
+    /// What choosing it for an app needs: which App ID it is for, and the entitlements only an
+    /// explicit App ID grants ([`EXPLICIT_ONLY`]).
+    fn summary(&self) -> Value {
+        let entitlements = self.parsed.entitlements();
+        let grants: Vec<&str> = EXPLICIT_ONLY.iter().copied()
+            .filter(|key| entitlements.get(*key).and_then(Plist::as_boolean) == Some(true))
+            .collect();
+        json!({
+            "uuid": self.uuid(), "name": self.name(), "teamId": self.team(), "appIdPattern": self.app_id_pattern(),
+            "kind": self.kind(), "debuggable": self.get_task_allow(), "expires": self.expires().map(iso), "grants": grants,
+        })
+    }
 }
 
 /// The bundle ID to sign `original` under with a profile for `pattern`. An explicit App ID
@@ -845,27 +858,133 @@ pub unsafe extern "C" fn apparition_sign_offline(
     })())
 }
 
+/// `apparition_sign_offline` with `hint` (JSON [`ProfileHint`], nullable) naming the profile for
+/// the main app: the one the build was made for, or the one chosen at review.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_sign_offline_hinted(
+    data_dir: *const c_char,
+    app_path: *const c_char,
+    identity_id: *const c_char,
+    hint: *const c_char,
+    udid: *const c_char,
+    strip_extensions: bool,
+    previous_app: *const c_char,
+) -> *mut c_char {
+    reply((|| {
+        let hint = ProfileHint::parse(&unsafe { optional(hint) }?.unwrap_or_default())?;
+        let previous = unsafe { optional(previous_app) }?.map(PathBuf::from);
+        sign_offline_hinted(
+            &PathBuf::from(unsafe { text(data_dir) }?),
+            PathBuf::from(unsafe { text(app_path) }?),
+            &unsafe { text(identity_id) }?,
+            None,
+            hint.as_ref(),
+            &unsafe { text(udid) }?,
+            strip_extensions,
+            previous.as_deref(),
+            None,
+            Platform::THIS,
+        )
+    })())
+}
+
 /// Resolve the exact identity and extension coverage without signing or registering anything.
 pub fn offline_install_plan(data_dir: &Path, app_path: PathBuf, identity_id: &str, udid: &str, platform: Platform) -> Result<Value, Report> {
+    offline_install_plan_hinted(data_dir, app_path, identity_id, udid, None, platform)
+}
+
+/// `offline_install_plan` for an app that should be signed with `hint`'s profile. The reply has
+/// the profile it resolves to (`profile`, with `source`: `hint` or `automatic`) and every profile
+/// this certificate could sign it with on this device (`profiles`, each with its own `target`
+/// and `supportedExtensions`), so a person can see what an App ID is for and pick another.
+pub fn offline_install_plan_hinted(data_dir: &Path, app_path: PathBuf, identity_id: &str, udid: &str, hint: Option<&ProfileHint>, platform: Platform) -> Result<Value, Report> {
     check_app_platform(&app_path, platform)?;
     let identity = Identity::load(data_dir, identity_id)?;
     if not_after(&identity.certificate) < SystemTime::now() { bail!("The signing certificate has expired"); }
-    let usable: Vec<Profile> = Profile::all(data_dir).into_iter()
-        .filter(|p| p.certificate_ids().contains(&identity.id))
-        .filter(|p| !p.expired() && p.kind() != "appStore" && p.for_platform(platform) && p.includes(Some(udid)) == Some(true))
-        .collect();
+    let usable = usable_profiles(data_dir, &identity, udid, platform);
     let app = Application::new(app_path.clone())?;
     let original = app.main_bundle_id()?;
     let asked = signed_entitlements(&app.bundle.bundle_dir);
-    let main = best_profile(&usable, &original, asked.as_ref()).ok_or_else(|| report!("No imported profile can sign this app on this device"))?;
-    let target = main.bundle_id_for(&original);
+    if usable.is_empty() { bail!("No imported profile can sign this app on this device"); }
+    let (main, source) = resolve_profile(&usable, &original, asked.as_ref(), hint)?;
     let inventory = crate::install_plan::inspect(&app_path)?;
-    let supported: Vec<String> = inventory.extensions.iter().filter(|e| {
-        let Some(suffix) = e.id.strip_prefix(&original).filter(|s| s.starts_with('.')) else { return false };
-        let child = format!("{target}{suffix}");
-        usable.iter().any(|p| p.covers(&child))
-    }).map(|e| e.id.clone()).collect();
-    Ok(json!({"target": target, "team": main.team(), "supportedExtensions": supported}))
+    let option = |profile: &Profile| {
+        let target = profile.bundle_id_for(&original);
+        let supported: Vec<String> = inventory.extensions.iter().filter(|e| {
+            let Some(suffix) = e.id.strip_prefix(&original).filter(|s| s.starts_with('.')) else { return false };
+            let child = format!("{target}{suffix}");
+            usable.iter().any(|p| p.covers(&child))
+        }).map(|e| e.id.clone()).collect();
+        let mut summary = profile.summary();
+        summary["target"] = json!(target);
+        summary["supportedExtensions"] = json!(supported);
+        summary
+    };
+    let mut profile = option(main);
+    profile["source"] = json!(source);
+    Ok(json!({
+        "target": profile["target"], "team": main.team(), "supportedExtensions": profile["supportedExtensions"],
+        "profile": profile, "profiles": usable.iter().map(option).collect::<Vec<_>>(),
+    }))
+}
+
+/// Profiles `identity` may sign with on the device `udid`: not expired, not App Store, for the platform, listing it.
+fn usable_profiles(data_dir: &Path, identity: &Identity, udid: &str, platform: Platform) -> Vec<Profile> {
+    Profile::all(data_dir).into_iter()
+        .filter(|p| p.certificate_ids().contains(&identity.id))
+        .filter(|p| !p.expired() && p.kind() != "appStore" && p.for_platform(platform) && p.includes(Some(udid)) == Some(true))
+        .collect()
+}
+
+/// The profile an app should be signed with, when someone knows: the one its build was made for
+/// (`apparition build --unsigned` writes it from the conf's `DEV_PROFILE_PATH`), or the one a
+/// person picked in the install review. An unsigned build has no signature to guess from, so
+/// without it [`best_profile`] can't tell that the app needs an explicit App ID's entitlements.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileHint {
+    pub uuid: Option<String>,
+    pub name: Option<String>,
+    /// What follows the team in `application-identifier`: matches a renewed profile, whose UUID is new.
+    pub app_id_pattern: Option<String>,
+    pub team: Option<String>,
+    /// The keychain groups the Mac would sign with (the profile's own, a wildcard's `TEAM.*`),
+    /// kept when the app has no signature of its own to take them from.
+    pub keychain_groups: Option<Vec<String>>,
+}
+
+impl ProfileHint {
+    pub fn parse(text: &str) -> Result<Option<Self>, Report> {
+        if text.trim().is_empty() { return Ok(None); }
+        let hint: Self = serde_json::from_str(text).map_err(|e| report!("bad profile hint: {e}"))?;
+        Ok((hint.uuid.is_some() || hint.app_id_pattern.is_some()).then_some(hint))
+    }
+}
+
+/// `hint`'s profile among `usable`: by UUID, else the newest debuggable one for the same App ID
+/// and team. A hint for another team (this device signs with a different certificate) is
+/// ignored; one for this team that matches nothing is an error, never a silent substitute.
+/// Without a hint, [`best_profile`]. Returns the profile and `hint` or `automatic`.
+fn resolve_profile<'a>(usable: &'a [Profile], original: &str, asked: Option<&Dictionary>, hint: Option<&ProfileHint>) -> Result<(&'a Profile, &'static str), Report> {
+    if let Some(hint) = hint {
+        if let Some(found) = hint.uuid.as_deref().and_then(|uuid| usable.iter().find(|p| p.uuid() == uuid)) {
+            return Ok((found, "hint"));
+        }
+        let team_ok = |p: &Profile| hint.team.as_deref().is_none_or(|team| p.team() == team);
+        if usable.iter().any(|p| team_ok(p)) {
+            if let Some(pattern) = &hint.app_id_pattern
+                && let Some(found) = usable.iter().filter(|p| team_ok(p) && &p.app_id_pattern() == pattern).max_by_key(|p| (p.get_task_allow(), p.expires()))
+            {
+                return Ok((found, "hint"));
+            }
+            bail!(
+                "This app is signed with the profile {}{}, which isn't imported here or doesn't list this device. Send it from the Mac with Signing on devices, or choose another profile in Review Install Options.",
+                hint.name.as_deref().or(hint.uuid.as_deref()).unwrap_or("it was built for"),
+                hint.app_id_pattern.as_deref().map(|p| format!(" (App ID {p})")).unwrap_or_default()
+            );
+        }
+    }
+    best_profile(usable, original, asked).map(|p| (p, "automatic")).ok_or_else(|| report!("No imported profile can sign this app on this device"))
 }
 
 /// See `apparition_sign_offline`.
@@ -898,6 +1017,23 @@ pub fn sign_offline_keeping(
     previous: Option<Dictionary>,
     platform: Platform,
 ) -> Result<Value, Report> {
+    sign_offline_hinted(data_dir, app_path, identity_id, chosen, None, udid, strip_extensions, previous_app, previous, platform)
+}
+
+/// `sign_offline_keeping`, with `hint` naming the profile when `chosen` doesn't (see [`ProfileHint`]).
+#[allow(clippy::too_many_arguments)]
+pub fn sign_offline_hinted(
+    data_dir: &Path,
+    app_path: PathBuf,
+    identity_id: &str,
+    chosen: Option<&str>,
+    hint: Option<&ProfileHint>,
+    udid: &str,
+    strip_extensions: bool,
+    previous_app: Option<&Path>,
+    previous: Option<Dictionary>,
+    platform: Platform,
+) -> Result<Value, Report> {
         check_app_platform(&app_path, platform)?;
         let identity = Identity::load(data_dir, identity_id)?;
         if not_after(&identity.certificate) < SystemTime::now() {
@@ -905,11 +1041,7 @@ pub fn sign_offline_keeping(
         }
 
         // Profiles this certificate may sign with on this device.
-        let usable: Vec<Profile> = Profile::all(&data_dir)
-            .into_iter()
-            .filter(|p| p.certificate_ids().contains(&identity.id))
-            .filter(|p| !p.expired() && p.kind() != "appStore" && p.for_platform(platform) && p.includes(Some(&udid)) == Some(true))
-            .collect();
+        let usable = usable_profiles(data_dir, &identity, udid, platform);
         if usable.is_empty() {
             bail!(
                 "No imported profile can sign with this certificate for this {}. Import a development, ad hoc or enterprise profile for {} that includes the certificate and this device (UDID {udid}).",
@@ -922,14 +1054,25 @@ pub fn sign_offline_keeping(
         let original = app.main_bundle_id()?;
         // Read before anything is re-signed: what the app asks for, and what it had last time.
         let asked = signed_entitlements(&app.bundle.bundle_dir);
-        let previous = previous.or_else(|| signed_entitlements(previous_app.unwrap_or(&app.bundle.bundle_dir)));
+        let mut previous = previous.or_else(|| signed_entitlements(previous_app.unwrap_or(&app.bundle.bundle_dir)));
 
         let main = match &chosen {
             Some(uuid) => usable
                 .iter()
                 .find(|p| &p.uuid() == uuid)
                 .ok_or_else(|| report!("The chosen profile can't sign with this certificate on this headset"))?,
-            None => best_profile(&usable, &original, asked.as_ref()).ok_or_else(|| report!("No usable profile"))?,
+            None => {
+                let (main, source) = resolve_profile(&usable, &original, asked.as_ref(), hint)?;
+                // An unsigned build keeps the keychain groups the Mac would have signed it with.
+                if source == "hint" && previous.is_none()
+                    && let Some(groups) = hint.and_then(|h| h.keychain_groups.clone()).filter(|g| !g.is_empty())
+                {
+                    let mut kept = Dictionary::new();
+                    kept.insert("keychain-access-groups".into(), Plist::Array(groups.into_iter().map(Plist::String).collect()));
+                    previous = Some(kept);
+                }
+                main
+            }
         };
         let main_id = main.bundle_id_for(&original);
         if main_id != original {
@@ -1386,6 +1529,38 @@ mod local {
             println!("{summary} certs={} ent={:?}", profile.certificate_ids().len(),
                      entitlements_for(&profile, "com.utmapp.UTM", None).keys().collect::<Vec<_>>());
         }
+    }
+
+    /// `APPARITION_PROFILES=<dir> cargo test --lib profile_hint -- --ignored --nocapture`, with a
+    /// paid team's wildcard and an explicit profile for another app in the folder.
+    #[test]
+    #[ignore]
+    fn profile_hint() {
+        let dir = std::env::var("APPARITION_PROFILES").unwrap();
+        let profiles: Vec<Profile> = std::fs::read_dir(dir).unwrap().filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "mobileprovision"))
+            .filter_map(|e| Profile::parse(std::fs::read(e.path()).unwrap()).ok())
+            .filter(|p| p.kind() == "development").collect();
+        let wildcard = profiles.iter().find(|p| p.app_id_pattern().ends_with('*')).expect("a wildcard profile");
+        let explicit = profiles.iter().find(|p| !p.app_id_pattern().ends_with('*') && p.team() == wildcard.team()).expect("an explicit profile");
+        let prefix = wildcard.app_id_pattern().trim_end_matches('*').to_string();
+        let app = format!("{prefix}hint-test-app");
+        let usable: Vec<Profile> = profiles.iter().filter(|p| p.team() == wildcard.team()).map(|p| Profile::parse(p.data.clone()).unwrap()).collect();
+        // An unsigned build: nothing to guess from, so the covering wildcard wins.
+        let (guessed, source) = resolve_profile(&usable, &app, None, None).unwrap();
+        assert_eq!((guessed.app_id_pattern().ends_with('*'), source), (true, "automatic"));
+        // The build names the explicit profile: by UUID, then (renewed) by App ID and team.
+        let mut hint = ProfileHint { uuid: Some(explicit.uuid()), app_id_pattern: Some(explicit.app_id_pattern()), team: Some(explicit.team().into()), ..Default::default() };
+        assert_eq!(resolve_profile(&usable, &app, None, Some(&hint)).unwrap().0.uuid(), explicit.uuid());
+        hint.uuid = Some("00000000-0000-0000-0000-000000000000".into());
+        assert_eq!(resolve_profile(&usable, &app, None, Some(&hint)).unwrap().0.app_id_pattern(), explicit.app_id_pattern());
+        // Same team, nothing matching: an error, not the wildcard.
+        hint.app_id_pattern = Some("com.example.not-imported".into());
+        assert!(resolve_profile(&usable, &app, None, Some(&hint)).is_err());
+        // Another team's hint doesn't apply to this certificate.
+        hint.team = Some("OTHERTEAM1".into());
+        assert_eq!(resolve_profile(&usable, &app, None, Some(&hint)).unwrap().1, "automatic");
+        println!("wildcard {} explicit {} ({:?})", wildcard.name(), explicit.name(), explicit.summary()["grants"]);
     }
 
     fn call(reply: *mut c_char) -> Value {

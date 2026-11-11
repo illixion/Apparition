@@ -151,6 +151,8 @@ final class BuildService {
         let createdAt: String?
         let app: App
         let origin: Origin?
+        /// For a build made unsigned for this device: the profile the conf signs it with on the Mac.
+        let signing: LibraryModel.ProfileHint?
     }
     private struct Artifacts: Decodable { let builds: [Artifact] }
     /// A provisioning profile in the Mac's build-signing folder, as the service describes it:

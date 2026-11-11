@@ -798,6 +798,9 @@ struct LibraryView: View {
                 Text(bundleId)
             }
             Text("From \(app.source)")
+            if let profile = app.profileHint, app.signWith != SigningStore.appleID {
+                Text("Profile: \(profile.label)")
+            }
             Button("Review Install Options", systemImage: "slider.horizontal.3") {
                 Task { await library.reviewInstalledApp(app.id) }
             }

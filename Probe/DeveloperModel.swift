@@ -193,7 +193,7 @@ final class DeveloperModel {
         catch { phases[key] = .failed(error.localizedDescription, keptBuild: artifact.buildId); return }
         defer { try? FileManager.default.removeItem(at: file) }
         phases[key] = .installing
-        let result = await library.installProjectBuild(file, project: project.name, buildId: artifact.buildId)
+        let result = await library.installProjectBuild(file, project: project.name, buildId: artifact.buildId, signing: artifact.signing)
         switch result {
         case .installed(let name):
             phases[key] = .done("\(name) installed on this \(ThisDevice.noun).")
@@ -224,7 +224,7 @@ final class DeveloperModel {
         catch { phases[key] = .failed(error.localizedDescription, keptBuild: artifact.buildId); return }
         defer { try? FileManager.default.removeItem(at: file) }
         phases[key] = .installing
-        switch await library.installProjectBuild(file, project: "sent:\(artifact.app.bundleId)", buildId: artifact.buildId) {
+        switch await library.installProjectBuild(file, project: "sent:\(artifact.app.bundleId)", buildId: artifact.buildId, signing: artifact.signing) {
         case .installed(let name):
             phases[key] = .done("\(name) installed on this \(ThisDevice.noun).")
             await library.refreshDeviceApps()
