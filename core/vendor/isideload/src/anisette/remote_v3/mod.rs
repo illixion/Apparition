@@ -40,6 +40,40 @@ pub struct RemoteV3AnisetteProvider {
 }
 
 impl RemoteV3AnisetteProvider {
+    /// Normalize an Anisette server URL: enforce `http://` when no scheme is given (never
+    /// upgrading local subnet IPs to `https://`), strip trailing slashes, and collapse any
+    /// accidental double slashes in the path component.
+    pub fn normalize_url(url: &str) -> String {
+        let trimmed = url.trim();
+        let raw = if trimmed.is_empty() {
+            DEFAULT_ANISETTE_V3_URL
+        } else {
+            trimmed
+        };
+        let with_scheme = if raw.starts_with("http://") || raw.starts_with("https://") {
+            raw.to_string()
+        } else {
+            format!("http://{raw}")
+        };
+        let (scheme, rest) = with_scheme
+            .split_once("://")
+            .unwrap_or(("http", with_scheme.as_str()));
+        let mut clean = String::new();
+        let mut prev_slash = false;
+        for ch in rest.trim_end_matches('/').chars() {
+            if ch == '/' {
+                if !prev_slash {
+                    clean.push(ch);
+                }
+                prev_slash = true;
+            } else {
+                prev_slash = false;
+                clean.push(ch);
+            }
+        }
+        format!("{scheme}://{clean}")
+    }
+
     /// Create a new RemoteV3AnisetteProvider with the given URL and config path
     ///
     /// # Arguments
@@ -53,7 +87,7 @@ impl RemoteV3AnisetteProvider {
     ) -> Result<Self, Report> {
         Ok(Self {
             state: None,
-            url: url.to_string(),
+            url: Self::normalize_url(url),
             storage,
             serial_number,
             client: Self::build_reqwest_client(None)?,
@@ -70,17 +104,21 @@ impl RemoteV3AnisetteProvider {
     fn build_reqwest_client(
         websocket_proxy: Option<String>,
     ) -> Result<reqwest_middleware::ClientWithMiddleware, Report> {
+        let mut builder = ClientBuilder::new().user_agent("akd/1.0 CFNetwork/808.1.4");
+        #[cfg(not(feature = "wasm"))]
+        {
+            builder = builder
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(20));
+        }
+        let client = builder.build()?;
         if let Some(websocket_proxy) = websocket_proxy {
             use crate::auth::middleware::WasmProxyMiddleware;
-
-            let client = ClientBuilder::new().build()?;
 
             Ok(MwClientBuilder::new(client)
                 .with(WasmProxyMiddleware::new(websocket_proxy))
                 .build())
         } else {
-            let client = ClientBuilder::new().build()?;
-
             Ok(MwClientBuilder::new(client).build())
         }
     }
@@ -94,7 +132,7 @@ impl RemoteV3AnisetteProvider {
     }
 
     pub fn set_url(mut self, url: &str) -> RemoteV3AnisetteProvider {
-        self.url = url.to_string();
+        self.url = Self::normalize_url(url);
         self
     }
 
@@ -122,24 +160,24 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
 
     // Can be hardcoded, but apple is changing things so much nowadays it makes more sense to just get it from the server
     async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
-        let info = self
+        let endpoint = format!("{}/v3/client_info", self.url);
+        debug!(anisette_url = %self.url, endpoint = %endpoint, "Contacting Anisette server for pre-flight client_info");
+        let resp = self
             .client
-            .get(format!("{}/v3/client_info", self.url))
+            .get(&endpoint)
             .send()
             .await
-            .context("Failed to request /v3/client_info from anisette server")?
+            .context("Failed to request /v3/client_info from anisette server")?;
+        debug!(anisette_url = %self.url, status = %resp.status(), "Anisette server /v3/client_info response");
+        let info = resp
             .error_for_status()
             .context("anisette server returned an error for /v3/client_info")?
             .json::<AnisetteClientInfo>()
             .await
             .context("Failed to parse /v3/client_info response")?;
-
-        // let info = AnisetteClientInfo {
-        //     client_info:
-        //         "<Pixel 7> <Android;14;UQ1A.240205.002> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-        //             .to_string(),
-        //     user_agent: "akd/1.0 CFNetwork/808.1.4".to_string(),
-        // };
+        if info.client_info.trim().is_empty() || info.user_agent.trim().is_empty() {
+            bail!("Anisette server returned empty client_info or user_agent");
+        }
         Ok(info)
     }
 
@@ -172,13 +210,17 @@ impl RemoteV3AnisetteProvider {
             body["md_lu"] = serde_json::Value::String(hex::encode(state.get_md_lu()));
         }
 
-        let headers = self
+        let endpoint = format!("{}/v3/get_headers", self.url);
+        debug!(anisette_url = %self.url, endpoint = %endpoint, "Requesting Anisette headers");
+        let resp = self
             .client
-            .post(format!("{}/v3/get_headers", self.url))
+            .post(&endpoint)
             .header(CONTENT_TYPE, "application/json")
             .body(body.to_string())
             .send()
-            .await?
+            .await?;
+        debug!(anisette_url = %self.url, status = %resp.status(), "Anisette server /v3/get_headers response");
+        let headers = resp
             .error_for_status()?
             .json::<AnisetteHeaders>()
             .await?;
@@ -189,17 +231,30 @@ impl RemoteV3AnisetteProvider {
                 one_time_password,
                 routing_info,
                 extra,
-            } => Ok(AnisetteDataResponse::Data(AnisetteData {
-                machine_id,
-                one_time_password,
-                routing_info,
-                _device_description: client_info.client_info.clone(),
-                device_unique_identifier: state.get_device_id(),
-                local_user_id: hex::encode(state.get_md_lu()),
-                legacy_device_id: state.get_legacy_device_id(),
-                extra: extra.into_iter().filter_map(|(key, value)| Some((key, value.as_str()?.to_string()))).collect(),
-                generated_at: SystemTime::now(),
-            })),
+            } => {
+                let mut extra_map: HashMap<String, String> = extra
+                    .into_iter()
+                    .filter_map(|(key, value)| Some((key, value.as_str()?.to_string())))
+                    .collect();
+                if !self.serial_number.trim().is_empty() && self.serial_number != "0" {
+                    extra_map
+                        .entry("X-Apple-I-SRL-NO".to_string())
+                        .or_insert_with(|| self.serial_number.clone());
+                }
+                let data = AnisetteData {
+                    machine_id,
+                    one_time_password,
+                    routing_info,
+                    _device_description: client_info.client_info.clone(),
+                    device_unique_identifier: state.get_device_id(),
+                    local_user_id: hex::encode(state.get_md_lu()),
+                    legacy_device_id: state.get_legacy_device_id(),
+                    extra: extra_map,
+                    generated_at: SystemTime::now(),
+                };
+                data.validate()?;
+                Ok(AnisetteDataResponse::Data(data))
+            }
             AnisetteHeaders::GetHeadersError { message } => {
                 // Apparition's server says "isn't provisioned" (with ADI's code) rather than -45061.
                 if message.contains("-45061") || message.to_lowercase().contains("provision") {
@@ -453,4 +508,34 @@ enum AnisetteHeaders {
         #[serde(flatten)]
         extra: HashMap<String, serde_json::Value>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_url_handles_schemes_and_slashes() {
+        assert_eq!(DEFAULT_ANISETTE_V3_URL, "https://ani.jkcoxson.com");
+        assert_eq!(
+            RemoteV3AnisetteProvider::normalize_url(""),
+            DEFAULT_ANISETTE_V3_URL
+        );
+        assert_eq!(
+            RemoteV3AnisetteProvider::normalize_url("http://127.0.0.1:6969/"),
+            "http://127.0.0.1:6969"
+        );
+        assert_eq!(
+            RemoteV3AnisetteProvider::normalize_url("192.0.2.10:6969///"),
+            "http://192.0.2.10:6969"
+        );
+        assert_eq!(
+            RemoteV3AnisetteProvider::normalize_url("http://192.0.2.10:6969//proxy//"),
+            "http://192.0.2.10:6969/proxy"
+        );
+        assert_eq!(
+            RemoteV3AnisetteProvider::normalize_url("https://ani.sidestore.io/"),
+            "https://ani.sidestore.io"
+        );
+    }
 }
