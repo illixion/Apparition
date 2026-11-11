@@ -390,7 +390,7 @@ pub fn failure_kind(error: &Report) -> Option<&'static str> {
 /// started on first use and stays up for the life of the process.
 async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result<String, Report> {
     if requested != BUILTIN_ANISETTE {
-        return Ok(requested.to_string());
+        return Ok(RemoteV3AnisetteProvider::normalize_url(requested));
     }
     #[cfg(all(feature = "anisette", unix))]
     {
@@ -698,7 +698,11 @@ fn runtime() -> &'static tokio::runtime::Runtime {
         let _ = rustls::crypto::ring::default_provider().install_default();
         errors::install_hooks();
         let _ = isideload::init();
-        tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime")
+        tokio::runtime::Builder::new_multi_thread()
+            .thread_stack_size(8 << 20)
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
     })
 }
 

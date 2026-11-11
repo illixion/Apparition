@@ -20,6 +20,19 @@ use std::sync::Arc;
 use tauri::Manager;
 
 fn main() {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    let runtime = RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .thread_name("tokio-rt-worker")
+            // Windows defaults thread stacks to 1 MiB (vs 8 MiB on Unix); unoptimised debug
+            // builds of the installer and signer exceed 1 MiB on worker/blocking threads.
+            .thread_stack_size(8 << 20)
+            .enable_all()
+            .build()
+            .expect("couldn't start async runtime")
+    });
+    tauri::async_runtime::set(runtime.handle().clone());
+
     apparition_core::api::init();
     let state = Arc::new(flow::State::new());
     let companion_state = Arc::new(companion::CompanionState::new(&apparition_core::api::DeviceStore::default()));

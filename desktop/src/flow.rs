@@ -148,7 +148,7 @@ async fn blocking<T: Send + 'static>(job: impl FnOnce() -> Result<T, Failure> + 
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    tauri::async_runtime::block_on(future)
+    tauri::async_runtime::block_on(Box::pin(future))
 }
 
 /// An answer to a prompt, from the page.
@@ -380,13 +380,18 @@ pub async fn apple_id_sign_in(
     if !email.contains('@') {
         return Err("Enter the email address of your Apple ID.".into());
     }
-    if anisette == api::BUILTIN_ANISETTE {
+    let anisette = if anisette.is_empty() {
+        return Err("Enter the address of an anisette server.".into());
+    } else if anisette == api::BUILTIN_ANISETTE {
         if !api::builtin_anisette_available() {
             return Err("This computer can't make its own anisette data; give the address of an anisette server.".into());
         }
+        anisette
     } else if !(anisette.starts_with("http://") || anisette.starts_with("https://")) {
-        return Err("The anisette server's address starts with http:// or https://.".into());
-    }
+        format!("http://{anisette}")
+    } else {
+        anisette
+    };
     let state = state.inner().clone();
     blocking(move || {
         let cancelled = AtomicBool::new(false);
