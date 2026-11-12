@@ -466,7 +466,12 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
         PAIRED_MAC_ANISETTE => paired_mac_address(data_dir).await,
         VM_ANISETTE => vm_address().await,
         ANDROID_ANISETTE => android_address(data_dir).await,
+        // The desktop and the command line check the address (the anisette module); on a device the client
+        // normalises it itself (RemoteV3AnisetteProvider::normalize_url).
+        #[cfg(feature = "anisette-server")]
         other => anisette::normalize_server_address(other).map_err(|why| report!("{why}")),
+        #[cfg(not(feature = "anisette-server"))]
+        other => Ok(other.to_string()),
     }
 }
 
