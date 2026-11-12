@@ -6,7 +6,10 @@ Thanks for wanting to help. Bug reports, app compatibility reports and pull requ
 
 Use the [issue templates](https://github.com/illixion/Apparition/issues/new/choose). For an app that won't
 install or run, check [docs/SUPPORTED_APPS.md](docs/SUPPORTED_APPS.md) first. For a sign-in that fails, run with
-`APPARITION_LOG=<file>`, which writes the sign-in's progress without secrets, and attach it. Security problems go
+`APPARITION_LOG=<file>`, which writes the sign-in's progress without secrets, and attach it. If Apple turns the
+request away, turn on the verbose record too ([how](docs/ANISETTE.md#seeing-what-a-sign-in-sent-to-apple-and-what-came-back)):
+it shows what was sent and what Apple answered, as structure and sizes with no passwords, tokens or anisette
+values. Read it before you attach it, since Apple's error text can name a team. Security problems go
 through [SECURITY.md](SECURITY.md), not an issue.
 
 ## Building

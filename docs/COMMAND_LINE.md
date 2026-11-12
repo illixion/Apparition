@@ -92,7 +92,10 @@ only; a watch app's data is not moved.
 Anything that signs in asks for the Apple ID's password, and for the 2FA code when Apple sends
 one, in the terminal; neither is kept unless you turn on Remember password on the device.
 `APPARITION_LOG=<file>` writes the sign-in's progress (no secrets) to a file, for working out
-why a sign-in failed.
+why a sign-in failed. `apparition --verbose <command>` (or `APPARITION_VERBOSE=1`) also records each
+request the sign-in sends to Apple and the answer, as structure and sizes (no passwords, tokens or
+anisette values), in `apparition-verbose.log` beside that log, and says where it is
+([what it holds](ANISETTE.md#seeing-what-a-sign-in-sent-to-apple-and-what-came-back)).
 
 On Linux, `pair --usb` needs usbmuxd running. Nothing else there makes the device trust the
 computer (Finder and Apple Devices do on macOS and Windows), so Apparition asks it itself and

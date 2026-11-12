@@ -153,6 +153,36 @@ The header corner of the desktop app always says where this computer's sign-in g
 (built-in, Docker or another server) and what the companion offers, so a screenshot shows the
 setup.
 
+## Seeing what a sign-in sent to Apple and what came back
+
+When a sign-in fails in a way the error doesn't explain (a bare 403, a code you didn't expect, a
+source that worked yesterday), the verbose record shows each request Apparition made to Apple and the
+answer. Apple changes what it accepts without notice, and this is how to see what changed.
+
+Turn it on, repeat the failing sign-in, then read the file:
+
+| Where | How | The file |
+|---|---|---|
+| The device | Settings > Troubleshooting > Record sign-in requests (Share the record sends it from there) | `apparition-verbose.log` in Apparition's folder in the Files app |
+| The desktop app | Companion tab > Troubleshooting > Record what a sign-in sends to Apple (Show the file opens it) | `apparition-verbose.log` beside `apparition-core.log`, in the `Apparition Installer` data folder |
+| The command line | `apparition --verbose <command>`, or `APPARITION_VERBOSE=1` in the environment | the same file; the command says where |
+| An agent | the app's debug server: `setVerboseLog` (`enabled`, `clear`), then `verboseLog` returns the end of the file | no need to pull it off the device |
+
+Each request is one line, with its answer under it:
+
+    #4 -> POST https://gsd.apple.com/grandslam/GsService2/ headers[content-type="text/xml", …] body {Header={Version="1.0.1"}, Request={A2k=<data:256>, cpd={bootstrap="true", …, X-Apple-I-Client-Time="2026-11-12T15:36:19Z", X-Apple-I-MD=<string:40>, X-Apple-I-MD-RINFO="17106176"}, o="init", ps=["s2k", "s2k_fo"], u=<string:52>}}
+    #4 <- 200 OK in 603 ms headers[server="Apple", content-type="text/x-xml-plist;charset=UTF-8", …]
+       body of https://gsd.apple.com/grandslam/GsService2/ (200): {Response={Status={hsc=200, ec=-20970, em="Your account information was entered incorrectly."}, …}}
+
+**It holds structure, not secrets.** A value is written out only for fields that identify nothing: the
+request's protocol flags, the headers Apple's own clients send, Apple's URLs, and Apple's error code and
+message. Every other string is its length (`<string:40>`) and every key, signature and token its size
+(`<data:256>`), so the password and its derived values, the one-time password and machine ID, the Apple
+ID, the team, the device IDs and the tokens are never in it. Apple's error text can still repeat a team
+or an app ID, so read the file before you post it. It is a file of its own, kept apart from
+`apparition-core.log` (so nothing that reports that log includes it), stops growing at about 4 MB (it
+keeps one older file) and is off until you turn it on.
+
 ## Why sign-in stopped in October 2026
 
 From about 29 October Apple refused the anisette the built-in provider makes: provisioning
