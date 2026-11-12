@@ -1,3 +1,7 @@
+//! Anisette provider backed by Apple's Android libraries, loaded in Apparition's process.
+//! The provider fetches the libraries on first use, keeps them in the anisette data directory,
+//! and gives each request its own working directory.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

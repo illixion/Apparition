@@ -1,3 +1,6 @@
+//! Selects client metadata for the configured anisette provider.
+//! Sign-in and developer-token requests can use different client profiles.
+
 use std::sync::Arc;
 
 use isideload::anisette::{AnisetteClientInfo, AnisetteDataResponse, AnisetteProvider};

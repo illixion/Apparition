@@ -301,8 +301,7 @@ pub fn builtin_anisette_available() -> bool {
 
 pub const ANDROID_ANISETTE: &str = "android";
 
-/// Whether this build and platform can run Apple Music's Android libraries for its own anisette, and
-/// `anisette::ANDROID_LIBRARIES` (core/src/anisette/mod.rs) has them switched on.
+/// Whether this build can run Apple Music's Android libraries for its own anisette.
 pub fn android_anisette_available() -> bool {
     #[cfg(all(feature = "anisette", unix))]
     {
