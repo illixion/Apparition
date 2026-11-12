@@ -1880,7 +1880,7 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             match check.headers {
                 Some(true) => println!("A Mac's headers: yes. Sign-in can use it."),
                 Some(false) => return Err(fail("the Mac's anisette gave no headers")),
-                None => println!("Not a Mac's anisette: Apple gives developer access only to a Mac's."),
+                None => println!("Not a Mac's anisette. A sign-in claims what it is (Android) and asks for the Xcode token as a Mac, which Apple accepted on 12 Nov 2026; Apple may stop."),
             }
             Ok(())
         }
