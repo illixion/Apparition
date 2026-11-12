@@ -421,6 +421,13 @@ pub async fn builtin_anisette() -> bool {
     tauri::async_runtime::spawn_blocking(api::native_anisette).await.unwrap_or(false)
 }
 
+/// Whether this build can run its own Android anisette (see `api::ANDROID_ANISETTE`): off where
+/// `anisette::ANDROID_LIBRARIES` is off, and on Windows.
+#[tauri::command]
+pub fn android_anisette() -> bool {
+    api::android_anisette_available()
+}
+
 /// The Mac this computer gets its anisette from (`{macName, address, paired}`), or null.
 #[tauri::command]
 pub fn paired_mac(state: Shared<'_>) -> Option<api::paired_mac::Summary> {
@@ -536,6 +543,10 @@ pub async fn apple_id_sign_in(
     }
     if anisette == api::BUILTIN_ANISETTE {
         if !builtin_anisette().await {
+            return Err(api::NO_ANISETTE.into());
+        }
+    } else if anisette == api::ANDROID_ANISETTE {
+        if !api::android_anisette_available() {
             return Err(api::NO_ANISETTE.into());
         }
     } else if anisette == api::PAIRED_MAC_ANISETTE {

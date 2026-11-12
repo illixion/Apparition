@@ -2,7 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- None: the hardened runtime's defaults. (Apparition loaded Android libraries up to 0.4.5 and
-	     needed unsigned executable memory for them; it runs no foreign code any more.) -->
+	<!-- Apple Music's Android libraries, which the Android anisette loads and maps executable
+	     (core/src/anisette/elf.rs; switched by anisette::ANDROID_LIBRARIES). The hardened runtime
+	     kills the app on the first instruction it runs from such a page unless this is allowed. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
 </dict>
 </plist>

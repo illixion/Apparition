@@ -1,4 +1,4 @@
-//! The anisette v3 protocol, served from one of three places (see [`Backend`]).
+//! The anisette v3 protocol, served from one of four places (see [`Backend`]).
 //!
 //! This is the protocol isideload's `RemoteV3AnisetteProvider` speaks (MIT licensed, a dependency
 //! of this crate), so what it expects is what's implemented:
@@ -8,7 +8,8 @@
 //! - `POST /v3/get_headers`: the `X-Apple-I-MD`, `X-Apple-I-MD-M` and `X-Apple-I-MD-RINFO`
 //!   headers, and whatever else AuthKit puts on the request.
 //!
-//! A Mac's own anisette and its VM's answer from macOS (`mac`, macOS only). A third-party server
+//! A Mac's own anisette and its VM's answer from macOS (`mac`, macOS only). Apple Music's Android libraries
+//! answer from `android` (macOS and Linux, switched by `ANDROID_LIBRARIES`). A third-party server
 //! is passed through as it is (`remote`, every platform). `/v3/client_info` of the first two also
 //! says what this server serves (`apparition_anisette`: `mac`), with the matching client info,
 //! which the sign-in claims (see claimed_platform).
@@ -50,6 +51,9 @@ enum Backend {
     /// stays here, on the host.
     #[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
     Vm { bundle: std::path::PathBuf, client: reqwest::Client },
+    /// Apple Music's Android libraries, loaded in this process (`android`): where this computer has no Mac's own.
+    #[cfg(all(feature = "anisette", unix))]
+    Android(super::android::Android),
     /// A third-party server at an address the person gave, on any platform: everything it answers is
     /// passed through, so a device paired with this companion gets that server's anisette.
     Remote(Upstream),
@@ -72,6 +76,17 @@ impl Drop for Server {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// Serves Apple Music's Android libraries on `bind` (see `android`), fetched into `data_dir` on first use: the
+/// address [`crate::ANDROID_ANISETTE`] starts. Fails when [`super::ANDROID_LIBRARIES`] is off.
+#[cfg(all(feature = "anisette", unix))]
+pub async fn start_android(data_dir: &std::path::Path, bind: SocketAddr, access: Access) -> Result<Server, Report> {
+    if !super::ANDROID_LIBRARIES {
+        bail!("Apparition's own Android anisette is switched off in this build (anisette::ANDROID_LIBRARIES).");
+    }
+    let android = super::android::Android::new(data_dir).await?;
+    serve(bind, access, Backend::Android(android)).await
 }
 
 /// Serves this Mac's anisette on `bind` (use port 0 to take any free one). Several servers can
@@ -166,6 +181,8 @@ async fn client_info(State(shared): State<Arc<Shared>>) -> Response {
             Ok(info) => Json(info).into_response(),
             Err(error) => (StatusCode::SERVICE_UNAVAILABLE, format!("{error}\n")).into_response(),
         },
+        #[cfg(all(feature = "anisette", unix))]
+        Backend::Android(_) => super::android::client_info().into_response(),
         Backend::Remote(upstream) => upstream.client_info().await,
     }
 }
@@ -195,6 +212,8 @@ async fn get_headers(State(shared): State<Arc<Shared>>, Json(body): Json<Value>)
             Err(error) => serde_json::json!({ "result": "GetHeadersError", "message": format!("{error}").replace("rovision", "repar") }),
         })
         .into_response(),
+        #[cfg(all(feature = "anisette", unix))]
+        Backend::Android(android) => Json(super::android::get_headers(android, body).await).into_response(),
         Backend::Remote(upstream) => upstream.get_headers(body).await,
     }
 }
@@ -207,6 +226,8 @@ async fn provisioning_session(State(shared): State<Arc<Shared>>, upgrade: WebSoc
             Backend::Native => super::mac::provision(socket).await,
             #[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
             Backend::Vm { .. } => super::mac::provision(socket).await,
+            #[cfg(all(feature = "anisette", unix))]
+            Backend::Android(android) => super::android::provision(android, socket).await,
             Backend::Remote(upstream) => upstream.provision(socket).await,
         };
     })

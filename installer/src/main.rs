@@ -1864,6 +1864,7 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
             match api::default_anisette(&store().apple_id_dir()) {
                 Some(api::BUILTIN_ANISETTE) => println!("Sign-ins use this Mac's own anisette."),
                 Some(api::VM_ANISETTE) => println!("Sign-ins use this Mac's anisette VM (`apparition vm status`)."),
+                Some(api::ANDROID_ANISETTE) => println!("Sign-ins use Apparition's own Android anisette (Apple Music's libraries, run in this program). Apple accepts it for sign-in and the Xcode token as of 12 Nov 2026."),
                 Some(_) => {
                     let paired = api::paired_mac::status(&anisette_dir()).expect("paired");
                     println!("Sign-ins use the anisette of {}, at {}, over the encrypted channel.", paired.mac_name, paired.address);

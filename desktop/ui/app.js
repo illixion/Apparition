@@ -35,6 +35,7 @@ const state = {
   handOff: true,
   /** @type {any} */ settings: {},
   /** This Mac gives its own anisette (never off a Mac). */ builtinAnisette: false,
+  /** Apparition can make its own Android anisette here (core's `ANDROID_LIBRARIES` is on; macOS and Linux). */ androidAnisette: false,
   /** This Mac's anisette VM is set up (Companion tab). */ vmAnisette: false,
   /** The anisette VM's state (vm_status), while the Companion tab shows it. @type {any} */ vm: null,
   /** The Mac this computer is paired with for anisette: {macName, address, paired}, or null. @type {any} */ pairedMac: null,
@@ -127,7 +128,7 @@ async function receiveNearby(root) {
  */
 function serverAddressOf(/** @type {string|null|undefined} */ choice) {
   const text = (choice ?? "").trim();
-  return !text || text === "builtin" || text === "vm" || text === "paired" || /^https?:\/\/localhost:6969\/?$/i.test(text) ? "" : text;
+  return !text || text === "builtin" || text === "vm" || text === "android" || text === "paired" || /^https?:\/\/localhost:6969\/?$/i.test(text) ? "" : text;
 }
 
 /** The host of a server's address, for a badge. */
@@ -142,6 +143,7 @@ function serverHost(/** @type {string} */ address) {
 /** What the anisette choice `choice` is, in a word or three. */
 function anisetteName(/** @type {string} */ choice) {
   if (choice === "builtin") return "this Mac's own";
+  if (choice === "android") return "Apparition's own (Android libraries)";
   if (choice === "vm") return state.vmAnisette ? "this Mac's anisette VM" : "anisette VM (not set up)";
   if (choice === "paired") return state.pairedMac ? `paired Mac (${state.pairedMac.macName})` : "paired Mac (not paired)";
   return choice.trim() ? `third-party server (${serverHost(choice.trim())})` : "none";
@@ -154,7 +156,7 @@ function offeredName(/** @type {string} */ offered) {
 
 /** The anisette a sign-in uses when nothing was chosen: this Mac's own, else its anisette VM, else the paired Mac's. */
 function defaultAnisette() {
-  return state.builtinAnisette ? "builtin" : state.vmAnisette ? "vm" : state.pairedMac ? "paired" : "";
+  return state.builtinAnisette ? "builtin" : state.vmAnisette ? "vm" : state.pairedMac ? "paired" : state.androidAnisette ? "android" : "";
 }
 
 /**
@@ -607,10 +609,14 @@ function signing() {
   // The anisette VM, once the Companion tab has set it up.
   const vmOption = /** @type {HTMLOptionElement} */ ($(appleForm, "source-vm"));
   vmOption.hidden = vmOption.disabled = !state.vmAnisette;
+  // Apparition's own Android anisette, where the build has it switched on.
+  const androidOption = /** @type {HTMLOptionElement} */ ($(appleForm, "source-android"));
+  androidOption.hidden = androidOption.disabled = !state.androidAnisette;
   // Nothing saved comes back as null, so `!= null` (not `!== undefined`).
   const initial = serverAddressOf(savedAnisette) ? "server"
     : savedAnisette === "builtin" && state.builtinAnisette ? "builtin"
     : savedAnisette === "vm" && state.vmAnisette ? "vm"
+    : savedAnisette === "android" && state.androidAnisette ? "android"
     : savedAnisette === "paired" ? "paired"
     // With no Mac of any kind set up, a server the Companion tab already has is the way to go on.
     : defaultAnisette() || (appleForm.anisette.value ? "server" : "paired");
@@ -632,6 +638,7 @@ function signing() {
     const source = sourceSelect.value;
     $(appleForm, "anisette-builtin-hint").hidden = source !== "builtin";
     $(appleForm, "anisette-vm-hint").hidden = source !== "vm";
+    $(appleForm, "anisette-android-hint").hidden = source !== "android";
     $(appleForm, "anisette-paired").hidden = source !== "paired";
     for (const role of ["anisette-server", "anisette-server-hint", "anisette-server-check-row", "anisette-server-status"]) $(appleForm, role).hidden = source !== "server";
     if (source !== "server") setStatus($(appleForm, "anisette-server-status"), "");
@@ -936,7 +943,7 @@ function signInError(/** @type {any} */ error, /** @type {string} */ anisette = 
   if (error?.cancelled) return message;
   // core's REFUSED_ANISETTE and the paired Mac's failures already explain themselves.
   if (/-80045|-80046/.test(message) || error?.kind === "pairedMac") return message;
-  const usingServer = anisette !== "builtin" && anisette !== "paired" && anisette !== "vm";
+  const usingServer = anisette !== "builtin" && anisette !== "paired" && anisette !== "vm" && anisette !== "android";
   if (usingServer && (/anisette/i.test(message) || (/connect|dns|resolve|refused/i.test(message) && !/\.apple\.com/i.test(message))))
     return `Couldn't sign in. Check that the anisette server is running and its address is right.\n\n${message}`;
   return message;
@@ -2081,7 +2088,7 @@ async function start() {
   state.info = await invoke("app_info");
   document.body.classList.toggle("mac", state.info.platform === "macos-universal");
   state.settings = await invoke("saved_settings");
-  [state.builtinAnisette, state.pairedMac, state.vm] = await Promise.all([invoke("builtin_anisette"), invoke("paired_mac"), invoke("vm_status")]);
+  [state.builtinAnisette, state.pairedMac, state.vm, state.androidAnisette] = await Promise.all([invoke("builtin_anisette"), invoke("paired_mac"), invoke("vm_status"), invoke("android_anisette")]);
   state.vmAnisette = !!state.vm?.ready;
   drawSetupBadge();
   // The companion's status only polls on its own tab; the badge needs to know on every screen.

@@ -299,6 +299,21 @@ pub fn builtin_anisette_available() -> bool {
     cfg!(all(feature = "anisette", target_os = "macos"))
 }
 
+pub const ANDROID_ANISETTE: &str = "android";
+
+/// Whether this build and platform can run Apple Music's Android libraries for its own anisette, and
+/// `anisette::ANDROID_LIBRARIES` (core/src/anisette/mod.rs) has them switched on.
+pub fn android_anisette_available() -> bool {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        anisette::ANDROID_LIBRARIES
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        false
+    }
+}
+
 /// Whether this Mac gives its own anisette: macOS 26 and earlier, or a macOS VM prepared with
 /// selfhost/macos-vm/setup.sh (SIP and AMFI off, the helper beside this program). Found once;
 /// it can take a moment.
@@ -328,6 +343,9 @@ pub fn default_anisette(data_dir: &std::path::Path) -> Option<&'static str> {
     if companion_client::status(&anisette_dir(data_dir)).is_some() {
         return Some(PAIRED_MAC_ANISETTE);
     }
+    if android_anisette_available() {
+        return Some(ANDROID_ANISETTE);
+    }
     let _ = data_dir;
     None
 }
@@ -346,13 +364,81 @@ pub fn anisette_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
     data_dir.parent().unwrap_or(data_dir).join("anisette")
 }
 
+/// Which of the Android anisette's two libraries are in place (see [`import_anisette_libraries`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AnisetteLibraries {
+    pub services: bool,
+    pub core: bool,
+    /// A file didn't match the checksum and was used because the person said to.
+    pub unverified: bool,
+}
+
+/// Takes the Android anisette's libraries from files the person got themselves, when Apple's CDN
+/// can't be reached: the Apple Music APK, or `libstoreservicescore.so` and `libCoreADI.so` from it.
+/// Each is checked against the SHA-256 of the version this build was tested with, and that is the
+/// only check made, as they are run in this process; one that doesn't match fails with a
+/// `"checksum"` [`failure_kind`] unless `accept_unverified` says to go on (Apple may update them and
+/// take the old address down). For the Apple ID folder `data_dir`, as [`sign_in`] takes it.
+pub async fn import_anisette_libraries(data_dir: &std::path::Path, paths: &[std::path::PathBuf], accept_unverified: bool) -> Result<AnisetteLibraries, Report> {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        let imported = anisette::import_libraries(&anisette_dir(data_dir), paths, accept_unverified).await?;
+        Ok(AnisetteLibraries { services: imported.services, core: imported.core, unverified: imported.unverified })
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = (data_dir, paths, accept_unverified);
+        bail!("This build has no Android anisette")
+    }
+}
+
+/// Whether the Android anisette's libraries include one supplied by the person that didn't match
+/// the checksum of the tested version (see [`import_anisette_libraries`]): an unsupported setup.
+pub fn anisette_libraries_unverified(data_dir: &std::path::Path) -> bool {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        anisette::libraries_unverified(&anisette_dir(data_dir))
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = data_dir;
+        false
+    }
+}
+
+/// Forgets the Android anisette's cached libraries, supplied or fetched, so the next start fetches
+/// Apple's own. A process that already loaded them keeps them until it restarts.
+pub fn reset_anisette_libraries(data_dir: &std::path::Path) -> Result<(), Report> {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        anisette::reset_libraries(&anisette_dir(data_dir))
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = data_dir;
+        Ok(())
+    }
+}
+
 /// What kind of failure `error` is, for an app to offer the way out that fits, or `None`:
+/// - `"libraries"`: Apple's CDN couldn't be reached for the Android anisette's libraries
+///   ([`import_anisette_libraries`] is the other way);
+/// - `"checksum"`: a library file given to [`import_anisette_libraries`] isn't the version this
+///   build was tested with; the person may go on anyway;
 /// - `"network"`: Apple's servers couldn't be reached, or refused a request (a retry may
 ///   work, on this network or another);
 /// - `"pairedMac"`: the Mac this computer is paired with for anisette couldn't be reached, or
 ///   no longer accepts it (pair again, or check that the Mac's companion runs).
 pub fn failure_kind(error: &Report) -> Option<&'static str> {
     error.iter_reports().find_map(|cause| {
+        #[cfg(all(feature = "anisette", unix))]
+        if cause.downcast_current_context::<anisette::LibraryDownload>().is_some() {
+            return Some("libraries");
+        }
+        #[cfg(all(feature = "anisette", unix))]
+        if cause.downcast_current_context::<anisette::ChecksumMismatch>().is_some() {
+            return Some("checksum");
+        }
         #[cfg(feature = "desktop")]
         if cause.downcast_current_context::<companion_client::Unreachable>().is_some() {
             return Some("pairedMac");
@@ -379,6 +465,7 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
         BUILTIN_ANISETTE => builtin_address().await,
         PAIRED_MAC_ANISETTE => paired_mac_address(data_dir).await,
         VM_ANISETTE => vm_address().await,
+        ANDROID_ANISETTE => android_address(data_dir).await,
         other => Ok(other.to_string()),
     }
 }
@@ -396,6 +483,25 @@ async fn builtin_address() -> Result<String, Report> {
     #[cfg(not(all(feature = "anisette", target_os = "macos")))]
     {
         bail!("Only a Mac makes its own anisette. Pair this computer with your Mac (or a macOS VM) running Apparition, or give the address of a third-party anisette server.")
+    }
+}
+
+async fn android_address(data_dir: &std::path::Path) -> Result<String, Report> {
+    #[cfg(all(feature = "anisette", unix))]
+    {
+        static SERVER: tokio::sync::OnceCell<anisette::Server> = tokio::sync::OnceCell::const_new();
+        let server = SERVER
+            .get_or_try_init(|| async {
+                anisette::start_android(&anisette_dir(data_dir), std::net::SocketAddr::from(([127, 0, 0, 1], 0)), None).await
+            })
+            .await
+            .context("Couldn't start Apparition's own Android anisette")?;
+        Ok(server.url())
+    }
+    #[cfg(not(all(feature = "anisette", unix)))]
+    {
+        let _ = data_dir;
+        bail!("This build has no Android anisette. Pair this computer with a Mac, or give the address of a third-party anisette server.")
     }
 }
 

@@ -35,8 +35,10 @@ apparition-service = { path = "../service", features = ["hosted"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
-# This Mac's own anisette, served in this process (core/src/anisette): macOS only. Elsewhere the
-# anisette comes from a paired Mac (core/src/companion_client.rs) or a server the person runs.
+# The anisette provider in this process (core/src/anisette): a Mac's own on macOS, Apple Music's Android
+# libraries on macOS and Linux (switched by anisette::ANDROID_LIBRARIES), not Windows (the loader maps ELF
+# libraries with POSIX calls). Elsewhere the anisette comes from a paired Mac or a server the person runs.
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 apparition-core = { path = "../core", features = ["anisette"] }
 
 [target.'cfg(windows)'.dependencies]
