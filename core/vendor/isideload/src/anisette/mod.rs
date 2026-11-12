@@ -39,18 +39,17 @@ impl AnisetteData {
         //let dt: DateTime<Utc> = Utc::now().round_subsecs(0);
 
         let mut headers = self.extra.clone();
-        if !self.extra.is_empty() {
+        // Routing info is something every provider must give (remote_v3 refuses an answer without
+        // it), and both genuine clients we have captures of, Apple's macOS and Windows ones, send
+        // it in every sign-in request. Upstream sent it only when the provider also gave other
+        // headers, so a plain server's sign-ins went without it.
+        if !self.routing_info.trim().is_empty() {
             headers.insert("X-Apple-I-MD-RINFO".to_string(), self.routing_info.clone());
         }
         headers.extend([
-            // (
-            //     "X-Apple-I-Client-Time".to_string(),
-            //     dt.format("%+").to_string().replace("+00:00", "Z"),
-            // ),
             // ("X-Apple-I-SRL-NO".to_string(), serial),
             // ("X-Apple-I-TimeZone".to_string(), "UTC".to_string()),
             // ("X-Apple-Locale".to_string(), "en_US".to_string()),
-            // ("X-Apple-I-MD-RINFO".to_string(), self.routing_info.clone()),
             // ("X-Apple-I-MD-LU".to_string(), self.local_user_id.clone()),
             (
                 "X-Mme-Device-Id".to_string(),
@@ -74,6 +73,13 @@ impl AnisetteData {
         headers
             .entry("X-Mme-Legacy-Device-Id".to_string())
             .or_insert_with(|| self.legacy_device_id.clone());
+        // The time of the request, which is what Apple's clients put here (second precision, UTC).
+        // A provider that already gave one (the anisette VM's guest does) keeps its own. Taken
+        // when the headers are built, not when the provider answered, so a cached answer isn't
+        // minutes old by the time it goes out.
+        headers
+            .entry("X-Apple-I-Client-Time".to_string())
+            .or_insert_with(|| client_time(web_time::SystemTime::now()));
         headers
     }
 
@@ -120,6 +126,23 @@ impl AnisetteData {
             }
         }
     }
+}
+
+/// `2026-11-12T09:30:05Z`: an instant as Apple's clients write `X-Apple-I-Client-Time`.
+fn client_time(at: SystemTime) -> String {
+    let seconds = at.duration_since(web_time::UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0) as i64;
+    let (days, of_day) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    // Days since 1970-01-01 to a calendar date (Hinnant's civil_from_days).
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", of_day / 3_600, of_day % 3_600 / 60, of_day % 60)
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +281,40 @@ mod tests {
         assert!(cpd.get("X-Apple-I-SRL-NO").is_none());
         assert!(cpd.get("X-Apple-I-MLB").is_none());
         assert!(cpd.get("X-Apple-I-ROM").is_none());
+    }
+
+    #[test]
+    fn routing_info_and_the_request_time_are_sent_whatever_the_provider_adds() {
+        // A plain server gives the three required headers and nothing else, so `extra` is empty:
+        // both genuine clients still send these two.
+        let cpd = sample(&[]).get_client_provided_data();
+        assert_eq!(get(&cpd, "X-Apple-I-MD-RINFO"), Some("17106176"));
+        let time = get(&cpd, "X-Apple-I-Client-Time").expect("a request time");
+        assert_eq!(time.len(), 20, "{time}");
+        assert!(time.ends_with('Z') && time.as_bytes()[10] == b'T', "{time}");
+        // Not the others the genuine clients carry that nothing here can honestly supply.
+        for absent in ["X-Apple-I-SRL-NO", "X-Apple-I-TimeZone", "X-Apple-Locale"] {
+            assert!(cpd.get(absent).is_none(), "{absent}");
+        }
+    }
+
+    #[test]
+    fn a_provider_that_gave_a_request_time_keeps_it() {
+        let cpd = sample(&[("X-Apple-I-Client-Time", "2026-01-02T03:04:05Z"), ("X-Apple-I-TimeZone", "UTC")]).get_client_provided_data();
+        assert_eq!(get(&cpd, "X-Apple-I-Client-Time"), Some("2026-01-02T03:04:05Z"));
+        assert_eq!(get(&cpd, "X-Apple-I-TimeZone"), Some("UTC"));
+    }
+
+    #[test]
+    fn the_request_time_is_written_the_way_apples_clients_write_it() {
+        let at = |seconds: u64| client_time(web_time::UNIX_EPOCH + std::time::Duration::from_secs(seconds));
+        assert_eq!(at(0), "1970-01-01T00:00:00Z");
+        assert_eq!(at(1_700_000_000), "2023-11-14T22:13:20Z");
+        // Leap days, in a year divisible by four and in one divisible by 400.
+        assert_eq!(at(1_709_164_800), "2024-02-29T00:00:00Z");
+        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(at(1_794_475_805), "2026-11-12T09:30:05Z");
+        assert_eq!(at(4_102_444_799), "2099-12-31T23:59:59Z");
     }
 
     #[test]
