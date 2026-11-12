@@ -97,10 +97,13 @@ impl GrandSlam {
     }
 
     pub fn get_url(&self, key: &str) -> Result<String, Report> {
-        let url = self
+        let mut url = self
             .url_bag
             .get_string(key)
             .context("Unable to find key in URL bag")?;
+        if key == "gsService" && url.ends_with("/grandslam/GsService2") {
+            url.push('/');
+        }
         Ok(url)
     }
 

@@ -19,7 +19,10 @@ use std::{
 use idevice::{
     RsdService,
     core_device::AppServiceClient,
-    afc::{AfcClient, opcode::AfcFopenMode},
+    afc::{
+        AfcClient,
+        opcode::{AfcFopenMode, AfcOpcode},
+    },
     installation_proxy::InstallationProxyClient,
 };
 use rootcause::prelude::*;
@@ -169,6 +172,44 @@ pub unsafe extern "C" fn apparition_install_ipa(
     })())
 }
 
+/// Uploads `out` to `staged` on the device without panicking if writing or closing fails.
+async fn upload_staged(afc: &mut AfcClient, out: &Path, staged: &str, total_bytes: u64) -> Result<(), Report> {
+    let _ = afc.mk_dir("PublicStaging").await;
+    let mut file = afc.open(staged.to_string(), AfcFopenMode::WrOnly).await?;
+    let mut uploaded = 0u64;
+    let write_result = async {
+        let mut input = BufReader::new(File::open(out)?);
+        let mut buffer = vec![0u8; UPLOAD_CHUNK];
+        loop {
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            file.write_entire(&buffer[..read])
+                .await
+                .context(format!("AFC upload of {staged} failed after {uploaded} of {total_bytes} bytes"))?;
+            uploaded += read as u64;
+        }
+        Ok::<_, Report>(())
+    }
+    .await;
+    let fd = file.as_raw_fd();
+    // `idevice` asserts `!self.dropped` in Drop and only marks `dropped = true` after `FileClose`
+    // succeeds, so any write/close error panics in debug builds instead of returning the failure.
+    // Detach the handle first: on success `send_op(FileClose)` sends the identical wire close; on
+    // error, dropping `afc` closes the session so iOS reclaims the descriptor automatically.
+    std::mem::forget(file);
+    if let Err(error) = write_result {
+        tracing::warn!(staged, uploaded, total_bytes, "AFC upload failed: {error}");
+        return Err(error);
+    }
+    afc.send_op(AfcOpcode::FileClose, fd.to_le_bytes().to_vec(), Vec::new())
+        .await
+        .context(format!("AFC close of {staged} failed after {uploaded} of {total_bytes} bytes"))
+        .inspect_err(|error| tracing::warn!(staged, uploaded, total_bytes, "AFC FileClose failed: {error}"))?;
+    Ok(())
+}
+
 /// See `apparition_install_ipa`.
 pub async fn install(
     adapter: &mut idevice::tcp::handle::AdapterHandle,
@@ -238,18 +279,7 @@ async fn upload_and_install(
     {
         let staged = format!("PublicStaging/{}", out.file_name().ok_or_else(|| report!("bad IPA path"))?.to_string_lossy());
         let mut afc = AfcClient::connect_rsd(adapter, handshake).await?;
-        let _ = afc.mk_dir("PublicStaging").await;
-        let mut file = afc.open(staged.clone(), AfcFopenMode::WrOnly).await?;
-        let mut input = BufReader::new(File::open(out)?);
-        let mut buffer = vec![0u8; UPLOAD_CHUNK];
-        loop {
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            file.write_entire(&buffer[..read]).await?;
-        }
-        file.close().await?;
+        upload_staged(&mut afc, out, &staged, std::fs::metadata(out)?.len()).await?;
         let upload_ms = started.elapsed().as_millis() as u64 - base_ms;
 
         // Closed only now, once the upload is done, so the app stays usable while it's sent.
@@ -380,5 +410,142 @@ mod tests {
         // A Mac app or a command line is never on the device it installs to.
         assert!(!is_install_of(own, Path::new("/Applications/Apparition.app/Contents/MacOS/Apparition")));
         assert!(!is_install_of(own, Path::new("/usr/local/bin/apparition")));
+    }
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+    use idevice::afc::{
+        MAGIC,
+        errors::AfcError,
+        packet::{AfcPacket, AfcPacketHeader},
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn read_afc_op(stream: &mut tokio::io::DuplexStream) -> Result<(u64, u64, Vec<u8>), std::io::Error> {
+        let mut hdr = [0u8; AfcPacketHeader::LEN as usize];
+        stream.read_exact(&mut hdr).await?;
+        let entire = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
+        let hdr_payload_len = u64::from_le_bytes(hdr[16..24].try_into().unwrap());
+        let num = u64::from_le_bytes(hdr[24..32].try_into().unwrap());
+        let op = u64::from_le_bytes(hdr[32..40].try_into().unwrap());
+        let rest_len = (entire - AfcPacketHeader::LEN) as usize;
+        let mut rest = vec![0u8; rest_len];
+        stream.read_exact(&mut rest).await?;
+        let body_start = (hdr_payload_len - AfcPacketHeader::LEN) as usize;
+        Ok((op, num, rest[body_start..].to_vec()))
+    }
+
+    async fn send_afc_reply(
+        stream: &mut tokio::io::DuplexStream,
+        num: u64,
+        operation: AfcOpcode,
+        header_payload: Vec<u8>,
+    ) {
+        let header_len = header_payload.len() as u64 + AfcPacketHeader::LEN;
+        let pkt = AfcPacket {
+            header: AfcPacketHeader {
+                magic: MAGIC,
+                entire_len: header_len,
+                header_payload_len: header_len,
+                packet_num: num,
+                operation,
+            },
+            header_payload,
+            payload: Vec::new(),
+        };
+        stream.write_all(&pkt.serialize()).await.unwrap();
+    }
+
+    fn temp_ipa_fixture(contents: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "apparition-ipa-upload-{}-{}.ipa",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn upload_staged_closes_fd_on_success() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let payload = b"hello ipa";
+        let path = temp_ipa_fixture(payload);
+        let srv = tokio::spawn(async move {
+            let mut ops = Vec::new();
+            let mut written = Vec::new();
+            while let Ok((op, num, data)) = read_afc_op(&mut server).await {
+                ops.push(op);
+                if op == AfcOpcode::FileOpen as u64 {
+                    send_afc_reply(&mut server, num, AfcOpcode::FileOpenRes, 7u64.to_le_bytes().to_vec()).await;
+                } else {
+                    if op == AfcOpcode::Write as u64 {
+                        written.extend_from_slice(&data);
+                    }
+                    send_afc_reply(&mut server, num, AfcOpcode::Status, (AfcError::Success as u64).to_le_bytes().to_vec()).await;
+                    if op == AfcOpcode::FileClose as u64 {
+                        break;
+                    }
+                }
+            }
+            (ops, written)
+        });
+        let mut afc = AfcClient::new(idevice::Idevice::new(Box::new(client), "test"));
+        let res = upload_staged(&mut afc, &path, "PublicStaging/Test.ipa", payload.len() as u64).await;
+        let _ = std::fs::remove_file(&path);
+        assert!(res.is_ok(), "{res:?}");
+        let (ops, written) = srv.await.unwrap();
+        assert_eq!(written, payload);
+        assert_eq!(ops, vec![
+            AfcOpcode::MakeDir as u64,
+            AfcOpcode::FileOpen as u64,
+            AfcOpcode::Write as u64,
+            AfcOpcode::FileClose as u64,
+        ]);
+    }
+
+    #[tokio::test]
+    async fn upload_staged_returns_write_error_without_drop_panic() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let path = temp_ipa_fixture(b"hello ipa");
+        tokio::spawn(async move {
+            while let Ok((op, num, _)) = read_afc_op(&mut server).await {
+                if op == AfcOpcode::FileOpen as u64 {
+                    send_afc_reply(&mut server, num, AfcOpcode::FileOpenRes, 7u64.to_le_bytes().to_vec()).await;
+                } else if op == AfcOpcode::Write as u64 {
+                    send_afc_reply(&mut server, num, AfcOpcode::Status, (AfcError::NoSpaceLeft as u64).to_le_bytes().to_vec()).await;
+                    break;
+                } else {
+                    send_afc_reply(&mut server, num, AfcOpcode::Status, (AfcError::Success as u64).to_le_bytes().to_vec()).await;
+                }
+            }
+        });
+        let mut afc = AfcClient::new(idevice::Idevice::new(Box::new(client), "test"));
+        let err = upload_staged(&mut afc, &path, "PublicStaging/Test.ipa", 9).await.unwrap_err();
+        let _ = std::fs::remove_file(&path);
+        assert!(crate::errors::describe(&err).to_ascii_lowercase().contains("space"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn upload_staged_returns_close_error_without_drop_panic() {
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let path = temp_ipa_fixture(b"hello ipa");
+        tokio::spawn(async move {
+            while let Ok((op, num, _)) = read_afc_op(&mut server).await {
+                if op == AfcOpcode::FileOpen as u64 {
+                    send_afc_reply(&mut server, num, AfcOpcode::FileOpenRes, 7u64.to_le_bytes().to_vec()).await;
+                } else if op == AfcOpcode::FileClose as u64 {
+                    send_afc_reply(&mut server, num, AfcOpcode::Status, (AfcError::IoError as u64).to_le_bytes().to_vec()).await;
+                    break;
+                } else {
+                    send_afc_reply(&mut server, num, AfcOpcode::Status, (AfcError::Success as u64).to_le_bytes().to_vec()).await;
+                }
+            }
+        });
+        let mut afc = AfcClient::new(idevice::Idevice::new(Box::new(client), "test"));
+        assert!(upload_staged(&mut afc, &path, "PublicStaging/Test.ipa", 9).await.is_err());
+        let _ = std::fs::remove_file(&path);
     }
 }

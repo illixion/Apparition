@@ -937,7 +937,7 @@ function signInError(/** @type {any} */ error, /** @type {string} */ anisette = 
   // core's REFUSED_ANISETTE and the paired Mac's failures already explain themselves.
   if (/-80045|-80046/.test(message) || error?.kind === "pairedMac") return message;
   const usingServer = anisette !== "builtin" && anisette !== "paired" && anisette !== "vm";
-  if (usingServer && (/anisette/i.test(message) || /connect|dns|resolve|refused/i.test(message)))
+  if (usingServer && (/anisette/i.test(message) || (/connect|dns|resolve|refused/i.test(message) && !/\.apple\.com/i.test(message))))
     return `Couldn't sign in. Check that the anisette server is running and its address is right.\n\n${message}`;
   return message;
 }

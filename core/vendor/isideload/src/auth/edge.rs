@@ -518,7 +518,7 @@ mod tests {
         let response = runtime
             .block_on(
                 client
-                    .post("https://gsd.apple.com/grandslam/GsService2")
+                    .post("https://gsd.apple.com/grandslam/GsService2/")
                     .header("Content-Type", "text/xml")
                     .header("Accept", "text/x-xml-plist")
                     .header("X-Xcode-Version", "27.0 (27A5218g)")

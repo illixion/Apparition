@@ -844,7 +844,8 @@ fn runtime() -> &'static tokio::runtime::Runtime {
         let _ = rustls::crypto::ring::default_provider().install_default();
         errors::install_hooks();
         let _ = isideload::init();
-        tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime")
+        // Windows gives threads 1 MiB of stack (Unix 8 MiB); unoptimised builds overflow it.
+        tokio::runtime::Builder::new_multi_thread().thread_stack_size(8 << 20).enable_all().build().expect("tokio runtime")
     })
 }
 

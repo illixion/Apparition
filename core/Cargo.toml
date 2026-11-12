@@ -81,9 +81,10 @@ anisette-server = ["dep:axum", "dep:tokio-tungstenite", "dep:futures-util", "tok
 anisette = ["anisette-server", "dep:libc"]
 
 
+
 [[example]]
-name = "grandslam_init_probe"
-required-features = ["desktop", "anisette"]
+name = "signin_e2e"
+required-features = ["desktop"]
 
 [dev-dependencies]
 rand = "0.8"
