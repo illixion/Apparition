@@ -9,6 +9,7 @@ body:
       For an app that won't install or run, use **App support** instead: it asks for what that needs.
       Never paste your Apple ID password, a certificate's password or a signing key. A 2FA code is fine to leave out too.
 - type: checkboxes
+  id: searched
   attributes:
     label: Is there an existing issue for this?
     description: Please search to see if an issue already exists for the bug you encountered.
@@ -16,6 +17,7 @@ body:
     - label: I have searched the existing issues
       required: true
 - type: dropdown
+  id: where
   attributes:
     label: Where does it happen?
     options:
@@ -31,18 +33,21 @@ body:
   validations:
     required: true
 - type: textarea
+  id: current
   attributes:
     label: Current Behavior
     description: A concise description of what you're experiencing. Include the exact error text if there is one.
   validations:
     required: true
 - type: textarea
+  id: expected
   attributes:
     label: Expected Behavior
     description: A concise description of what you expected to happen.
   validations:
     required: false
 - type: textarea
+  id: steps
   attributes:
     label: Steps To Reproduce
     description: Steps to reproduce the behavior.
@@ -52,15 +57,27 @@ body:
       3. See error...
   validations:
     required: false
+- type: input
+  id: version
+  attributes:
+    label: Apparition version
+    description: At the bottom of **Settings** in the app. For the desktop app and the command line it's the version of the download (the number in the file name).
+    placeholder: "1.0.0 (298)"
+  validations:
+    required: true
+- type: input
+  id: os
+  attributes:
+    label: Device and OS version
+    description: The device Apparition runs on, or installs to, and its OS version (Settings > General > About).
+    placeholder: "Apple Vision Pro, visionOS 26.1"
+  validations:
+    required: false
 - type: textarea
+  id: environment
   attributes:
     label: Environment
-    description: |
-      Apparition's version is at the bottom of **Settings** in the app. For the desktop app and the command line it's the version of the download (the number in the file name).
-      The device's OS version is in Settings > General > About.
     value: |
-        - Apparition version:
-        - Device and OS version:
         - Computer and OS (desktop app or command line):
         - Signing with (free Apple ID / paid Apple ID / own certificate):
         - Reaching the device through (companion / LocalDevVPN / Tailscale / USB / not sure):
@@ -69,6 +86,19 @@ body:
   validations:
     required: true
 - type: textarea
+  id: trace
+  attributes:
+    label: Trace
+    description: |
+      A trace is this run's log, what Apparition was doing and its state, with personal details (your Apple ID, team, device name and addresses) left out. It is the quickest way to get a problem found.
+
+      In Apparition, open **Settings > Report a Problem…**, read the files it lists, and save the **encrypted** report. Then drag that file into this box. It is encrypted to the maintainer's key, so nobody else who reads this issue can open it.
+
+      Never attach the plain, unencrypted zip to a public issue: anyone could read it. The desktop app and the command line have no trace; leave this empty for those.
+  validations:
+    required: false
+- type: textarea
+  id: logs
   attributes:
     label: Logs and screenshots
     description: |
@@ -79,6 +109,7 @@ body:
   validations:
     required: false
 - type: textarea
+  id: more
   attributes:
     label: Anything else?
     description: Links? References? Anything that will give us more context about the issue you are encountering!

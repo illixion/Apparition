@@ -9,6 +9,7 @@ body:
       Apparition signs any IPA (and any `.deb` package that holds an app), but an app can still fail on its own terms: an entitlement a free account can't have, JIT it asks for in a way Apparition doesn't answer yet, or a build made for other devices.
       The [list of apps we've tested](https://github.com/illixion/Apparition/blob/main/docs/SUPPORTED_APPS.md) says what we know. Never paste your Apple ID password or a signing key.
 - type: checkboxes
+  id: searched
   attributes:
     label: Before you file
     options:
@@ -17,6 +18,7 @@ body:
     - label: I searched the existing issues
       required: true
 - type: input
+  id: app
   attributes:
     label: App and version
     description: Its name, and the version or release you used.
@@ -24,6 +26,7 @@ body:
   validations:
     required: true
 - type: input
+  id: source
   attributes:
     label: Where you got it
     description: A link to the source, GitHub project or download. For a file you already had, say where it came from.
@@ -31,6 +34,7 @@ body:
   validations:
     required: true
 - type: dropdown
+  id: need
   attributes:
     label: What do you need?
     options:
@@ -42,12 +46,14 @@ body:
   validations:
     required: true
 - type: textarea
+  id: current
   attributes:
     label: What happens
     description: The exact error text Apparition showed, or what the app does. Say when it stops (downloading, signing, installing, opening).
   validations:
     required: true
 - type: dropdown
+  id: elsewhere
   attributes:
     label: Does it work anywhere else?
     description: Another sideloading tool, Xcode, or a jailbreak, on the same device.
@@ -58,20 +64,46 @@ body:
     - No, it fails there too
   validations:
     required: false
+- type: input
+  id: version
+  attributes:
+    label: Apparition version
+    description: At the bottom of **Settings** in the app. For the desktop app and the command line it's the version of the download (the number in the file name).
+    placeholder: "1.0.0 (298)"
+  validations:
+    required: true
+- type: input
+  id: os
+  attributes:
+    label: Device and OS version
+    description: The device the app is installed on and its OS version (Settings > General > About).
+    placeholder: "Apple Vision Pro, visionOS 26.1"
+  validations:
+    required: true
 - type: textarea
+  id: environment
   attributes:
     label: Environment
-    description: |
-      Apparition's version is at the bottom of **Settings** in the app. For the desktop app and the command line it's the version of the download (the number in the file name).
     value: |
-        - Apparition version:
-        - Device and OS version:
         - Installing from (the app / desktop app / command line):
         - Signing with (free Apple ID / paid Apple ID / own certificate):
     render: markdown
   validations:
     required: true
 - type: textarea
+  id: trace
+  attributes:
+    label: Trace
+    description: |
+      A trace is this run's log, what Apparition was doing and its state, with personal details (your Apple ID, team, device name and addresses) left out. It is the quickest way to get a problem found.
+
+      In Apparition, open **Settings > Report a Problem…**, read the files it lists, and save the **encrypted** report. Then drag that file into this box. It is encrypted to the maintainer's key, so nobody else who reads this issue can open it.
+
+      Never attach the plain, unencrypted zip to a public issue: anyone could read it. Installing from the desktop app or the command line makes no trace; leave this empty for those.
+  validations:
+    required: false
+- type: textarea
+  id: logs
   attributes:
     label: Logs and screenshots
     description: |
