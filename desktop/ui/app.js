@@ -153,6 +153,15 @@ function anisetteName(/** @type {string} */ choice) {
   return choice.trim() ? `third-party server (${serverHost(choice.trim())})` : "none";
 }
 
+/** A choice in a word, for the header badge. */
+function anisetteLabel(/** @type {string} */ choice) {
+  if (choice === "builtin") return "Mac";
+  if (choice === "android") return "Android";
+  if (choice === "vm") return "VM";
+  if (choice === "paired") return "Paired Mac";
+  return choice?.trim() ? serverHost(choice.trim()) : "none";
+}
+
 /** What the companion offers (`companion_status`'s `anisette.offered`), in a word or three. */
 function offeredName(/** @type {string} */ offered, /** @type {string} */ server = "") {
   return offered === "vm" ? "this Mac's anisette VM"
@@ -222,15 +231,14 @@ async function drawSetupBadge() {
   const choice = state.anisetteChoice ?? state.settings?.anisette ?? defaultAnisette();
   const anisette = state.companion?.anisette;
   const offered = state.companion?.relay?.running ? anisette?.offered : null;
-  const signIn = anisetteName(choice);
-  // One source for sign-ins and devices, said in full: the badge is what a screenshot shows.
-  const same = offered && choiceOfOffer({ mode: offered, server: anisette?.server }) === choice.trim();
-  text.textContent = same ? `Anisette: ${signIn} · for sign-ins and your devices`
-    : offered ? `Sign-in: ${signIn} · Devices: ${offeredName(offered, anisette?.server)}`
-    : `Anisette: ${signIn} · not offered to devices`;
-  badge.title = text.textContent;
-  const mac = choice === "builtin" || (choice === "vm" && state.vmAnisette) || (choice === "paired" && state.pairedMac);
-  badge.className = `setup-badge${mac && (same || !offered) ? "" : " attention"}`;
+  // Short on the badge (a screenshot aid, and the header must not grow), the sentence in its tooltip.
+  const same = !!offered && choiceOfOffer({ mode: offered, server: anisette?.server }) === choice.trim();
+  const mac = choice === "builtin" || (choice === "vm" && state.vmAnisette) || (choice === "paired" && !!state.pairedMac);
+  text.textContent = `Anisette · ${offered && !same ? `${anisetteLabel(choice)} ≠ ${anisetteLabel(offered === "server" ? anisette?.server : offered)}` : anisetteLabel(choice)}`;
+  badge.title = same ? `Sign-ins and your devices use ${anisetteName(choice)}`
+    : offered ? `Sign-ins use ${anisetteName(choice)}; the companion offers ${offeredName(offered, anisette?.server)} to your devices`
+    : `Sign-ins use ${anisetteName(choice)}; not offered to your devices`;
+  badge.className = `setup-badge ${offered && !same ? "bad" : mac ? "ok" : "warn"}${offered ? "" : " solo"}`;
   badge.hidden = false;
 }
 

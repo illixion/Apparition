@@ -957,22 +957,39 @@ details[open] > summary { margin-bottom: .85rem; }
 /* Where anisette comes from, in the header's corner on every screen, so a screenshot says how
    Apparition is set up. Red when the setup isn't supported. */
 .setup-badge {
-  /* The whole sentence, wrapping in a narrow window: it is what a screenshot of the app shows for troubleshooting. */
+  /* One short line, so the header never changes height; the full sentence is its tooltip. The dot says
+     where it stands: green a Mac's anisette, amber another platform's or a server's, red when sign-ins and
+     the companion disagree; hollow when only this computer's sign-ins use it. */
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 28rem;
-  padding: .3rem .85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: .3rem .75rem;
   border: 1px solid var(--line);
-  border-radius: 1rem;
+  border-radius: 999px;
   font-size: .8rem;
-  line-height: 1.25;
-  text-align: center;
-  overflow-wrap: anywhere;
+  line-height: 1.2;
   color: var(--muted);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
+  white-space: nowrap;
 }
 .setup-badge[hidden] { display: none; }
-.setup-badge.attention { border-color: var(--lilac); color: var(--ink); }
+.setup-badge::before {
+  content: "";
+  display: inline-block;
+  width: .55rem;
+  height: .55rem;
+  margin-right: .45rem;
+  border-radius: 50%;
+  vertical-align: baseline;
+  background: var(--dot, var(--glow));
+  border: 2px solid var(--dot, var(--glow));
+  box-sizing: border-box;
+}
+.setup-badge.ok { --dot: var(--glow); }
+.setup-badge.warn { --dot: var(--warn); }
+.setup-badge.bad { --dot: var(--danger); }
+.setup-badge.solo::before { background: transparent; }
 .setup-badge.unsupported { border: 2px solid var(--danger); color: var(--danger); font-weight: 600; }
 
 /* Shared Store projects, using the desktop shell's palette. */
