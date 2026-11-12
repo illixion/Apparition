@@ -14,6 +14,12 @@ typedef const char *(*apparition_two_factor_fn)(void *context, const char *param
 
 void apparition_string_free(char *string);
 void apparition_init_logging(const char *log_path);
+// Switches the verbose record of the requests a sign-in sends to Apple and their answers on or off
+// (core/src/verbose.rs). It goes to apparition-verbose.log beside the log above, never to that log,
+// and holds structure and sizes, not passwords, tokens or anisette values. Off until switched on.
+void apparition_set_verbose(bool enabled);
+// Where that record is written, or NULL before apparition_init_logging. Free with apparition_string_free.
+char *apparition_verbose_path(void);
 
 char *apparition_login(const char *email, const char *password, const char *anisette_url,
                    const char *apple_proxy, const char *data_dir, apparition_two_factor_fn two_factor, void *context);

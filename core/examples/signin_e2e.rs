@@ -3,6 +3,10 @@
 //! Prints only outcomes, never tokens, codes or numbers. Credentials are typed at the prompts.
 //!
 //!     cargo run --release --example signin_e2e --features desktop,anisette -- <anisette url> [<email>]
+//!
+//! `APPARITION_VERBOSE=1` also writes what the sign-in sends to Apple, and the answers, as their
+//! structure to `apparition-verbose.log` in the folder it names at the end. No passwords, tokens or
+//! anisette values go in it (core/src/verbose.rs).
 
 use apparition_core::api::{self, TwoFactorCallbackParams, TwoFactorCallbackResponse};
 
@@ -47,6 +51,10 @@ async fn main() {
     let email = args.get(2).cloned().unwrap_or_else(|| line("Apple ID email: ", true));
     let password = line("Apple ID password: ", false);
     let dir = std::env::temp_dir().join(format!("apparition-signin-e2e-{}", std::process::id()));
+    apparition_core::init_logging(&dir.join("apparition-core.log"), false);
+    if let Some(path) = apparition_core::verbose::path().filter(|_| apparition_core::verbose::is_on()) {
+        println!("verbose record: {}", path.display());
+    }
     println!("signing in through {url}");
     let (mut session, result) = match api::sign_in(&email, password, &url, &dir, two_factor).await {
         Ok(ok) => ok,
@@ -64,5 +72,8 @@ async fn main() {
         Ok(certs) => println!("RESULT certificates OK ({})", certs.as_array().map_or_else(|| certs.to_string().len(), |list| list.len())),
         Err(error) => println!("RESULT certificates FAILED:\n{}", api::describe(&error)),
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    // The verbose record is what the run was for: keep it, and say where it is (above).
+    if !apparition_core::verbose::is_on() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -112,18 +112,28 @@ impl DeveloperSession {
         headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
         headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
 
-        let text = self
+        let response = self
             .client
             .post(url)?
             .body(plist_to_xml_string(&body))
             .headers(headers)
             .send()
-            .await?
+            .await?;
+        let status = response.status().as_u16();
+        // A refusal's page is read only for the verbose record; otherwise it is dropped unread.
+        if crate::auth::wire_log::enabled()
+            && let Some(refusal) = response.error_for_status_ref().err()
+        {
+            crate::auth::wire_log::response_body(url, status, &response.text().await.unwrap_or_default());
+            return Err(refusal).context("Developer request failed").map_err(Into::into);
+        }
+        let text = response
             .error_for_status()
             .context("Developer request failed")?
             .text()
             .await
             .context("Failed to read developer request response text")?;
+        crate::auth::wire_log::response_body(url, status, &text);
 
         let dict: Dictionary = plist::from_bytes(text.as_bytes())
             .context("Failed to parse developer request plist")?;

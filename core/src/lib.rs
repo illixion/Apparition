@@ -22,6 +22,7 @@ use rootcause::prelude::*;
 
 pub mod api;
 pub mod release;
+pub mod verbose;
 pub(crate) mod account;
 pub mod errors;
 pub mod claimed_platform;
@@ -1144,6 +1145,9 @@ const LOG_ROTATE_BYTES: u64 = 4 * 1024 * 1024;
 /// is appended to, so an attempt from an earlier launch is still there, and one session line marks
 /// each launch. `idevice_debug` adds idevice's debug output, which includes the device's whole app
 /// list, so only the iPhone/iPad/Vision app asks for it.
+///
+/// The verbose record of a sign-in's requests to Apple (see [`verbose`]) goes to a file of its own
+/// beside this one, and only once something switches it on; `APPARITION_VERBOSE=1` does here.
 pub fn init_logging(path: &std::path::Path, idevice_debug: bool) {
     use std::io::Write;
     use tracing::level_filters::LevelFilter;
@@ -1163,10 +1167,23 @@ pub fn init_logging(path: &std::path::Path, idevice_debug: bool) {
     let targets = Targets::new()
         .with_default(LevelFilter::INFO)
         .with_target("idevice", if idevice_debug { LevelFilter::DEBUG } else { LevelFilter::INFO })
-        .with_target("apple_codesign", LevelFilter::ERROR);
-    let _ = tracing_subscriber::registry()
+        .with_target("apple_codesign", LevelFilter::ERROR)
+        // Never the ordinary log: the verbose record has a file of its own.
+        .with_target(isideload::auth::wire_log::TARGET, LevelFilter::OFF);
+    let verbose_path = path.with_file_name(verbose::FILE_NAME);
+    verbose::remember_path(verbose_path.clone());
+    let record = tracing_subscriber::fmt::layer()
+        .with_writer(verbose::Sink(verbose_path))
+        .with_ansi(false)
+        .with_filter(Targets::new().with_target(isideload::auth::wire_log::TARGET, LevelFilter::INFO));
+    let started = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(Mutex::new(file)).with_ansi(false).with_filter(targets))
-        .try_init();
+        .with(record)
+        .try_init()
+        .is_ok();
+    if started && verbose::asked_for_by_environment() {
+        verbose::set(true);
+    }
 }
 
 /// Signs in with an Apple ID and opens a developer session, replacing any previous one.

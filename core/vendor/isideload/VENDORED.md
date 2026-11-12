@@ -62,6 +62,16 @@ captures or reverse-engineering notes.
     normalize server addresses, bound connection and request time, and reject
     incomplete provider metadata and required headers. The timeout allows for a
     provider that needs time to resume or start.
+20. **Routing info and request time in every sign-in** (`src/anisette/mod.rs`):
+    send `X-Apple-I-MD-RINFO` whenever the provider supplied routing info (it
+    must), not only when it also supplied other headers, and add
+    `X-Apple-I-Client-Time` at request time unless the provider gave one. The
+    macOS and Windows clients send both.
+21. **Request record for troubleshooting** (`src/auth/wire_log.rs`, `src/auth/grandslam.rs`,
+    `src/dev/developer_session.rs`): an opt-in middleware that writes each request
+    through the client and its answer as structure only (names, sizes, flags,
+    Apple's own error text; no secret values), under its own tracing target.
+    Off unless the host enables it.
 
 The vendored manifest requests `zip` 9.0.5 to match the core dependency and avoid
 the known parser differential addressed by that release; this is a dependency

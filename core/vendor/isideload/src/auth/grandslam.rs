@@ -81,17 +81,20 @@ impl GrandSlam {
         base_headers: HeaderMap,
     ) -> Result<Dictionary, Report> {
         debug!("Fetching URL bag from GrandSlam");
-        let resp = client
+        let response = client
             // Upstream claims a Mac here whatever the sign-in claims. Claiming Android for the sign-in
             // after a Mac's bag, GSA answers the first SRP request 503, so the bag gets the real claim.
             .get(URL_BAG)
             .headers(base_headers)
             .send()
             .await
-            .context("Failed to fetch URL Bag")?
+            .context("Failed to fetch URL Bag")?;
+        let status = response.status().as_u16();
+        let resp = response
             .text()
             .await
             .context("Failed to read URL Bag response text")?;
+        super::wire_log::response_body(URL_BAG, status, &resp);
 
         let dict: Dictionary =
             plist::from_bytes(resp.as_bytes()).context("Failed to parse URL Bag plist")?;
@@ -210,12 +213,21 @@ impl GrandSlam {
             }
         }
 
+        let status = result.status().as_u16();
+        // A refusal's page is read only for the verbose record; otherwise it is dropped unread.
+        if super::wire_log::enabled()
+            && let Some(refusal) = result.error_for_status_ref().err()
+        {
+            super::wire_log::response_body(url, status, &result.text().await.unwrap_or_default());
+            return Err(refusal).context("Received error response from grandslam").map_err(Into::into);
+        }
         let resp = result
             .error_for_status()
             .context("Received error response from grandslam")?
             .text()
             .await
             .context("Failed to read grandslam response as text")?;
+        super::wire_log::response_body(url, status, &resp);
 
         let dict: Dictionary = plist::from_bytes(resp.as_bytes())
             .context("Failed to parse grandslam response plist")
@@ -315,6 +327,9 @@ impl GrandSlam {
         let builder = if proxy_url.is_none() {
             builder.with(super::edge::EdgeAvoidance)
         } else { builder };
+        // Last, so it sees each attempt the layer above makes. Writes nothing unless switched on.
+        #[cfg(not(feature = "wasm"))]
+        let builder = builder.with(super::wire_log::WireLog);
         #[cfg(feature = "wasm")]
         let builder = if let Some(proxy_url) = proxy_url {
             builder.with(WasmProxyMiddleware::new(proxy_url))

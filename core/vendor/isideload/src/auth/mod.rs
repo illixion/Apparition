@@ -4,3 +4,4 @@ pub mod builder;
 pub mod edge;
 pub mod grandslam;
 pub mod middleware;
+pub mod wire_log;

@@ -229,6 +229,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       ~/.local/bin, made if missing), and what to add to PATH if <dir> isn't on it already. From
       the Mac app, run it as /Applications/Apparition.app/Contents/MacOS/apparition-cli link.
       The link follows the app when it updates. --remove takes the link away again.
+  apparition --verbose <command>      (or APPARITION_VERBOSE=1 in the environment)
+      Also writes what a sign-in sends to Apple and what comes back, as structure and sizes (no
+      passwords, tokens or anisette values), to apparition-verbose.log beside the log, and says
+      where. For finding out what Apple changed; read it before posting it, since Apple's error
+      text can name a team or an app ID.
   apparition --version | --help
 ";
 
@@ -263,7 +268,16 @@ async fn main() -> ExitCode {
     }
     // What a cancelled or killed run left in the temp folder (a .p12's key among it).
     scratch::sweep();
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--verbose") {
+        args.remove(0);
+        apparition_core::verbose::set(true);
+    }
+    if apparition_core::verbose::is_on()
+        && let Some(path) = apparition_core::verbose::path()
+    {
+        eprintln!("Verbose record: {}", path.display());
+    }
     let result = match args.first().map(String::as_str) {
         Some("devices") => devices().await,
         Some("apps") => apps(&args[1..]).await,
