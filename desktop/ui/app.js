@@ -67,8 +67,12 @@ function setStatus(el, text, kind = "") {
   el.hidden = !text;
   el.textContent = text;
   el.className = `status ${kind}`.trim();
-  // A step can be taller than the window: bring the error into view.
-  if (kind === "error" && text) el.scrollIntoView({ block: "nearest" });
+  // A step can be taller than the window: bring a new error into view. The Companion tab redraws its
+  // statuses every two seconds, so an error that is still the same one must not scroll the page again.
+  const shown = kind === "error" && text ? text : "";
+  if (shown && el.dataset.scrolledTo !== shown) el.scrollIntoView({ block: "nearest" });
+  if (shown) el.dataset.scrolledTo = shown;
+  else delete el.dataset.scrolledTo;
 }
 
 /** @param {HTMLButtonElement} button @param {boolean} busy */

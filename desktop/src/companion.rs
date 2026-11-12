@@ -431,8 +431,24 @@ pub fn update_available(app: &AppHandle, version: Option<&str>) {
     }
 }
 
+/// Whether the window was sent to the tray by [`hide_window`] (closing it), as opposed to the system
+/// hiding the whole app (Cmd+H on macOS) or minimising it. macOS asks the app to "reopen" whenever it is
+/// activated with no visible window, and that includes a hidden app showing a tooltip for its menu-bar
+/// icon: reopening then pulled the window back after Cmd+H.
+static IN_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What a macOS reopen request (the Dock icon, or opening the app again) should do: bring the window back
+/// only when the app was closed to the tray. A hidden or minimised app is brought back by the system when
+/// the person asks, and anything else that reopens it is not asking for the window.
+pub fn reopen(app: &AppHandle, has_visible_windows: bool) {
+    if !has_visible_windows && IN_TRAY.load(std::sync::atomic::Ordering::Relaxed) {
+        show_window(app);
+    }
+}
+
 /// Shows the window (and, on macOS, the Dock icon).
 pub fn show_window(app: &AppHandle) {
+    IN_TRAY.store(false, std::sync::atomic::Ordering::Relaxed);
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
@@ -444,6 +460,7 @@ pub fn show_window(app: &AppHandle) {
 
 /// Hides the window; the companion keeps running from the tray (and, on macOS, leaves the Dock).
 pub fn hide_window(app: &AppHandle) {
+    IN_TRAY.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }

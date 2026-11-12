@@ -166,9 +166,9 @@ fn main() {
                 cleanup.clean_up();
                 host::shutdown(&app.state::<host::ServiceHost>());
             }
-            // macOS: clicking the Dock icon (or opening the app again) brings the window back.
+            // macOS: opening the app again brings the window back when it was closed to the tray (see companion::reopen).
             #[cfg(target_os = "macos")]
-            tauri::RunEvent::Reopen { .. } => companion::show_window(app),
+            tauri::RunEvent::Reopen { has_visible_windows, .. } => companion::reopen(app, has_visible_windows),
             _ => {
                 let _ = app;
             }
