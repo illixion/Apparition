@@ -16,6 +16,6 @@ and refreshes them, and launches them with debugger-prepared JIT.
   generated project. Run `xcodegen` after changing project.yml or adding files.
 - The Rust core (core/, isideload + idevice FFI in one static library) is built by
   scripts/build-core.sh into ignored build/core-out.
-- Deployment uses ~/bin/build-and-sign (bas) with build-signing.conf.
+- Deployment uses ~/bin/build-and-sign (bas) with build-signing.conf (ignored; copy build-signing.conf.example).
 - A simulator build is not evidence of anything device-side: pairing, tunnels,
   installs and JIT must be checked on the headset.

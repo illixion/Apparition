@@ -133,6 +133,11 @@ Apple. See [docs/USING.md](docs/USING.md#about-apple-ids) for the certificate li
 
 ## Build
 
+The Apple app builds against two sibling packages by path, so clone them next to this repo:
+[DebugTrace](https://github.com/illixion/DebugTrace) and [RAVESDK](https://github.com/illixion/RAVESDK)
+(`../DebugTrace`, `../RAVESDK`). The desktop app and command line need only this repo and Rust.
+
+    cp build-signing.conf.example build-signing.conf   # then set your device names
     scripts/build-core.sh      # builds the Rust core (isideload + idevice) for visionOS and iOS
     scripts/build-core.sh visionos-sim   # adds the visionOS simulator (rustup target add aarch64-apple-visionos-sim)
     xcodegen                   # generates Apparition.xcodeproj from project.yml
@@ -140,6 +145,8 @@ Apple. See [docs/USING.md](docs/USING.md#about-apple-ids) for the certificate li
     PLATFORM=iPad apparition build --no-mcp    # the lab app on iPad (PLATFORM=iOS for iPhone)
 
 The desktop app and its packaging are in [docs/DESKTOP_APP.md](docs/DESKTOP_APP.md#building-it).
+
+Contributions are welcome ([CONTRIBUTING.md](CONTRIBUTING.md)); security problems go through [SECURITY.md](SECURITY.md).
 
 Licensed MIT. Signing (`core/signer`) builds on [apple-codesign](https://github.com/indygreg/apple-platform-rs)
 (MPL-2.0), used unmodified from crates.io.

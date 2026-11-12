@@ -1,0 +1,27 @@
+# Copy this to build-signing.conf (ignored by Git) and set DEVICE_NAME to your devices' names as
+# `apparition devices` lists them. `apparition build` reads it, along with ~/.config/build-signing/global.conf.
+
+PROJECT_PATH="Apparition.xcodeproj"
+
+# Platform aliases. The Apparition Store config and the terminal both pass one as PLATFORM:
+#   visionOS  Apparition on Vision Pro                        (default)
+#   tvOS      Apparition on Apple TV
+#   iOS       Apparition on iPhone
+#   iPad      Apparition on iPad, the same iOS build
+# The target supports visionOS, iOS (iPhone and iPad) and tvOS natively; one bundle id throughout.
+# A --device flag still outranks DEVICE_NAME here, and an env DEVICE_NAME is respected.
+ALIAS="${PLATFORM:-visionOS}"
+case "$ALIAS" in
+    visionOS) PLATFORM=visionOS; CORE_PLATFORM=visionos; DEVICE_NAME="${DEVICE_NAME:-My Vision Pro}" ;;
+    tvOS)     PLATFORM=tvOS; CORE_PLATFORM=tvos; DEVICE_NAME="${DEVICE_NAME:-My Apple TV}" ;;
+    iOS)      PLATFORM=iOS; CORE_PLATFORM=ios; DEVICE_NAME="${DEVICE_NAME:-My iPhone}" ;;
+    iPad)     PLATFORM=iOS; CORE_PLATFORM=ios; DEVICE_NAME="${DEVICE_NAME:-My iPad}" ;;
+esac
+
+# The project and Rust library are generated, ignored build inputs. Refresh both for every
+# build so the version and linked core match the checkout being stamped into the app.
+PRE_BUILD_HOOK="export PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin\"; xcodegen generate --quiet && scripts/build-core.sh ${CORE_PLATFORM:?Unsupported platform alias}"
+
+SCHEME_NAME="${SCHEME_NAME:-Apparition}"
+TARGET_NAME="${TARGET_NAME:-Apparition}"
+BUILD_BUNDLE_ID="${BUILD_BUNDLE_ID:-com.illixion.apparition}"
