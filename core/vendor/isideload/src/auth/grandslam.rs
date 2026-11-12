@@ -343,7 +343,7 @@ mod windows_cpd_tests {
     }
 
     #[test]
-    fn windows_flags_match_the_observed_authkit_types_without_replacing_identity() {
+    fn windows_flags_are_applied_without_replacing_identity() {
         let mut cpd = Dictionary::new();
         cpd.insert("pbe".into(), plist::Value::String("false".into()));
         cpd.insert("prkgen".into(), plist::Value::String("true".into()));
