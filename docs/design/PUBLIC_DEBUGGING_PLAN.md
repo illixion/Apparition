@@ -14,6 +14,9 @@ develop it from their own Mac. The DebugTrace parts are generic, so later public
   listens. `APPARITION_RELEASE` drops only the experiment endpoints and the release-site override.
 - Upload goes to the Apparition Store, which accepts only keys in this Mac's ledger. Public copies have
   no upload URL, so `canUpload` is false and MetricKit reports are never sent.
+- A copy with an upload URL (build-and-sign, `apparition build`) shows DebugTraceUI's "Debug Trace…"
+  under Settings > Troubleshooting, and sends the trace to its Store. Public copies don't show it;
+  Report a Problem (below) is what they get.
 - A copy that Apparition signs on the device embeds a development profile, so
   `DebugPrivacyMode.detected` is `development`. Today, shipped copies log without redaction.
 

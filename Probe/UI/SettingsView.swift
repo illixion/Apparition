@@ -1,3 +1,5 @@
+import DebugTrace
+import DebugTraceUI
 import RAVESupport
 import RAVEUI
 import SwiftUI
@@ -36,6 +38,7 @@ struct SettingsView: View {
                 #endif
                 advancedSection
                 troubleshootingSection
+                traceSection
                 Section { RAVESupportCard(RAVESupportConfig(appName: "Apparition", appID: "com.illixion.apparition")) }
                 aboutSection
             }
@@ -245,6 +248,21 @@ struct SettingsView: View {
             #endif
         }
         .onAppear { verboseBytes = VerboseLog.bytes }
+    }
+
+    /// A debug trace of this run, sent to the Apparition Store that built this copy. Only a copy
+    /// with an upload destination offers it (build-and-sign and `apparition build` embed one). Copies
+    /// from the release site log without redaction and can't preview a trace before it leaves, so
+    /// they wait for Report a Problem (docs/design/PUBLIC_DEBUGGING_PLAN.md).
+    @ViewBuilder
+    private var traceSection: some View {
+        if DebugTrace.canUpload {
+            Section {
+                DebugTraceButton()
+            } footer: {
+                Text("This copy was built by an Apparition Store, so a debug trace of this run (its log, breadcrumbs and app state) goes back to that Store, where you can read it next to the build. Copies from the release site don't offer this.")
+            }
+        }
     }
 
     private var aboutSection: some View {
