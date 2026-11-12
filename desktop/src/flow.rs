@@ -150,7 +150,9 @@ async fn blocking<T: Send + 'static>(job: impl FnOnce() -> Result<T, Failure> + 
 }
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    tauri::async_runtime::block_on(future)
+    // Boxed: the sign-in and install futures are large, and on Windows (1 MiB thread stacks) holding one
+    // on the calling thread's stack overflowed it (PR #17).
+    tauri::async_runtime::block_on(Box::pin(future))
 }
 
 /// An answer to a prompt, from the page.
