@@ -294,6 +294,12 @@ async fn upload_and_install(
             return Ok::<_, Report>((upload_ms, false, closed));
         }
         match tokio::time::timeout(std::time::Duration::from_millis(detach_after_ms), installer.install(staged, None)).await {
+            Ok(Err(error)) if is_held_update(&error.to_string(), bundle_id, adapter, handshake).await => {
+                // installd holds an update of a running app until it closes, and can drop this request's
+                // connection meanwhile ("device socket io failed"): the update is queued, not failed.
+                tracing::info!("the install's connection dropped while installd holds the update ({error}); it is queued");
+                Ok((upload_ms, true, closed))
+            }
             Ok(done) => {
                 done.context("Install failed")?;
                 Ok((upload_ms, false, closed))
@@ -304,6 +310,23 @@ async fn upload_and_install(
             }
         }
     }
+}
+
+/// Whether an install that failed with `error` is an update installd is holding: the connection broke (a socket or I/O
+/// failure, not a refusal of the app) and the app being updated is still running, which is what makes installd wait.
+async fn is_held_update(
+    error: &str,
+    bundle_id: Option<&str>,
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+) -> bool {
+    let lower = error.to_ascii_lowercase();
+    let broken = lower.contains("socket") || lower.contains("io failed") || lower.contains("broken pipe") || lower.contains("connection reset") || lower.contains("unexpected eof");
+    if !broken {
+        return false;
+    }
+    let Some(bundle_id) = bundle_id else { return false };
+    matches!(crate::jit::app_process(adapter, handshake, bundle_id).await, Ok(crate::jit::AppProcess::Running { .. }))
 }
 
 /// How long a running app gets to exit on SIGTERM before it's killed, and then to be gone.
