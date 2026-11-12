@@ -234,8 +234,13 @@ code { font: .875em/1.4 var(--mono); }
 }
 
 /* Install | Companion */
+/* The header's three pills (tabs, mode switch, setup badge) share one height. */
+:root { --pill-h: 2.5rem; }
 .views {
   display: inline-flex;
+  align-items: center;
+  height: var(--pill-h);
+  box-sizing: border-box;
   gap: .2rem;
   padding: .2rem;
   border: 1px solid var(--line);
@@ -249,11 +254,13 @@ code { font: .875em/1.4 var(--mono); }
   background: none;
   border: 0;
   border-radius: 999px;
-  padding: .45rem .9rem;
+  padding: 0 .9rem;
+  height: calc(var(--pill-h) - .4rem - 2px);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: .4rem;
+  transition: color .18s ease, background-color .18s ease;
 }
 .views button[aria-selected="true"] { color: var(--ink); background: var(--surface); }
 .views button:focus-visible { outline: 2px solid var(--lilac); outline-offset: 1px; }
@@ -270,16 +277,16 @@ code { font: .875em/1.4 var(--mono); }
 /* Five tabs, the mode switch and the setup badge no longer fit the 780px minimum window side by side. */
 @media (max-width: 62rem) {
   .views { margin-left: .5rem; }
-  .views button { padding: .45rem .5rem; font-size: .8rem; gap: .3rem; }
-  .mode-switch button { padding: .4rem .55rem; font-size: .75rem; }
+  .views button { padding: 0 .5rem; font-size: .8rem; gap: .3rem; }
+  .mode-switch button { padding: 0 .55rem; font-size: .75rem; }
   .brand span { display: none; }
 }
 .companion-state { display: inline-flex; align-items: center; gap: .5rem; margin: .25rem 0 0; color: var(--muted); font-size: .875rem; }
 .companion-state.on { color: var(--ink); }
 
 /* Install apps | Develop apps, in the header on every screen. */
-.mode-switch { display: inline-flex; gap: .2rem; padding: .2rem; border: 1px solid var(--line); border-radius: 999px; flex: none; }
-.mode-switch button { font: 500 .8rem/1 var(--text); color: var(--muted); background: none; border: 0; border-radius: 999px; padding: .4rem .8rem; cursor: pointer; }
+.mode-switch { display: inline-flex; align-items: center; gap: .2rem; padding: .2rem; height: var(--pill-h); box-sizing: border-box; border: 1px solid var(--line); border-radius: 999px; flex: none; }
+.mode-switch button { font: 500 .8rem/1 var(--text); color: var(--muted); background: none; border: 0; border-radius: 999px; padding: 0 .8rem; height: calc(var(--pill-h) - .4rem - 2px); cursor: pointer; transition: color .18s ease, background-color .18s ease; }
 .mode-switch button[aria-pressed="true"] { color: var(--ink); background: var(--surface); }
 .mode-switch button:focus-visible { outline: 2px solid var(--lilac); outline-offset: 1px; }
 
@@ -964,7 +971,11 @@ details[open] > summary { margin-bottom: .85rem; }
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: .3rem .75rem;
+  display: inline-flex;
+  align-items: center;
+  height: var(--pill-h);
+  box-sizing: border-box;
+  padding: 0 .9rem;
   border: 1px solid var(--line);
   border-radius: 999px;
   font-size: .8rem;
@@ -974,6 +985,7 @@ details[open] > summary { margin-bottom: .85rem; }
   white-space: nowrap;
 }
 .setup-badge[hidden] { display: none; }
+.setup-badge > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .setup-badge::before {
   content: "";
   display: inline-block;
@@ -1001,3 +1013,28 @@ details[open] > summary { margin-bottom: .85rem; }
 }
 #developer-panel .project-extra { margin-top:10px; }
 #developer-panel > .status:empty { display:none; }
+
+/* Motion: a view or a setup step eases in when it is shown, and the steps' marks ease between states. */
+.trail .mark { transition: background-color .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease; }
+@media (prefers-reduced-motion: no-preference) {
+  .view-in { animation: view-in .24s cubic-bezier(.2, .7, .2, 1) both; }
+  .step-in { animation: step-in .3s cubic-bezier(.2, .7, .2, 1) both; }
+  .step-in.back { animation-name: step-back; }
+  .trail li[data-state="current"] .mark { animation: mark-pop .45s cubic-bezier(.3, 1.6, .5, 1); }
+}
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes step-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes step-back {
+  from { opacity: 0; transform: translateX(-18px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes mark-pop {
+  from { transform: scale(.82); }
+  to   { transform: none; }
+}

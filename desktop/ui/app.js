@@ -242,6 +242,14 @@ async function drawSetupBadge() {
   badge.hidden = false;
 }
 
+/** Plays a one-off entrance on `el` (`class` is a CSS animation class); nothing happens for people who ask for less motion. */
+function playIn(/** @type {HTMLElement} */ el, /** @type {string} */ name, /** @type {boolean} */ back = false) {
+  el.classList.remove("view-in", "step-in", "back");
+  void el.offsetWidth; // restarts the animation if it is already running
+  el.classList.add(name);
+  el.classList.toggle("back", back);
+}
+
 /** Forgets what the step being left kept for a retry (the signing step sets it). */
 let leaveStep = () => {};
 
@@ -250,8 +258,10 @@ function go(/** @type {string} */ step) {
   invoke("nearby_stop").catch(() => {});
   leaveStep();
   leaveStep = () => {};
+  const back = STEPS.indexOf(step) < STEPS.indexOf(state.step);
   state.step = step;
   render();
+  playIn(panel, "step-in", back);
   panel.scrollTop = 0;
   panel.focus({ preventScroll: true });
 }
@@ -1640,6 +1650,7 @@ function syncDeveloperTabs(/** @type {boolean} */ showing) {
 
 function showView(/** @type {"install"|"companion"|"developer"|"mode"} */ view, /** @type {string} */ section = developer.section) {
   const companion = view === "companion";
+  const shown = { install: installView, companion: companionView, developer: developerView, mode: modeView }[view];
   modeView.hidden = view !== "mode";
   installView.hidden = view !== "install";
   companionView.hidden = !companion;
@@ -1658,7 +1669,12 @@ function showView(/** @type {"install"|"companion"|"developer"|"mode"} */ view, 
     companionPanel.focus({ preventScroll: true });
   }
   developer.placeSetup(companion);
+  // Not again for a tab that is already showing.
+  const key = view === "developer" ? `developer:${developer.section}` : view;
+  if (shown && key !== lastView) playIn(shown, "view-in");
+  lastView = key;
 }
+let lastView = "";
 
 /** Shows the tabs of `mode` and marks the switch. Does not save or navigate. */
 function applyMode(/** @type {"install"|"develop"} */ mode) {
