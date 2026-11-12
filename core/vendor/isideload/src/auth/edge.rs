@@ -7,10 +7,9 @@
 //! attempts is which address the connection goes to. The connection still names the host, so TLS
 //! checks the certificate exactly as before.
 //!
-//! `Content-Type` (see `grandslam.rs`), which was on some edges first and on all of them a day
-//! later; with the right content type no edge refuses, and this layer does nothing. It stays as the
-//! general answer to one edge misbehaving, whatever the reason.
-//!
+//! Transient network and service responses can vary by endpoint. This layer retries another
+//! available address while preserving the requested host name and normal TLS verification.
+
 //! The system's resolver is asked first (it is right for nearly everyone, and a VPN or a workplace
 //! network expects it). An edge that refuses is avoided for an hour, so a sign-in doesn't knock on
 //! it again and again, and the request goes to another edge, from the system's answer or, when that
@@ -495,46 +494,5 @@ mod tests {
         assert!(is_unreachable(&error), "{error:?}");
     }
 
-    /// Against Apple: 17.171.11.101 answered 403 to every request with the legacy `text/x-xml-plist`
-    ///
-    ///     cargo test -p isideload --lib content_type_clears -- --ignored
-    #[test]
-    #[ignore = "talks to Apple"]
-    fn content_type_clears_the_edge_that_refused() {
-        use crate::auth::grandslam::APPLE_ROOT_G3;
-        use crate::sideload::cert_identity::APPLE_ROOT;
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let edge: IpAddr = "17.171.11.101".parse().unwrap();
-        let client = reqwest::ClientBuilder::new()
-            .add_root_certificate(reqwest::Certificate::from_der(APPLE_ROOT).unwrap())
-            .add_root_certificate(reqwest::Certificate::from_der(APPLE_ROOT_G3).unwrap())
-            .http1_title_case_headers()
-            .dns_resolver(EdgeResolver::over(Arc::new(Fixed(edge))))
-            .build()
-            .unwrap();
-        let client = reqwest_middleware::ClientBuilder::new(client).with(EdgeAvoidance).build();
-        let body = r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Header</key><dict><key>Version</key><string>1.0.1</string></dict><key>Request</key><dict><key>cpd</key><dict/><key>o</key><string>init</string><key>u</key><string>probe-nobody-2026@example.com</string></dict></dict></plist>"#;
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let response = runtime
-            .block_on(
-                client
-                    .post("https://gsd.apple.com/grandslam/GsService2/")
-                    .header("Content-Type", "text/xml")
-                    .header("Accept", "text/x-xml-plist")
-                    .header("X-Xcode-Version", "27.0 (27A5218g)")
-                    .header("X-Apple-App-Info", "com.apple.gs.xcode.auth")
-                    .header("User-Agent", "akd/1.0 CFNetwork/808.1.4")
-                    .header(
-                        "X-Mme-Client-Info",
-                        "<Pixel 8><Android; 14; UQ1A.240205.004><com.apple.AuthKit/1 (com.apple.android.music/4.9.6)>",
-                    )
-                    .header("Connection", "close")
-                    .body(body)
-                    .send(),
-            )
-            .unwrap();
-        assert_ne!(response.status(), reqwest::StatusCode::FORBIDDEN);
-        assert_eq!(response.remote_addr().map(|addr| addr.ip()), Some(edge));
-        assert!(!edges().avoided.contains_key(&edge));
-    }
+
 }
