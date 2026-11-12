@@ -35,14 +35,16 @@ const USAGE: &str = "\
 apparition build: build, sign, keep and install the app of the repo you're in (build-and-sign's flags)
 
   apparition build [--debug] [--no-deploy] [--unsigned] [--sign-only] [--ipa FILE] [--profile FILE]
-                   [--platform P] [--device NAME] [--set KEY=VALUE]... [--run] [--log] [--log-all]
+                   [--platform P] [--device NAME] [--via auto|apparition|devicectl] [--set KEY=VALUE]...
+                   [--run] [--log] [--log-all]
                    [--mcp | --no-mcp] [--jit] [--inject] [--inject-backend dynamic|apparition]
   apparition build --sign-dylib FILE...     sign Mach-O files with the conf's certificate (a live patch)
   apparition build --plan [--platform P]    print what the conf resolves to, as JSON (for a Store)
 
 Reads ~/.config/build-signing/global.conf and the repo's (scripts/)build-signing.conf. Signs with
 the conf's .p12 and profile, keeps the build (and its dSYMs) in the build store, installs it over
-Apparition's own pairing with the device and, with --run, launches it the same way: --log streams
+Apparition's own pairing with the device (--via: auto falls back to Xcode's tunnel, devicectl, when that can't
+reach it; devicectl forces the tunnel) and, with --run, launches it the same way: --log streams
 its console to build/device-console.log, --mcp makes the launch a debug session for the `apps`
 tools (MCP_DEFAULT=on makes every --run one), --jit serves the app's JIT requests.
 ";
@@ -154,6 +156,50 @@ fn log_excerpt(log: &Path) -> Option<String> {
     (!lines.is_empty()).then(|| lines[lines.len().saturating_sub(25)..].join("\n"))
 }
 
+/// How the signed app gets onto the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Via {
+    /// Apparition's own pairing, and Xcode's tunnel (`devicectl`) if that can't reach the device.
+    Auto,
+    /// Apparition's own pairing only.
+    Apparition,
+    /// Xcode's tunnel only: `xcrun devicectl device install app`.
+    Devicectl,
+}
+
+impl Via {
+    fn parse(text: &str) -> Result<Via, String> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Ok(Via::Auto),
+            "apparition" => Ok(Via::Apparition),
+            "devicectl" | "xcode" | "tunnel" => Ok(Via::Devicectl),
+            other => Err(format!("--via is auto, apparition or devicectl, not {other}")),
+        }
+    }
+}
+
+/// Whether an install failed because the device couldn't be reached or the connection broke, as opposed to the
+/// device refusing the app (a signing or profile problem, which another route would only repeat).
+fn is_transport_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    ["socket", "didn't answer", "timed out", "tunnel", "connection", "unreachable", "broken pipe"].iter().any(|word| lower.contains(word))
+}
+
+/// Installs `ipa` on the device with `xcrun devicectl device install app`, Xcode's own route.
+fn install_with_devicectl(udid: &str, ipa: &Path) -> Result<(), String> {
+    let output = std::process::Command::new("/usr/bin/xcrun")
+        .args(["devicectl", "device", "install", "app", "--device", udid])
+        .arg(ipa)
+        .output()
+        .map_err(|e| format!("Couldn't run xcrun devicectl: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&output.stderr);
+    let text = if text.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { text };
+    Err(format!("devicectl couldn't install it either:\n    {}", text.trim().lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n    ")))
+}
+
 #[derive(Default, Debug)]
 struct Options {
     config: &'static str,
@@ -169,6 +215,8 @@ struct Options {
     inject_backend: Option<String>,
     platform: Option<String>,
     device: Option<String>,
+    /// `--via`: how the signed app reaches the device (the conf's `APPARITION_INSTALL_VIA`, else `auto`).
+    via: Option<Via>,
     settings: Vec<String>,
     ipa: Option<PathBuf>,
     profile: Option<PathBuf>,
@@ -200,6 +248,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--inject-backend" => { o.inject_backend = Some(value(&mut args, arg)?); o.inject = true; }
             "--platform" => o.platform = Some(value(&mut args, arg)?),
             "--device" => o.device = Some(value(&mut args, arg)?),
+            "--via" => o.via = Some(Via::parse(&value(&mut args, arg)?)?),
             "--set" => o.settings.push(value(&mut args, arg)?),
             "--ipa" => { o.ipa = Some(PathBuf::from(value(&mut args, arg)?)); o.sign_only = true; }
             "--profile" => o.profile = Some(PathBuf::from(value(&mut args, arg)?)),
@@ -957,12 +1006,36 @@ impl Build {
             let device = device.as_ref().ok_or("no device to install to")?;
             println!("==> Installing to {}...", device.name);
             let _ = std::io::stdout().flush();
-            let mut tunnel = crate::store().connect_verified(device).await.map_err(|e| format!("{} didn't answer: {}", device.name, api::describe(&e)))?;
-            let existing = tunnel.installed_app(&bundle_id).await.map_err(|e| api::describe(&e))?.is_some();
-            let reply = tunnel.install_signed_ipa(&signed_ipa, Some(&bundle_id), if existing { 20_000 } else { 0 }).await
-                .map_err(|e| format!("Install through Apparition failed:\n    {}", api::describe(&e)))?;
-            if reply["queued"].as_bool() == Some(true) {
-                println!("    {} holds the update until the app is closed", device.name);
+            let via = o.via.or_else(|| conf.get("APPARITION_INSTALL_VIA").and_then(|v| Via::parse(v).ok())).unwrap_or(Via::Auto);
+            let mut done = false;
+            if via != Via::Devicectl {
+                let attempt: Result<serde_json::Value, String> = async {
+                    let mut tunnel = crate::store().connect_verified(device).await.map_err(|e| format!("{} didn't answer: {}", device.name, api::describe(&e)))?;
+                    let existing = tunnel.installed_app(&bundle_id).await.map_err(|e| api::describe(&e))?.is_some();
+                    tunnel.install_signed_ipa(&signed_ipa, Some(&bundle_id), if existing { 20_000 } else { 0 }).await
+                        .map_err(|e| format!("Install through Apparition failed:\n    {}", api::describe(&e)))
+                }.await;
+                match attempt {
+                    Ok(reply) => {
+                        if reply["closed"].as_bool() == Some(true) {
+                            println!("    closed the running app so its update applies now");
+                        }
+                        if reply["queued"].as_bool() == Some(true) {
+                            println!("    {} holds the update until the app is closed", device.name);
+                        }
+                        done = true;
+                    }
+                    // A device that can't be reached over Apparition's pairing may still be reachable through Xcode's.
+                    Err(message) if via == Via::Auto && is_transport_error(&message) => {
+                        println!("    Apparition's own route couldn't reach {}: {}", device.name, message.lines().last().unwrap_or("").trim());
+                        println!("    Trying Xcode's tunnel (devicectl) instead...");
+                    }
+                    Err(message) => return Err(message),
+                }
+            }
+            if !done {
+                install_with_devicectl(&device.udid, &signed_ipa)?;
+                println!("    installed through Xcode's tunnel (devicectl)");
             }
             installed = true;
         }
@@ -1110,6 +1183,19 @@ pub fn exit_code() -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_install_route_is_chosen_or_falls_back_on_transport_errors_only() {
+        assert_eq!(Via::parse("auto"), Ok(Via::Auto));
+        assert_eq!(Via::parse("Apparition"), Ok(Via::Apparition));
+        assert_eq!(Via::parse("devicectl"), Ok(Via::Devicectl));
+        assert!(Via::parse("ota").is_err());
+        assert!(is_transport_error("Install through Apparition failed:\n    Install failed\n    device socket io failed"));
+        assert!(is_transport_error("AVP didn't answer: timed out"));
+        assert!(!is_transport_error("Install failed: ApplicationVerificationFailed: profile doesn't include this device"));
+        let o = parse(&["--via".to_string(), "devicectl".to_string()]).unwrap().unwrap();
+        assert_eq!(o.via, Some(Via::Devicectl));
+    }
+
     use super::*;
 
     #[test]

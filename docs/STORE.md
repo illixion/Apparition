@@ -213,7 +213,7 @@ set. It is the same command you can run in a terminal, in the repo, with the sam
   build and its dSYMs, and installs it over the device's pairing. With `--run` it launches the app
   the same way: `--log` streams the console to `build/device-console.log`, `--mcp` makes the launch
   a debug session for the `apps` tools, `--jit` serves the app's JIT requests, `--inject` builds for
-  live patching. `--no-deploy` builds and keeps without installing, `--unsigned` leaves signing to
+  live patching. `--via auto|apparition|devicectl` picks how the signed app reaches the device (`auto`, the default, uses Apparition's own pairing, which also closes a running app so its update applies, and falls back to Xcode's tunnel, `devicectl`, when the device can't be reached that way; `devicectl` forces the tunnel; `APPARITION_INSTALL_VIA` in a conf sets it), `--no-deploy` builds and keeps without installing, `--unsigned` leaves signing to
   the device.
 - DerivedData is per checkout, in `<checkout>/build/DerivedData` (`DerivedData-inject` for
   `--inject`). A per-checkout lock (`build/.build-and-sign.lock`) makes two builds in one checkout
