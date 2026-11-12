@@ -116,6 +116,12 @@ struct LibraryView: View {
             } message: {
                 Text("Apparition signs itself again with \(library.signing.signerName(library.selfSigner)) and hands the update to \(ThisDevice.os), keeping its data. The update applies when you close Apparition, like an App Store update.")
             }
+            .confirmationDialog("Close Apparition to finish updating?", isPresented: Binding(get: { library.closeToApply != nil }, set: { if !$0 { library.closeToApply = nil } }), titleVisibility: .visible) {
+                Button("Close Apparition", role: .destructive) { library.closeToApplyUpdate() }
+                Button("Not Now", role: .cancel) { library.closeToApply = nil }
+            } message: {
+                Text("The update is waiting in \(ThisDevice.os) and applies as soon as Apparition closes. Open Apparition again afterwards.")
+            }
             .sheet(item: $linking) { app in
                 LinkProjectSheet(developer: developer, app: app) { linking = nil }
             }

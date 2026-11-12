@@ -2,6 +2,7 @@ import BackgroundTasks
 import DebugTrace
 import Foundation
 import Observation
+import UIKit
 
 private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "Library")
 
@@ -1454,6 +1455,18 @@ final class LibraryModel {
                                           detachAfterMs: 20_000)
         if outcome == "queued" {
             let what = update.map { "install \($0.version)" } ?? "apply the update"
+            // installd applies the update once Apparition closes, and a visionOS app can't be closed from outside it,
+            // so close it here, as an install of any other app closes that app: at once when nobody is using
+            // Apparition (a refresh the system started), after asking when they are. Never under a JIT session, which
+            // would end with it.
+            if probe.jitSessions.isEmpty {
+                if UIApplication.shared.applicationState == .background {
+                    log.info("closing Apparition so its queued update applies")
+                    closeToApplyUpdate()
+                    return "ok, closing Apparition to \(what) (expires \(main?.profileExpires ?? "?"))"
+                }
+                closeToApply = what
+            }
             return "ok, waiting: close Apparition to \(what) (expires \(main?.profileExpires ?? "?"))"
         }
         selfRecord.pending = nil
@@ -1470,6 +1483,21 @@ final class LibraryModel {
         selfRecord.lastError = nil
         save()
         return "ok, expires \(main?.profileExpires ?? "?") (applies when Apparition next opens)"
+    }
+
+    /// Set while Apparition's own update waits in installd and Apparition is in use: what closing would do
+    /// ("install 1.0.1"), for the Library to ask about.
+    var closeToApply: String?
+
+    /// Ends Apparition so installd applies its queued update, the way closing the app from the app switcher would.
+    /// The state is saved first, and the exit waits a moment for the log and the last results to be written.
+    func closeToApplyUpdate() {
+        closeToApply = nil
+        save()
+        Task {
+            try? await Task.sleep(for: .seconds(1))
+            exit(0)
+        }
     }
 
     /// `logged` replaces the message in the log when it names other apps.
