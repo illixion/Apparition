@@ -394,6 +394,20 @@ pub fn set_mode(state: Shared<'_>, mode: String) -> Result<(), Failure> {
     write_settings(&state, &settings)
 }
 
+/// Remembers which anisette this computer's sign-ins use, without signing in. The Companion tab and the sign-in
+/// form share one anisette source (the page keeps them equal), so a change on either is written here.
+#[tauri::command]
+pub async fn save_anisette_choice(state: Shared<'_>, choice: String) -> Result<(), Failure> {
+    let mut choice = choice.trim().to_string();
+    let named = [api::BUILTIN_ANISETTE, api::ANDROID_ANISETTE, api::PAIRED_MAC_ANISETTE, api::VM_ANISETTE];
+    if !named.contains(&choice.as_str()) {
+        choice = apparition_core::anisette::normalize_server_address(&choice)?;
+    }
+    let mut settings = read_settings(&state);
+    settings.anisette = Some(choice);
+    write_settings(&state, &settings)
+}
+
 /// Whether Xcode is usable on this computer: the first line of `xcodebuild -version`, or none.
 /// Only macOS has it; the page says so elsewhere.
 #[tauri::command]

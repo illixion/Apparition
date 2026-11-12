@@ -154,8 +154,57 @@ function anisetteName(/** @type {string} */ choice) {
 }
 
 /** What the companion offers (`companion_status`'s `anisette.offered`), in a word or three. */
-function offeredName(/** @type {string} */ offered) {
-  return offered === "vm" ? "this Mac's anisette VM" : offered === "server" ? "a third-party server" : "this Mac's own";
+function offeredName(/** @type {string} */ offered, /** @type {string} */ server = "") {
+  return offered === "vm" ? "this Mac's anisette VM"
+    : offered === "android" ? "Apparition's own (Android libraries)"
+    : offered === "server" ? (server ? `third-party server (${serverHost(server)})` : "a third-party server")
+    : "this Mac's own";
+}
+
+/**
+ * Apparition uses one anisette source for this computer's sign-ins and for what the companion offers devices, so
+ * the two never disagree. What the companion offers, as a sign-in choice ("builtin", "vm", "android" or a server's
+ * address), or null when it offers nothing.
+ */
+function choiceOfOffer(/** @type {any} */ anisette) {
+  const mode = anisette?.mode;
+  if (mode === "server") return anisette.server || null;
+  return mode === "builtin" || mode === "vm" || mode === "android" ? mode : null;
+}
+
+/** The companion mode (and server address) a sign-in choice stands for; null for the paired Mac's, which can't be offered on. */
+function offerOfChoice(/** @type {string} */ choice) {
+  const text = (choice ?? "").trim();
+  if (!text || text === "paired") return null;
+  if (text === "builtin" || text === "vm" || text === "android") return { mode: text };
+  return serverAddressOf(text) ? { mode: "server", server: text } : null;
+}
+
+let reconciling = false;
+/** What the companion offers is what sign-ins use: follows a change made on the Companion tab (the paired Mac's choice stays). */
+async function followOffer(/** @type {any} */ status) {
+  const want = choiceOfOffer(status?.anisette);
+  const saved = state.settings?.anisette ?? null;
+  if (!want || reconciling || saved === want || saved === "paired") return;
+  reconciling = true;
+  try {
+    await invoke("save_anisette_choice", { choice: want });
+    state.settings = { ...state.settings, anisette: want };
+    drawSetupBadge();
+  } catch {} finally {
+    reconciling = false;
+  }
+}
+
+/** A sign-in with `choice` is what the companion offers from now on, if it offers anything. */
+async function offerChoice(/** @type {string} */ choice) {
+  const offer = offerOfChoice(choice);
+  const now = state.companion?.anisette;
+  if (!offer || !now || now.mode === "off" || choiceOfOffer(now) === choice.trim()) return;
+  try {
+    await invoke("companion_set_anisette", offer);
+  } catch {}
+  refreshCompanion();
 }
 
 /** The anisette a sign-in uses when nothing was chosen: this Mac's own, else its anisette VM, else the paired Mac's. */
@@ -171,13 +220,17 @@ async function drawSetupBadge() {
   const badge = /** @type {HTMLElement} */ (document.getElementById("setup-badge"));
   const text = /** @type {HTMLElement} */ (document.getElementById("setup-badge-text"));
   const choice = state.anisetteChoice ?? state.settings?.anisette ?? defaultAnisette();
-  const offered = state.companion?.relay?.running ? state.companion?.anisette?.offered : null;
-  const parts = [`Sign-in anisette: ${anisetteName(choice)}`];
-  if (offered) parts.push(`Companion offers: ${offeredName(offered)}`);
-  text.textContent = parts.join(" · ");
+  const anisette = state.companion?.anisette;
+  const offered = state.companion?.relay?.running ? anisette?.offered : null;
+  const signIn = anisetteName(choice);
+  // One source for sign-ins and devices, said in full: the badge is what a screenshot shows.
+  const same = offered && choiceOfOffer({ mode: offered, server: anisette?.server }) === choice.trim();
+  text.textContent = same ? `Anisette: ${signIn} · for sign-ins and your devices`
+    : offered ? `Sign-in: ${signIn} · Devices: ${offeredName(offered, anisette?.server)}`
+    : `Anisette: ${signIn} · not offered to devices`;
   badge.title = text.textContent;
   const mac = choice === "builtin" || (choice === "vm" && state.vmAnisette) || (choice === "paired" && state.pairedMac);
-  badge.className = `setup-badge${mac ? "" : " attention"}`;
+  badge.className = `setup-badge${mac && (same || !offered) ? "" : " attention"}`;
   badge.hidden = false;
 }
 
@@ -735,6 +788,7 @@ function signing() {
       const result = await invoke("apple_id_sign_in", args);
       state.signing = { mode: "appleId", ...result };
       state.settings = { email: result.email, anisette: args.anisette.trim() };
+      offerChoice(args.anisette);
       setStatus(status, "");
       args.password = "";
       drawSetupBadge();
@@ -1962,9 +2016,10 @@ function drawCompanion(/** @type {any} */ status) {
     stateLine.querySelector(".tab-dot")?.classList.toggle("on", running);
     $(companionPanel, "companion-state-text").textContent = running ? "Companion running" : "Companion stopped";
   }
-  const before = JSON.stringify([state.companion?.relay?.running, state.companion?.anisette?.offered]);
+  const before = JSON.stringify([state.companion?.relay?.running, state.companion?.anisette?.offered, state.companion?.anisette?.mode, state.companion?.anisette?.server]);
   state.companion = status;
-  if (before !== JSON.stringify([status.relay.running, status.anisette.offered])) drawSetupBadge();
+  followOffer(status);
+  if (before !== JSON.stringify([status.relay.running, status.anisette.offered, status.anisette.mode, status.anisette.server])) drawSetupBadge();
   if (!companionPanel.firstElementChild) return;
   const relayOn = /** @type {HTMLInputElement} */ ($(companionPanel, "relay-on"));
   relayOn.checked = status.relay.on;

@@ -86,6 +86,7 @@ fn main() {
             flow::xcode_version,
             flow::builtin_anisette,
             flow::android_anisette,
+            flow::save_anisette_choice,
             flow::check_anisette_server,
             flow::apple_id_sign_in,
             flow::sign_out,

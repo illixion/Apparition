@@ -957,18 +957,19 @@ details[open] > summary { margin-bottom: .85rem; }
 /* Where anisette comes from, in the header's corner on every screen, so a screenshot says how
    Apparition is set up. Red when the setup isn't supported. */
 .setup-badge {
-  /* Shrinks and ends in an ellipsis in a narrow window; the full text is its tooltip. */
+  /* The whole sentence, wrapping in a narrow window: it is what a screenshot of the app shows for troubleshooting. */
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: .3rem .75rem;
+  max-width: 28rem;
+  padding: .3rem .85rem;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 1rem;
   font-size: .8rem;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
   color: var(--muted);
   background: color-mix(in srgb, var(--surface) 70%, transparent);
-  white-space: nowrap;
 }
 .setup-badge[hidden] { display: none; }
 .setup-badge.attention { border-color: var(--lilac); color: var(--ink); }
