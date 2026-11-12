@@ -864,7 +864,13 @@ async fn traces(store: &Store, opts: &Opts) -> Result<(), Error> {
         println!("No traces uploaded.");
     }
     for t in &list {
-        println!("{}  {} {}  {}  {}", text(t, "id"), t.pointer("/app/name").and_then(Value::as_str).unwrap_or(""),
+        // A problem report from a public copy: unsigned, what it says of itself is the sender's word.
+        let report = match t.get("report").filter(|r| r.is_object()) {
+            Some(r) if r["signed"] == true => "  report",
+            Some(_) => "  report, unsigned",
+            None => "",
+        };
+        println!("{}  {} {}  {}  {}{report}", text(t, "id"), t.pointer("/app/name").and_then(Value::as_str).unwrap_or(""),
             t.pointer("/app/version").and_then(Value::as_str).unwrap_or(""), t.pointer("/device/name").and_then(Value::as_str).unwrap_or(""),
             t["receivedAt"].as_u64().map(ago).or_else(|| t["receivedAt"].as_str().map(String::from)).unwrap_or_default());
     }

@@ -96,6 +96,10 @@
   section.traces h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
     letter-spacing: .1em; font-family: var(--mono); font-weight: 600; margin: 0; }
   section.traces .hint { font-size: .74rem; color: var(--dim2); }
+  /* a problem report from a public copy: nothing vouches for what it says of itself */
+  .reporttag { display: inline-block; font-family: var(--mono); font-size: .68rem; line-height: 1.3; padding: 0 5px;
+    border-radius: 4px; border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
+  .reporttag.unverified { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
   section.updates { margin-top: 30px; }
   section.updates .uphead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
   section.updates h3 { color: var(--dim2); font-size: .74rem; text-transform: uppercase;
@@ -489,10 +493,10 @@
   <section class="view traces" data-view="traces" id="traces">
     <div class="tracehead">
       <h3>Traces</h3>
-      <span class="hint">Uploaded from an app's Debug Trace sheet, or drop a trace .zip here</span>
+      <span class="hint">Uploaded from an app's Debug Trace sheet, or drop a trace .zip or an encrypted report (.trace) here</span>
       <span style="margin-left:auto"></span>
       <button class="ghost" id="traceUploadBtn">Upload trace…</button>
-      <input type="file" id="traceFile" accept=".zip,application/zip" style="display:none">
+      <input type="file" id="traceFile" accept=".zip,.trace,application/zip" style="display:none">
     </div>
     <table>
       <thead><tr><th>Received</th><th>App</th><th>Build</th><th>Device</th><th>Note</th><th></th></tr></thead>
@@ -757,13 +761,23 @@ function renderTraces(){
   tb.innerHTML = traces.map(t => {
     const b = t.build || {};
     const open = openTraces.has(t.id);
+    // A report came encrypted to one of this Mac's report keys. Unless a ledger key also signed
+    // it, its app, build and device are only what the sender's copy said.
+    const report = t.report;
+    const unsigned = report && !report.signed;
+    const source = report
+      ? `report key ${esc(report.keyId)} · ${unsigned ? 'unsigned: the app, build and device are what the sender said' : `also signed by ledger key ${esc(b.keyId)}`}`
+      : `key ${esc(b.keyId)} · built ${esc(b.builtAt||'?')}${b.configuration?' · '+esc(b.configuration):''}`;
+    const build = unsigned
+      ? `<span class="reporttag unverified" title="A problem report, accepted unsigned">report · unverified</span> ${esc(t.app?.version||'?')} (${esc(t.app?.build||'?')})`
+      : `${report ? '<span class="reporttag" title="A problem report from a build this Mac made">report</span> ' : ''}${esc(b.repo||'?')} · ${esc(b.branch||'?')}@${esc(t.app?.build)}`;
     const files = open ? `<tr><td></td><td colspan="5"><div class="tracefiles">${(t.files||[]).map(f =>
       `<a href="/api/traces/${t.id}/files/${f.path.split('/').map(encodeURIComponent).join('/')}" target="_blank" rel="noopener">${esc(f.path)} <span class="muted">${(f.bytes/1024).toFixed(1)}K</span></a>`).join('')}
-      </div><div class="muted" style="font-size:.72rem">key ${esc(b.keyId)} · built ${esc(b.builtAt||'?')}${b.configuration?' · '+esc(b.configuration):''}${t.uploader?' · uploaded by '+esc(t.uploader):''} · via ${esc(t.via)} · ${esc(t.id)}</div></td></tr>` : '';
+      </div><div class="muted" style="font-size:.72rem">${source}${t.uploader?' · uploaded by '+esc(t.uploader):''} · via ${esc(t.via)} · ${esc(t.id)}</div></td></tr>` : '';
     return `<tr class="clickable" data-trace="${t.id}">
       <td class="mono">${ago(t.receivedAt)}</td>
       <td><b>${esc(t.app?.name)}</b><br><span class="muted">${esc(t.app?.bundleId)}</span></td>
-      <td class="mono">${esc(b.repo||'?')} · ${esc(b.branch||'?')}@${esc(t.app?.build)}<br><span class="muted">${esc(t.app?.platform)}</span></td>
+      <td class="mono">${build}<br><span class="muted">${esc(t.app?.platform)}</span></td>
       <td>${esc(b.installedTo||'')}<br><span class="muted">${esc(t.device?.model)} · ${esc(t.device?.os)}</span></td>
       <td class="tracenote">${esc(t.note||'')}</td>
       <td style="white-space:nowrap"><a href="/api/traces/${t.id}.zip"><button class="icon" title="Download zip">⤓</button></a>
@@ -771,15 +785,28 @@ function renderTraces(){
     </tr>${files}`;
   }).join('');
 }
+// An encrypted report (.trace, from a public copy's Report a Problem) starts with this.
+async function isReportFile(file){
+  if (/\.trace$/i.test(file.name)) return true;
+  try { return new TextDecoder().decode(await file.slice(0, 8).arrayBuffer()) === 'DTRCHPKE'; } catch { return false; }
+}
 async function uploadTrace(file){
   if (!file) return;
-  toast(`Verifying ${file.name}…`);
+  const report = await isReportFile(file);
+  toast(`${report ? 'Opening' : 'Verifying'} ${file.name}…`);
   try {
-    const r = await fetch('/api/traces', { method: 'POST', body: file,
-      headers: { 'Content-Type': 'application/zip', 'X-DebugTrace-Source': 'web' } });
+    // A report goes in through the signed-in page only; a signed trace takes the route apps use.
+    const r = report
+      ? await fetch('/api/traces/report', { method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' } })
+      : await fetch('/api/traces', { method: 'POST', body: file,
+          headers: { 'Content-Type': 'application/zip', 'X-DebugTrace-Source': 'web' } });
     const body = await r.json();
     if (!r.ok) { toast(`Rejected: ${body.error}`); return; }
-    toast(body.trace.duplicate ? 'Already have that trace.' : `Verified trace from ${body.trace.app.name} ${body.trace.app.build}.`);
+    const t = body.trace;
+    toast(t.duplicate ? (report ? 'Already have that report.' : 'Already have that trace.')
+      : !report ? `Verified trace from ${t.app.name} ${t.app.build}.`
+      : t.report?.signed ? `Report from ${t.app?.name} ${t.app?.build}, a build this Mac made.`
+      : `Report opened: it says ${[t.app?.name || 'an app', t.app?.version].filter(Boolean).join(' ')} (${t.app?.build || '?'}). Unsigned, so that is the sender's word.`);
     openTraces.add(body.trace.id);
     pollTraces();
   } catch (e) { toast(`Upload failed: ${e}`); }
@@ -1962,7 +1989,7 @@ function renderAppReports(){
     <span class="muted">${esc(c.build || '')} · ${esc(c.device || '')}</span>
     <span class="rowlinks">${c.symbolicated ? `<a href="/api/crashlogs/${c.id}/symbolicated" target="_blank" rel="noopener">symbolicated</a>` : ''}
     <a href="/api/crashlogs/${c.id}/ips" target="_blank" rel="noopener">.ips</a></span></li>`;
-  const trace = t => `<li><span class="mono">${ago(t.receivedAt)}</span> <b>${esc(t.note || 'Trace')}</b>
+  const trace = t => `<li><span class="mono">${ago(t.receivedAt)}</span> ${t.report ? `<span class="reporttag${t.report.signed ? '' : ' unverified'}">${t.report.signed ? 'report' : 'report · unverified'}</span> ` : ''}<b>${esc(t.note || (t.report ? 'Report' : 'Trace'))}</b>
     <span class="muted">${esc(t.app?.build || '')} · ${esc(t.device?.model || '')}</span>
     <span class="rowlinks"><a href="/api/traces/${t.id}.zip">download</a> <a href="#traces" data-opentrace="${t.id}">open</a></span></li>`;
   pane.innerHTML = !total

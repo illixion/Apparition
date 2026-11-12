@@ -49,6 +49,8 @@ pub struct Settings {
     pub host_token: Option<String>,
     /// Where `build-and-sign` records trace signing keys (`traces::default_key_dir()`).
     pub key_dir: PathBuf,
+    /// Where the keys that open encrypted problem reports are kept (`reports::default_key_dir()`).
+    pub report_key_dir: PathBuf,
     /// DebugTrace's state directory (`sessions/` inside): `DEBUGTRACE_STATE_DIR` or
     /// `~/.local/state/debugtrace`.
     pub debug_state_dir: PathBuf,
@@ -70,6 +72,7 @@ impl Settings {
         Settings {
             config_path, data_dir, public_dir: Some(public_dir), host_token: None,
             key_dir: traces::default_key_dir(),
+            report_key_dir: crate::reports::default_key_dir(),
             debug_state_dir: std::env::var_os("DEBUGTRACE_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".local/state/debugtrace")),
             browser: Arc::new(Arc::new(debug::Mdns::default())),
             client_name: format!("Apparition Store page on {}", host.split('.').next().unwrap_or("")),
@@ -696,7 +699,9 @@ impl App {
         self.settings.data_dir.join("traces")
     }
 
-    fn receive_trace(&self, req: &Req) -> Response {
+    /// `POST /api/traces` (a signed trace, from an app or dropped on the page), or with `report`,
+    /// `POST /api/traces/report` (an encrypted problem report, from a signed-in page).
+    fn receive_trace(&self, req: &Req, report: bool) -> Response {
         let config = self.config();
         let repo_for_bundle = |bundle: &str| -> Option<String> {
             config.raw.get("repos")?.as_array()?.iter().find(|r| {
@@ -709,13 +714,22 @@ impl App {
             via_web: req.header("x-debugtrace-source") == "web", uploader: (!uploader.is_empty()).then_some(uploader),
             repo_for_bundle: &repo_for_bundle,
         };
-        match traces::receive(&req.body, &up) {
+        // An encrypted report has its own way in, behind a session: this route takes anything
+        // from anyone, and a report carries no signature to judge it by.
+        let received = if report {
+            traces::receive_report(&req.body, &up, &self.settings.report_key_dir)
+        } else if crate::reports::is_report(&req.body) {
+            Err(traces::TraceError(400, "this is an encrypted report (.trace), which only a person at this Store can add: drop it on the Store's Crashes & traces page, or run `apparition crash-reports add <file>`".into()))
+        } else {
+            traces::receive(&req.body, &up)
+        };
+        match received {
             Ok((status, meta)) => {
                 if status == 201 {
                     // a crash log pulled before this trace arrived
                     let metas: Vec<Value> = traces::list(&self.traces_dir()).into_iter().take(100).collect();
                     self.crash_logs().link(&crashlogs::crash_refs(&self.traces_dir(), &metas));
-                    eprintln!("trace {} from {} ({} bytes)", meta["id"].as_str().unwrap_or(""), meta["app"]["bundleId"].as_str().unwrap_or(""), req.body.len());
+                    eprintln!("{} {} from {} ({} bytes)", if report { "report" } else { "trace" }, meta["id"].as_str().unwrap_or(""), meta["app"]["bundleId"].as_str().unwrap_or(""), req.body.len());
                 }
                 json_reply(status, json!({ "ok": true, "trace": meta }))
             }
@@ -812,6 +826,7 @@ impl App {
                 Some(with_header(res, "content-security-policy", "default-src 'none'"))
             }
             ["api", "traces"] if get => Some(json_reply(200, json!({ "traces": traces::list(&traces) }))),
+            ["api", "traces", "report"] if post => Some(self.receive_trace(req, true)),
             ["api", "traces", file] if get && file.strip_suffix(".zip").is_some_and(is_id) => {
                 let id = file.strip_suffix(".zip").unwrap();
                 let Ok(bytes) = fs::read(traces.join(id).join("trace.zip")) else { return Some(json_reply(404, json!({ "error": "unknown trace" }))) };
@@ -1076,7 +1091,7 @@ async fn handle(State(app): State<Arc<App>>, request: Request) -> Response {
     if let Some(res) = devices_route(&app, &parts).await {
         return res;
     }
-    let upload = parts.method == Method::POST && parts.uri.path() == "/api/traces";
+    let upload = parts.method == Method::POST && ["/api/traces", "/api/traces/report"].contains(&parts.uri.path());
     // Uploads are read and verified in memory (up to the inflated cap each): a few at a time,
     // and the turn is taken before the body is read, so waiting ones hold no memory.
     static UPLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
@@ -1241,7 +1256,7 @@ fn dispatch(app: &App, req: &Req) -> Response {
 
     // ---- everything below needs a session, or one of the signed links ----
     if req.method == Method::POST && req.path == "/api/traces" {
-        return app.receive_trace(req);
+        return app.receive_trace(req, false);
     }
     // AltSource: clients have no cookie; the feed has its lasting token, its links their own.
     if let Some(routed) = app.alt_source_routes(req) {

@@ -392,7 +392,8 @@ Apparition lists it under **Sent from your computers**.
 ## Debug traces and the key ledger
 
 Apps that link DebugTrace upload a trace zip to `POST /api/traces` from their Debug Trace sheet; the
-web page's Traces view lists them and also takes a dropped `.zip` (one shared by AirDrop, say).
+web page's Traces view lists them and also takes a dropped `.zip` (one shared by AirDrop, say), or
+an encrypted problem report (`.trace`, [below](#problem-reports-from-public-copies)).
 
 - **Keys.** Every dev build of a DebugTrace app gets a fresh Ed25519 key pair from `apparition
   build`. The private half goes into `DebugTraceCredential.plist` in the app (sealed by the code
@@ -416,7 +417,64 @@ web page's Traces view lists them and also takes a dropped `.zip` (one shared by
   {ok, trace}` or `{error}`. `GET /api/traces`, `GET /api/traces/<id>.zip`, `GET
   /api/traces/<id>/files/<path>` (text served as `text/plain` with `nosniff` and a `default-src
   'none'` CSP, never HTML, since the content came from a device) and `POST /api/traces/<id>/delete`.
+  `POST /api/traces/report` takes an encrypted report, and needs a session.
 - MetricKit reports a trace carries (`crashes/*.json`) are what link it to a crash log.
+
+### Problem reports from public copies
+
+A copy from the release site has no build key, so its Report a Problem makes an **encrypted
+report**: a `.trace` file, the trace zip sealed to the maintainer's public key (HPKE, RFC 9180:
+X25519, HKDF-SHA256, ChaCha20-Poly1305; the layout is in DebugTrace's `Docs/traces.md`). The
+person attaches it to a public issue, and only the Mac holding the private key can open it.
+
+- **The key.** `debugtrace-decrypt keygen` (in DebugTrace's `Tools/debugtrace-decrypt`) makes the
+  pair. The private half is `~/.local/state/debugtrace/report-keys/<key id>.key`, mode 600
+  (`DEBUGTRACE_REPORT_KEYS` names another folder); the public half is built into the app. A file
+  names the key it needs, so old keys keep opening old reports. Back the folder up: nothing else
+  opens a report.
+- **Adding one.** Drop the `.trace` on the **Crashes & traces** page (or **Upload trace…**), or
+  run `apparition crash-reports add <file.trace>...`, which needs no running Store. Either way it
+  is decrypted, checked and unpacked into `data/traces/<traceId>/` like any trace, so
+  `crash-reports show`, the files view and symbolication read it the same way.
+- **The intake rule.** A report is accepted **unsigned**, and that is the one exception to the
+  ledger rule above. Everything else is checked as for a signed trace: the zip's form, every file
+  listed with its size and SHA-256, safe paths, nothing unlisted, the size limits. The record
+  carries `via: "report"` and `report: {keyId, signed}`: the report key it was sealed to, and
+  whether a ledger key also signed it. The page and `crash-reports list` mark it `report`, and
+  `unverified` or `unsigned` when no key vouches for it, and its `build` fields are empty: the app,
+  version, build and device of an unsigned report are **what the sender's copy said**, nothing
+  more.
+  - A report whose manifest names a key **in this Mac's ledger** (one of your own dev builds) must
+    verify against it, bundle ID and build included, or it is refused. It is then stored with the
+    ledger's build details and `signed: true`.
+  - One that names a key this Mac has never seen (another Mac's build) can't be checked, and
+    counts as unsigned.
+- **Who may add one.** The public key ships in a public app, so anyone can seal a file to it:
+  decrypting proves the file was meant for this Mac, not who made it. So a report goes in only
+  through a **signed-in page** (`POST /api/traces/report`: a session, never the service API's
+  bearer or a paired computer) or the command line on this Mac. `POST /api/traces`, which needs no
+  session because a ledger signature is its whole gate, refuses a `.trace` and says where to take
+  it, and still refuses an unsigned zip.
+- **Errors say what to do.** A report sealed to a key this Mac lacks names that key's id and the
+  folder searched; a changed or truncated file says to ask for the original; a file that isn't a
+  report says so.
+
+### Symbols for public releases
+
+`apparition build` keeps each dev build's dSYMs by build ID. A release has no build ID, so its
+symbols are imported once, from the dSYM zips the release attaches
+(`Apparition-<version>-<platform>-dSYMs.zip`, also in `build/dsyms/<version>/` after a release):
+
+```sh
+apparition crash-reports import-dsyms build/dsyms/1.0.0/Apparition-1.0.0-*-dSYMs.zip
+```
+
+Each zip becomes a set of its own, `~/.local/state/debugtrace/dsyms/<bundle id>@release-<version>-<platform>/`,
+indexed by binary UUID like a build's. Signing a copy on a device changes its signature, not the
+binary's UUID, so one import covers every copy installed from that release, and
+`crash-reports show <id>` then resolves a report's app frames to function and line. Importing the
+same zip again changes nothing; a set is never replaced or removed. The command runs DebugTrace's
+`debugtrace-symbolicate import-dsyms`, which works on its own too.
 
 ## Crash logs
 
@@ -430,12 +488,17 @@ symbolicated text and the trace linked by bundle ID, `pid` and time.
 
 - **`apparition crash-reports`** reads the Store's data folder directly (`STORE_DATA` names another),
   so it needs no login and works while the Store is stopped:
-  - `list [--app TEXT] [--device NAME]`: crash logs, then traces, newest first.
+  - `list [--app TEXT] [--device NAME]`: crash logs, then traces, newest first. A problem report
+    shows `report` where a trace shows its device, and `unsigned` when no key vouches for it.
   - `show <id>`: a crash log's symbolicated stack, or a trace's MetricKit reports. An id is any
     unambiguous prefix of what `list` prints.
   - `done <id>... [--dry-run]`: investigated and fixed. It moves the crash log's `.ips`, its text
     and the linked trace to the Trash, never deletes them. The Store forgets a crash log whose files
     are gone.
+  - `add <file.trace>...`: open an encrypted problem report and keep its trace
+    ([Problem reports from public copies](#problem-reports-from-public-copies)).
+  - `import-dsyms <dSYMs.zip>...`: keep a release's symbols
+    ([Symbols for public releases](#symbols-for-public-releases)).
   Clean up only what you investigated and fixed.
 - **API.** `GET /api/crashlogs` returns `{crashLogs, pull}`; `GET /api/crashlogs/<id>/ips` and
   `/symbolicated` serve text as `text/plain`, never HTML. Nothing here skips the session.
@@ -621,7 +684,8 @@ The Debug window is the same page signed in by a one-time link, with the pages o
   (behind `tailscale serve` every client is 127.0.0.1). A non-GET with a foreign `Origin` is refused.
   A Store with no password and the pages off has no browser sessions at all.
 - **What works without a session**, each with its own check:
-  - `POST /api/traces`: only traces signed by a key in this Mac's ledger are kept.
+  - `POST /api/traces`: only traces signed by a key in this Mac's ledger are kept. (An encrypted
+    problem report is unsigned, and so needs a session: `POST /api/traces/report`.)
   - OTA manifests and IPAs: signed links, valid for an hour.
   - The AltStore source, when enabled: its URL carries a lasting token (`altSource.token`, else one
     derived from `data/secret`; delete that file to rotate it, which also signs every other link

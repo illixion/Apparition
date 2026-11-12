@@ -35,7 +35,9 @@ Three crates carry it, plus the desktop app that hosts it.
     that arrives from another computer. `devices.rs`: the `Devices` trait.
   - `traces.rs`, `crashlogs.rs`, `debug.rs`, `mcp.rs`: trace verification and storage, crash logs
     (read side), the apps' debug servers (own Bonjour browse, the proxy, panels) and the MCP server
-    at `/mcp`. `altsource.rs`, `macapps.rs`: the two feeds. `assets.rs`: the web pages, compiled in
+    at `/mcp`. `reports.rs`: opening encrypted problem reports (`.trace`), DebugTrace's one HPKE
+    suite over `x25519-dalek` and ring, checked against RFC 9180's vectors and a CryptoKit-sealed
+    fixture; `traces::receive_report` is their intake (STORE.md, "Problem reports from public copies"). `altsource.rs`, `macapps.rs`: the two feeds. `assets.rs`: the web pages, compiled in
     from `service/public`.
 - **`installer/` (the `apparition` command line)**: `builder/` is `apparition build` (below),
   `developer.rs` is `apparition mac`, `deploy`, `mcp` and `updates` (a client of the Store over the

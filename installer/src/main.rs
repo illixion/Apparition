@@ -192,9 +192,12 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       projects, queue builds and follow their logs, re-sign, and the OTA, AltStore and Mac download
       links. `apparition store help` for each.
   apparition crash-reports list [--app <text>] [--device <name>] | show <id> | done <id>... [--dry-run]
+          | add <file.trace>... | import-dsyms <dSYMs.zip>...
       What the Store holds about crashes: crash logs pulled off devices and uploaded debug traces,
       newest first. show prints a crash log symbolicated (or a trace's MetricKit reports); done
       moves what you investigated to the Trash. An id is any unambiguous prefix of what list prints.
+      add opens an encrypted problem report (a .trace file from a public copy) with this Mac's
+      report key and keeps its trace; import-dsyms keeps a release's symbols so its crashes resolve.
       Reads the Store's data folder directly (STORE_DATA to use another), so it needs no login.
   apparition mcp [--local]
       An MCP server on stdin/stdout for agents here: the apps' debug servers the Mac can see

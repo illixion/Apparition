@@ -7,6 +7,11 @@
 //! `crashlogs/index.json` (`entries`, each with `id`, `file`, `symbolicated`, `traceId`, ...) and
 //! `traces/<id>/meta.json`. `done` moves files to the Trash, never deletes: the Store forgets a
 //! crash log whose files are gone.
+//!
+//! `add` is the one command that writes a trace: it opens an encrypted problem report (the
+//! `.trace` file a public copy's Report a Problem makes) with this Mac's report key and stores
+//! the trace inside, as dropping the file on the Store's page does. `import-dsyms` puts a
+//! release's dSYMs where the symbolicator looks, so those reports' crashes resolve.
 
 use std::{
     io::Write,
@@ -20,12 +25,17 @@ use serde_json::Value;
 pub const USAGE: &str = "usage: apparition crash-reports list [--app TEXT] [--device NAME]   crash logs, then traces, newest first
        apparition crash-reports show <id>                           a crash log's symbolicated stack, or a trace's MetricKit reports
        apparition crash-reports done <id>... [--dry-run]            investigated and fixed: move it to the Trash
+       apparition crash-reports add <file.trace>...                 open an encrypted problem report and keep its trace
+       apparition crash-reports import-dsyms <dSYMs.zip>...         keep a release's symbols, so its crash reports symbolicate
        an id is any unambiguous prefix of what `list` prints; STORE_DATA names another data folder";
 
 /// Where the Store keeps its data, and where the Trash is.
 struct Folders {
     data: PathBuf,
     config: PathBuf,
+    /// The key ledger `apparition build` writes, and the keys that open encrypted reports.
+    ledger: PathBuf,
+    report_keys: PathBuf,
     /// Overrides the platform's Trash (tests, mostly).
     trash: Option<Trash>,
 }
@@ -38,7 +48,13 @@ impl Folders {
         let config = std::env::var_os("STORE_CONFIG").map(PathBuf::from).unwrap_or_else(|| {
             if data == default_data { store.join("config.json") } else { data.parent().unwrap_or(&data).join("config.json") }
         });
-        Folders { data, config, trash: None }
+        Folders {
+            data,
+            config,
+            ledger: apparition_service::traces::default_key_dir(),
+            report_keys: apparition_service::reports::default_key_dir(),
+            trash: None,
+        }
     }
 
     fn crash_dir(&self) -> PathBuf {
@@ -152,13 +168,15 @@ fn when(ms: f64) -> String {
 
 // MARK: Commands
 
-/// One of `list`, `show` and `done`. Returns the exit code to leave with, which is the symbolicator's
-/// own for `show`.
+/// One of `list`, `show`, `done`, `add` and `import-dsyms`. Returns the exit code to leave with, which
+/// is the symbolicator's own for `show` and `import-dsyms`.
 fn execute(folders: &Folders, args: &[String], out: &mut dyn Write) -> Result<i32, String> {
     match args.first().map(String::as_str) {
         Some("list") => list(folders, &args[1..], out).map(|()| 0),
         Some("show") => show(folders, args.get(1).map(String::as_str), out),
         Some("done") => done(folders, &args[1..], out).map(|()| 0),
+        Some("add") => add(folders, &args[1..], out).map(|()| 0),
+        Some("import-dsyms") => import_dsyms(folders, &args[1..], out),
         _ => Err(USAGE.to_string()),
     }
 }
@@ -211,13 +229,17 @@ fn list(folders: &Folders, args: &[String], out: &mut dyn Write) -> Result<(), S
     for t in &traces {
         let reports = t["files"].as_array().into_iter().flatten().filter(|f| str_of(&f["path"]).starts_with("crashes/")).count();
         let reports = if reports > 0 { format!("{reports} MetricKit report(s)  ") } else { String::new() };
+        // A problem report has no device this Mac installed to. Unsigned, its app and build are
+        // only what the sender's copy said.
+        let report = t.get("report").filter(|r| r.is_object());
+        let unsigned = if report.is_some_and(|r| r["signed"] != true) { "unsigned  " } else { "" };
         write_line(
             out,
             format!(
-                "  {}  {}  {:<8} {:<16} {:<14} {reports}{}",
+                "  {}  {}  {:<8} {:<16} {:<14} {unsigned}{reports}{}",
                 head(str_of(&t["id"])),
                 when(number(&t["receivedAt"])),
-                truthy(&t["build"]["installedTo"]).unwrap_or(""),
+                if report.is_some() { "report" } else { truthy(&t["build"]["installedTo"]).unwrap_or("") },
                 js_string(&t["app"]["name"], "undefined"),
                 js_string(&t["app"]["build"], "undefined"),
                 truthy(&t["note"]).unwrap_or(""),
@@ -295,6 +317,62 @@ fn symbolicate(folders: &Folders, target: &str, out: &mut dyn Write) -> Result<i
         .arg(target)
         .env("STORE_DATA", &folders.data)
         .status()
+        .map_err(|e| format!("could not run {python}: {e}"))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Opens each encrypted report with the report key it names and stores the trace inside. The
+/// same intake as the Store page's drop (`traces::receive_report`): everything is checked but the
+/// signature, which a public copy cannot make.
+fn add(folders: &Folders, args: &[String], out: &mut dyn Write) -> Result<(), String> {
+    if args.is_empty() || args.iter().any(|a| a.starts_with("--")) {
+        return Err("usage: apparition crash-reports add <file.trace>...".into());
+    }
+    let config = read_json(&folders.config).unwrap_or(Value::Null);
+    let repo_for_bundle = |bundle: &str| -> Option<String> {
+        config["repos"].as_array()?.iter().find(|r| {
+            ["platforms", "macApps"].iter().filter_map(|k| r.get(k)?.as_array()).flatten().any(|p| p["bundleId"].as_str() == Some(bundle))
+        })?["name"].as_str().map(String::from)
+    };
+    let dir = folders.trace_dir();
+    for path in args {
+        let sealed = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let upload = apparition_service::traces::Upload {
+            dir: &dir, key_dir: &folders.ledger, now_ms: now_ms() as u64, via_web: false, uploader: None, repo_for_bundle: &repo_for_bundle,
+        };
+        let (status, meta) = apparition_service::traces::receive_report(&sealed, &upload, &folders.report_keys)
+            .map_err(|apparition_service::traces::TraceError(_, message)| format!("{path}: {message}"))?;
+        let app = &meta["app"];
+        let what = format!(
+            "{}{} ({})",
+            truthy(&app["name"]).unwrap_or("an app"),
+            truthy(&app["version"]).map(|v| format!(" {v}")).unwrap_or_default(),
+            truthy(&app["build"]).unwrap_or("?")
+        );
+        let id = head(str_of(&meta["id"]));
+        let line = if status == 200 {
+            format!("already have {id}  {what}")
+        } else if meta["report"]["signed"] == true {
+            format!("added {id}  {what}, a build this Mac made")
+        } else {
+            format!("added {id}  {what}  unsigned: the app, build and device are what the sender's copy said")
+        };
+        write_line(out, line)?;
+        write_line(out, format!("  files: {}", dir.join(str_of(&meta["id"])).join("files").display()))?;
+    }
+    Ok(())
+}
+
+/// Hands release dSYM zips to the symbolicator's `import-dsyms`, which keeps them in the symbol
+/// archive it reads, indexed by binary UUID.
+fn import_dsyms(folders: &Folders, args: &[String], out: &mut dyn Write) -> Result<i32, String> {
+    if args.is_empty() {
+        return Err("usage: apparition crash-reports import-dsyms <dSYMs.zip>...".into());
+    }
+    let tool = symbolicate_tool(folders)?;
+    out.flush().map_err(|e| e.to_string())?;
+    let python = if cfg!(target_os = "macos") { "/usr/bin/python3" } else if cfg!(windows) { "python" } else { "python3" };
+    let status = Command::new(python).arg("-I").arg(&tool).arg("import-dsyms").args(args).status()
         .map_err(|e| format!("could not run {python}: {e}"))?;
     Ok(status.code().unwrap_or(1))
 }
@@ -487,7 +565,13 @@ mod tests {
     }
 
     fn folders(dir: &tempfile::TempDir) -> Folders {
-        Folders { data: dir.path().join("data"), config: dir.path().join("config.json"), trash: Some(Trash { files: dir.path().join("trash/files"), info: None }) }
+        Folders {
+            data: dir.path().join("data"),
+            config: dir.path().join("config.json"),
+            ledger: dir.path().join("keys"),
+            report_keys: dir.path().join("report-keys"),
+            trash: Some(Trash { files: dir.path().join("trash/files"), info: None }),
+        }
     }
 
     fn cli(f: &Folders, args: &[&str]) -> (Result<i32, String>, String) {
@@ -511,6 +595,56 @@ mod tests {
         assert_eq!(lines[2], "Traces (1):");
         assert_eq!(lines[3], format!("  bbbb2222  {}  AVP      App              abc            1 MetricKit report(s)  ", when(1.0)));
         assert_eq!(lines.len(), 4);
+    }
+
+    /// The CryptoKit-sealed report and its throwaway key from the service's fixtures.
+    fn report_fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../service/tests/fixtures/report")
+    }
+
+    #[test]
+    fn add_opens_a_report_and_list_marks_it_unsigned() {
+        let dir = data();
+        let mut f = folders(&dir);
+        f.report_keys = report_fixture().join("keys");
+        let file = report_fixture().join("cryptokit.trace");
+        let file = file.to_str().unwrap();
+
+        let (result, out) = cli(&f, &["add", file]);
+        assert_eq!(result, Ok(0), "{out}");
+        let stored = dir.path().join("data/traces/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+        assert_eq!(out, format!(
+            "added aaaaaaaa  Public App 1.0.0 (298)  unsigned: the app, build and device are what the sender's copy said\n  files: {}\n",
+            stored.join("files").display()));
+        assert!(std::fs::read_to_string(stored.join("files/logs.txt")).unwrap().starts_with("# the app's own log"));
+        let meta = read_json(&stored.join("meta.json")).unwrap();
+        assert_eq!((&meta["via"], &meta["report"]), (&json!("report"), &json!({ "keyId": "a5d2ee9eadd96f4a", "signed": false })));
+
+        let (result, out) = cli(&f, &["add", file]);
+        assert_eq!(result, Ok(0));
+        assert!(out.starts_with("already have aaaaaaaa  Public App 1.0.0 (298)\n"), "{out}");
+
+        let (_, out) = cli(&f, &["list", "--app", "public"]);
+        assert_eq!(out.lines().nth(2).unwrap(), format!(
+            "  aaaaaaaa  {}  report   Public App       298            unsigned  It stopped refreshing after the update.", when(number(&meta["receivedAt"]))));
+        // A report was installed nowhere by this Mac, so no device filter finds it.
+        let (_, out) = cli(&f, &["list", "--device", "report"]);
+        assert!(out.contains("Traces (0):"), "{out}");
+    }
+
+    #[test]
+    fn add_says_which_key_a_report_needs_and_takes_nothing_else() {
+        let dir = data();
+        let f = folders(&dir);
+        let file = report_fixture().join("cryptokit.trace");
+        let error = cli(&f, &["add", file.to_str().unwrap()]).0.unwrap_err();
+        assert!(error.contains("cryptokit.trace: this report is encrypted to key a5d2ee9eadd96f4a, which is not in "), "{error}");
+        let zip = report_fixture().join("report.zip");
+        let error = cli(&f, &["add", zip.to_str().unwrap()]).0.unwrap_err();
+        assert!(error.contains("report.zip: not an encrypted report: no magic."), "{error}");
+        assert_eq!(cli(&f, &["add"]).0, Err("usage: apparition crash-reports add <file.trace>...".into()));
+        assert_eq!(cli(&f, &["import-dsyms"]).0, Err("usage: apparition crash-reports import-dsyms <dSYMs.zip>...".into()));
+        assert!(!dir.path().join("data/traces/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee").exists());
     }
 
     #[test]

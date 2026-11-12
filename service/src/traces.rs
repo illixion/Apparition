@@ -5,6 +5,9 @@
 //! entries only, every path relative and plain, every file listed in the signed manifest with its
 //! size and SHA-256, and nothing in the zip the manifest does not list. The signing key must be
 //! one `build-and-sign` recorded in the key ledger, for this bundle id and build.
+//!
+//! One other way in: an encrypted problem report (`receive_report`, `reports.rs`), which a person
+//! at this Mac adds and which is taken unsigned, marked as a report.
 
 use flate2::read::DeflateDecoder;
 use ring::{digest, signature};
@@ -175,11 +178,27 @@ fn trace_key(key_dir: &Path, key_id: &str) -> Option<Value> {
 
 pub struct Verified {
     pub manifest: Value,
-    pub key: Value,
+    /// The ledger record of the key that signed it. None only for a report, which is taken
+    /// unsigned (`verify_report`).
+    pub key: Option<Value>,
     pub files: Vec<(String, Vec<u8>)>,
 }
 
+/// A trace an app uploads, or a zip dropped on the page: signed by a key in the ledger.
 pub fn verify(buf: &[u8], key_dir: &Path) -> Result<Verified, TraceError> {
+    check(buf, key_dir, false)
+}
+
+/// The zip inside an encrypted report (`reports::open`). A public copy has no build key, so its
+/// trace is unsigned, and that is accepted here and nowhere else: `key` is then None. Every
+/// other rule stands. A signature that names a key in this Mac's ledger must still verify, so a
+/// report from one of this Mac's own builds is held to its build; one that names a key this
+/// Mac has never seen (another Mac's build) can't be checked and counts as unsigned.
+pub fn verify_report(buf: &[u8], key_dir: &Path) -> Result<Verified, TraceError> {
+    check(buf, key_dir, true)
+}
+
+fn check(buf: &[u8], key_dir: &Path, report: bool) -> Result<Verified, TraceError> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let entries = zip_entries(buf)?;
     let mut by_name: HashMap<&str, &Entry> = HashMap::new();
@@ -205,31 +224,44 @@ pub fn verify(buf: &[u8], key_dir: &Path) -> Result<Verified, TraceError> {
         return Err(TraceError::new(400, "manifest has no valid traceId"));
     }
     let signature_info = manifest.get("signature").filter(|s| !s.is_null() && s.as_bool() != Some(false));
-    let (Some(signature_info), Some(sig_entry)) = (signature_info, by_name.get("manifest.sig")) else {
-        return Err(TraceError::new(403, "unsigned trace: only apps built by apparition build carry a key; share this one as a file instead"));
+    let signed = match (signature_info, by_name.get("manifest.sig")) {
+        (Some(info), Some(entry)) => Some((info, entry)),
+        _ if report => None,
+        _ => return Err(TraceError::new(403, "unsigned trace: only apps built by apparition build carry a key; share this one as a file instead")),
     };
-    if signature_info.get("algorithm").and_then(Value::as_str) != Some("ed25519") {
-        return Err(TraceError::new(400, format!("unsupported signature {}", js(signature_info.get("algorithm")).trim_matches('"'))));
-    }
-    let key_id = signature_info.get("keyId").and_then(Value::as_str).unwrap_or("");
-    let key = trace_key(key_dir, key_id).ok_or_else(|| TraceError::new(403, format!(
-        "signing key {} is not in this store's ledger (built on another Mac, or the ledger was cleared)", js(signature_info.get("keyId")).trim_matches('"'))))?;
-    let public = STANDARD.decode(key.get("publicKey").and_then(Value::as_str).unwrap_or("")).unwrap_or_default();
-    let sig = zip_read(buf, sig_entry, Some(64))?;
-    if signature::UnparsedPublicKey::new(&signature::ED25519, &public).verify(&manifest_bytes, &sig).is_err() {
-        return Err(TraceError::new(403, "manifest.sig does not verify"));
-    }
-    let claimed_bundle = string_at(&manifest, &["app", "bundleId"]);
-    if claimed_bundle != string_at(&key, &["bundleId"]) {
-        return Err(TraceError::new(403, format!("trace claims {}, but key {} belongs to {}",
-            claimed_bundle.unwrap_or("undefined"), key_id, string_at(&key, &["bundleId"]).unwrap_or("undefined"))));
-    }
-    if let Some(build) = key.get("build").filter(|b| !b.is_null() && b.as_str() != Some("")) {
-        if manifest.get("app").and_then(|a| a.get("build")) != Some(build) {
-            return Err(TraceError::new(403, format!("trace claims build {}, but key {} belongs to build {}",
-                js(manifest.get("app").and_then(|a| a.get("build"))).trim_matches('"'), key_id, build.as_str().map_or(build.to_string(), String::from))));
+    let key = match signed {
+        None => None,
+        Some((info, sig_entry)) => {
+            let key_id = info.get("keyId").and_then(Value::as_str).unwrap_or("");
+            let ed25519 = info.get("algorithm").and_then(Value::as_str) == Some("ed25519");
+            match trace_key(key_dir, key_id).filter(|_| ed25519 || !report) {
+                // Nothing on this Mac can check it: an unsigned report.
+                None if report => None,
+                _ if !ed25519 => return Err(TraceError::new(400, format!("unsupported signature {}", js(info.get("algorithm")).trim_matches('"')))),
+                None => return Err(TraceError::new(403, format!(
+                    "signing key {} is not in this store's ledger (built on another Mac, or the ledger was cleared)", js(info.get("keyId")).trim_matches('"')))),
+                Some(key) => {
+                    let public = STANDARD.decode(key.get("publicKey").and_then(Value::as_str).unwrap_or("")).unwrap_or_default();
+                    let sig = zip_read(buf, sig_entry, Some(64))?;
+                    if signature::UnparsedPublicKey::new(&signature::ED25519, &public).verify(&manifest_bytes, &sig).is_err() {
+                        return Err(TraceError::new(403, "manifest.sig does not verify"));
+                    }
+                    let claimed_bundle = string_at(&manifest, &["app", "bundleId"]);
+                    if claimed_bundle != string_at(&key, &["bundleId"]) {
+                        return Err(TraceError::new(403, format!("trace claims {}, but key {} belongs to {}",
+                            claimed_bundle.unwrap_or("undefined"), key_id, string_at(&key, &["bundleId"]).unwrap_or("undefined"))));
+                    }
+                    if let Some(build) = key.get("build").filter(|b| !b.is_null() && b.as_str() != Some("")) {
+                        if manifest.get("app").and_then(|a| a.get("build")) != Some(build) {
+                            return Err(TraceError::new(403, format!("trace claims build {}, but key {} belongs to build {}",
+                                js(manifest.get("app").and_then(|a| a.get("build"))).trim_matches('"'), key_id, build.as_str().map_or(build.to_string(), String::from))));
+                        }
+                    }
+                    Some(key)
+                }
+            }
         }
-    }
+    };
     let listed = manifest.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
     let mut expected: HashSet<String> = ["manifest.json".to_string(), "manifest.sig".to_string()].into();
     let mut files = Vec::new();
@@ -294,7 +326,34 @@ pub struct Upload<'a> {
 }
 
 pub fn receive(buf: &[u8], up: &Upload) -> Result<(u16, Value), TraceError> {
-    let Verified { manifest, key, files } = verify(buf, up.key_dir)?;
+    store(buf, verify(buf, up.key_dir)?, up, None)
+}
+
+/// A problem report: an encrypted `.trace`, opened with the report key it names
+/// (`reports::open`), then checked and stored as any trace is, so `crash-reports` and
+/// symbolication read it the same way.
+///
+/// **Who may add one, and what it proves.** The report key's public half ships in a public
+/// app, so anyone can seal a file to it: decrypting proves only that the file was meant for this
+/// Mac. That is why this is not what `POST /api/traces` does, which takes anything from anyone
+/// because a ledger signature is its whole gate. A report is added by a person at this Mac's
+/// Store (its page behind a session, or `apparition crash-reports add`), who chose the file.
+/// The trace inside is accepted unsigned, and the record says so: `via` is `report` and `report`
+/// holds the report key's id and whether a ledger key verified it. The app, build and device
+/// in an unsigned report are what the sender's copy said, not something a key vouches for.
+pub fn receive_report(sealed: &[u8], up: &Upload, report_keys: &Path) -> Result<(u16, Value), TraceError> {
+    let (zip, report_key) = crate::reports::open(sealed, report_keys)?;
+    if zip.len() > MAX_UPLOAD {
+        return Err(TraceError::new(413, format!("the trace inside is larger than {} MB", MAX_UPLOAD >> 20)));
+    }
+    let verified = verify_report(&zip, up.key_dir)?;
+    store(&zip, verified, up, Some(&report_key))
+}
+
+/// Unpacks a checked trace into `<dir>/<trace id>/`. `report_key` is the id of the report key
+/// it was encrypted to, for one that came as a report.
+fn store(buf: &[u8], verified: Verified, up: &Upload, report_key: Option<&str>) -> Result<(u16, Value), TraceError> {
+    let Verified { manifest, key, files } = verified;
     let id = manifest["traceId"].as_str().unwrap().to_string();
     if let Some(mut meta) = read_meta(up.dir, &id) {
         meta["duplicate"] = Value::Bool(true);
@@ -312,18 +371,28 @@ pub fn receive(buf: &[u8], up: &Upload) -> Result<(u16, Value), TraceError> {
         fs::create_dir_all(dest.parent().unwrap()).map_err(io)?;
         fs::write(dest, data).map_err(io)?;
     }
-    let bundle = key["bundleId"].as_str().unwrap_or("");
     let mut build = Map::new();
-    let key_id = key["keyId"].clone();
-    build.insert("keyId".into(), key_id.clone());
-    build.insert("buildId".into(), key.get("buildId").filter(|v| !v.is_null()).cloned().unwrap_or(key_id));
-    build.insert("repo".into(), (up.repo_for_bundle)(bundle).map_or(Value::Null, Value::String));
-    for (name, from) in [("branch", "branch"), ("platform", "platform"), ("configuration", "configuration"), ("installedTo", "device"), ("builtAt", "createdAt")] {
-        build.insert(name.into(), key.get(from).filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null));
+    match &key {
+        Some(key) => {
+            let bundle = key["bundleId"].as_str().unwrap_or("");
+            let key_id = key["keyId"].clone();
+            build.insert("keyId".into(), key_id.clone());
+            build.insert("buildId".into(), key.get("buildId").filter(|v| !v.is_null()).cloned().unwrap_or(key_id));
+            build.insert("repo".into(), (up.repo_for_bundle)(bundle).map_or(Value::Null, Value::String));
+            for (name, from) in [("branch", "branch"), ("platform", "platform"), ("configuration", "configuration"), ("installedTo", "device"), ("builtAt", "createdAt")] {
+                build.insert(name.into(), key.get(from).filter(|v| !v.is_null()).cloned().unwrap_or(Value::Null));
+            }
+        }
+        // No ledger record: nothing here is known about the build, and nothing is claimed.
+        None => {
+            for name in ["keyId", "buildId", "repo", "branch", "platform", "configuration", "installedTo", "builtAt"] {
+                build.insert(name.into(), Value::Null);
+            }
+        }
     }
-    let meta = json!({
+    let mut meta = json!({
         "id": id, "receivedAt": up.now_ms, "bytes": buf.len(),
-        "via": if up.via_web { "web" } else { "app" },
+        "via": if report_key.is_some() { "report" } else if up.via_web { "web" } else { "app" },
         "uploader": up.uploader,
         "createdAt": manifest.get("createdAt"), "session": manifest.get("session"),
         "note": manifest.get("note").filter(|n| !n.is_null() && n.as_str() != Some("")).cloned().unwrap_or(Value::Null),
@@ -331,6 +400,9 @@ pub fn receive(buf: &[u8], up: &Upload) -> Result<(u16, Value), TraceError> {
         "build": Value::Object(build),
         "files": files.iter().map(|(p, d)| json!({ "path": p, "bytes": d.len() })).collect::<Vec<_>>(),
     });
+    if let Some(report_key) = report_key {
+        meta["report"] = json!({ "keyId": report_key, "signed": key.is_some() });
+    }
     fs::write(tmp.join("meta.json"), serde_json::to_string_pretty(&meta).unwrap()).map_err(io)?;
     fs::rename(&tmp, up.dir.join(&id)).map_err(io)?;
     prune(up.dir);

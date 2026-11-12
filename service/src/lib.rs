@@ -25,6 +25,7 @@ pub mod git;
 pub mod install_mode;
 pub mod mcp;
 pub mod queue;
+pub mod reports;
 pub mod state;
 pub mod traces;
 pub mod updates;
