@@ -15,6 +15,7 @@ use std::{
 
 use serde_json::json;
 
+#[derive(Clone, Copy)]
 pub struct Detached<'a> {
     pub bundle_id: &'a str,
     pub device: &'a str,
@@ -96,11 +97,25 @@ pub fn detached(d: Detached) -> Result<u32, String> {
     let _ = fs::remove_file(d.pidfile);
     let output = tail(d.log, 15);
     Err(format!(
-        "Failed to launch {} on {} through Apparition: {}.\n  The app is installed. A headset has to be worn (or the device unlocked) to launch; then build again with --run.{}",
+        "Failed to launch {} on {} through Apparition: {}.\n  The app is installed. A headset may need to be worn (or the device unlocked); check the device connection and retry.{}",
         d.bundle_id, d.device,
         if output.trim().is_empty() { format!("no answer in {} s", d.wait.as_secs()) } else { "it stopped".to_string() },
         if output.trim().is_empty() { String::new() } else { format!("\n---- launch output ----\n{output}") }
     ))
+}
+
+/// Opens the device's Apparition app through Xcode's tunnel, so the full Apparition route can be
+/// retried for the requested app (including console and JIT launches).
+pub fn open_apparition_with_devicectl(device_id: &str) -> Result<(), String> {
+    let output = Command::new("/usr/bin/xcrun")
+        .args(["devicectl", "device", "process", "launch", "--device", device_id,
+            "--timeout", "30", "com.illixion.apparition"])
+        .output()
+        .map_err(|e| format!("couldn't start xcrun devicectl: {e}"))?;
+    if output.status.success() { return Ok(()); }
+    let text = String::from_utf8_lossy(&output.stderr);
+    let text = if text.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { text };
+    Err(format!("Xcode's tunnel couldn't open Apparition:\n{}", text.trim()))
 }
 
 /// The port of "listening on port N" in the console log, waiting up to `wait` for it.

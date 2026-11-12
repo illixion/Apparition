@@ -1072,10 +1072,21 @@ impl Build {
                 else { environment.push(("OS_ACTIVITY_DT_MODE".into(), "YES".into())) }
                 if mcp_session { environment.push(("DEBUGTRACE_SERVER".into(), "1".into())) }
                 let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-                let pid = launch::detached(launch::Detached {
-                    bundle_id: &bundle_id, device: &device.name, console: true, jit: o.jit, environment: &pairs,
+                let launch = launch::Detached {
+                    bundle_id: &bundle_id, device: &device.name,
+                    console: true, jit: o.jit, environment: &pairs,
                     log: &app_log, pidfile: &pidfile, wait: Duration::from_secs(20),
-                })?;
+                };
+                let pid = match launch::detached(launch) {
+                    Ok(pid) => pid,
+                    Err(first) => {
+                        println!("    Apparition's launch route couldn't reach {}: {}", device.name, first.lines().next().unwrap_or("").trim());
+                        println!("    Opening Apparition through Xcode's tunnel (devicectl), then retrying...");
+                        launch::open_apparition_with_devicectl(&device.udid)
+                            .and_then(|()| launch::detached(launch))
+                            .map_err(|second| format!("{first}\n{second}"))?
+                    }
+                };
                 let (mut debug_api, mut note) = (None, None);
                 if let (true, Some(token)) = (mcp_session, token) {
                     let address = device.name.to_lowercase();
