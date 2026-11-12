@@ -69,13 +69,16 @@ struct Settings {
     /// Announce this computer over mDNS, so Find Companion lists it. Off, devices type its
     /// address; ones that already have it keep connecting as before.
     advertise: bool,
+    /// Record what a sign-in sends to Apple and what comes back, as structure and sizes, in
+    /// `apparition-verbose.log` (apparition_core::verbose). For troubleshooting; off unless chosen.
+    verbose: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         // The relay is what Apparition on a device needs to do anything, so it's on unless
         // turned off; serving anisette to the network is a choice the user makes.
-        Self { relay: true, anisette: AnisetteMode::Off, anisette_server: None, auto_updates: false, advertise: true }
+        Self { relay: true, anisette: AnisetteMode::Off, anisette_server: None, auto_updates: false, advertise: true, verbose: false }
     }
 }
 
@@ -108,9 +111,23 @@ impl CompanionState {
     }
 
     fn set_auto_updates(&self, on: bool) -> Result<(), Failure> {
+        self.change(|settings| settings.auto_updates = on)
+    }
+
+    /// Whether the verbose record of sign-ins is on, as last chosen.
+    pub fn verbose(&self) -> bool {
+        self.settings.lock().unwrap().verbose
+    }
+
+    fn set_verbose(&self, on: bool) -> Result<(), Failure> {
+        self.change(|settings| settings.verbose = on)
+    }
+
+    /// Saves `edit` applied to the settings, and keeps them only if the save worked.
+    fn change(&self, edit: impl FnOnce(&mut Settings)) -> Result<(), Failure> {
         let mut settings = self.settings.lock().unwrap();
         let mut next = settings.clone();
-        next.auto_updates = on;
+        edit(&mut next);
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(|error| Failure::new(error.to_string()))?;
         }
@@ -477,6 +494,53 @@ pub fn hide_window(app: &AppHandle) {
 
 // MARK: Commands
 
+/// The verbose record of sign-ins, for the Companion tab: whether it is on, where it is and how big.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerboseLog {
+    on: bool,
+    path: Option<String>,
+    bytes: u64,
+}
+
+fn verbose_log_state() -> VerboseLog {
+    let path = apparition_core::verbose::path();
+    let bytes = path.as_ref().and_then(|path| std::fs::metadata(path).ok()).map_or(0, |meta| meta.len());
+    VerboseLog { on: apparition_core::verbose::is_on(), path: path.map(|path| path.display().to_string()), bytes }
+}
+
+#[tauri::command]
+pub fn verbose_log() -> VerboseLog {
+    verbose_log_state()
+}
+
+/// Switches the record on or off and remembers the choice for the next launch.
+#[tauri::command]
+pub fn set_verbose_log(state: Shared<'_>, on: bool) -> Result<VerboseLog, Failure> {
+    state.set_verbose(on)?;
+    apparition_core::verbose::set(on);
+    Ok(verbose_log_state())
+}
+
+#[tauri::command]
+pub fn clear_verbose_log() -> VerboseLog {
+    apparition_core::verbose::clear();
+    verbose_log_state()
+}
+
+/// Shows the record in the file manager, or the folder it will be in once there is one.
+#[tauri::command]
+pub fn reveal_verbose_log(app: AppHandle) -> Result<(), Failure> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = apparition_core::verbose::path().ok_or_else(|| Failure::new("Logging isn't set up."))?;
+    let result = if path.exists() {
+        app.opener().reveal_item_in_dir(&path)
+    } else {
+        app.opener().open_path(path.parent().unwrap_or(&path).display().to_string(), None::<&str>)
+    };
+    result.map_err(|error| Failure::new(error.to_string()))
+}
+
 #[tauri::command]
 pub fn auto_updates(state: Shared<'_>) -> bool {
     state.auto_updates()
@@ -621,6 +685,23 @@ mod tests {
         assert!(old.anisette_server.is_none());
         let written = serde_json::to_value(&settings).unwrap();
         assert_eq!(written["anisette"], "server");
+    }
+
+    #[test]
+    fn the_verbose_record_is_off_until_chosen_and_the_choice_is_kept() {
+        assert!(!Settings::default().verbose);
+        let old: Settings = serde_json::from_str(r#"{"relay":true,"autoUpdates":true}"#).unwrap();
+        assert!(!old.verbose);
+        let dir = tempfile::tempdir().unwrap();
+        let store = api::DeviceStore { dir: dir.path().to_path_buf() };
+        let state = CompanionState::new(&store);
+        state.set_auto_updates(true).unwrap();
+        state.set_verbose(true).unwrap();
+        let reloaded = CompanionState::new(&store);
+        // Saving one setting keeps the other.
+        assert!(reloaded.verbose() && reloaded.auto_updates());
+        state.set_verbose(false).unwrap();
+        assert!(!CompanionState::new(&store).verbose() && CompanionState::new(&store).auto_updates());
     }
 
     #[test]

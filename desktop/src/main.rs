@@ -41,6 +41,10 @@ fn main() {
     apparition_core::init_logging(&apparition_core::api::DeviceStore::default().dir.join("apparition-core.log"), false);
     let state = Arc::new(flow::State::new());
     let companion_state = Arc::new(companion::CompanionState::new(&apparition_core::api::DeviceStore::default()));
+    // The verbose record of sign-ins, if the person left it on (APPARITION_VERBOSE=1 already did it).
+    if companion_state.verbose() {
+        apparition_core::verbose::set(true);
+    }
     let cleanup = state.clone();
     tauri::Builder::default()
         // Opening the app again shows the running one's window, which is also the way back to
@@ -70,6 +74,10 @@ fn main() {
             updater::check_update,
             updater::update_status,
             updater::install_update,
+            companion::verbose_log,
+            companion::set_verbose_log,
+            companion::clear_verbose_log,
+            companion::reveal_verbose_log,
             flow::open_downloads,
             flow::open_developer_link,
             flow::open_help,

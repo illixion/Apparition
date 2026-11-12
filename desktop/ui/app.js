@@ -1907,6 +1907,27 @@ function buildCompanion() {
       setStatus(vmStatus, p.program || p.helper ? "The VM is downloading…" : "The VM fetched the script.");
     }
   });
+  const verboseOn = /** @type {HTMLInputElement} */ ($(companionPanel, "verbose-on"));
+  const verboseActions = $(companionPanel, "verbose-actions");
+  const verboseStatus = $(companionPanel, "verbose-status");
+  const drawVerbose = (/** @type {{on: boolean, path: string|null, bytes: number}} */ log) => {
+    verboseOn.checked = log.on;
+    // The file appears with the first record, so there is something to show or clear once there is one.
+    verboseActions.hidden = !log.on && !log.bytes;
+    setStatus(verboseStatus, log.bytes ? `${log.path ?? "apparition-verbose.log"} (${megabytes(log.bytes)})` : "");
+  };
+  invoke("verbose_log").then(drawVerbose);
+  verboseOn.addEventListener("change", async () => {
+    try {
+      drawVerbose(await invoke("set_verbose_log", { on: verboseOn.checked }));
+    } catch (error) {
+      verboseOn.checked = !verboseOn.checked;
+      setStatus(verboseStatus, messageOf(error), "error");
+    }
+  });
+  $(companionPanel, "verbose-reveal").addEventListener("click", () =>
+    invoke("reveal_verbose_log").catch((/** @type {any} */ error) => setStatus(verboseStatus, messageOf(error), "error")));
+  $(companionPanel, "verbose-clear").addEventListener("click", async () => drawVerbose(await invoke("clear_verbose_log")));
   // Also the only way to quit where there's no tray to show the menu (niri, plain GNOME).
   $(companionPanel, "quit").addEventListener("click", () => invoke("quit_app"));
   const login = /** @type {HTMLInputElement} */ ($(companionPanel, "login"));

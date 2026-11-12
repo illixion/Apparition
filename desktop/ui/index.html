@@ -199,6 +199,17 @@
     </div>
 
     <div class="group">
+      <h2 class="small">Troubleshooting</h2>
+      <label class="check"><input type="checkbox" role="switch" data-role="verbose-on"><span>Record what a sign-in sends to Apple</span></label>
+      <p class="hint">For finding out what Apple changed. It writes each request a sign-in makes, and the answer, as structure and sizes only: no password, token, key or anisette value. Apple's error text can still name a team or an app ID, so read the file before you post it. Off unless you choose it.</p>
+      <div class="row" data-role="verbose-actions" hidden>
+        <button type="button" class="button quiet small" data-role="verbose-reveal">Show the file</button>
+        <button type="button" class="button quiet small" data-role="verbose-clear">Clear it</button>
+      </div>
+      <p class="status" data-role="verbose-status" hidden></p>
+    </div>
+
+    <div class="group">
       <h2 class="small">Quitting</h2>
       <p class="hint">Closing this window keeps the companion running; open Apparition again to get back here. Quitting stops the relay and the anisette server.</p>
       <div class="row"><button type="button" class="button quiet small" data-role="quit">Quit Apparition</button></div>
