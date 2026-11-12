@@ -109,11 +109,12 @@
 
     <div class="group">
       <h2 class="small">Anisette for your devices</h2>
-      <p class="hint">To sign in to Apple, Apparition on a device and on your other computers needs anisette. A Mac on macOS 26 or earlier (Intel Macs included) offers its own here, and it is the best choice: sign-ins get the normal prompt on your devices. A macOS VM on an Apple-silicon Mac on macOS 27 works too, but Apple texts its sign-ins a code instead. Any computer, a Windows or Linux PC too, can instead pass a third-party anisette server's through, so a device can sign in with no Mac at all if Apple accepts what that server serves. Your devices and computers pair with this companion for either.</p>
+      <p class="hint">To sign in to Apple, Apparition on a device and on your other computers needs anisette. A Mac on macOS 26 or earlier (Intel Macs included) offers its own here, and it is the best choice: sign-ins get the normal prompt on your devices. A macOS VM on an Apple-silicon Mac on macOS 27 works too, but Apple texts its sign-ins a code instead. On a Mac with little memory (8 GB) or a Linux PC, Apparition's own Android anisette needs no VM. Any computer, a Windows or Linux PC too, can instead pass a third-party anisette server's through, so a device can sign in with no Mac at all if Apple accepts what that server serves. Your devices and computers pair with this companion for either.</p>
       <div class="modes compact" data-role="anisette-modes">
         <label class="mode"><input type="radio" name="anisette-mode" value="off"><span class="mode-title">Don't offer it</span><span class="mode-text">This companion relays only.</span></label>
         <label class="mode" data-role="mode-builtin"><input type="radio" name="anisette-mode" value="builtin"><span class="mode-title">This Mac's own</span><span class="mode-text">Made by macOS and sent to paired devices and computers over the encrypted channel. Its HTTP provider listens only on this Mac. It never sees an Apple ID or password.</span></label>
         <label class="mode" data-role="mode-vm" hidden><input type="radio" name="anisette-mode" value="vm"><span class="mode-title">This Mac's anisette VM</span><span class="mode-text">Made by macOS in the VM set up below and sent the same way, over the encrypted channel to paired devices and computers only. The VM wakes in about a second when one signs in, and is saved to disk again when idle.</span></label>
+        <label class="mode" data-role="mode-android" hidden><input type="radio" name="anisette-mode" value="android"><span class="mode-title">Apparition's own (Android libraries)</span><span class="mode-text">Made in this app with the libraries of Apple's Apple Music app for Android, fetched from Apple on first use, and sent to paired devices and computers over the encrypted channel. It needs no VM, so it suits a Mac with 8 GB of memory, or a Mac on macOS 27. Apple turned this kind of anisette away before and may again; a Mac's own is the sure choice.</span></label>
         <label class="mode" data-role="mode-server"><input type="radio" name="anisette-mode" value="server"><span class="mode-title">A third-party anisette server</span><span class="mode-text">An anisette (v3) server at an address you give, yours or someone else's, on any computer. This companion passes paired devices' and computers' anisette requests to it over the encrypted channel, so they never need to reach the server themselves. Only anisette goes there, never an Apple ID or password.</span></label>
       </div>
       <div class="server-config" data-role="server-config" hidden>
@@ -125,7 +126,7 @@
         </div>
         <p class="status" data-role="server-status" hidden></p>
       </div>
-      <p class="hint" data-role="anisette-not-mac" hidden>This computer doesn't give its own anisette: <span data-role="anisette-not-mac-why">only a Mac does</span>. Pair your devices with your Mac's Apparition for signing in, or offer a third-party anisette server above; this companion relays for them either way.</p>
+      <p class="hint" data-role="anisette-not-mac" hidden>This computer doesn't give its own anisette: <span data-role="anisette-not-mac-why">only a Mac does</span>. Pair your devices with your Mac's Apparition for signing in, or offer Apparition's own or a third-party anisette server above; this companion relays for them either way.</p>
       <div class="access" data-role="access" hidden>
         <div class="group-head">
           <h3 class="small">Who can use it</h3>

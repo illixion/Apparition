@@ -1661,7 +1661,7 @@ function buildCompanion() {
       // server" is what starts offering it (so a typo is never offered, and what was on stays on).
       serverEditing = mode === "server";
       if (serverEditing) return refreshCompanion();
-      const note = mode === "builtin" ? "Starting this Mac's anisette…" : mode === "vm" ? "Offering the anisette VM's…" : "";
+      const note = mode === "builtin" ? "Starting this Mac's anisette…" : mode === "vm" ? "Offering the anisette VM's…" : mode === "android" ? "Starting Apparition's own anisette (it fetches its libraries the first time)…" : "";
       companionCall("companion_set_anisette", { mode }, note);
     }),
   );
@@ -2005,6 +2005,7 @@ function drawCompanion(/** @type {any} */ status) {
   const anisette = status.anisette;
   $(companionPanel, "mode-builtin").hidden = !anisette.native;
   $(companionPanel, "mode-vm").hidden = !state.vmAnisette && anisette.mode !== "vm";
+  $(companionPanel, "mode-android").hidden = !anisette.androidAvailable && anisette.mode !== "android";
   $(companionPanel, "anisette-not-mac").hidden = anisette.native || state.vmAnisette;
   $(companionPanel, "anisette-not-mac-why").textContent = anisette.builtinAvailable
     ? "macOS 27 keeps it to itself outside a VM set up for it"

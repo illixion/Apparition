@@ -92,9 +92,10 @@ from macOS on your own Mac, as Xcode does. In order of preference:
    own process, nothing to install or run. The sign-in claims Android, then asks for the Xcode token
    as a Mac, which Apple accepted in a full sign-in on 12 Nov 2026 (2FA, token, teams, app IDs,
    certificates). Apple has changed what it accepts several times since October, once turning this
-   (`anisette::ANDROID_LIBRARIES`) and a future build may turn it off. It serves sign-ins on this
-   computer; the companion doesn't offer it to your devices, which still need a Mac's anisette or a
-   third-party server for their own refreshes.
+   (`anisette::ANDROID_LIBRARIES`) and a future build may turn it off. It signs in on this
+   computer, and the companion can offer it to your devices too (Settings > Companion > Anisette for
+   your devices), which is how a Mac with 8 GB, too little for the anisette VM, or a Mac on macOS 27
+   serves them without a VM.
 4. **A third-party anisette server**, given by address, on any computer, with no Mac at all.
    Apparition supports using one, but doesn't provide or recommend one: you trust whoever runs it,
    and whether it works is Apple's to say. A public Android-based server passed a full sign-in on
@@ -307,10 +308,10 @@ Sharing or a game streaming PC from anywhere, for example with
    Nothing to switch when you leave home or come back, and before it uses another address it
    checks that the same computer answers there.
 3. Under Anisette, choose Use Companion's Anisette: Apparition reaches it at the same Tailscale
-   address, so signing in works away from home too. Anisette for your devices comes from a Mac or a third-party
-   server (Apparition's own Android anisette serves sign-ins on this computer only; see
-   [Anisette](#anisette)): use your Mac (a Mac on macOS 26 or earlier, Intel included, is best;
-   a macOS VM gives SMS codes only), or a third-party server, as this companion, or pair the
+   address, so signing in works away from home too. Anisette for your devices comes from a Mac, from Apparition's own
+   Android anisette or from a third-party server (see [Anisette](#anisette)): use your Mac (a Mac on macOS 26
+   or earlier, Intel included, is best; a macOS VM gives SMS codes only), or Apparition's own (a Mac with 8 GB,
+   or on macOS 27 with no VM, or a Linux PC), or a third-party server, as this companion, or pair the
    device with the Mac as a second companion for signing in.
 4. Keep Tailscale connected on the device when a refresh or a Shortcuts automation runs.
    Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion

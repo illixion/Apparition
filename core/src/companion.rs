@@ -32,6 +32,9 @@ pub enum AnisetteSource {
     Vm,
     /// A third-party anisette server at an address the person gave, passed through the same way, on any computer.
     Server,
+    /// Apparition's own Android anisette (anisette::android), run in this process and served the same way: for a
+    /// Mac that can't give its own, such as an 8 GB one that has no room for the anisette VM, or a Linux computer.
+    Android,
 }
 
 pub struct Companion {
@@ -195,6 +198,24 @@ impl Companion {
         self.share(AnisetteSource::Vm, Offer::Vm(bundle)).await
     }
 
+    /// Serves Apparition's own Android anisette (libraries fetched into `data_dir` on first use) and offers it
+    /// through the encrypted channel to paired devices. Fails where it isn't available (Windows, or switched off by
+    /// [`crate::anisette::ANDROID_LIBRARIES`]).
+    pub async fn share_android_anisette(&self, data_dir: PathBuf) -> Result<(), Report> {
+        #[cfg(all(feature = "anisette", unix))]
+        {
+            if !crate::android_anisette_available() {
+                bail!("Apparition's own Android anisette is switched off in this build.");
+            }
+            self.share(AnisetteSource::Android, Offer::Android(data_dir)).await
+        }
+        #[cfg(not(all(feature = "anisette", unix)))]
+        {
+            let _ = data_dir;
+            bail!("Apparition's own Android anisette runs on macOS and Linux, not here. Pair with a Mac, run an anisette server in Docker, or give a third-party server's address.")
+        }
+    }
+
     /// Passes the third-party anisette server at `address` (see [`crate::anisette::normalize_server_address`])
     /// through to paired devices on the encrypted channel, from any computer. The server isn't asked for anything
     /// until a device uses it; [`crate::check_anisette`] says whether it answers.
@@ -207,7 +228,7 @@ impl Companion {
         let mut served = self.served.lock().await;
         let address = match &offer {
             Offer::Server(address) => Some(address.clone()),
-            #[cfg(all(feature = "anisette", target_os = "macos"))]
+            #[cfg(all(feature = "anisette", unix))]
             _ => None,
         };
         // Serving already the same thing: nothing to restart.
@@ -224,6 +245,8 @@ impl Companion {
                 Offer::Native => crate::anisette::start(bind, access).await,
                 #[cfg(all(feature = "anisette", target_os = "macos"))]
                 Offer::Vm(bundle) => crate::anisette::start_vm(bind, access, bundle).await,
+                #[cfg(all(feature = "anisette", unix))]
+                Offer::Android(data_dir) => crate::anisette::start_android(&data_dir, bind, access).await,
                 Offer::Server(address) => crate::anisette::start_remote(bind, access, &address).await,
             };
             let started = started.context(format!("Couldn't serve anisette on port {port}. If another program uses that port, stop it."))?;
@@ -253,6 +276,8 @@ enum Offer {
     Native,
     #[cfg(all(feature = "anisette", target_os = "macos"))]
     Vm(PathBuf),
+    #[cfg(all(feature = "anisette", unix))]
+    Android(PathBuf),
     /// The third-party server at this (normalised) address.
     Server(String),
 }
@@ -495,5 +520,39 @@ async fn accept_pairings(listener: TcpListener, devices: Arc<PairedDevices>, log
                 Err(_) => log(&format!("pairing from {peer_text} timed out")),
             }
         });
+    }
+}
+
+#[cfg(all(test, feature = "anisette", unix))]
+mod android_offer_tests {
+    use super::*;
+
+    /// The companion offers Apparition's own Android anisette to a paired device: its loopback server answers a
+    /// device's token and refuses another. Fetches Apple Music's libraries: `APPARITION_NET=1`.
+    #[tokio::test]
+    async fn offers_the_android_anisette_to_a_paired_device_only() {
+        if std::env::var_os("APPARITION_NET").is_none() {
+            return;
+        }
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::tempdir().unwrap();
+        let file = serde_json::json!({
+            "host_id": "host",
+            "devices": [{ "id": "device", "name": "Test", "token": "good-token", "paired": 0, "grants": ["anisette"] }],
+        });
+        std::fs::write(dir.path().join("paired-devices.json"), file.to_string()).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let log: Log = Arc::new(|_: &str| {});
+        let companion = Companion::start(0, port, false, dir.path(), log).await.unwrap();
+        assert_eq!(companion.anisette(), None);
+        companion.share_android_anisette(dir.path().to_path_buf()).await.unwrap();
+        assert_eq!(companion.anisette(), Some(AnisetteSource::Android));
+        let client = reqwest::Client::new();
+        let ok: serde_json::Value = client.get(format!("http://127.0.0.1:{port}/t/good-token/v3/client_info")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(ok["apparition_anisette"], "android", "{ok}");
+        let refused = client.get(format!("http://127.0.0.1:{port}/t/bad-token/v3/client_info")).send().await.unwrap();
+        assert!(!refused.status().is_success(), "{}", refused.status());
+        companion.stop_builtin_anisette().await;
+        assert_eq!(companion.anisette(), None);
     }
 }

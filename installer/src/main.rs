@@ -148,11 +148,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       .apparitionsigning file, for that Apple ID's signing here.
   apparition forget <name or UDID>
       Forget a paired device (remove the computer from its Remote Devices list too).
-  apparition relay [--port <port>] [--no-mdns] [--anisette builtin|none] [--no-prompt]
+  apparition relay [--port <port>] [--no-mdns] [--anisette builtin|android|none] [--no-prompt]
       Be the companion for Apparition on your devices: relay its connection back to the
       device (port 49160), and on a Mac that gives its own anisette (macOS 26 or earlier, or a
-      macOS VM set up for it), offer that anisette (builtin, the default there; none offers
-      nothing). Runs until Ctrl-C. Anisette goes only to devices and computers paired with this
+      macOS VM set up for it), offer that anisette (builtin, the default there; android offers Apparition's
+      own Android anisette, on macOS or Linux; none offers nothing). Runs until Ctrl-C. Anisette goes only to devices and computers paired with this
       Mac: one asks to pair (port 49161), both show a six-digit code, and you answer in this
       terminal. Without a terminal, or with --no-prompt, requests are declined: pair in a
       terminal once (paired devices are remembered). All anisette requests use the encrypted
@@ -1784,9 +1784,13 @@ async fn relay(args: &[String]) -> Result<(), Error> {
             companion.share_builtin_anisette().await?;
             println!("Offering this Mac's own anisette to paired devices and computers, over the encrypted channel; Apple TLS stays on the device.");
         }
+        "android" => {
+            companion.share_android_anisette(anisette_dir()).await?;
+            println!("Offering Apparition's own Android anisette to paired devices and computers, over the encrypted channel; Apple TLS stays on the device.");
+        }
         "none" if api::builtin_anisette_available() => println!("Not offering anisette: this Mac doesn't give its own (macOS 27 outside a VM set up for it)."),
         "none" => println!("Not offering anisette: only a Mac does. Pair your devices with your Mac's Apparition for it."),
-        other => return Err(fail(format!("--anisette is builtin or none, not {other}"))),
+        other => return Err(fail(format!("--anisette is builtin, android or none, not {other}"))),
     }
     // The Store running here (the app's or `apparition store serve`), for the computers paired
     // with developer access: looked for again every few seconds, as it starts, stops and moves.
