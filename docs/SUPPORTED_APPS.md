@@ -21,7 +21,7 @@ get working end up here.
 
 "JIT" here is Apparition's **Launch with JIT**, which stays attached as the debugger and
 prepares the memory the app asks for. It works on current chips, where the old
-"attach once" trick doesn't (see the [README](../README.md)).
+"attach once" trick doesn't (see [JIT](JIT.md)).
 
 ## UTM
 
@@ -49,7 +49,7 @@ Vision Pro the prompt opens in its own window (0.3.1 and later).
 ## PPSSPP
 
 PlayStation Portable emulator. A stock PPSSPP runs, but without JIT on devices that enforce
-[the iOS 26 rules](../README.md) (A15 and M2 and later, and Vision Pro): it falls back to its
+[the iOS 26 rules](JIT.md) (A15 and M2 and later, and Vision Pro): it falls back to its
 interpreter, which is slow.
 
 JIT needs PPSSPP to ask the debugger for its code memory with the JIT26 request

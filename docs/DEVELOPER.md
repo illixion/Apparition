@@ -38,7 +38,7 @@ or code changes.
 - Your devices paired with Apparition on the Mac (`apparition pair`, or pairing in the app).
   The Store reads, installs to and launches on a device over that pairing, not Xcode's.
 - For a headset, iPhone or Apple TV away from the Mac: a way to reach the Mac over HTTPS. Tailscale
-  Serve is the easy one (see "Away from home, over Tailscale" in the README).
+  Serve is the easy one (see [Away from home, over Tailscale](REMOTE_ACCESS.md)).
 
 ## Setting up
 
