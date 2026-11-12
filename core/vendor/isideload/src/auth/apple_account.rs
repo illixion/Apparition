@@ -33,6 +33,9 @@ pub struct AppleAccount {
     pub anisette_generator: AnisetteDataGenerator,
     pub grandslam_client: Arc<GrandSlam>,
     pub trusted_phone_numbers: Option<Vec<TrustedNumber>>,
+    /// From `GET /auth` before any push is asked for: Apple's default SMS number when it says it
+    /// has no trusted device for this sign-in. Apple has then already texted the code (hsc 409),
+    /// and asking for a push would only text a second one.
     auto_sms_number: Option<u32>,
     login_state: LoginState,
     debug: bool,
@@ -255,6 +258,8 @@ impl AppleAccount {
                         .send_trusted_device_2fa()
                         .await
                         .context("Failed to complete trusted device 2FA")?;
+                    // Apple texted the code instead: it can only be checked as an SMS code
+                    // for that number (the trusted-device check answers -21669).
                     self.login_state = match sms_number {
                         Some(id) => LoginState::NeedsSMS2FAVerification(id),
                         None => LoginState::NeedsDevice2FAVerification,
@@ -277,6 +282,7 @@ impl AppleAccount {
                                 .verify_trusted_device_2fa(code)
                                 .await
                                 .context("Failed to verify trusted device 2FA")?;
+                            // Taken (hsc 409 asks for it too): code_after_login mustn't ask again.
                             if matches!(self.login_state, LoginState::NeedsLogin) {
                                 self.code_checked = true;
                                 code_taken = true;
@@ -452,8 +458,18 @@ impl AppleAccount {
             .context("Failed to request trusted device 2fa")?;
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
+        // Apple answers 200 whether or not a push goes out, so say what the body holds: its keys
+        // and any error code and message (`ec`, `em`), never values that could be a token.
         info!("Trusted device 2FA request answered {}: {}", status, describe_body(&body));
 
+        // A push that goes out is answered 2xx with an empty body. When Apple won't push to the
+        // trusted devices for this sign-in, it answers with its phone-options state instead: a
+        // 200 web page routed to `auth/verify/phone/options`, or with JSON negotiated, a 412.
+        // That state says `noTrustedDevices: true` and names a default `trustedPhoneNumber` with
+        // `pushMode: sms`: Apple texts the code to that number itself, and it can only be
+        // checked as an SMS code (as a trusted-device code it's -21669 "Incorrect").
+        // A real Mac's sign-in gets a push AND a large non-empty 200 page with no `noTrustedDevices`
+        // in it, so a body alone isn't "no push": Apple must say it has no trusted devices.
         let phone_options = status == reqwest::StatusCode::PRECONDITION_FAILED
             || (status.is_success() && body_flag(&body, "noTrustedDevices") == Some(true));
         if phone_options {
@@ -794,6 +810,8 @@ impl AppleAccount {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
             && let Some(numbers) = json.get("trustedPhoneNumbers")
         {
+            // The same state Apple's phone-options answer carries: with no trusted device it
+            // names the default number it texted. Key names only in the log, never values.
             let no_trusted_devices = json.get("noTrustedDevices").and_then(serde_json::Value::as_bool);
             let default_number = json.get("trustedPhoneNumber");
             let default_sms_id = default_number
@@ -874,6 +892,10 @@ impl AppleAccount {
         let gs_service_url = self.grandslam_client.get_url("gsService")?;
         debug!("GrandSlam service URL: {}", gs_service_url);
 
+        // Sign-in keeps the legacy string flags even for Windows CoreADI: with them Apple answers
+        // trustedDeviceSecondaryAuth and pushes a code. The Boolean flags AuthKitWin uses (pbe/wpbe/
+        // winprot) get hsc 409 instead, which expects AuthKitWin's web flow, and no push arrives
+        // then; nor does a verified SMS code trust the next login.
         let cpd = anisette_data.get_client_provided_data();
 
         let srp_client = srp::Client::<G2048, Sha256>::new_with_options(false);
@@ -1289,6 +1311,9 @@ fn answer_label(response: &TwoFactorCallbackResponse) -> &'static str {
     }
 }
 
+/// The `id` of the default `trustedPhoneNumber` in Apple's phone-options state, when Apple marks
+/// it for SMS. Found in the JSON (412) and in the web page's embedded bootstrap JSON (200) alike;
+/// that object has no nested objects, so it ends at the first `}`.
 fn default_sms_number_id(body: &str) -> Option<u32> {
     let start = body.find("\"trustedPhoneNumber\"")?;
     let rest = &body[start..];
@@ -1338,6 +1363,8 @@ fn describe_body(body: &str) -> String {
 mod phone_options_tests {
     use super::{body_flag, default_sms_number_id};
 
+    // Shapes of Apple's phone-options state, values made up: the 412 JSON (pretty-printed) and
+    // the bootstrap JSON embedded in the 200 web page (compact).
     const JSON_412: &str = r#"{
   "trustedPhoneNumbers" : [ { "numberWithDialCode" : "+1 ••• ••• ••12", "pushMode" : "sms", "id" : 1 } ],
   "noTrustedDevices" : true,

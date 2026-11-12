@@ -1,5 +1,21 @@
-//! Selects client metadata for the configured anisette provider.
-//! Sign-in and developer-token requests can use different client profiles.
+//! Which device the sign-in says it comes from (`X-Mme-Client-Info`), matched to the anisette.
+//!
+//! Apple refuses a sign-in (`-80045`) when the anisette's platform and the claimed one differ. isideload
+//! always claims a Mac (`<Mac15,7> <macOS;27.0;…>`), while an anisette made with Apple Music's Android
+//! libraries must claim Android (`<…><Android; …>`) and a Mac's own anisette (anisette::native) must
+//! claim macOS. The program named at the end of the claim and the User-Agent make no difference.
+//!
+//! So the claim follows the server. Apparition's own says what it serves (`/v3/client_info` carries
+//! `apparition_anisette`). A server that runs the Android libraries but reports a Mac's client info is
+//! recognised by its `Implementation-Version` and gets the Android claim. Any other server is claimed as
+//! the platform it reports: a server on native Mac anisette reports a Mac, and Apple refuses its
+//! provisioning when Android is claimed (401).
+//!
+//! A server reporting the legacy `Mac OS X;10.x` form is claimed as `MAC_CLIENT_INFO` instead: Apple
+//! answers a sign-in claiming that old a Mac with an HTML 403 at the password and SMS 2FA steps. The
+//! server's user agent is kept. That claim is not attested and needs no attestation: only a VM
+//! (`VirtualMac2,1`) is asked for AuthKit's `x-apple-baa-*` headers, and it must claim its real model
+//! (Apparition's own VM server does).
 
 use std::sync::Arc;
 
@@ -20,6 +36,7 @@ pub enum Served {
     Mac,
     /// Made by Apple Music's Android libraries.
     Android,
+    /// Apple's Windows CoreADI, provided by the companion.
     Windows,
 }
 
@@ -45,6 +62,7 @@ impl Served {
 /// What a sign-in through one server claims to be (`X-Mme-Client-Info` and User-Agent).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
+    /// Android or not, for what Apple does differently then (the Xcode token: `after_sign_in`).
     pub served: Served,
     pub client_info: String,
     pub user_agent: String,
@@ -55,6 +73,10 @@ impl Claim {
         Claim { served, client_info: served.client_info().to_string(), user_agent: USER_AGENT.to_string() }
     }
 
+    /// What to claim once Apple has taken the password, for the Xcode token and the developer requests
+    /// made with it, when that differs from the sign-in's claim. Claiming Android, Apple refuses the Xcode
+    /// token (`-80046`) but issues it claiming a Mac, whatever made the anisette. An iCloud token is issued
+    /// claiming Android.
     pub fn after_sign_in(&self) -> Option<AnisetteClientInfo> {
         (self.served == Served::Android)
             .then(|| AnisetteClientInfo { client_info: MAC_CLIENT_INFO.to_string(), user_agent: USER_AGENT.to_string() })
@@ -91,6 +113,11 @@ impl Claim {
                 let served = if client_info.contains("<Android") { Served::Android } else if client_info.contains("<Windows;") { Served::Windows } else { Served::Mac };
                 Claim {
                     served,
+                    // Servers on native Mac anisette report a 10.12 Mac ("Mac OS X;10.x", the pre-macOS-11 spelling),
+                    // which Apple answers with 403 at the password and SMS 2FA steps, so it is claimed as
+                    // MAC_CLIENT_INFO. Only that legacy form is replaced: a server reporting a modern macOS or a VM
+                    // (`VirtualMac2,1` with forwarded x-apple-baa attestation) is claimed as it reports, since an
+                    // attested VM is refused (-3000076) under any other model.
                     client_info: if served == Served::Mac && client_info.contains("<Mac OS X;") { MAC_CLIENT_INFO.to_string() } else { client_info.to_string() },
                     user_agent: user_agent.to_string(),
                 }

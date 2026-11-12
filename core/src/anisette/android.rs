@@ -1,6 +1,18 @@
-//! Anisette provider backed by Apple's Android libraries, loaded in Apparition's process.
-//! The provider fetches the libraries on first use, keeps them in the anisette data directory,
-//! and gives each request its own working directory.
+//! What the server answers from Apple Music's Android libraries, run in this process (`adi`, `elf`, `shim`),
+//! on a computer that doesn't give a Mac's own anisette.
+//!
+//! Provisioning is real: the client makes the requests to Apple, and the libraries turn Apple's answers into
+//! the `adi.pb` the client keeps. The server keeps nothing between requests: the client stores its `adi.pb`
+//! and identifier, and each request gets a folder of its own for the library to read and write, removed
+//! afterwards.
+//!
+//! Wire conventions shared with other anisette servers: the ADI identifier is the UUID made of the
+//! client's 16 bytes, written in capitals and cut to 16 characters, and `X-Apple-I-MD-RINFO` is the
+//! constant 17106176.
+//!
+//! The route is switched by [`super::ANDROID_LIBRARIES`]. Apple has closed this route before and reopened
+//! it after a small change on the wire, so the code stays in the tree when it stops working: turn the
+//! constant off and nothing here runs.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

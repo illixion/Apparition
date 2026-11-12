@@ -1,3 +1,31 @@
+//! This Mac's own anisette, from macOS itself.
+//!
+//! Apple checks that the anisette matches the device the sign-in claims to be (see claimed_platform),
+//! and it gives the Xcode token only to a sign-in that claims a Mac. A Mac's own anisette claims a Mac
+//! throughout, as Xcode does. A Mac can give its anisette to other programs in two ways:
+//!
+//! - AuthKit's `-[AKAppleIDSession appleIDHeadersForRequest:]`, which needs AuthKit's private client
+//!   entitlements. Only a program signed with them gets the headers, and macOS runs such a program only
+//!   with SIP and AMFI off (`amfi_get_out_of_my_way=1`). That program is `apparition-anisette-helper`
+//!   ([`helper_main`]), next to this one. It gives every header AuthKit puts on a request, and in a
+//!   virtual machine those include the host's attestation (`x-apple-baa-*`): Apple refuses a VM's
+//!   anisette without it (`-3000076`), and with it, claiming the VM as it is (`VirtualMac2,1`), signs
+//!   in. So it's preferred whenever it runs.
+//! - AOSKit's `+[AOSUtilities retrieveOTPHeadersForDSID:]`, in this process. It needs no entitlement up
+//!   to macOS 26, but gives only the two anisette headers, which a real Mac's sign-in needs and a VM's
+//!   doesn't get by with. On macOS 27 the daemon behind it (`adid`) refuses programs that aren't
+//!   Apple's, and the call returns nothing.
+//!
+//! A sign-in with the helper's headers claims this Mac as it is ([`client_info`]): its model, macOS
+//! version and build, and CFNetwork's and Darwin's in the User-Agent, as AuthKit's own requests do.
+//! AOSKit's keep claiming `Mac15,7` (claimed_platform::MAC_CLIENT_INFO).
+//!
+//! A Mac is provisioned by macOS, so nothing else is: the server hands a client a placeholder `adi.pb`
+//! and serves this Mac's headers whatever the client stored (see `server`).
+//!
+//! The names and the behaviour of these private APIs come from the Objective-C runtime (class and
+//! method lists) and from trying them; no code was copied.
+
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -82,6 +110,8 @@ fn load(framework: &str) -> bool {
 pub struct Headers {
     pub machine_id: String,
     pub one_time_password: String,
+    /// AuthKit's other headers for the request (routing info, this Mac's own device identifiers, and in a
+    /// virtual machine the host's attestation, `x-apple-baa-*`), sent along as they are.
     pub extra: Vec<(String, String)>,
 }
 
@@ -293,6 +323,8 @@ pub fn headers() -> Result<Headers, Report> {
     headers.ok_or_else(|| report!("this Mac stopped giving its anisette"))
 }
 
+/// The helper program: prints AuthKit's anisette as JSON and exits 0, or exits 1 if AuthKit
+/// gave none. Signed with AuthKit's private entitlements by the build.
 pub fn helper_main() -> i32 {
     match from_authkit() {
         Some(headers) => {

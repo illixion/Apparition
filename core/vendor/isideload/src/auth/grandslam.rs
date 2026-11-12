@@ -54,6 +54,8 @@ impl GrandSlam {
         })
     }
 
+    /// The same client and URL bag, claiming `client_info` instead. Apple issues the Xcode token
+    /// for a sign-in claiming Android only to requests claiming a Mac.
     pub fn claiming(&self, client_info: AnisetteClientInfo) -> Self {
         Self {
             client: self.client.clone(),
@@ -63,6 +65,10 @@ impl GrandSlam {
         }
     }
 
+    /// The developer-token request's cpd. Windows AuthKit uses Boolean capability flags,
+    /// including winprot/wpbe, rather than the legacy string flags; this follows the provider
+    /// even if the request's client metadata is changed after login. Sign-in doesn't use it:
+    /// see login_inner.
     pub fn client_provided_data(&self, data: &crate::anisette::AnisetteData) -> Dictionary {
         let mut cpd = data.get_client_provided_data();
         if self.windows_adi { windows_client_provided_data(&mut cpd); }
@@ -76,6 +82,8 @@ impl GrandSlam {
     ) -> Result<Dictionary, Report> {
         debug!("Fetching URL bag from GrandSlam");
         let resp = client
+            // Upstream claims a Mac here whatever the sign-in claims. Claiming Android for the sign-in
+            // after a Mac's bag, GSA answers the first SRP request 503, so the bag gets the real claim.
             .get(URL_BAG)
             .headers(base_headers)
             .send()
@@ -101,6 +109,8 @@ impl GrandSlam {
             .url_bag
             .get_string(key)
             .context("Unable to find key in URL bag")?;
+        // Apple's edge answers a bare HTML 403 to a POST on exactly `/grandslam/GsService2` and takes
+        // `/grandslam/GsService2/`. The URL bag still lists the first form.
         if key == "gsService" && url.ends_with("/grandslam/GsService2") {
             url.push('/');
         }
@@ -229,6 +239,15 @@ impl GrandSlam {
     ) -> Result<reqwest::header::HeaderMap, Report> {
         let mut headers = reqwest::header::HeaderMap::new();
         if !sms {
+            // Apple's edge answers a request with a bare HTML 403 before reading it, keyed on the request's
+            // Content-Type, and the two hosts block opposite values: gsd.apple.com (machine provisioning,
+            // MidService) rejects `text/…plist` (so the legacy `text/x-xml-plist` older tooling sends), while
+            // gsa.apple.com (sign-in / URL bag) rejects `application/x-xml-plist`. `text/xml` is the one value
+            // that clears both: the body is XML either way and Apple parses it the same, returning its usual
+            // `text/x-xml-plist` plist. (`Accept` isn't matched by the rules, so it stays as Apple's own
+            // response type.) A further rule answers 403 on a POST to `/grandslam/GsService2` without the
+            // trailing slash (see `get_url`); that, not the anisette, can look like the Android route being
+            // turned away.
             headers.insert("Content-Type", HeaderValue::from_static("text/xml"));
             headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
         } else {
@@ -243,6 +262,8 @@ impl GrandSlam {
             "User-Agent",
             HeaderValue::from_str(&client_info.user_agent)?,
         );
+        // Kept on Windows CoreADI requests too: the sign-in that got a trusted-device push and a
+        // successful re-login carried them; see login_inner's cpd note.
         headers.insert("X-Xcode-Version", HeaderValue::from_static("27.0 (27A5218g)"));
         headers.insert("X-Apple-App-Info", HeaderValue::from_static("com.apple.gs.xcode.auth"));
         headers.insert(
@@ -343,7 +364,7 @@ mod windows_cpd_tests {
     }
 
     #[test]
-    fn windows_flags_are_applied_without_replacing_identity() {
+    fn windows_flags_match_the_observed_authkit_types_without_replacing_identity() {
         let mut cpd = Dictionary::new();
         cpd.insert("pbe".into(), plist::Value::String("false".into()));
         cpd.insert("prkgen".into(), plist::Value::String("true".into()));

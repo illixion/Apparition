@@ -7,9 +7,12 @@
 //! attempts is which address the connection goes to. The connection still names the host, so TLS
 //! checks the certificate exactly as before.
 //!
-//! Transient network and service responses can vary by endpoint. This layer retries another
-//! available address while preserving the requested host name and normal TLS verification.
-
+//! It exists because which edge `gsd.apple.com` resolves to can depend on the resolver asking, and an
+//! edge can answer every GrandSlam request with that 403 while the others answer. The cause of one such
+//! episode was an edge WAF rule on the request's `Content-Type` (see `grandslam.rs`), which with the
+//! right content type no edge refuses, and this layer then does nothing. It stays as the general
+//! answer to one edge misbehaving, whatever the reason.
+//!
 //! The system's resolver is asked first (it is right for nearly everyone, and a VPN or a workplace
 //! network expects it). An edge that refuses is avoided for an hour, so a sign-in doesn't knock on
 //! it again and again, and the request goes to another edge, from the system's answer or, when that

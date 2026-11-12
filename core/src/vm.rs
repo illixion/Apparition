@@ -176,6 +176,8 @@ impl Tools {
         piece("apparition-vm", "vm")
     }
 
+    /// The helper must carry AuthKit's private entitlements in its own signature, which only the build gives it
+    /// (scripts/install-desktop.sh, package-release.sh): a copy re-signed without them gets nothing in the guest.
     fn verify_helper(&self) -> Result<(), Report> {
         let output = std::process::Command::new("/usr/bin/codesign")
             .args(["-d", "--entitlements", ":-"])
@@ -1268,6 +1270,8 @@ fn lease(leases: &str, mac: &str) -> Option<std::net::Ipv4Addr> {
     })
 }
 
+/// Asks Apple with the VM's anisette, without an Apple ID: one GrandSlam init for a reserved `.invalid` account,
+/// which Apple answers -20970 ("incorrect") when it accepted the anisette and -3000076 when it refused it.
 pub async fn check_with_apple(url: &str) -> Result<(), Report> {
     let dir = cache_dir().join("vm-check");
     std::fs::create_dir_all(&dir)?;

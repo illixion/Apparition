@@ -299,6 +299,8 @@ pub fn builtin_anisette_available() -> bool {
     cfg!(all(feature = "anisette", target_os = "macos"))
 }
 
+/// What to pass as the anisette address to use Apple Music's Android libraries, run in this process (see
+/// [`android_anisette_available`]). Sign-ins through it claim Android, then ask for the Xcode token as a Mac.
 pub const ANDROID_ANISETTE: &str = "android";
 
 /// Whether this build can run Apple Music's Android libraries for its own anisette.
@@ -704,6 +706,9 @@ async fn sign_in_with_proxy(
     let developer_result = async {
         let session = match developer_session_with_retry(&mut account).await {
             Ok(session) => session,
+            // Claiming Android, a sign-in Apple doesn't trust yet gets no 2FA step and no Xcode token (-22411)
+            // until the code it pushes to the trusted devices is checked: sign in again, which pushes one, and
+            // check it (vendor/isideload, code_after_login).
             Err(error) if served == claimed_platform::Served::Android && auth_code(&error) == Some(-22411) => {
                 account.grandslam_client = signing_in.clone();
                 account.code_after_login = true;
@@ -711,6 +716,9 @@ async fn sign_in_with_proxy(
                 claim_after_sign_in(&mut account);
                 developer_session_with_retry(&mut account).await.context("Failed to open a developer session")?
             }
+            // Windows CoreADI signs in as Windows, but Apple rejects its Xcode-token request with -80046. Retry
+            // just the developer-token phase with the existing Mac/Xcode metadata; keep the successful login and
+            // its Windows identity.
             Err(error) if served == claimed_platform::Served::Windows && auth_code(&error) == Some(-80046) => {
                 tracing::info!("Windows login succeeded; retrying the refused Xcode token with Mac client metadata");
                 account.grandslam_client = Arc::new(signing_in.claiming(isideload::anisette::AnisetteClientInfo {

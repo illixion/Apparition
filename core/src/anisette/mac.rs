@@ -40,6 +40,9 @@ fn identifier_from(value: &str) -> Option<String> {
 
 pub(super) fn client_info() -> Json<Value> {
     use crate::claimed_platform::{Served, USER_AGENT};
+    // AuthKit's whole set of headers, from the helper, is claimed as this Mac (see `native::client_info`):
+    // a VM is refused when it claims another model. AOSKit's two headers keep the usual Mac claim, which a
+    // real Mac's sign-in gets through more reliably than one that claims the Mac's own model.
     if super::native::source() == Some(super::native::Source::Helper) {
         let (client_info, user_agent) = super::native::client_info();
         return Json(json!({ "client_info": client_info, "user_agent": user_agent, "apparition_anisette": Served::Mac.name() }));

@@ -33,6 +33,8 @@ const ABI: &str = "x86_64";
 pub(crate) const SERVICES: &str = "libstoreservicescore.so";
 pub(crate) const CORE: &str = "libCoreADI.so";
 
+/// A library of the Apple Music APK as Apple's CDN serves it, and its SHA-256. A download that doesn't
+/// match is refused, so a changed library stops the route instead of running unverified code.
 struct Known {
     abi: &'static str,
     name: &'static str,
