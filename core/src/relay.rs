@@ -353,6 +353,9 @@ impl Mdns {
                         IpAddr::V4(ip) => ip.is_link_local(),
                         IpAddr::V6(_) => false,
                     })),
+                    // Virtual machine and container bridges: announced there, the bridge's address (192.168.64.1
+                    // for the anisette VM) ends up in the records a phone resolves, and the phone can't reach it.
+                    mdns_sd::IfKind::Predicate(mdns_sd::IfPredicate::new(|intf| is_virtual_interface(&intf.name))),
                 ];
                 if let Err(error) = daemon.disable_interface(skipped.to_vec()) {
                     log(&format!("mDNS: couldn't leave out loopback and link-local interfaces: {error}"));
@@ -417,13 +420,21 @@ pub fn primary_address() -> Option<IpAddr> {
     socket.local_addr().ok().map(|address| address.ip()).filter(|ip| !ip.is_unspecified())
 }
 
-/// This computer's private IPv4 addresses on a LAN (10/8, 172.16/12, 192.168/16): where a device
-/// knocks to wake it. Not Tailscale's (100.64/10), whose UDP never wakes a Mac.
-pub fn lan_addresses() -> Vec<std::net::Ipv4Addr> {
+/// Whether an interface belongs to virtual machines or containers on this computer (a Mac's `bridge100` for the
+/// anisette VM or Colima, Docker's and libvirt's bridges, VMware's and VirtualBox's host-only networks, Hyper-V's and WSL's
+/// `vEthernet`). Its address reaches those guests only: advertised to a phone, it is an address that never answers.
+fn is_virtual_interface(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["bridge", "vmenet", "vmnet", "vboxnet", "docker", "br-", "veth", "virbr", "vethernet", "wsl", "podman", "lxc", "tap"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+fn private_addresses(wanted: impl Fn(&if_addrs::Interface) -> bool) -> Vec<std::net::Ipv4Addr> {
     let mut addresses: Vec<std::net::Ipv4Addr> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter(|interface| !interface.is_loopback())
+        .filter(|interface| !interface.is_loopback() && wanted(interface))
         .filter_map(|interface| match interface.ip() {
             IpAddr::V4(v4) if v4.is_private() => Some(v4),
             _ => None,
@@ -432,6 +443,18 @@ pub fn lan_addresses() -> Vec<std::net::Ipv4Addr> {
     addresses.sort();
     addresses.dedup();
     addresses
+}
+
+/// This computer's private IPv4 addresses on a LAN (10/8, 172.16/12, 192.168/16): where a device
+/// knocks to wake it, and what the companion tells devices. Not Tailscale's (100.64/10), whose UDP never wakes a Mac,
+/// and not a virtual machine bridge's, which a phone can't reach (see [`is_virtual_interface`]).
+pub fn lan_addresses() -> Vec<std::net::Ipv4Addr> {
+    private_addresses(|interface| !is_virtual_interface(&interface.name))
+}
+
+/// Every private IPv4 address, virtual machine bridges included: where a guest on this computer reaches it.
+pub fn host_addresses() -> Vec<std::net::Ipv4Addr> {
+    private_addresses(|_| true)
 }
 
 /// This computer's Tailscale IPv4 addresses (100.64.0.0/10, the CGNAT range Tailscale assigns
@@ -481,6 +504,21 @@ pub fn browse(seconds: u64, mut found: impl FnMut(String)) -> Result<(), Report>
     }
     let _ = daemon.shutdown();
     Ok(())
+}
+
+#[cfg(test)]
+mod interface_tests {
+    use super::*;
+
+    #[test]
+    fn virtual_machine_bridges_are_not_lan_interfaces() {
+        for name in ["bridge100", "vmenet0", "docker0", "br-1a2b3c", "virbr0", "vEthernet (WSL)", "veth12ab"] {
+            assert!(is_virtual_interface(name), "{name}");
+        }
+        for name in ["en0", "en7", "eth0", "wlan0", "enp3s0", "Ethernet", "Wi-Fi", "utun10", "tailscale0"] {
+            assert!(!is_virtual_interface(name), "{name}");
+        }
+    }
 }
 
 #[cfg(test)]

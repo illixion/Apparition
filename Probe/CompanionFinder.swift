@@ -36,11 +36,18 @@ final class CompanionFinder {
     func search(seconds: Double = 3) async -> [Companion] {
         searching = true
         defer { searching = false }
-        let services = await Self.browse(seconds: seconds)
+        // Bonjour reports one result per network interface the announcement arrived on, so a companion heard on
+        // Wi-Fi, Tailscale and a bridge shows up several times. One entry per name (reaching it already tries
+        // every address), then one per companion id in case two names reached the same computer.
+        var names = Set<String>()
+        let services = await Self.browse(seconds: seconds).filter { names.insert($0.0).inserted }
         var companions: [Companion] = []
         for (name, endpoint) in services {
             do {
-                companions.append(try await Self.reach(name: name, endpoint: endpoint))
+                let companion = try await Self.reach(name: name, endpoint: endpoint)
+                if !companions.contains(where: { $0.relay == companion.relay || ($0.companionID != nil && $0.companionID == companion.companionID) }) {
+                    companions.append(companion)
+                }
             } catch {
                 log.error("companion \(name, privacy: .private) didn't answer: \(LogScrub.text(String(describing: error)), privacy: .public)")
             }

@@ -137,7 +137,7 @@ async fn serve_files(program: PathBuf, helper: PathBuf, appliance: Option<Applia
             }
         }
     });
-    Ok(Session { port, addresses: crate::relay::lan_addresses(), progress, task })
+    Ok(Session { port, addresses: crate::relay::host_addresses(), progress, task })
 }
 
 async fn handle(mut stream: TcpStream, files: &Files, tx: &watch::Sender<Progress>) {
