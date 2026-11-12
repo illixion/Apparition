@@ -596,6 +596,19 @@ enum Keychain {
     }
 }
 
+#if DEBUG
+extension AccountModel {
+    /// For ApparitionTests: the state a sign-in leaves, without signing in. Debug builds only.
+    func seedForTests(email: String, team: Team, lastError: String?) {
+        self.email = email
+        self.team = team
+        teams = [team]
+        self.lastError = lastError
+        LogScrub.remember([team.name])
+    }
+}
+#endif
+
 /// Retained across the C callback; both objects synchronize their own mutable state.
 private final class TwoFactorCallbackContext: @unchecked Sendable {
     let box: PinBox

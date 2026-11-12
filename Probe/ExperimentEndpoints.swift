@@ -20,8 +20,8 @@ enum ExperimentEndpoints {
         let moved: Int
     }
 
-    static func register(probe: ProbeModel, account: AccountModel) {
-        DebugSurface.shared.register([
+    static func register(probe: ProbeModel, account: AccountModel, on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             // A fresh install has no certificate key: signing then stops before making a second
             // certificate while Apparition elsewhere has one (core's check_certificate).
             .command("experimentSetAsideSigningKey",

@@ -29,6 +29,12 @@ targets:
       - path: Probe
         excludes:
           - Info.plist
+    # Written out rather than left for Xcode to make, because Xcode makes no scheme for a
+    # target that another scheme already builds. It builds the app alone; the tests are built
+    # only by its Test action.
+    scheme:
+      testTargets:
+        - ApparitionTests
     dependencies:
       - package: DebugTrace
         product: DebugTrace
@@ -151,6 +157,27 @@ targets:
         # scripts/build-core.sh stages one library per SDK (xros, xrsimulator, iphoneos).
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/build/core-out/lib/$(PLATFORM_NAME)
         OTHER_LDFLAGS: -lapparition_core
+        SWIFT_STRICT_CONCURRENCY: minimal
+  # What a problem report can carry, checked with seeded values (CONTRIBUTING.md, "What a problem
+  # report can carry"). Hosted by the app, so it reads the endpoints and log lines the app has.
+  # Run it on the visionOS simulator with scripts/test-report-privacy.sh. No release build
+  # includes it: building the Apparition scheme makes the app alone.
+  ApparitionTests:
+    type: bundle.unit-test
+    platform: auto
+    supportedDestinations: [visionOS, iOS]
+    sources:
+      - path: ApparitionTests
+    dependencies:
+      - target: Apparition
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.tests
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+        XROS_DEPLOYMENT_TARGET: "26.0"
+        # The app's module carries its bridging header (the core's C interface).
+        HEADER_SEARCH_PATHS: $(SRCROOT)/build/core-out/include
         SWIFT_STRICT_CONCURRENCY: minimal
   ApparitionLab:
     type: application

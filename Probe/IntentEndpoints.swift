@@ -12,8 +12,8 @@ enum IntentEndpoints {
         let display: String
     }
 
-    static func register(probe: ProbeModel, account: AccountModel, library: LibraryModel) {
-        DebugSurface.shared.register([
+    static func register(probe: ProbeModel, account: AccountModel, library: LibraryModel, on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .query("intentApps", "The apps the Launch with JIT action offers (installed, with a bundle id)") { _ in
                 library.installed.filter { $0.installedBundleId != nil }.map { app in
                     App(id: app.id, name: app.name, expiresAt: app.expiresAt,

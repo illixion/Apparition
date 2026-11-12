@@ -53,8 +53,8 @@ enum LibraryEndpoints {
               })
     }
 
-    static func register(_ model: LibraryModel, account: AccountModel) {
-        DebugSurface.shared.register([
+    static func register(_ model: LibraryModel, account: AccountModel, on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .query("libraryState", "Sources and their apps, installed apps with expiry, recent refresh runs") { _ in
                 state(model, account)
             },
@@ -185,7 +185,7 @@ enum LibraryEndpoints {
             },
         ])
         #if DEBUG
-        DebugSurface.shared.register([
+        (surface ?? .shared).register([
             .command("sampleAppLimit", "Debug builds: show the free-profile app-limit card for the installd error an iPhone gave (or `error`), as if installing `appId` hit it. Nothing is installed or removed until a Remove is confirmed on the device",
                      parameters: [
                         .string("appId", "A library app's id to retry; defaults to the first one"),

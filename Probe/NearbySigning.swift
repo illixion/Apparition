@@ -533,13 +533,13 @@ enum NearbyEndpoints {
         }
     }
 
-    static func register(_ signing: SigningStore, account: AccountModel) {
+    static func register(_ signing: SigningStore, account: AccountModel, on surface: DebugSurface? = nil) {
         let receiver = signing.nearbyReceiver, sender = signing.nearbySender
         func summary() -> Summary {
             Summary(receiver: side(receiver.phase), sender: side(sender.phase), peers: sender.peers.map(\.name),
                     name: receiver.name, port: receiver.port, address: receiver.address)
         }
-        DebugSurface.shared.register([
+        (surface ?? .shared).register([
             .query("nearbySigning", "Where nearby certificate-key hand-overs are, both sides (codes included), and receivers found") { _ in
                 summary()
             },

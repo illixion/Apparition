@@ -35,8 +35,8 @@ enum AccountEndpoints {
               signs: model.signs)
     }
 
-    static func register(_ model: AccountModel) {
-        DebugSurface.shared.register([
+    static func register(_ model: AccountModel, on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .query("accountState", "Sign-in state, team, anisette server, downloaded IPAs and signing results") { _ in
                 state(model)
             },

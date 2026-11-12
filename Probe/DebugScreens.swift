@@ -18,8 +18,8 @@ final class DebugScreens {
     var tab: AppTab?
     var panel: Panel?
 
-    static func register() {
-        DebugSurface.shared.register([
+    static func register(on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .command("showScreen", "Switch to a tab and/or present a signing panel, as tapping there would (panel none closes it)",
                      parameters: [
                         .string("tab", "Tab to show", choices: AppTab.allCases.map(\.rawValue)),

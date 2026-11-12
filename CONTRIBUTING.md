@@ -35,6 +35,29 @@ cd desktop && cargo tauri build --bundles app
 [docs/DESKTOP_APP.md](docs/DESKTOP_APP.md#building-it) has the other platforms. A few of the core's socket tests can
 fail when the whole suite runs in parallel; run them alone (`-- <test name>`) before treating one as a regression.
 
+## What a problem report can carry
+
+**Settings > Report a Problem…** captures a debug trace the way a release build would and encrypts it to the
+maintainer. What is in it may end up on a public issue, so these rules hold, and `scripts/test-report-privacy.sh`
+checks them with seeded values (the `ApparitionTests` target, hosted by the app on the visionOS simulator):
+
+- **App state.** Only debug endpoints marked `releaseSafe` go in, and none of Apparition's is: each returns
+  something of the person's (team, device name and identifier, anisette server, companion address, the apps they
+  installed). A report names them under `withheldInRelease` and holds DebugTrace's own `_info` and `_features`.
+  Mark an endpoint `releaseSafe` only when all it returns is counts, modes and versions.
+- **Logs.** A value is in the report only when its call site marks it `.public`. Error text from Apple, installd
+  and the core is logged as public after `LogScrub.text`, which takes out emails, team IDs, URLs, addresses (IPv4,
+  IPv6, hardware), a named host with its port, `.local` and tailnet names, device identifiers, long runs of hex
+  (a certificate's serial number), and the names this copy knows: team and certificate names, the paired device's
+  name, the companion's name and host, the anisette server's host. The name of the app being installed stays,
+  because a report about an app is no use without it.
+- **Never in a report:** the Apple ID's password, the pairing record, signing keys, the verbose sign-in record and
+  the core's log file. Apparition registers no trace attachments. DebugTrace puts every registered attachment
+  into a trace whatever its privacy mode, so one that is added needs the same care.
+- **`info.json`** says the device's model, OS version, locale and time zone.
+
+A new kind of personal value gets a seed in `ApparitionTests/ReportPrivacyTests.swift`.
+
 ## Pull requests
 
 - Keep a change to one purpose, and say in the description what you ran it on. Anything that touches pairing,
@@ -48,4 +71,5 @@ fail when the whole suite runs in parallel; run them alone (`-- <test name>`) be
 - **Comments say why.** A comment should hold what the code can't: the rule Apple enforces, the failure it avoids,
   the order something must happen in. Leave out dates, probe logs and measurements.
 - **Logging goes through `DebugLogger`** (from DebugTrace) with honest privacy labels: `.public` only for values the code defines, and
-  anything from the user, the network or the filesystem stays private.
+  anything from the user, the network or the filesystem stays private. Error text you didn't write goes through `LogScrub.text`
+  before it is logged as public (see "What a problem report can carry").

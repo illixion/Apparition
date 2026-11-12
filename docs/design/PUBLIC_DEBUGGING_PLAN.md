@@ -62,8 +62,12 @@ develop it from their own Mac. The DebugTrace parts are generic, so later public
     DebugTrace.
 - **Nothing is sent on its own.** Crash reports wait on the device and go into a report only
   when the person includes them.
-- Audit every snapshot provider (`accountState`, `libraryState`, the Signing and Nearby ones) for
-  Apple ID, team, device name, UDID and anisette URL. Add RegentChat's seeded-value leak test.
+- **Done:** the audit of what a report can carry (snapshot providers, log values, attachments), and
+  the seeded-value leak test (`ApparitionTests`, run by `scripts/test-report-privacy.sh`). No
+  Apparition endpoint is `releaseSafe`, so a report's `snapshot.json` holds `_info` and `_features`
+  only. One leak was found and fixed: error text logged as public could name a companion or a
+  server by host name, a device by its name or identifier, and IPv6 and hardware addresses
+  (`LogScrub`). The rules are in CONTRIBUTING.md, "What a problem report can carry".
 - **The maintainer's side:** `debugtrace-decrypt <file>`, or dropping the `.trace` file onto the
   Apparition Store page. It unpacks the trace into `data/traces/` like any other, so `crash-reports` and
   symbolication work.

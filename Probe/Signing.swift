@@ -516,8 +516,8 @@ final class SigningStore {
 
 @MainActor
 enum SigningEndpoints {
-    static func register(_ store: SigningStore) {
-        DebugSurface.shared.register([
+    static func register(_ store: SigningStore, on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .query("signing", "Imported certificates and profiles (no keys), and the default signer") { _ in
                 store.load()
                 return SigningSummary(defaultSigner: store.defaultSigner, identities: store.identities, profiles: store.profiles)

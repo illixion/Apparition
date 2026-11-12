@@ -95,8 +95,8 @@ enum DeveloperSlots {
 
 @MainActor
 enum DeveloperSlotsEndpoints {
-    static func register() {
-        DebugSurface.shared.register([
+    static func register(on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .query("certificates", "The account's development certificates of every platform (a free account has two slots)",
                    timeout: .seconds(60)) { _ in
                 try await DeveloperSlots.certificates()

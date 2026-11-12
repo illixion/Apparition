@@ -1710,6 +1710,17 @@ final class LibraryModel {
     }
 }
 
+#if DEBUG
+extension LibraryModel {
+    /// For ApparitionTests: a library as installs and a failed refresh leave it, without either.
+    /// Nothing is saved. Debug builds only.
+    func seedForTests(installed: [InstalledApp], status: String?) {
+        self.installed = installed
+        self.status = status
+    }
+}
+#endif
+
 extension LibraryModel {
     struct InstallExtension: Codable, Identifiable, Sendable {
         let id: String

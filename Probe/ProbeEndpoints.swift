@@ -27,12 +27,15 @@ enum ProbeEndpoints {
               pairingProblem: model.pairingProblem, relay: model.relay)
     }
 
-    static func register(_ model: ProbeModel) {
+    /// `surface`: nil for the app's own. A test registers on one of its own (ApparitionTests);
+    /// each `register` here takes it the same way. Optional, because a default argument can't
+    /// read the main actor's `DebugSurface.shared`.
+    static func register(_ model: ProbeModel, on surface: DebugSurface? = nil) {
         let target: [DebugParameter] = [
             .string("host", "Numeric address to connect to (10.7.0.1 for LocalDevVPN), or \"relay\" to go through the companion set with setRelay", required: true),
             .integer("port", "TCP port of the RemotePairing service", required: true, range: 1...65535),
         ]
-        DebugSurface.shared.register([
+        (surface ?? .shared).register([
             .query("probeState", "Bonjour results, own interface addresses, reachability, pairing/tunnel attempts") { _ in
                 state(model)
             },

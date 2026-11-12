@@ -367,8 +367,8 @@ private final class Once: @unchecked Sendable {
 
 @MainActor
 enum CompanionEndpoints {
-    static func register(_ finder: CompanionFinder, probe: ProbeModel) {
-        DebugSurface.shared.register([
+    static func register(_ finder: CompanionFinder, probe: ProbeModel, on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .command("findCompanions", "Browse the local network for Apparition companions and ask each what it offers (relay address, anisette server)",
                      parameters: [.number("seconds", "How long to browse", default: 3)], timeout: .seconds(30)) { args in
                 await finder.search(seconds: args.double("seconds") ?? 3)

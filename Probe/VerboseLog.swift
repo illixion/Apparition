@@ -72,9 +72,9 @@ enum VerboseLogEndpoints {
         return State(enabled: VerboseLog.isOn, file: VerboseLog.fileName, bytes: VerboseLog.bytes, cutAtStart: cut, text: text)
     }
 
-    static func register() {
+    static func register(on surface: DebugSurface? = nil) {
         let size: DebugParameter = .integer("maxKB", "How much of the end of the record to return, in KB", default: 64, range: 1...512)
-        DebugSurface.shared.register([
+        (surface ?? .shared).register([
             .query("verboseLog", "The verbose record of sign-ins: each request Apparition sends to Apple's servers and the answer, as structure and sizes (no passwords, tokens or anisette values). Off until setVerboseLog turns it on; returns the end of the file",
                    parameters: [size]) { args in
                 state(maxKB: args.int("maxKB") ?? 64)

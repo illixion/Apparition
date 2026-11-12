@@ -4,8 +4,8 @@ import Foundation
 /// Development endpoints for StateVault: what it holds, and a purge to test the restore with.
 @MainActor
 enum VaultEndpoints {
-    static func register() {
-        DebugSurface.shared.register([
+    static func register(on surface: DebugSurface? = nil) {
+        (surface ?? .shared).register([
             .query("vaultStatus", "Files StateVault keeps (on disk and in the Keychain, with sizes) and any the Keychain has that the disk lost") { _ in
                 StateVault.status()
             },
