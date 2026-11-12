@@ -17,8 +17,8 @@ const PYTHON_TOOL: &str = "../../DebugTrace/Tools/debugtrace-mcp";
 type Calls = Arc<Mutex<Vec<Value>>>;
 
 async fn fake_root(State(calls): State<Calls>, uri: axum::http::Uri) -> impl IntoResponse {
-    let endpoint = uri.query().and_then(|q| q.strip_prefix("endpoint=")).map(|v| v.replace("%20", " ").replace("%2F", "/"));
-    calls.lock().unwrap().push(json!({ "help": endpoint }));
+    let decoded = |prefix| uri.query().and_then(|q| q.strip_prefix(prefix)).map(|v: &str| v.replace("%20", " ").replace("%2F", "/"));
+    calls.lock().unwrap().push(json!({ "help": decoded("endpoint="), "module": decoded("module=") }));
     Json(json!({ "ok": true, "endpoints": ["_info"] }))
 }
 
@@ -175,6 +175,12 @@ async fn apps_help_and_call_with_the_forgiving_arguments() {
     let res = tool(&r.app, "help", json!({ "endpoint": "a b/c" })).await;
     assert!(text_of(&res).contains("\"endpoints\""));
     assert_eq!(r.calls.lock().unwrap().iter().find_map(|c| c.get("help").cloned()).unwrap(), "a b/c");
+    // A multi-module process: `module` describes one module's endpoints; `endpoint` wins over it.
+    tool(&r.app, "help", json!({ "module": "Spatial Home" })).await;
+    tool(&r.app, "help", json!({ "endpoint": "e", "module": "all" })).await;
+    let asked: Vec<Value> = r.calls.lock().unwrap().iter().filter(|c| c.get("help").is_some()).cloned().collect();
+    assert_eq!(asked[asked.len() - 2], json!({ "help": null, "module": "Spatial Home" }));
+    assert_eq!(asked[asked.len() - 1], json!({ "help": "e", "module": null }));
 
     let img = tool(&r.app, "call", json!({ "endpoint": "_screenshot" })).await;
     assert_eq!(img["content"][0], json!({ "type": "image", "data": "AQID", "mimeType": "image/png" }));

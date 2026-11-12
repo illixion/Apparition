@@ -365,9 +365,13 @@ impl Mcp {
 
     async fn tool_help(&self, args: &Map<String, Value>) -> Result<Value, ToolError> {
         let session = self.verified(args.get("app").and_then(Value::as_str)).await?;
-        let path = match args.get("endpoint").and_then(Value::as_str).filter(|e| !e.is_empty()) {
-            Some(e) => format!("/?endpoint={}", quote(e)),
-            None => "/".into(),
+        // A process hosting several modules (Nexus) lists only each module's endpoint names;
+        // `module` asks for one module's described, or `all`. `endpoint` wins when both are given.
+        let given = |key| args.get(key).and_then(Value::as_str).filter(|v| !v.is_empty());
+        let path = match (given("endpoint"), given("module")) {
+            (Some(e), _) => format!("/?endpoint={}", quote(e)),
+            (None, Some(m)) => format!("/?module={}", quote(m)),
+            (None, None) => "/".into(),
         };
         let (status, _, raw) = self.request(&session, None, &path).await?;
         Ok(text_result(String::from_utf8_lossy(&raw).into_owned(), status >= 400))
