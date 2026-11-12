@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 
 /// What to tell the person about an address that can't be a server's.
-pub const ADDRESS_HELP: &str = "The anisette server's address starts with http:// or https://, like https://ani.example.com";
+pub const ADDRESS_HELP: &str = "Give the anisette server's address, like https://ani.example.com or http://localhost:6970";
 
 /// How long one request to the server may take, and the whole of a provisioning session.
 const REQUEST: Duration = Duration::from_secs(60);
@@ -29,10 +29,41 @@ const SESSION: Duration = Duration::from_secs(300);
 /// The most a server may answer a request with: its replies are a few hundred bytes.
 const LIMIT: usize = 1 << 20;
 
-/// `address` as the server's base address (no trailing slash), or why it can't be one. The address is
-/// kept in the settings and shown on screen, so it carries no username or password.
+/// Whether `host` is a name or address on this computer or its own network, which no one outside can reach: where
+/// a missing scheme means `http://` (a Docker server on `localhost:6970`, a Mac at `192.168.1.20:6969`) rather
+/// than `https://`.
+fn is_local_host(host: &str) -> bool {
+    let host = host.trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".local") || host.ends_with(".localhost") || host.ends_with(".lan") || !host.contains('.') && !host.contains(':') {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1])),
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+/// `address` as the server's base address (no trailing slash, no doubled slashes), or why it can't be one. The
+/// address is kept in the settings and shown on screen, so it carries no username or password. With no scheme
+/// (`localhost:6970`, `ani.example.com`) it is `http://` for an address on this computer or its network and
+/// `https://` for any other, so nothing identifying leaves in the clear by accident.
 pub fn normalize(address: &str) -> Result<String, &'static str> {
-    let url = reqwest::Url::parse(address.trim()).map_err(|_| ADDRESS_HELP)?;
+    let trimmed = address.trim();
+    if trimmed.is_empty() {
+        return Err(ADDRESS_HELP);
+    }
+    let full = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else if trimmed.contains("://") {
+        return Err(ADDRESS_HELP);
+    } else {
+        let authority = trimmed.split(['/', '?', '#']).next().unwrap_or("");
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        let host = if host.starts_with('[') { host.split(']').next().unwrap_or(host) } else { host.split(':').next().unwrap_or(host) };
+        format!("{}://{trimmed}", if is_local_host(host) { "http" } else { "https" })
+    };
+    let url = reqwest::Url::parse(&full).map_err(|_| ADDRESS_HELP)?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
         return Err(ADDRESS_HELP);
     }
@@ -42,7 +73,13 @@ pub fn normalize(address: &str) -> Result<String, &'static str> {
     if url.query().is_some() || url.fragment().is_some() {
         return Err("The anisette server's address ends at its host or path: leave out anything after a ? or #.");
     }
-    Ok(url.as_str().trim_end_matches('/').to_string())
+    // A doubled slash in the path makes `https://server//v3/client_info`, which servers answer with a 404.
+    let mut base = url.as_str().trim_end_matches('/').to_string();
+    let after_scheme = base.find("://").map(|at| at + 3).unwrap_or(0);
+    while let Some(at) = base[after_scheme..].find("//") {
+        base.remove(after_scheme + at);
+    }
+    Ok(base)
 }
 
 /// The third-party server at `base`.
@@ -156,7 +193,14 @@ mod tests {
         assert_eq!(normalize(" https://ani.example.com/ ").unwrap(), "https://ani.example.com");
         assert_eq!(normalize("http://192.168.1.20:6969").unwrap(), "http://192.168.1.20:6969");
         assert_eq!(normalize("https://example.com/anisette/").unwrap(), "https://example.com/anisette");
-        for refused in ["", "ani.example.com", "ftp://example.com", "https://", "https://user:secret@example.com", "https://example.com/?key=1", "https://example.com/#x"] {
+        // No scheme: http for this computer's or its network's addresses, https for any other.
+        assert_eq!(normalize("localhost:6970").unwrap(), "http://localhost:6970");
+        assert_eq!(normalize("192.168.1.20:6969/").unwrap(), "http://192.168.1.20:6969");
+        assert_eq!(normalize("100.69.196.5:6969").unwrap(), "http://100.69.196.5:6969");
+        assert_eq!(normalize("my-mac.local:6969").unwrap(), "http://my-mac.local:6969");
+        assert_eq!(normalize("ani.example.com").unwrap(), "https://ani.example.com");
+        assert_eq!(normalize("http://192.0.2.10:6969//proxy//").unwrap(), "http://192.0.2.10:6969/proxy");
+        for refused in ["", "ftp://example.com", "https://", "https://user:secret@example.com", "https://example.com/?key=1", "https://example.com/#x"] {
             assert!(normalize(refused).is_err(), "{refused:?} should be refused");
         }
     }

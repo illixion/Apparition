@@ -40,6 +40,44 @@ pub struct RemoteV3AnisetteProvider {
 }
 
 impl RemoteV3AnisetteProvider {
+    /// Normalizes an Anisette server address (from the PR #17 contributor's `normalize_url`): a scheme when none is
+    /// given (`http://` for a local or private address, `https://` for any other), no trailing slash, and no doubled
+    /// slashes in the path, which would otherwise make `https://server//v3/client_info`. An empty address is the
+    /// default server.
+    pub fn normalize_url(url: &str) -> String {
+        let trimmed = url.trim();
+        let raw = if trimmed.is_empty() { DEFAULT_ANISETTE_V3_URL } else { trimmed };
+        // With no scheme: http for an address on this computer or its network, https for any other.
+        let with_scheme = if raw.starts_with("http://") || raw.starts_with("https://") {
+            raw.to_string()
+        } else {
+            let authority = raw.split(['/', '?', '#']).next().unwrap_or("");
+            let host = authority.rsplit('@').next().unwrap_or(authority);
+            let host = host.split(':').next().unwrap_or(host).to_ascii_lowercase();
+            let local = host == "localhost"
+                || host.ends_with(".local")
+                || host.ends_with(".lan")
+                || !host.contains('.')
+                || host.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_private() || ip.is_loopback() || ip.is_link_local() || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1])));
+            format!("{}://{raw}", if local { "http" } else { "https" })
+        };
+        let (scheme, rest) = with_scheme.split_once("://").unwrap_or(("http", with_scheme.as_str()));
+        let mut clean = String::new();
+        let mut previous_slash = false;
+        for ch in rest.trim_end_matches('/').chars() {
+            if ch == '/' {
+                if !previous_slash {
+                    clean.push(ch);
+                }
+                previous_slash = true;
+            } else {
+                previous_slash = false;
+                clean.push(ch);
+            }
+        }
+        format!("{scheme}://{clean}")
+    }
+
     /// Create a new RemoteV3AnisetteProvider with the given URL and config path
     ///
     /// # Arguments
@@ -53,7 +91,7 @@ impl RemoteV3AnisetteProvider {
     ) -> Result<Self, Report> {
         Ok(Self {
             state: None,
-            url: url.to_string(),
+            url: Self::normalize_url(url),
             storage,
             serial_number,
             client: Self::build_reqwest_client(None)?,
@@ -70,16 +108,24 @@ impl RemoteV3AnisetteProvider {
     fn build_reqwest_client(
         websocket_proxy: Option<String>,
     ) -> Result<reqwest_middleware::ClientWithMiddleware, Report> {
+        // A server that doesn't answer must not hang a sign-in (from the PR #17 contributor's change): connecting
+        // gets 10 seconds. A whole request gets 120, not their 20, because Apparition's own server may be waiting
+        // for the anisette VM to resume (a second) or boot (about a minute) before it answers.
+        let builder = ClientBuilder::new();
+        #[cfg(not(feature = "wasm"))]
+        let builder = builder
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120));
         if let Some(websocket_proxy) = websocket_proxy {
             use crate::auth::middleware::WasmProxyMiddleware;
 
-            let client = ClientBuilder::new().build()?;
+            let client = builder.build()?;
 
             Ok(MwClientBuilder::new(client)
                 .with(WasmProxyMiddleware::new(websocket_proxy))
                 .build())
         } else {
-            let client = ClientBuilder::new().build()?;
+            let client = builder.build()?;
 
             Ok(MwClientBuilder::new(client).build())
         }
@@ -94,7 +140,7 @@ impl RemoteV3AnisetteProvider {
     }
 
     pub fn set_url(mut self, url: &str) -> RemoteV3AnisetteProvider {
-        self.url = url.to_string();
+        self.url = Self::normalize_url(url);
         self
     }
 
@@ -133,6 +179,9 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
             .json::<AnisetteClientInfo>()
             .await
             .context("Failed to parse /v3/client_info response")?;
+        if info.client_info.trim().is_empty() || info.user_agent.trim().is_empty() {
+            bail!("The anisette server answered /v3/client_info with an empty client_info or user_agent");
+        }
 
         // let info = AnisetteClientInfo {
         //     client_info:
@@ -184,6 +233,24 @@ impl RemoteV3AnisetteProvider {
             .await?;
 
         match headers {
+            AnisetteHeaders::Headers {
+                machine_id,
+                one_time_password,
+                routing_info,
+                extra: _,
+            } if [("X-Apple-I-MD", &one_time_password), ("X-Apple-I-MD-M", &machine_id), ("X-Apple-I-MD-RINFO", &routing_info)]
+                .iter()
+                .any(|(_, value)| value.trim().is_empty()) =>
+            {
+                // A server that answers without what Apple checks first gets a clear error here, not Apple's vague one.
+                let missing = [("X-Apple-I-MD", &one_time_password), ("X-Apple-I-MD-M", &machine_id), ("X-Apple-I-MD-RINFO", &routing_info)]
+                    .iter()
+                    .filter(|(_, value)| value.trim().is_empty())
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!("The anisette server's headers are missing {missing}")
+            }
             AnisetteHeaders::Headers {
                 machine_id,
                 one_time_password,
@@ -453,4 +520,20 @@ enum AnisetteHeaders {
         #[serde(flatten)]
         extra: HashMap<String, serde_json::Value>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_url_handles_schemes_and_slashes() {
+        assert_eq!(RemoteV3AnisetteProvider::normalize_url(""), DEFAULT_ANISETTE_V3_URL);
+        assert_eq!(RemoteV3AnisetteProvider::normalize_url("http://127.0.0.1:6969/"), "http://127.0.0.1:6969");
+        assert_eq!(RemoteV3AnisetteProvider::normalize_url("192.168.1.20:6969///"), "http://192.168.1.20:6969");
+        assert_eq!(RemoteV3AnisetteProvider::normalize_url("ani.example.com"), "https://ani.example.com");
+        assert_eq!(RemoteV3AnisetteProvider::normalize_url("localhost:6970"), "http://localhost:6970");
+        assert_eq!(RemoteV3AnisetteProvider::normalize_url("http://192.0.2.10:6969//proxy//"), "http://192.0.2.10:6969/proxy");
+        assert_eq!(RemoteV3AnisetteProvider::normalize_url("https://ani.sidestore.io/"), "https://ani.sidestore.io");
+    }
 }

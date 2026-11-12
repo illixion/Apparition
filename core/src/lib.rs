@@ -466,7 +466,7 @@ async fn anisette_address(requested: &str, data_dir: &std::path::Path) -> Result
         PAIRED_MAC_ANISETTE => paired_mac_address(data_dir).await,
         VM_ANISETTE => vm_address().await,
         ANDROID_ANISETTE => android_address(data_dir).await,
-        other => Ok(other.to_string()),
+        other => anisette::normalize_server_address(other).map_err(|why| report!("{why}")),
     }
 }
 
