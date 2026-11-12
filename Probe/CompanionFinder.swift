@@ -65,9 +65,19 @@ final class CompanionFinder {
         }
         let host = String(relay[..<colon]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         do {
-            let companion = try await Self.info(.hostPort(host: NWEndpoint.Host(host), port: port), name: host)
+            var companion = try await Self.info(.hostPort(host: NWEndpoint.Host(host), port: port), name: host)
             lastError = nil
-            if !found.contains(companion) { found.append(companion) }
+            // The same companion may already be listed under its Bonjour name ("Pegasus"), where this answer is
+            // named by the address that was typed: one entry per companion, keeping the name people know it by.
+            if let index = found.firstIndex(where: { $0.relay == companion.relay || ($0.companionID != nil && $0.companionID == companion.companionID) }) {
+                let name = found[index].name
+                companion = Companion(name: name, relay: companion.relay, anisetteURL: companion.anisetteURL,
+                                      anisettePairingPort: companion.anisettePairingPort,
+                                      anisetteChannelPort: companion.anisetteChannelPort, companionID: companion.companionID)
+                found[index] = companion
+            } else {
+                found.append(companion)
+            }
             return companion
         } catch {
             lastError = "\(relay) didn't answer: \(error)"
