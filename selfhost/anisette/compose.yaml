@@ -1,0 +1,25 @@
+# Self-hosted anisette for Apparition: Dadoum's anisette-v3-server, pulled from its own registry.
+# It listens only on this computer, on port 6970 (6969 is the one Apparition's own companion uses on a
+# Mac). It runs the same software as the public SideStore server and makes anisette from Apple Music's
+# Android libraries, which it fetches from Apple on first start. Needs Docker Desktop (Windows, macOS)
+# or Docker Engine (Linux), or Docker inside WSL.
+#
+#   docker compose -f selfhost/anisette/compose.yaml up -d
+#
+# Then in Apparition's sign-in choose Anisette data > From a third-party anisette server and type
+#   http://localhost:6970
+# (or `apparition install --anisette http://localhost:6970 ...`). Use Check server to see what it serves.
+#
+# The image is pinned by digest so an upstream change can't alter what runs without a deliberate
+# update here. The volume keeps the downloaded Apple library and the server's state across restarts.
+name: apparition-anisette
+services:
+  anisette:
+    image: dadoum/anisette-v3-server@sha256:8577c27cb7592900947960799bf03c79a53bf857ed951e4c48ef6e06c6e0f488
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6970:6969"
+    volumes:
+      - data:/home/Alcoholic/.config/anisette-v3/lib
+volumes:
+  data:

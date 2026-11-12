@@ -32,13 +32,14 @@ because Apple wants an "anisette" source for that, and a Mac is the most reliabl
 | Pair a Vision Pro or Apple TV | Over Wi-Fi with the code it shows | The same | The same |
 | Pair an iPhone or iPad | Cable once, then Wi-Fi | Cable once, then Wi-Fi. Install **Apple Devices** (or iTunes) first: it provides the USB connection | Cable once, then Wi-Fi. Install and start `usbmuxd` first |
 | Install, refresh, JIT, companion | Yes | Yes | Yes |
-| Sign in with a free Apple ID | The Mac's own anisette, or a macOS 26 VM on macOS 27. Nothing else needed | Pair with a Mac running Apparition (best), **or** give a third-party anisette server's address. No Mac needed for the second | Apparition's **own Android anisette** (nothing to set up), or pair with a Mac, or a third-party server's address |
+| Sign in with a free Apple ID | The Mac's own anisette, or a macOS 26 VM on macOS 27. Nothing else needed | Pair with a Mac running Apparition (best), **or** run your own anisette server in Docker (Docker Desktop or WSL, [one command](#run-your-own-anisette-server-with-docker)), **or** give a third-party server's address. No Mac needed for the last two | Apparition's **own Android anisette** (nothing to set up), or pair with a Mac, or [your own server in Docker](#run-your-own-anisette-server-with-docker), or a third-party server's address |
 | Sign with a paid account's certificate | Yes, no sign-in and no anisette | Yes, the same | Yes, the same |
 | Build your own apps | Xcode, live patching, the whole Develop workflow | `apparition deploy` from a PC that pairs with a Mac, or [xtool](https://github.com/xtool-org/xtool) through WSL ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) | Same as Windows, with xtool running natively |
 
 **What "no Mac" means.** On Windows and Linux the app installs and refreshes everything without one.
-Only the Apple ID sign-in needs an anisette source, and you have three: a Mac of your own, Apparition's
-own Android anisette on Linux (and macOS), or a third-party anisette server's address on any computer. Apple
+Only the Apple ID sign-in needs an anisette source, and you have four: a Mac of your own, Apparition's
+own Android anisette on Linux (and macOS), an anisette server you run yourself in Docker, or a third-party
+server's address. The last two work on any computer, Windows included. Apple
 decides what it accepts and has changed that several times since October, so a Mac you own is the
 setup least likely to break; the others work today, and Apparition keeps them for as long as Apple lets them. If you have a Mac at all, even an old Intel MacBook left on a shelf, pair it as a companion.
 
@@ -184,7 +185,8 @@ once, to install Apparition.
    - **Mac on macOS 26 or earlier:** nothing to choose, it uses the Mac's own.
    - **Mac on macOS 27:** the anisette VM (Companion > Set up the anisette VM).
    - **Windows:** From my paired Mac (pair with a Mac's Apparition first), or From a third-party
-     anisette server and its address. Apparition's own isn't available on Windows.
+     anisette server and its address, which can be one you run yourself in Docker on this PC
+     ([how](#run-your-own-anisette-server-with-docker)). Apparition's own isn't available on Windows.
    - **Linux:** Apparition's own (Android libraries) with nothing to set up, or either of the Windows choices.
 
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
