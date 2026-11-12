@@ -1,0 +1,11 @@
+# The `aes` crate (0.8.x, pulled in by idevice's TLS-PSK channel to a headset or phone) only compiles
+# in the ARMv8 AES instructions when asked: without this cfg it silently uses the constant-time
+# software implementation on Apple silicon. That made installs slow: the IPA goes up through the
+# encrypted tunnel with AES-256-CBC, which cannot be parallelised, and software AES held it to about
+# 8 MB/s for a 940 MB app. The instructions are detected at run time (cpufeatures), so this is safe on
+# every aarch64 target, and ignored on x86_64. Drop it once `aes` is 0.9, where it is the default.
+#
+# `RUSTFLAGS` in the environment replaces this file's rustflags, so scripts/package-release.sh
+# carries the same cfg.
+[target.'cfg(target_arch = "aarch64")']
+rustflags = ["--cfg", "aes_armv8"]

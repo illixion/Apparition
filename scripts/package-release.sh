@@ -402,7 +402,8 @@ elif has macos; then
   # replaces any RUSTFLAGS or CFLAGS from outside, which would change the bytes too.
   cargo_home="$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd -P)"
   rustup_home="$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd -P)"
-  export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
+  # `--cfg aes_armv8` is what .cargo/config.toml sets (see there): this RUSTFLAGS would replace it.
+  export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup --cfg aes_armv8"
   export CFLAGS="-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$rustup_home=/rustup"
   export MACOSX_DEPLOYMENT_TARGET=11.0
   # Tools that stamp a build date take this one instead (the vendored OpenSSL put "built on: <now>"
