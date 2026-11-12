@@ -243,6 +243,7 @@ final class ProbeModel {
     init() {
         let documents = AppFolders.documents
         apparition_init_logging(documents.appendingPathComponent("apparition-core.log").path)
+        VerboseLog.applyAtLaunch()
         // idevice's own log, from before the core's logger took over: it named the Apple ID.
         try? FileManager.default.removeItem(at: documents.appendingPathComponent("idevice.log"))
         refreshPairing()

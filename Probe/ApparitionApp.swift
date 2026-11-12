@@ -20,6 +20,7 @@ struct ApparitionApp: App {
         let model = ProbeModel()
         _model = State(initialValue: model)
         ProbeEndpoints.register(model)
+        VerboseLogEndpoints.register()
         let account = AccountModel()
         _account = State(initialValue: account)
         AccountEndpoints.register(account)

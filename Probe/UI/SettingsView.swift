@@ -14,6 +14,8 @@ struct SettingsView: View {
     @AppStorage("pairedName") private var pairedName: String?
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @AppStorage(UpdateNotice.enabledKey) private var notifyAboutUpdates = true
+    @State private var verboseLog = VerboseLog.isOn
+    @State private var verboseBytes = VerboseLog.bytes
     @State private var notificationsDenied = false
     @State private var confirmForget = false
     @State private var confirmSignOut = false
@@ -33,6 +35,7 @@ struct SettingsView: View {
                 notificationsSection
                 #endif
                 advancedSection
+                troubleshootingSection
                 Section { RAVESupportCard(RAVESupportConfig(appName: "Apparition", appID: "com.illixion.apparition")) }
                 aboutSection
             }
@@ -213,6 +216,35 @@ struct SettingsView: View {
             Button("Run Setup Again", action: onSetup)
             Toggle("Show Diagnostics tab", isOn: $showDiagnostics)
         }
+    }
+
+    /// The record of a sign-in's requests to Apple (Probe/VerboseLog.swift): off until chosen.
+    private var troubleshootingSection: some View {
+        Section {
+            Toggle("Record sign-in requests", isOn: $verboseLog)
+                .onChange(of: verboseLog) { _, on in
+                    VerboseLog.set(on)
+                    verboseBytes = VerboseLog.bytes
+                }
+            if verboseBytes > 0 {
+                #if !os(tvOS)
+                ShareLink("Share the record", item: VerboseLog.url)
+                #endif
+                Button("Clear the record", role: .destructive) {
+                    VerboseLog.clear()
+                    verboseBytes = 0
+                }
+            }
+        } header: {
+            Text("Troubleshooting")
+        } footer: {
+            #if os(tvOS)
+            Text("For finding out what Apple changed. Writes each request a sign-in sends to Apple, and the answer, as structure and sizes only: no password, token, key or anisette value. Apple's error text can still name a team or an app ID, so read it before sharing it. A connected computer can read it with the debug server's verboseLog. Off until you turn it on.")
+            #else
+            Text("For finding out what Apple changed. Writes each request a sign-in sends to Apple, and the answer, as structure and sizes only: no password, token, key or anisette value. Apple's error text can still name a team or an app ID, so read apparition-verbose.log (in Apparition's folder in the Files app) before sharing it. Off until you turn it on.")
+            #endif
+        }
+        .onAppear { verboseBytes = VerboseLog.bytes }
     }
 
     private var aboutSection: some View {
