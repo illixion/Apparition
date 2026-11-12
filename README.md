@@ -5,8 +5,11 @@
 Apparition is an on-device developer tool for Apple Vision Pro, iPhone, iPad and Apple TV. It keeps
 the apps you sideload with your own free Apple ID signed and running past Apple's seven-day limit
 without a cable or a trip back to your desk, and it launches them with JIT for emulators such as
-UTM. Your Mac is Apparition's companion for the Apple ID work: it signs in and provides anisette
-from macOS itself, over the network, and needn't be on the same Wi-Fi (Tailscale works). Apps
+UTM. A Mac gives the most complete and most stable setup: it can provide the sign-in data Apple
+wants ("anisette") from macOS itself, over the network, and needn't be on the same Wi-Fi
+(Tailscale works). **A Mac is not required, though: Windows and Linux computers are fully
+supported** and run the same app, as the [computer-by-computer guide below](#start-here-pick-your-computer)
+says. Apps
 install from AltStore-format sources, from a GitHub project's releases, or from an IPA you have,
 signed with a free Apple ID or your own certificate. A computer installs Apparition on the device
 the first time; after that, refreshing and JIT run on the device, reaching your Mac only when the
@@ -15,6 +18,32 @@ Apple ID work needs it.
 <p align="center">
   <img src="docs/images/desktop.png" height="420" alt="The desktop app's welcome screen">
 </p>
+
+## Start here: pick your computer
+
+Apparition's desktop app runs on **macOS, Windows and Linux**, and all three install Apparition on
+the device, refresh it, launch apps with JIT and act as the companion that keeps those working away
+from home. **None of that needs a Mac.** What differs is how you sign in with a free Apple ID,
+because Apple wants an "anisette" source for that, and a Mac is the most reliable one.
+
+| | **Mac** (most complete, most stable) | **Windows** | **Linux** |
+|---|---|---|---|
+| Get the app | Download the zip from [apparition.illixion.com](https://apparition.illixion.com), move **Apparition** to Applications, then run `xattr -dr com.apple.quarantine /Applications/Apparition.app` (it isn't notarized) | Download the zip (x64 or ARM64), unzip it to a folder you can write to and open **Apparition.exe**. SmartScreen may warn, since it isn't signed by a publisher: choose More info, then Run anyway. Needs Microsoft Edge WebView2, which Windows 10 and 11 normally have | Download the **.deb** (Debian, Ubuntu) or the **AppImage** (anything else; `chmod +x` it first) for your CPU, x64 or ARM64. Needs glibc 2.35 or newer |
+| Pair a Vision Pro or Apple TV | Over Wi-Fi with the code it shows | The same | The same |
+| Pair an iPhone or iPad | Cable once, then Wi-Fi | Cable once, then Wi-Fi. Install **Apple Devices** (or iTunes) first: it provides the USB connection | Cable once, then Wi-Fi. Install and start `usbmuxd` first |
+| Install, refresh, JIT, companion | Yes | Yes | Yes |
+| Sign in with a free Apple ID | The Mac's own anisette, or a macOS 26 VM on macOS 27. Nothing else needed | Pair with a Mac running Apparition (best), **or** give a third-party anisette server's address. No Mac needed for the second | Apparition's **own Android anisette** (nothing to set up), or pair with a Mac, or a third-party server's address |
+| Sign with a paid account's certificate | Yes, no sign-in and no anisette | Yes, the same | Yes, the same |
+| Build your own apps | Xcode, live patching, the whole Develop workflow | `apparition deploy` from a PC that pairs with a Mac, or [xtool](https://github.com/xtool-org/xtool) through WSL ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) | Same as Windows, with xtool running natively |
+
+**What "no Mac" means.** On Windows and Linux the app installs and refreshes everything without one.
+Only the Apple ID sign-in needs an anisette source, and you have three: a Mac of your own, Apparition's
+own Android anisette on Linux (and macOS), or a third-party anisette server's address on any computer. Apple
+decides what it accepts and has changed that several times since October, so a Mac you own is the
+setup least likely to break; the others work today, and Apparition keeps them for as long as Apple lets them. If you have a Mac at all, even an old Intel MacBook left on a shelf, pair it as a companion.
+
+The device itself needs Developer Mode on (Settings > Privacy & Security), and a free Apple ID's
+limits apply wherever you sign in ([About Apple IDs](#getting-started)).
 
 ## Requirements
 
@@ -150,12 +179,16 @@ once, to install Apparition.
    - **iPhone or iPad:** plug it into the computer with a USB cable and unlock it, then tap
      Trust and enter its passcode if it asks. There's no code to type. You only need the cable
      until the device trusts the computer: after that, pairing it again works over Wi-Fi.
-3. Sign in with your Apple ID, or choose your own certificate and profile, and install. On a
-   Mac on macOS 26 or earlier the anisette is the Mac's own; elsewhere choose From my paired
-   Mac and pair with your Mac's Apparition first, or Apparition's own (Android libraries) on
-   macOS and Linux (see [Requirements](#requirements)).
+3. Sign in with your Apple ID, or choose your own certificate and profile, and install. The sign-in's
+   **Anisette data** choice depends on your computer:
+   - **Mac on macOS 26 or earlier:** nothing to choose, it uses the Mac's own.
+   - **Mac on macOS 27:** the anisette VM (Companion > Set up the anisette VM).
+   - **Windows:** From my paired Mac (pair with a Mac's Apparition first), or From a third-party
+     anisette server and its address. Apparition's own isn't available on Windows.
+   - **Linux:** Apparition's own (Android libraries) with nothing to set up, or either of the Windows choices.
+
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the
-   signing it used.
+   signing it used. See [Start here](#start-here-pick-your-computer) and [Requirements](#requirements) for the details.
 4. If the device won't open Apparition, it needs one of two settings. Turn on Developer Mode
    under Settings > Privacy & Security, which restarts the device. Or, if it says the developer
    isn't trusted, trust it under Settings > General > VPN & Device Management.
@@ -984,19 +1017,6 @@ refuses, the error says so; try again later or on another network.
 The header corner of the desktop app always says where this computer's sign-in gets its anisette
 (this Mac's own, the paired Mac, or your own server) and what the companion offers, so a
 screenshot shows the setup.
-
-### Why Apparition no longer runs Apple's Android libraries
-
-Up to 0.4.5, Apparition made anisette off a Mac with the two libraries Apple Music for Android uses,
-fetched from Apple's CDN and run in its own process. Since October 2026 Apple gives the Xcode token
-only to a Mac's anisette, so those libraries no longer get a free account to signing, and running
-another platform's Apple code to stand in for a Mac isn't something Apparition wants to depend on.
-It now needs a Mac you own, which is what Apple's own tools need too. An HTML `403 Forbidden` from
-`gsd.apple.com` is not always the request header, though. Apple's edge did refuse the legacy
-`text/x-xml-plist` and `application/x-xml-plist` content types in October, and Apparition sends
-`text/xml`. But since 3 November `gsd.apple.com`'s sign-in endpoint (the one Android anisette is
-sent to) refuses every content type, and `gsa.apple.com` answers an Android claim with `503`, so
-other anisette means Apple didn't like what that anisette claims to be.
 
 ## Build
 
