@@ -8,14 +8,18 @@
 //! Written from the zip format (PKWARE APPNOTE): the end-of-central-directory record, central
 //! directory headers, local file headers; sizes are 32-bit (an APK of this size has no zip64).
 //!
+//! What comes from the CDN is trusted for coming from Apple over TLS, and used even when it isn't
+//! the version in [`KNOWN`]: Apple updates the APK at the same address, and the new libraries
+//! usually work as the old did, so refusing them would stop the Android anisette at every update
+//! until Apparition shipped new hashes. Such a download is only logged.
+//!
 //! When the CDN can't be reached, [`import`] takes the APK, or the libraries out of it, from a file
-//! the person got some other way. That is the one route by which a file Apparition didn't fetch
-//! gets run (in this process, by `elf`), so it is checked against a SHA-256 of the libraries this
+//! the person got some other way. That is the one route by which a file nobody vouches for gets
+//! run (in this process, by `elf`), so it is checked against a SHA-256 of the libraries this
 //! version was built and tested with, and nothing else. A file that differs is refused with a
-//! [`ChecksumMismatch`] unless the person chose to go on (`accept_unverified`): Apple may update the
-//! libraries and take the old address down, leaving this table as the only reference there is.
-//! Even then the file has to be a 64-bit ELF library for this processor, and a library of the
-//! other processor's known build is refused.
+//! [`ChecksumMismatch`] unless the person chose to go on (`accept_unverified`), for when Apple has
+//! updated the libraries since. Even then the file has to be a 64-bit ELF library for this
+//! processor, and a library of the other processor's known build is refused.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -33,8 +37,9 @@ const ABI: &str = "x86_64";
 pub(crate) const SERVICES: &str = "libstoreservicescore.so";
 pub(crate) const CORE: &str = "libCoreADI.so";
 
-/// A library of the Apple Music APK as Apple's CDN serves it, and its SHA-256. A download that doesn't
-/// match is refused, so a changed library stops the route instead of running unverified code.
+/// A library of the Apple Music APK this version was built and tested with, and its SHA-256: what an
+/// imported file has to match ([`import`]). A download from Apple's CDN that differs is used anyway
+/// and logged (see the top).
 struct Known {
     abi: &'static str,
     name: &'static str,
@@ -224,6 +229,13 @@ pub(crate) async fn libraries(cache: &Path) -> Result<(Vec<u8>, Vec<u8>), Report
     let download = async {
         let client = reqwest::Client::builder().user_agent(concat!("Apparition/", env!("CARGO_PKG_VERSION"))).build()?;
         let (services, core) = fetch(&Source::Remote(client)).await?;
+        for (name, bytes) in [(SERVICES, &services), (CORE, &core)] {
+            if !is_known(name, bytes) {
+                // Not a reason to refuse it (TLS says it is Apple's), but the first thing to know
+                // when sign-in through the Android anisette breaks.
+                tracing::warn!("Apple's CDN served a {name} that isn't the version Apparition was tested with (SHA-256 {}); using it", sha256(bytes));
+            }
+        }
         save(cache, SERVICES, &services)?;
         save(cache, CORE, &core)?;
         let _ = std::fs::remove_file(cache.join(UNVERIFIED_MARKER));

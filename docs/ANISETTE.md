@@ -94,7 +94,8 @@ IP address, never the Apple ID or password, which go straight to Apple.
 
 Signing in to Apple needs "anisette" data that identifies the computer. On macOS, Linux and
 Windows (arm64 and x86_64) the installer makes its own: it fetches two libraries from Apple's CDN the first time (the ones Apple Music for
-Android uses; nothing of Apple's is stored in this repository), loads them in its own process
+Android uses; nothing of Apple's is stored in this repository; they are trusted for coming from Apple
+over HTTPS, and used even after Apple updates them), loads them in its own process
 (`core/src/anisette/`) and talks to Apple through them. Nothing to run or install. Wherever
 you prefer it, use a server: Apparition ships none, so enter the URL of
 any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
