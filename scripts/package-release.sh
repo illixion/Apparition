@@ -239,7 +239,7 @@ linux_build() {
   on docker run --rm --platform "$platform" -v "$(store "cargo-$arch"):/usr/local/cargo/registry" \
     -v "$(store "installer-target-$arch"):/target" -e CARGO_TARGET_DIR=/target \
     -v "$dir:/src" -w /src/installer -e CARGO_PROFILE_RELEASE_STRIP=true rust:1.97-alpine \
-    sh -c "apk add -q musl-dev && cargo build -q --release && mkdir -p /src/bundles && cp /target/release/apparition /src/bundles/ && $give_back"
+    sh -c "apk add -q musl-dev perl make && cargo build -q --release && mkdir -p /src/bundles && cp /target/release/apparition /src/bundles/ && $give_back"
 
   echo "==> desktop app for Linux ($arch${host:+, on $host})"
   if [[ -z "${LINUX_DESKTOP_IMAGE_BUILT:-}" ]]; then
@@ -503,6 +503,17 @@ windows_runtime_check() {
 }
 
 if has windows; then
+  # OpenSSL (built from source for the companion's TLS) configures with a Windows Perl. Git Bash's
+  # own perl is first on PATH and lacks modules Configure needs (Locale::Maketext::Simple), so take
+  # Strawberry Perl's, whose c\bin also has the nasm x64 OpenSSL assembles with.
+  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*)
+    if [[ -z "${OPENSSL_SRC_PERL:-}" ]]; then
+      [[ -x /c/Strawberry/perl/bin/perl.exe ]] \
+        || { echo "error: no Strawberry Perl in C:\\Strawberry (choco install strawberryperl), or set OPENSSL_SRC_PERL" >&2; exit 1; }
+      export OPENSSL_SRC_PERL="$(cygpath -m /c/Strawberry/perl/bin/perl.exe)"
+    fi
+    command -v nasm >/dev/null || export PATH="$PATH:/c/Strawberry/c/bin"
+  esac
   for arch in ${WINDOWS_ARCHS:-x86_64}; do
     case "$arch" in
       # MSVC when this runs on Windows (CI's windows-2025 runner), like ARM64: one toolchain for

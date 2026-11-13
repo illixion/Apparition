@@ -331,6 +331,10 @@ jobs:
           if ! command -v makensis >/dev/null && [[ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]]; then
             choco install nsis --no-progress -y
           fi
+          # Strawberry Perl configures OpenSSL (Git Bash's perl can't); package-release.sh uses it.
+          if [[ ! -x /c/Strawberry/perl/bin/perl.exe ]]; then
+            choco install strawberryperl --no-progress -y
+          fi
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         if: steps.finished.outputs.cache-hit != 'true'
         with:
