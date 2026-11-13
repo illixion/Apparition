@@ -13,6 +13,8 @@ companion (`apparition relay`) and pairs with a Mac for anisette (`apparition an
     apparition uninstall com.example.app --device ATV
     apparition launch com.example.app --device ATV --console   # launch, streaming its stdout/stderr here
     apparition launch com.example.emu --device AVP --jit --console   # launch suspended and serve its JIT requests
+    apparition logs --app com.example.app --device AVP   # the app's log as it's written, until Ctrl-C
+    apparition location 59.437 24.7536 --device ixPhone   # simulate a place until Ctrl-C
     apparition anisette pair my-mac.local   # Windows, Linux, macOS 27: once, for a Mac's anisette
     apparition install --apple-id you@example.com   # this Mac's anisette, or the paired Mac's
     apparition install --p12 development.p12 --profile wildcard.mobileprovision
@@ -62,6 +64,10 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `uninstall <bundle ID>` | Removes an app and its data container. |
 | `container pull`, `push`, `count <bundle ID>` | Copies an installed, development-signed app's Documents and Library out, back in, or counts them: for backing data up across a reinstall. |
 | `launch <bundle ID> [--console] [--jit]` | Launches an app (ending a running copy); `--console` streams its output here, `--jit` starts it suspended and serves its JIT requests. |
+| `processes [--apps] [--json]` | What runs on the device, apps first, with each process's pid and the app it belongs to. |
+| `kill <pid or bundle ID> [--term]` | Ends a process, or an app by its bundle ID; `--term` asks it to end instead. |
+| `location <latitude> <longitude>` | Simulates that place for the whole device until Ctrl-C, which puts the real location back. Needs the developer disk image mounted: Xcode mounts it, and a restart unmounts it. |
+| `logs [--app <bundle ID> \| --pid <pid>] [--level info\|debug]` | The device's log as it's written, one app's or everything, until Ctrl-C. Like `log stream`, info and debug lines are left out unless `--level` asks for them. |
 | `inject [<app>]` | On a Mac: patches the Swift sources edited since the build into a running app. |
 | `build [--run] [--log] [--mcp] [--jit] [--inject]` | On a Mac, in a repo with a `build-signing.conf`: builds with Xcode, signs, keeps the build and installs it over this pairing; `--run` launches it. `apparition build --help` lists the rest. |
 | `updates [--check] [--run]` | Which apps on your devices are behind their branch, from the Mac's Store; `--run` builds and installs the updates. |

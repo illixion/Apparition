@@ -27,6 +27,7 @@ use apparition_core::{
 };
 use rootcause::prelude::*;
 mod inject;
+mod device_tools;
 mod developer;
 mod builder;
 mod crash_reports;
@@ -102,6 +103,18 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       its running process) and serve its JIT requests until it closes or says it's done. The
       app has to be development-signed (installed by Apparition is). --wait is how long to
       wait for its first request before leaving it (default: no limit).
+  apparition processes [--device <name or UDID>] [--apps] [--json]
+      What runs on the device, apps first: pid, kind (app, system app, extension, system) and name.
+  apparition kill <pid or bundle ID> [--device <name or UDID>] [--term]
+      End a process, or an app's by its bundle ID; --term asks it to end instead (SIGTERM).
+  apparition location <latitude> <longitude> [--device <name or UDID>]
+      Simulate that place for the whole device while this runs; Ctrl-C puts the real location
+      back. Needs the developer disk image mounted (Xcode mounts it; a restart unmounts it).
+  apparition logs [--app <bundle ID> | --pid <pid>] [--level debug|info|default|error]
+          [--device <name or UDID>] [--json]
+      The device's log as it's written, one app's or everything, until Ctrl-C. Like `log stream`,
+      info and debug lines are left out unless --level asks for them. Values an app logs as
+      private arrive as <private>.
   apparition inject [<app>] [--device <name or UDID>] [--file PATH]... [--run SWIFT]
           [--allow-view-type-change] [--no-launch]
       Patch a running app with the Swift sources edited since its build: compile and sign on
@@ -349,6 +362,10 @@ async fn run() -> ExitCode {
         Some("sign") => sign(&args[1..]).await,
         Some("jit") => jit(&args[1..]).await,
         Some("watches") => watches(&args[1..]).await,
+        Some("processes") => device_tools::processes(&args[1..]).await,
+        Some("kill") => device_tools::kill(&args[1..]).await,
+        Some("location") => device_tools::location(&args[1..]).await,
+        Some("logs") => device_tools::logs(&args[1..]).await,
         Some("inject") => inject::run(&args[1..]).await,
         Some("build") => builder::run(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),

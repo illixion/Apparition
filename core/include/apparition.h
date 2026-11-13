@@ -144,6 +144,32 @@ char *apparition_jit_stop(const char *key);
 char *apparition_attach_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                         unsigned long long pid, const char *bundle_id, unsigned int wait_seconds);
 
+// Device tools (core/src/tools.rs). The device's running processes, apps first:
+// {ok, processes: [{pid, name, path, kind, bundleId, appName}]}; kind is app, systemApp, extension or system.
+char *apparition_processes(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake);
+// Sends signal_number to pid (15 asks it to end, 9 ends it): {ok}.
+char *apparition_signal_process(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                uint32_t pid, uint32_t signal_number);
+// Simulates (latitude, longitude) for the whole device until apparition_tool_stop(key) or the
+// connection drops, moving with apparition_move_location meanwhile, then puts the real location
+// back. on_set(context, latitude, longitude) runs each time the device has taken a coordinate.
+// Blocks for the whole session; the tunnel must outlive it. {ok, ended: "stopped"|"lost", seconds, moves}.
+// Needs the developer disk image mounted (the error says so when it isn't).
+char *apparition_simulate_location(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                   const char *key, double latitude, double longitude,
+                                   void (*on_set)(void *context, double latitude, double longitude), void *context);
+// Moves the location session key: {ok, moved} (false: no location session under that key).
+char *apparition_move_location(const char *key, double latitude, double longitude);
+// Streams the device's log (only pid's when pid >= 0, only lines at minimum_level or above:
+// 0 debug, 1 info, 2 notice, 3 error, 4 fault) until apparition_tool_stop(key) or the device ends it. on_batch(context, json) gets a JSON array of {time, pid, process, sender, level,
+// subsystem, category, message} (time: ms since 1970), valid only during the call. Blocks for the
+// whole session; the tunnel must outlive it. {ok, ended: "stopped"|"lost", lines}.
+char *apparition_stream_log(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                            const char *key, int64_t pid, uint32_t minimum_level,
+                            void (*on_batch)(void *context, const char *json), void *context);
+// Ends the location or log session key; its call then returns ended "stopped". {ok, stopped}.
+char *apparition_tool_stop(const char *key);
+
 // A debugserver session lent to a StikDebug JIT script, which the caller runs: the script
 // attaches (only to this session's process), continues and answers breakpoints itself.
 typedef struct JitScript JitScript;

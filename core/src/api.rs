@@ -24,6 +24,7 @@ use serde_json::Value;
 
 pub use crate::errors::describe;
 pub use crate::jit::{Target as JitTarget, stop as stop_jit};
+pub use crate::tools::stop as stop_tool;
 pub use crate::launch::Launched;
 pub use crate::{
     Session,
@@ -520,6 +521,39 @@ impl Tunnel {
     /// The pid of `bundle_id`'s running process, if it runs.
     pub async fn running_pid(&mut self, bundle_id: &str) -> Result<Option<u64>, Report> {
         crate::jit::running_pid(&mut self.adapter, &mut self.handshake, bundle_id).await
+    }
+
+    /// The device's running processes, apps first. See `crate::tools::processes`.
+    pub async fn processes(&mut self) -> Result<Vec<crate::tools::Process>, Report> {
+        crate::tools::processes(&mut self.adapter, &mut self.handshake).await
+    }
+
+    /// Sends `signal` to `pid` (15 asks it to end, 9 ends it).
+    pub async fn signal_process(&mut self, pid: u32, signal: u32) -> Result<(), Report> {
+        crate::tools::signal(&mut self.adapter, &mut self.handshake, pid, signal).await
+    }
+
+    /// Simulates `at` for the whole device until `crate::tools::stop(key)`. See
+    /// `crate::tools::simulate_location`.
+    pub async fn simulate_location(
+        &mut self,
+        key: &str,
+        at: crate::tools::Coordinate,
+        on_set: &mut (dyn FnMut(crate::tools::Coordinate) + Send),
+    ) -> Result<Value, Report> {
+        crate::tools::simulate_location(&mut self.adapter, &mut self.handshake, key, at, on_set).await
+    }
+
+    /// Streams the device's log (only `pid`'s when given) until `crate::tools::stop(key)`. See
+    /// `crate::tools::stream_log`.
+    pub async fn stream_log(
+        &mut self,
+        key: &str,
+        pid: Option<u32>,
+        minimum: crate::tools::Level,
+        on_batch: &mut (dyn FnMut(Vec<crate::tools::LogEntry>) + Send),
+    ) -> Result<Value, Report> {
+        crate::tools::stream_log(&mut self.adapter, &mut self.handshake, key, pid, minimum, on_batch).await
     }
 
     /// Closes `bundle_id` if it's running (never the calling app); true when it was. See

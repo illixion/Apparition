@@ -39,6 +39,7 @@ pub mod package;
 pub mod install_plan;
 mod jit;
 mod launch;
+pub mod tools;
 mod tunnel;
 pub mod watch;
 pub mod stop;

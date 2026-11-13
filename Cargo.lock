@@ -247,6 +247,7 @@ dependencies = [
  "apparition-core",
  "apparition-service",
  "base64 0.22.1",
+ "chrono",
  "libc",
  "plist",
  "reqwest 0.13.5",

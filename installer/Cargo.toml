@@ -22,6 +22,8 @@ apparition-core = { path = "../core", features = ["desktop", "anisette"] }
 rootcause = "0.12.0"
 rpassword = "7"
 serde_json = "1"
+# Already in the tree (idevice, apple-codesign); the log command prints device times in local time.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time", "signal", "process", "io-std", "io-util", "fs"] }
 # `apparition build`: Info.plist edits, the trace key, digests.
 plist = "1"
