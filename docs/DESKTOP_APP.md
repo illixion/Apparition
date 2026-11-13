@@ -7,7 +7,9 @@ signing. Both modes share the same pairing and signing, and the buttons in the h
 switch between them at any time; the choice is remembered. To add a project, choose its folder: the
 Apparition Store reads its schemes and bundle IDs and writes a small `build-signing.conf` with no
 signing material, kept out of Git. Settings holds the companion (a dot on the tab shows whether it
-is running), anisette, opening at login and updates.
+is running), anisette, opening at login and updates. Under Troubleshooting, **Report a problem…** opens the
+desktop app's bug form on GitHub with the version and this computer's OS filled in (nothing else, and nothing is
+sent by the app); the Apparition app on a device has its own, encrypted, in its Settings.
 
 `desktop/` is Apparition for macOS, Windows and Linux (Tauri v2): the same installer as a
 guided app, so nobody needs a terminal, and the companion, kept running from the menu bar or

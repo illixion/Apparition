@@ -1907,6 +1907,11 @@ function buildCompanion() {
       setStatus(vmStatus, p.program || p.helper ? "The VM is downloading…" : "The VM fetched the script.");
     }
   });
+  const reportStatus = $(companionPanel, "report-status");
+  $(companionPanel, "report-problem").addEventListener("click", () => {
+    setStatus(reportStatus, "");
+    invoke("open_issue").catch((/** @type {any} */ error) => setStatus(reportStatus, messageOf(error), "error"));
+  });
   const verboseOn = /** @type {HTMLInputElement} */ ($(companionPanel, "verbose-on"));
   const verboseActions = $(companionPanel, "verbose-actions");
   const verboseStatus = $(companionPanel, "verbose-status");

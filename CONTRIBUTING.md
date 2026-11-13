@@ -4,17 +4,23 @@ Thanks for wanting to help. Bug reports, app compatibility reports and pull requ
 
 ## Reporting a problem
 
-Use the [issue templates](https://github.com/illixion/Apparition/issues/new/choose). For an app that won't
-install or run, check [docs/SUPPORTED_APPS.md](docs/SUPPORTED_APPS.md) first. For a sign-in that fails, run with
-`APPARITION_LOG=<file>`, which writes the sign-in's progress without secrets, and attach it. If Apple turns the
-request away, turn on the verbose record too ([how](docs/ANISETTE.md#seeing-what-a-sign-in-sent-to-apple-and-what-came-back)):
-it shows what was sent and what Apple answered, as structure and sizes with no passwords, tokens or anisette
-values. Read it before you attach it, since Apple's error text can name a team. Security problems go
-through [SECURITY.md](SECURITY.md), not an issue.
+Use the [issue templates](https://github.com/illixion/Apparition/issues/new/choose). There are separate forms for
+the **Apparition app** on a Vision Pro, iPhone, iPad or Apple TV, for the **desktop app and the command line**, and
+for an **app that won't install or run** (check [docs/SUPPORTED_APPS.md](docs/SUPPORTED_APPS.md) first). Security
+problems go through [SECURITY.md](SECURITY.md), not an issue.
 
-For a problem in the app itself, **Settings > Report a Problem…** makes a report you can attach to the issue: you
+**In the Apparition app,** open **Settings > Report a Problem…**. It makes a report you can attach to the issue: you
 read every file in it first and choose what stays, and it is encrypted so only the maintainer can open it, even on
-a public issue. It is a `.trace.zip`; attach it as it is.
+a public issue. It is a `.trace.zip`; attach it as it is, to the **Trace** box of the form it opens with the version,
+device and OS filled in.
+
+**In the desktop app,** open **Settings > Troubleshooting > Report a problem…**. It opens the desktop form with the
+version and your computer's OS filled in; nothing is sent by the app itself. The desktop app and the command line make
+no encrypted trace, so whatever you attach is public. For a sign-in that fails, run with `APPARITION_LOG=<file>`,
+which writes the sign-in's progress without secrets, and attach it. If Apple turns the request away, turn on the
+verbose record too ([how](docs/ANISETTE.md#seeing-what-a-sign-in-sent-to-apple-and-what-came-back)): it shows what was
+sent and what Apple answered, as structure and sizes with no passwords, tokens or anisette values. Read it before you
+attach it, since Apple's error text can name a team.
 
 ## Building
 

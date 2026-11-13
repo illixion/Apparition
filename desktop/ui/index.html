@@ -200,6 +200,9 @@
 
     <div class="group">
       <h2 class="small">Troubleshooting</h2>
+      <p class="hint">Something not working? Report it on GitHub: the form opens with this app's version and your computer's OS already filled in, and tells you what else to include. It sends nothing itself.</p>
+      <div class="row"><button type="button" class="button quiet small" data-role="report-problem">Report a problem…</button></div>
+      <p class="status error" data-role="report-status" hidden></p>
       <label class="check"><input type="checkbox" role="switch" data-role="verbose-on"><span>Record what a sign-in sends to Apple</span></label>
       <p class="hint">For finding out what Apple changed. It writes each request a sign-in makes, and the answer, as structure and sizes only: no password, token, key or anisette value. Apple's error text can still name a team or an app ID, so read the file before you post it. Off unless you choose it.</p>
       <div class="row" data-role="verbose-actions" hidden>

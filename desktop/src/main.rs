@@ -14,6 +14,7 @@ mod companion;
 mod developer;
 mod flow;
 mod host;
+mod report;
 mod service;
 mod updater;
 mod vm;
@@ -81,6 +82,7 @@ fn main() {
             flow::open_downloads,
             flow::open_developer_link,
             flow::open_help,
+            report::open_issue,
             flow::paired_devices,
             flow::discover,
             flow::forget_device,

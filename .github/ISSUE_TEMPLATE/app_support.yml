@@ -99,7 +99,7 @@ body:
 
       In Apparition, open **Settings > Report a Problem…**, read the files it lists, and save the **encrypted** report. Then drag that file into this box. It is encrypted to the maintainer's key, so nobody else who reads this issue can open it.
 
-      Never attach the plain, unencrypted zip to a public issue: anyone could read it. Installing from the desktop app or the command line makes no trace; leave this empty for those.
+      Never attach the plain, unencrypted zip to a public issue: anyone could read it. Installing from the desktop app or the command line makes no trace; leave this empty for those, and for a problem in the desktop app itself use **Desktop app or command line bug**.
   validations:
     required: false
 - type: textarea
