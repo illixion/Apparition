@@ -12,6 +12,10 @@ it shows what was sent and what Apple answered, as structure and sizes with no p
 values. Read it before you attach it, since Apple's error text can name a team. Security problems go
 through [SECURITY.md](SECURITY.md), not an issue.
 
+For a problem in the app itself, **Settings > Report a Problem…** makes a report you can attach to the issue: you
+read every file in it first and choose what stays, and it is encrypted so only the maintainer can open it, even on
+a public issue. It is a `.trace.zip`; attach it as it is.
+
 ## Building
 
 The Apple app builds against two sibling packages by path (`project.yml`), so clone
@@ -41,10 +45,12 @@ fail when the whole suite runs in parallel; run them alone (`-- <test name>`) be
 maintainer. What is in it may end up on a public issue, so these rules hold, and `scripts/test-report-privacy.sh`
 checks them with seeded values (the `ApparitionTests` target, hosted by the app on the visionOS simulator):
 
-- **App state.** Only debug endpoints marked `releaseSafe` go in, and none of Apparition's is: each returns
-  something of the person's (team, device name and identifier, anisette server, companion address, the apps they
-  installed). A report names them under `withheldInRelease` and holds DebugTrace's own `_info` and `_features`.
-  Mark an endpoint `releaseSafe` only when all it returns is counts, modes and versions.
+- **App state.** Only debug endpoints marked `releaseSafe` go in. Of Apparition's, only `debugAccess` is
+  (whether debugging from a computer is on, its ports, how many computers are paired: no names, addresses or
+  secrets); every other returns something of the person's (team, device name and identifier, anisette server,
+  companion address, the apps they installed). A report names those under `withheldInRelease` and holds
+  DebugTrace's own `_info` and `_features`. Mark an endpoint `releaseSafe` only when all it returns is counts,
+  modes and versions.
 - **Logs.** A value is in the report only when its call site marks it `.public`. Error text from Apple, installd
   and the core is logged as public after `LogScrub.text`, which takes out emails, team IDs, URLs, addresses (IPv4,
   IPv6, hardware), a named host with its port, `.local` and tailnet names, device identifiers, long runs of hex
@@ -52,11 +58,35 @@ checks them with seeded values (the `ApparitionTests` target, hosted by the app 
   name, the companion's name and host, the anisette server's host. The name of the app being installed stays,
   because a report about an app is no use without it.
 - **Never in a report:** the Apple ID's password, the pairing record, signing keys, the verbose sign-in record and
-  the core's log file. Apparition registers no trace attachments. DebugTrace puts every registered attachment
-  into a trace whatever its privacy mode, so one that is added needs the same care.
+  the core's log file. Apparition registers no trace attachments. A report carries only those registered
+  `releaseSafe`, so one that is added needs the same care.
 - **`info.json`** says the device's model, OS version, locale and time zone.
 
 A new kind of personal value gets a seed in `ApparitionTests/ReportPrivacyTests.swift`.
+
+## Debugging your copy from your Mac
+
+Any copy of Apparition, the release site's included, can let a Mac you pair with it read its logs and state and
+run its debug commands, the same tools the maintainer uses. It is off until you turn it on:
+
+1. Clone [DebugTrace](https://github.com/illixion/DebugTrace) and [RAVESDK](https://github.com/illixion/RAVESDK)
+   side by side (the same layout as for building).
+2. In Apparition, **Settings > Developer > Debugging from a Computer**: turn it on (for an hour, or until you turn
+   it off), then **Pair a Computer…**.
+3. On the Mac, `../DebugTrace/Tools/debugtrace-mcp pair` (it builds RAVESDK's `rave-debug` helper the first time).
+   Both screens show six digits; if they match, tap **Allow** on the device. A device Bonjour can't see (another
+   network, Tailscale): `pair --host <its address or tailnet name>`.
+4. Register `debugtrace-mcp` with your agent (`claude mcp add -s user apps -- <path>/DebugTrace/Tools/debugtrace-mcp`).
+   Apparition is then in `apps`, and `help`, `call` and `trace` work on it.
+
+The Mac reaches the app over TLS with a key only those two hold, and nothing listens while the setting is off.
+Code changes and screen captures still ask on the device every time. **Share personal detail with connected
+computers** (off by default) adds the system log, debug-level lines, screenshots and full snapshots: leave it off
+if your agent sends what it reads to a cloud model. The password listener under **Advanced** is for tools that
+can't pair, and only over Tailscale or another VPN, since it is not encrypted. `debugtrace-mcp paired` lists your
+pairings and `forget <app>` drops one; **Remove** in the app takes a Mac's key away. The design is in
+[docs/design/PUBLIC_DEBUGGING_PLAN.md](docs/design/PUBLIC_DEBUGGING_PLAN.md) and DebugTrace's
+`Docs/server-and-security.md`, "Public builds".
 
 ## Pull requests
 

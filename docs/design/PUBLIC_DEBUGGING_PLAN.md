@@ -1,24 +1,31 @@
 # Plan: DebugTrace in the public Apparition
 
-Status: agreed 2026-11-01. Done: release dSYMs; in DebugTrace (`2f1fef8`), capture categories,
-the per-capture privacy override, staged capture (`stage` → `remove` → `seal`), HPKE `.trace`
-encryption and `debugtrace-decrypt`. Apparition is the first public
-app to ship DebugTrace's debug server and trace reports to everyone. Because it doesn't ship on
-the App Store, the server can be offered to anyone. A person with a free Apple ID can then help
-develop it from their own Mac. The DebugTrace parts are generic, so later public apps reuse them.
+Status: agreed 2026-11-01, **built 2026-11-13**; what is left is checking it on devices (the
+last section). Apparition is the first public app to ship DebugTrace's debug server and trace
+reports to everyone. Because it doesn't ship on the App Store, the server can be offered to anyone.
+A person with a free Apple ID can then help develop it from their own Mac. The DebugTrace parts are
+generic, so later public apps reuse them.
 
-## What exists today
+## What exists now
 
-- The GitHub Actions IPAs link `DebugTrace`, `DebugTraceServer` and `DebugTraceUI`. The server starts
-  only with an `apparition build` credential or `DEBUGTRACE_SERVER=1`, so in a shipped IPA it never
-  listens. `APPARITION_RELEASE` drops only the experiment endpoints and the release-site override.
-- Upload goes to the Apparition Store, which accepts only keys in this Mac's ledger. Public copies have
-  no upload URL, so `canUpload` is false and MetricKit reports are never sent.
-- A copy with an upload URL (build-and-sign, `apparition build`) shows DebugTraceUI's "Debug Trace…"
-  under Settings > Troubleshooting, and sends the trace to its Store. Public copies don't show it;
-  Report a Problem (below) is what they get.
-- A copy that Apparition signs on the device embeds a development profile, so
-  `DebugPrivacyMode.detected` is `development`. Today, shipped copies log without redaction.
+- **Report a Problem** (Settings): a `.report` trace (release privacy), every file previewed in
+  DebugTraceUI's browser with Remove and category checkboxes, encrypted to the maintainer's key
+  (`ProblemReport.maintainerKey`, key id `8332337272b7d9b4`) and shared as `<name>.trace.zip`,
+  because GitHub takes no `.trace` file on an issue. Then the bug form opens with `where`,
+  `version` and `os` filled in. The maintainer opens it with `debugtrace-decrypt`, or by dropping
+  it on the Store page or `apparition crash-reports add`, which stores it as an unsigned report.
+- **Debugging from a computer** (Settings > Developer): off by default; for an hour or until
+  turned off; paired computers over TLS-PSK with their own keys (RAVESDK's `RAVEDebugAccess`), each
+  removable; a generated password for the plain listener as an advanced option; a privacy switch.
+  `debugtrace-mcp pair` pairs a Mac through RAVESDK's `Tools/rave-debug`, and the app is then in
+  `apps`. CONTRIBUTING.md, "Debugging your copy from your Mac", is the how-to.
+- A copy with an upload URL (build-and-sign, `apparition build`) also shows DebugTraceUI's "Debug
+  Trace…" and sends the trace to its Store. Its launch server and build token are untouched;
+  turning debugging on there only adds the paired listener.
+- Release dSYMs are imported into the symbol archive by `/release` (`crash-reports import-dsyms`),
+  so crash reports from public builds symbolicate.
+
+The sections below are the design as agreed, with where it ended up noted.
 
 ## 1. Report a Problem: encrypted traces on a public issue
 
@@ -68,13 +75,22 @@ develop it from their own Mac. The DebugTrace parts are generic, so later public
   only. One leak was found and fixed: error text logged as public could name a companion or a
   server by host name, a device by its name or identifier, and IPv6 and hardware addresses
   (`LogScrub`). The rules are in CONTRIBUTING.md, "What a problem report can carry".
-- **The maintainer's side:** `debugtrace-decrypt <file>`, or dropping the `.trace` file onto the
-  Apparition Store page. It unpacks the trace into `data/traces/` like any other, so `crash-reports` and
-  symbolication work.
+- **The maintainer's side:** `debugtrace-decrypt <file>`, or dropping the file onto the
+  Apparition Store page (`apparition crash-reports add <file>`). It unpacks the trace into `data/traces/` like any other, so `crash-reports` and
+  symbolication work. **Built** (Apparition `ad3e474`, `f08675c`): a report is accepted unsigned
+  and recorded as one; the app route stays signed-only. The attachable form is `<name>.trace.zip`
+  (one entry, the `.trace`), told apart by content.
 - One recipient for now, since no other maintainers are planned. A second key can be added
   later.
 
 ## 2. Debug access on the device
+
+**Built.** DebugTrace `b5d0527`, `d379d07`; RAVESDK `5ba981c`, `8527e87`; Apparition `efe9112`.
+Where it differs from the text below: the pairing tool is `debugtrace-mcp pair` (the helper is
+RAVESDK's `rave-debug`); the privacy switch is "Share personal detail with connected computers";
+the pairing screen is "Pair a Computer…" under Debugging from a Computer, and its listener is up
+only while that screen is open. Paired computers are listed there with Remove. A paired client
+skips "Allow debug access?" only; code changes and screen capture still ask.
 
 Settings → Developer → "Allow debugging from a computer", off by default. Asked each time it is
 turned on: **run for an hour** (ends by the clock, survives suspension, not restarted after a
@@ -127,6 +143,9 @@ Dev builds behave exactly as now.
 
 ## 3. Where the code goes
 
+**Built as described**, except that the RAVESDK target is `RAVEDebugAccess` and its namespace is
+`ravedebug` (ports 8692-8711, pairing on 8712), and the contributor section is in CONTRIBUTING.md.
+
 DebugTrace can't import RAVESDK, because RAVESDK depends on it. So:
 
 - **DebugTrace (generic):**
@@ -164,27 +183,28 @@ DebugTrace can't import RAVESDK, because RAVESDK depends on it. So:
 - `core/Cargo.toml` builds with line tables, so Rust frames get file and line too.
 - The shipped binary's debug map is stripped (`strip -S`) once the dSYM exists. That is 3.5 MB of
   stabs, about 670 KB compressed, and the UUID is checked again after stripping.
-- **Still to do:** import a release's dSYMs into the local archive
-  (`~/.local/state/debugtrace/dsyms/`, keyed by UUID; public builds have no build id), so
-  `crash-reports` symbolicates public crash reports.
+- **Done:** a release's dSYMs are imported into the local archive
+  (`~/.local/state/debugtrace/dsyms/<bundleId>@release-<version>-<platform>/`, matched by UUID;
+  public builds have no build id) by `apparition crash-reports import-dsyms`, which `/release` runs,
+  so `crash-reports` symbolicates public crash reports.
 
 ## Order
 
-1. DebugTrace: start and stop, categories and privacy override (done), staged capture (done) with
-   the preview browser, HPKE plus decrypt (done), approvals tied to a credential, the transport
-   seam (`swift test`).
-2. Apparition Phase 1: Report a Problem. It can ship alone.
-3. The RAVESDK target, the helper, and `debugtrace-mcp` support.
-4. Apparition Phase 2: pairing, the password, the timer, privacy.
-5. Docs.
+All five steps are done (2026-11-13): DebugTrace, Report a Problem, the RAVESDK target with the
+helper and `debugtrace-mcp` support, pairing with the password, timer and privacy switch, and the
+docs.
 
 ## Must be checked on a device
 
-A simulator build proves none of these:
+Checked in the visionOS simulator (2026-11-13): turning debugging on, pairing a Mac over Bonjour
+(both screens showed the same code), calling the app through `debugtrace-mcp` over TLS-PSK, and
+being refused once it was turned off. A simulator proves none of these:
 
 - pairing and the approval window on visionOS, iOS and tvOS
 - TLS-PSK on Wi-Fi and over Tailscale
 - Bonjour advertising from an Apparition-signed GitHub Actions build
 - the hour timer across suspension
-- the share sheet and issue link
-- decrypting a real report
+- the share sheet and issue link, and GitHub accepting the `.trace.zip` on an issue
+- decrypting a real report (made on a device, attached to an issue, downloaded)
+- the Settings screens themselves (only built and driven through endpoints so far)
+- the issue form prefill (`where` is a dropdown, which GitHub may not prefill)
