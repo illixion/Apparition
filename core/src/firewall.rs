@@ -214,12 +214,16 @@ mod windows {
     }
 
     /// The PowerShell that takes away the rules for `programs`. Run as an administrator. The
-    /// firewall cmdlets take and give the same names in every language.
+    /// firewall cmdlets take and give the same names in every language. Only "no rule names it"
+    /// is passed over: unelevated, the lookup is refused ("Access is denied"), and passing that
+    /// over too made a removal find nothing and succeed with every rule still there.
     fn removal(programs: &[String]) -> String {
         format!(
             r#"$ErrorActionPreference = 'Stop'
 foreach ($program in @({})) {{
-    Get-NetFirewallApplicationFilter -Program $program -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' }} | Remove-NetFirewallRule
+    try {{ $filters = @(Get-NetFirewallApplicationFilter -Program $program) }}
+    catch {{ if ($_.CategoryInfo.Category -ne 'ObjectNotFound') {{ throw }}; $filters = @() }}
+    $filters | Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' }} | Remove-NetFirewallRule
 }}
 "#,
             list(programs)
@@ -258,10 +262,21 @@ exit 0
             .is_ok_and(|output| output.status.success())
     }
 
-    /// Runs `script` as this program, which is enough when it runs as an administrator already
-    /// (setup, or over SSH); else as an administrator, which Windows asks the person to approve.
+    /// Whether this process holds an administrator's elevated token (setup for everyone, a
+    /// command over SSH), so the firewall's rules can be read and changed without asking.
+    fn elevated() -> bool {
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn IsUserAnAdmin() -> i32;
+        }
+        unsafe { IsUserAnAdmin() != 0 }
+    }
+
+    /// Runs `script` as this program when it is elevated already; else as an administrator, which
+    /// Windows asks the person to approve. Unelevated, the firewall refuses even to list its
+    /// rules, so trying first without asking can't tell "nothing to do" from "not allowed".
     fn as_administrator(script: &str) {
-        if !powershell(script) {
+        if !(elevated() && powershell(script)) {
             let elevate = format!(
                 "$ErrorActionPreference = 'Stop'\n$run = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','{}'\nexit $run.ExitCode\n",
                 encoded(script)
