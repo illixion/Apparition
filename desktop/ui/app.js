@@ -373,10 +373,17 @@ function headset() {
       input.checked = state.selected?.key === row.key;
       if (row.kind === "paired") {
         title.textContent = row.device.name;
-        meta.textContent = `Paired with this computer, at ${row.device.address}`;
-        const seen = online(row.device);
-        badge.textContent = seen ? "On this network" : "Not seen yet";
-        badge.classList.toggle("online", seen);
+        if (row.device.legacy) {
+          // iOS 16 and earlier: no network service to see, only usbmuxd's cable or Wi-Fi sync.
+          meta.textContent = "Paired with this computer, over the cable or Wi-Fi sync";
+          badge.textContent = "iOS 16 · untested";
+          badge.classList.remove("online");
+        } else {
+          meta.textContent = `Paired with this computer, at ${row.device.address}`;
+          const seen = online(row.device);
+          badge.textContent = seen ? "On this network" : "Not seen yet";
+          badge.classList.toggle("online", seen);
+        }
         const forget = /** @type {HTMLButtonElement} */ (item.querySelector(".forget"));
         forget.hidden = false;
         forget.addEventListener("click", () => confirmForget(li, row.device, refreshPaired));
