@@ -23,7 +23,7 @@ struct RefreshAppsIntent: AppIntent, ProgressReportingIntent {
         categoryName: "Apps"
     )
     static let openAppWhenRun = true
-    @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
+    @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)
     static var supportedModes: IntentModes { .foreground }
 
     @Parameter(title: "All Apps", description: "Refresh every app, not only those expiring within 3 days", default: false)
@@ -114,7 +114,7 @@ struct LaunchWithJITIntent: AppIntent {
         categoryName: "Apps"
     )
     static let openAppWhenRun = true
-    @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
+    @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)
     static var supportedModes: IntentModes { .foreground }
 
     @Parameter(title: "App", requestValueDialog: "Which app?")
@@ -140,7 +140,7 @@ struct OpenApparitionIntent: AppIntent {
     static let title: LocalizedStringResource = "Open Apparition"
     static let description = IntentDescription("Opens Apparition.")
     static let openAppWhenRun = true
-    @available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
+    @available(iOS 26.0, macOS 26.0, tvOS 26.0, visionOS 26.0, *)
     static var supportedModes: IntentModes { .foreground }
 
     func perform() async throws -> some IntentResult {

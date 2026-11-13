@@ -36,7 +36,12 @@ enum JITScript {
         }
         /// An address or a length: scripts pass BigInts (`0x1000n`) as often as Numbers.
         func unsigned(_ value: JSValue) -> UInt64? {
-            if value.isBigInt { return value.toUInt64() }
+            if #available(iOS 18.0, tvOS 18.0, visionOS 2.0, *) {
+                if value.isBigInt { return value.toUInt64() }
+            } else if !value.isNumber, !value.isString, let text = value.toString(), let number = UInt64(text) {
+                // Before iOS 18 JSValue can't tell a BigInt apart; its decimal text reads the same.
+                return number
+            }
             guard value.isNumber, let number = value.toNumber()?.doubleValue, number >= 0, number < 0x1p64 else { return nil }
             return UInt64(number)
         }

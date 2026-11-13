@@ -113,7 +113,7 @@ struct RootView: View {
                     } else {
                         library.pendingJITRequest = request
                         #if os(visionOS)
-                        openWindow(id: JITRequestWindow.windowID)
+                        if !Self.jitInAlerts { openWindow(id: JITRequestScene.windowID) }
                         #endif
                     }
                 } else if let source = LibraryModel.sourceLink(url) {
@@ -128,30 +128,12 @@ struct RootView: View {
                 }
             }
             #if os(visionOS)
-            // A request that couldn't be served: the JIT request window says why.
+            // A request that couldn't be served: the JIT request window says why, or the alert below.
             .onChange(of: model.jitFailure?.id) { _, failure in
-                if failure != nil { openWindow(id: JITRequestWindow.windowID) }
-            }
-            #else
-            .alert(model.jitFailure.map { "Can't Enable JIT for \(library.displayName(of: $0.bundleId))" } ?? "",
-                   isPresented: Binding(get: { model.jitFailure != nil }, set: { if !$0 { model.jitFailure = nil } }),
-                   presenting: model.jitFailure) { failure in
-                if failure.problem != nil {
-                    Button("Open Setup") { openSetup() }
-                }
-                Button("OK", role: .cancel) {}
-            } message: { failure in
-                Text(failure.message)
-            }
-            .alert("Enable JIT for \(library.pendingJITRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
-                   isPresented: Binding(get: { library.pendingJITRequest != nil }, set: { if !$0 { library.pendingJITRequest = nil } }),
-                   presenting: library.pendingJITRequest) { request in
-                Button("Enable JIT") { attach(request) }
-                Button("Cancel", role: .cancel) {}
-            } message: { request in
-                Text(LibraryModel.JITRequest.message(request, managed: library.isManaged(request.bundleId)))
+                if failure != nil, !Self.jitInAlerts { openWindow(id: JITRequestScene.windowID) }
             }
             #endif
+            .modifier(JITAlerts(model: model, library: library, openSetup: openSetup, attach: attach))
             .panel(isPresented: Binding(get: { library.incoming != nil }, set: {
                 if !$0 {
                     guard !library.busy else { return }
@@ -219,6 +201,16 @@ struct RootView: View {
     }
     #endif
 
+    /// Whether JIT requests and failures ask in an alert: on iPhone, iPad and Apple TV, and on a
+    /// headset before visionOS 26, which has no `Window` for `JITRequestWindow` (a confirmation
+    /// dialog there is a popover that can land out of reach, but an alert is centered).
+    static var jitInAlerts: Bool {
+        #if os(visionOS)
+        if #available(visionOS 26.0, *) { return false }
+        #endif
+        return true
+    }
+
     private func attach(_ request: LibraryModel.JITRequest) {
         Task { await model.answerJIT(request) }
     }
@@ -239,9 +231,10 @@ struct RootView: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             ForEach(visibleTabs, id: \.self) { item in
-                Tab(item.rawValue, systemImage: item.systemImage, value: item) {
-                    screen(item)
-                }
+                // `.tabItem` rather than iOS 18's `Tab`, for the iOS 17 floor.
+                screen(item)
+                    .tabItem { Label(item.rawValue, systemImage: item.systemImage) }
+                    .tag(item)
             }
         }
         #if os(iOS)
@@ -366,3 +359,34 @@ private struct ActivityAccessory<Accessory: View>: ViewModifier {
     }
 }
 #endif
+
+/// The JIT request and failure alerts (see `RootView.jitInAlerts`), apart from the body so its
+/// modifier chain still type-checks in reasonable time.
+private struct JITAlerts: ViewModifier {
+    let model: ProbeModel
+    let library: LibraryModel
+    let openSetup: () -> Void
+    let attach: (LibraryModel.JITRequest) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .alert(model.jitFailure.map { "Can't Enable JIT for \(library.displayName(of: $0.bundleId))" } ?? "",
+                   isPresented: Binding(get: { RootView.jitInAlerts && model.jitFailure != nil }, set: { if !$0 { model.jitFailure = nil } }),
+                   presenting: model.jitFailure) { failure in
+                if failure.problem != nil {
+                    Button("Open Setup") { openSetup() }
+                }
+                Button("OK", role: .cancel) {}
+            } message: { failure in
+                Text(failure.message)
+            }
+            .alert("Enable JIT for \(library.pendingJITRequest.map { library.displayName(of: $0.bundleId) } ?? "")?",
+                   isPresented: Binding(get: { RootView.jitInAlerts && library.pendingJITRequest != nil }, set: { if !$0 { library.pendingJITRequest = nil } }),
+                   presenting: library.pendingJITRequest) { request in
+                Button("Enable JIT") { attach(request) }
+                Button("Cancel", role: .cancel) {}
+            } message: { request in
+                Text(LibraryModel.JITRequest.message(request, managed: library.isManaged(request.bundleId)))
+            }
+    }
+}

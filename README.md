@@ -13,7 +13,9 @@ says. Apps
 install from AltStore-format sources, from a GitHub project's releases, or from an IPA you have,
 signed with a free Apple ID or your own certificate. A computer installs Apparition on the device
 the first time; after that, refreshing and JIT run on the device, reaching your Mac only when the
-Apple ID work needs it.
+Apple ID work needs it. Apparition runs on iOS and iPadOS 17.4 or later, tvOS 17.4 or later and
+visionOS 2 or later, so an iPhone XS or XR on iOS 18 works too. Older iPhones and iPads get apps from
+the desktop app instead (a TrollStore installer, say): see pairing below.
 
 <p align="center">
   <img src="docs/images/desktop.png" height="420" alt="The desktop app's welcome screen">

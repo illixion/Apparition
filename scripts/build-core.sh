@@ -29,12 +29,12 @@ fi
 # platform -> rust target, Xcode SDK, deployment-target variable and value
 spec() {
   case "$1" in
-    visionos)     echo "aarch64-apple-visionos xros XROS_DEPLOYMENT_TARGET 26.0" ;;
-    visionos-sim) echo "aarch64-apple-visionos-sim xrsimulator XROS_DEPLOYMENT_TARGET 26.0" ;;
-    ios)          echo "aarch64-apple-ios iphoneos IPHONEOS_DEPLOYMENT_TARGET 17.0" ;;
-    ios-sim)      echo "aarch64-apple-ios-sim iphonesimulator IPHONEOS_DEPLOYMENT_TARGET 17.0" ;;
-    tvos)         echo "aarch64-apple-tvos appletvos TVOS_DEPLOYMENT_TARGET 17.0" ;;
-    tvos-sim)     echo "aarch64-apple-tvos-sim appletvsimulator TVOS_DEPLOYMENT_TARGET 17.0" ;;
+    visionos)     echo "aarch64-apple-visionos xros XROS_DEPLOYMENT_TARGET 2.0" ;;
+    visionos-sim) echo "aarch64-apple-visionos-sim xrsimulator XROS_DEPLOYMENT_TARGET 2.0" ;;
+    ios)          echo "aarch64-apple-ios iphoneos IPHONEOS_DEPLOYMENT_TARGET 17.4" ;;
+    ios-sim)      echo "aarch64-apple-ios-sim iphonesimulator IPHONEOS_DEPLOYMENT_TARGET 17.4" ;;
+    tvos)         echo "aarch64-apple-tvos appletvos TVOS_DEPLOYMENT_TARGET 17.4" ;;
+    tvos-sim)     echo "aarch64-apple-tvos-sim appletvsimulator TVOS_DEPLOYMENT_TARGET 17.4" ;;
     *) echo "unknown platform: $1 (visionos, visionos-sim, ios, ios-sim, tvos, tvos-sim)" >&2; return 1 ;;
   esac
 }

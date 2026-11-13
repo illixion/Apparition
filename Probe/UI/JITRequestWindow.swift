@@ -37,13 +37,20 @@ extension LibraryModel.JITRequest {
 
 #if os(visionOS)
 
+/// The JIT request window's ID, apart from the window, which needs visionOS 26, so the views and the
+/// openers that name it build for visionOS 2.
+enum JITRequestScene {
+    static let windowID = "jit-request"
+}
+
 /// The "Enable JIT?" prompt for an app Apparition didn't install, or a JIT script, in a utility window. A
 /// confirmation dialog on visionOS is a popover anchored to the main window, which could land far
 /// to its right and out of reach, leaving the request to time out. iOS and tvOS use an alert.
 /// It also says why a request couldn't be served (no pairing, a pairing the headset turned down,
-/// no companion), which iOS and tvOS show in an alert.
+/// no companion), which iOS and tvOS show in an alert, as does visionOS before 26.
+@available(visionOS 26.0, *)
 struct JITRequestWindow: Scene {
-    static let windowID = "jit-request"
+    static var windowID: String { JITRequestScene.windowID }
 
     let model: ProbeModel
     let library: LibraryModel
@@ -82,7 +89,7 @@ private struct JITRequestView: View {
                     .accessibilityIdentifier("jitFailure")
                 Button("OK") {
                     model.jitFailure = nil
-                    dismissWindow(id: JITRequestWindow.windowID)
+                    dismissWindow(id: JITRequestScene.windowID)
                 }
                 .buttonStyle(.borderedProminent)
             } else if let request = library.pendingJITRequest {
@@ -97,14 +104,14 @@ private struct JITRequestView: View {
                 VStack(spacing: 10) {
                     Button("Enable JIT") {
                         library.pendingJITRequest = nil
-                        dismissWindow(id: JITRequestWindow.windowID)
+                        dismissWindow(id: JITRequestScene.windowID)
                         Task { await model.answerJIT(request) }
                     }
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("enableJIT")
                     Button("Cancel", role: .cancel) {
                         library.pendingJITRequest = nil
-                        dismissWindow(id: JITRequestWindow.windowID)
+                        dismissWindow(id: JITRequestScene.windowID)
                     }
                 }
             } else {

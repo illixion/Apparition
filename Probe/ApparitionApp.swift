@@ -79,8 +79,11 @@ struct ApparitionApp: App {
         .defaultSize(width: 1180, height: 820)
         #endif
         #if os(visionOS)
-        DebugApprovalWindow()
-        JITRequestWindow(model: model, library: library)
+        // `Window` scenes need visionOS 26; before it, both ask in alerts instead.
+        if #available(visionOS 26.0, *) {
+            DebugApprovalWindow()
+            JITRequestWindow(model: model, library: library)
+        }
         #endif
     }
 }
