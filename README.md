@@ -90,12 +90,13 @@ comparison of anisette sources is in [docs/ANISETTE.md](docs/ANISETTE.md).
    - **iPhone or iPad:** plug it into the computer with a USB cable and unlock it, then tap
      Trust and enter its passcode if it asks. There's no code to type. You only need the cable
      until the device trusts the computer: after that, pairing it again works over Wi-Fi.
-   - **iPhone or iPad on iOS 16 or earlier (untested):** pair it the same way. The RemotePairing
-     tunnel arrived with iOS 17, so Apparition reaches it the way Finder does instead, over the
-     cable or Wi-Fi sync, and installs app files there from the desktop app or with
-     `apparition install <app.ipa>`. JIT, Apple Watch apps and Apparition itself need iOS 17, so
-     refresh an app by installing it again from the computer. This hasn't been tried on a real
-     iOS 16 device yet: please say how it went, working or not, in
+   - **iPhone or iPad on iOS 17.3 or earlier (untested):** pair it the same way. The
+     RemotePairing tunnel Apparition uses arrived with iOS 17.4, so Apparition reaches it the way
+     Finder does instead, over the cable or Wi-Fi sync, and installs app files there from the
+     desktop app or with `apparition install <app.ipa>` (a TrollStore installer, say). JIT, Apple
+     Watch apps and Apparition itself need iOS 17.4, so refresh an app by installing it again from
+     the computer. This hasn't been tried on a real device that old yet: please say how it went,
+     working or not, in
      [issue #14](https://github.com/illixion/Apparition/issues/14).
 3. Sign in with your Apple ID, or choose your own certificate and profile, and install. The sign-in's
    **Anisette data** choice depends on your computer:

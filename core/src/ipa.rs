@@ -243,10 +243,10 @@ pub async fn install(
     }))
 }
 
-/// [`install`] for a device on iOS 16 or earlier, through usbmuxd and lockdown instead of the
+/// [`install`] for a device on iOS 17.3 or earlier, through usbmuxd and lockdown instead of the
 /// RemotePairing tunnel ([`crate::legacy`]). The same IPA, upload and installd request; what it
 /// can't do is close a running copy first (that is CoreDevice's appservice, from iOS 17), so an
-/// update of an open app waits until it's closed. Untested on a real iOS 16 device so far.
+/// update of an open app waits until it's closed. Untested on a real device that old so far.
 pub async fn install_lockdown(
     provider: &idevice::provider::UsbmuxdProvider,
     app_path: &Path,

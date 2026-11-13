@@ -104,13 +104,21 @@ pub async fn usb_devices() -> Result<Vec<UsbDevice>, Report> {
 }
 
 /// Whether a device with lockdown's `product_type` and `os_version` predates the RemotePairing
-/// tunnel (CoreDevice arrived with iOS and tvOS 17), so it's reached through usbmuxd and lockdown
-/// instead: see [`crate::legacy`]. visionOS has had the tunnel from 1.0, and its versions only
-/// reached 26 later, so a headset never counts. Anything that doesn't read as a version counts
-/// as current.
+/// tunnel Apparition uses, so it's reached through usbmuxd and lockdown instead: see
+/// [`crate::legacy`]. CoreDevice arrived with iOS 17, but the tunnel over TCP only with 17.4
+/// (StikDebug, on the same idevice library, starts there too), so an iPhone or iPad on 17.0 to
+/// 17.3 counts: TrollStore's iOS 17.0 among them. An Apple TV has no cable to fall back to and
+/// counts only before 17. visionOS has had the tunnel from 1.0, and its versions only reached 26
+/// later, so a headset never counts. Anything that doesn't read as a version counts as current.
 pub fn is_legacy_os(product_type: &str, os_version: &str) -> bool {
-    Platform::of_product(product_type) != Platform::VisionOS
-        && os_version.split('.').next().and_then(|major| major.parse::<u32>().ok()).is_some_and(|major| major < 17)
+    let mut parts = os_version.split('.').map(|part| part.parse::<u32>().ok());
+    let Some(Some(major)) = parts.next() else { return false };
+    let minor = parts.next().flatten().unwrap_or(0);
+    match Platform::of_product(product_type) {
+        Platform::VisionOS => false,
+        Platform::TvOS => major < 17,
+        Platform::IOS => (major, minor) < (17, 4),
+    }
 }
 
 /// usbmuxd's provider for `udid`: the cable when it's plugged in, else the network (Wi-Fi sync).
@@ -329,7 +337,7 @@ pub(crate) fn installed_ids(apps: &std::collections::HashMap<String, plist::Valu
 }
 
 /// What a computer reaches a device through: the RemotePairing tunnel (iOS 17 and later,
-/// visionOS, tvOS), or usbmuxd and lockdown for iOS 16 and earlier ([`crate::legacy`]). The
+/// visionOS, tvOS), or usbmuxd and lockdown before iOS 17.4 ([`crate::legacy`]). The
 /// legacy one only does what lockdown can without CoreDevice: list, install and remove apps.
 pub enum Connection {
     Tunnel(Tunnel),
@@ -366,7 +374,7 @@ impl Connection {
     }
 
     /// Packs and installs a signed app. Over the tunnel a running copy is closed first; lockdown
-    /// can't close apps, so on iOS 16 an update of an open app waits until it's closed.
+    /// can't close apps, so before iOS 17.4 an update of an open app waits until it's closed.
     pub async fn install(&mut self, app_path: &Path, source_ipa: Option<&Path>, detach_after_ms: u64) -> Result<Value, Report> {
         match self {
             Connection::Tunnel(tunnel) => tunnel.install(app_path, source_ipa, detach_after_ms).await,
@@ -374,7 +382,7 @@ impl Connection {
         }
     }
 
-    /// The Apple Watches paired with this iPhone, through the tunnel; none on iOS 16 and earlier,
+    /// The Apple Watches paired with this iPhone, through the tunnel; none before iOS 17.4,
     /// where Apparition doesn't reach the Watch.
     pub async fn paired_watches(&mut self) -> Result<Vec<crate::watch::PairedWatch>, Report> {
         match self {
@@ -384,7 +392,7 @@ impl Connection {
     }
 
     /// The tunnel, for what only it can do (JIT, Apple Watch installs, handing Apparition its
-    /// pairing and signing); `None` on iOS 16 and earlier.
+    /// pairing and signing); `None` before iOS 17.4.
     pub fn tunnel(&mut self) -> Option<&mut Tunnel> {
         match self {
             Connection::Tunnel(tunnel) => Some(tunnel),
@@ -804,7 +812,7 @@ mod desktop {
         /// before iPhone and iPad could pair, which were all headsets.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub product_type: Option<String>,
-        /// iOS 16 or earlier, reached through usbmuxd and lockdown ([`crate::legacy`]): it has no
+        /// iOS 17.3 or earlier, reached through usbmuxd and lockdown ([`crate::legacy`]): it has no
         /// RemotePairing, so `address`, `port` and `pairing` mean nothing. Untested on a real
         /// device so far.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -922,7 +930,7 @@ mod desktop {
         /// error saying to pair again over usbmuxd.
         pub async fn connect(&self, device: &PairedDevice, pin: impl Fn() -> String) -> Result<Tunnel, Report> {
             if device.legacy {
-                bail!("{} runs iOS 16 or earlier, which has no RemotePairing tunnel: Apparition can only install and remove apps on it, over usbmuxd.", device.name);
+                bail!("{} runs iOS 17.3 or earlier, which has no RemotePairing tunnel Apparition can use: Apparition can only install and remove apps on it, over usbmuxd.", device.name);
             }
             if device.platform() == super::Platform::IOS {
                 return self.connect_verified(device).await;
@@ -951,7 +959,7 @@ mod desktop {
         /// the saved address doesn't answer, the device is looked up again under its name.
         pub async fn connect_verified(&self, device: &PairedDevice) -> Result<Tunnel, Report> {
             if device.legacy {
-                bail!("{} runs iOS 16 or earlier, which has no RemotePairing tunnel: Apparition can only install and remove apps on it, over usbmuxd.", device.name);
+                bail!("{} runs iOS 17.3 or earlier, which has no RemotePairing tunnel Apparition can use: Apparition can only install and remove apps on it, over usbmuxd.", device.name);
             }
             let (mut pairing, address) = self.pairing_of(device)?;
             let connected = super::connect_verified(address, &hostname(), &mut pairing).await;
@@ -1003,7 +1011,7 @@ mod desktop {
             waiting: &(dyn Fn(&str) + Send + Sync),
         ) -> Result<(PairedDevice, super::DeviceInfo), Report> {
             let hostname = hostname();
-            // iOS 16 and earlier has no RemotePairing to pair with: usbmuxd's trust is the pairing.
+            // Before iOS 17.4 there's no RemotePairing tunnel to pair for: usbmuxd's trust is the pairing.
             let (_, identity) = super::usb_identity(udid, &hostname, waiting).await?;
             if super::is_legacy_os(&identity.product_type, &identity.os_version) {
                 let device = PairedDevice {
@@ -1198,11 +1206,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_os_is_before_ios_17() {
+    fn legacy_os_is_before_ios_17_4() {
         assert!(super::is_legacy_os("iPhone10,4", "16.3.1"));
         assert!(super::is_legacy_os("iPad7,5", "12.5.7"));
         assert!(super::is_legacy_os("AppleTV6,2", "16.6"));
-        assert!(!super::is_legacy_os("iPhone10,4", "17.0"));
+        assert!(super::is_legacy_os("iPhone11,8", "17.0"));
+        assert!(super::is_legacy_os("iPhone11,8", "17"));
+        assert!(super::is_legacy_os("iPhone11,8", "17.3.1"));
+        assert!(!super::is_legacy_os("iPhone11,8", "17.4"));
+        assert!(!super::is_legacy_os("iPhone11,8", "18.7.2"));
+        assert!(!super::is_legacy_os("AppleTV6,2", "17.0"));
         assert!(!super::is_legacy_os("iPhone17,1", "26.1"));
         assert!(!super::is_legacy_os("RealityDevice14,1", "2.4"));
         assert!(!super::is_legacy_os("iPhone10,4", ""));

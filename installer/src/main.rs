@@ -750,7 +750,7 @@ async fn devices() -> Result<(), Error> {
         println!("Paired with this computer:");
         for device in &paired {
             if device.legacy {
-                println!("  {} ({}) over usbmuxd (iOS 16 or earlier, untested)", device.name, device.udid);
+                println!("  {} ({}) over usbmuxd (iOS 17.3 or earlier, untested)", device.name, device.udid);
             } else {
                 println!("  {} ({}) at {}", device.name, device.udid, device.address);
             }
@@ -1064,7 +1064,7 @@ async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
     let (device, info) = store().pair_usb(&udid, &|what| println!("{what}")).await?;
     if device.legacy {
         println!(
-            "Paired with {} ({} {}) over usbmuxd. iOS 16 and earlier has no RemotePairing, so Apparition can install and remove apps there (over the cable, or Wi-Fi sync), with no JIT.",
+            "Paired with {} ({} {}) over usbmuxd. Before iOS 17.4 there's no RemotePairing tunnel Apparition can use, so it can install and remove apps there (over the cable, or Wi-Fi sync), with no JIT.",
             info.name, info.product_type, info.os_version
         );
         println!("{}", legacy_notice());
@@ -1494,10 +1494,10 @@ async fn latest_apparition(site: &str, dir: &Path, platform: api::Platform) -> R
     Ok(path)
 }
 
-/// What the command line says on a device on iOS 16 or earlier: the route is untested.
+/// What the command line says on a device on iOS 17.3 or earlier: the route is untested.
 fn legacy_notice() -> String {
     format!(
-        "iOS 16 and earlier is new in Apparition and hasn't been tried on a real device yet. Please say how it went, working or not: {}",
+        "Installing to iOS 17.3 and earlier is new in Apparition and hasn't been tried on a real device yet. Please say how it went, working or not: {}",
         apparition_core::legacy::REPORT_URL
     )
 }
@@ -1507,7 +1507,7 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
         // Refused before signing, which would spend one of a free account's App IDs on an app
         // installd then turns down for its minimum iOS.
         if device.legacy {
-            return Err(fail(format!("Apparition itself needs iOS 17 or later, which {} doesn't run. Give an IPA to install instead: `apparition install <app.ipa>`", device.name)));
+            return Err(fail(format!("Apparition itself needs iOS 17.4 or later, which {} doesn't run. Give an IPA to install instead: `apparition install <app.ipa>`", device.name)));
         }
         options.ipa = latest_apparition(&options.release_site, &scratch.join("download"), device.platform()).await?;
     }
@@ -1540,7 +1540,7 @@ async fn sign_and_install(
     scratch: &Path,
     strip: bool,
 ) -> Result<(), Error> {
-    let tunnel_only = || fail(format!("{} runs iOS 16 or earlier: Apparition can only install apps there, not Apple Watch apps or Apparition's own pairing", info.name));
+    let tunnel_only = || fail(format!("{} runs iOS 17.3 or earlier: Apparition can only install apps there, not Apple Watch apps or Apparition's own pairing", info.name));
     // Before signing, which would spend one of a free account's App IDs on an app installd
     // turns down for its minimum iOS.
     api::check_app_os(&options.ipa, &info.product_type, &info.os_version).map_err(|e| fail(format!("{}: {e}", info.name)))?;

@@ -374,9 +374,9 @@ function headset() {
       if (row.kind === "paired") {
         title.textContent = row.device.name;
         if (row.device.legacy) {
-          // iOS 16 and earlier: no network service to see, only usbmuxd's cable or Wi-Fi sync.
+          // Before iOS 17.4: no tunnel service to see, only usbmuxd's cable or Wi-Fi sync.
           meta.textContent = "Paired with this computer, over the cable or Wi-Fi sync";
-          badge.textContent = "iOS 16 · untested";
+          badge.textContent = "Before iOS 17.4 · untested";
           badge.classList.remove("online");
         } else {
           meta.textContent = `Paired with this computer, at ${row.device.address}`;
@@ -570,7 +570,7 @@ function pair() {
       state.pairSkipped = false;
       const os = device.osVersion ? ` (${device.platform} ${device.osVersion})` : "";
       const legacy = device.legacy
-        ? " iOS 16 and earlier has no wireless pairing, so Apparition installs to it over the cable (or Wi-Fi sync). That route is untested so far: the next screens say more."
+        ? " Before iOS 17.4 there's no wireless pairing Apparition can use, so it installs to it over the cable (or Wi-Fi sync). That route is untested so far: the next screens say more."
         : "";
       setStatus(status, `Paired with ${device.name}${os}. This computer stays paired for next time.${legacy}`, "good");
       start.textContent = "Continue";
@@ -1105,7 +1105,7 @@ function install() {
   const handoff = /** @type {HTMLInputElement} */ ($(panel, "handoff"));
 
   back.addEventListener("click", () => go("signing"));
-  // iOS 16 and earlier: installs only, over usbmuxd, untested. Apparition itself needs iOS 17.
+  // Before iOS 17.4: installs only, over usbmuxd, untested. Apparition itself needs iOS 17.4.
   const legacy = state.device?.legacy === true;
   $(panel, "legacy-note").hidden = !legacy;
   $(panel, "legacy-report").addEventListener("click", () => invoke("open_ios16_report").catch(() => {}));
@@ -1126,7 +1126,7 @@ function install() {
       : `The latest official release, checked against Apparition's release signature before it's used, signed for ${state.device?.name ?? "the device"}.`;
     $(panel, "local-name").textContent = state.localPath ? basename(state.localPath) : "An .ipa, or a .deb such as Kodi's, on this computer.";
     if (state.what === "local" || legacy) advanced.open = true;
-    // On iOS 16 and earlier only an app file can be installed (Apparition needs iOS 17).
+    // Before iOS 17.4 only an app file can be installed (Apparition needs 17.4).
     start.disabled = legacy && state.what !== "local";
   };
   what.forEach((w) =>

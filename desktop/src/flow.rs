@@ -228,7 +228,7 @@ pub fn open_help(app: AppHandle) -> Result<(), Failure> {
     app.opener().open_url(QUESTIONS, None::<&str>).map_err(|error| Failure::new(error.to_string()))
 }
 
-/// Where to report how installing to iOS 16 or earlier went (it's untested so far).
+/// Where to report how installing to iOS 17.3 or earlier went (it's untested so far).
 #[tauri::command]
 pub fn open_ios16_report(app: AppHandle) -> Result<(), Failure> {
     app.opener().open_url(apparition_core::legacy::REPORT_URL, None::<&str>).map_err(|error| Failure::new(error.to_string()))
@@ -258,7 +258,7 @@ pub struct DeviceView {
     /// "visionOS", "iOS" (iPhone and iPad) or "tvOS".
     platform: &'static str,
     os_version: Option<String>,
-    /// iOS 16 or earlier, reached over usbmuxd: installs only, and untested so far.
+    /// iOS 17.3 or earlier, reached over usbmuxd: installs only, and untested so far.
     legacy: bool,
 }
 
@@ -1058,7 +1058,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             // Refused before signing, which would spend one of a free account's App IDs on an app
             // installd turns down for its minimum iOS.
             if is_apparition && tunnel.tunnel().is_none() {
-                return Err(rootcause::report!("Apparition itself needs iOS 17 or later, and {} runs iOS {}. Choose another app to install there.", info.name, info.os_version));
+                return Err(rootcause::report!("Apparition itself needs iOS 17.4 or later, and {} runs iOS {}. Choose another app to install there.", info.name, info.os_version));
             }
             api::check_app_os(&prepared.path, &info.product_type, &info.os_version)?;
             // A watch app needs the paired Watch registered on the team; only the iPhone can say which.
@@ -1236,10 +1236,10 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 && tunnel.installed_app(from).await?.is_some() {
                 migration_pending = true;
                 if reply["queued"].as_bool() != Some(true) {
-                    // Moving an app's data needs the tunnel's container access, which iOS 16 lacks.
+                    // Moving an app's data needs the tunnel's container access, which iOS before 17.4 lacks here.
                     let moved = match tunnel.tunnel() {
                         Some(tunnel) => tunnel.migrate_data(from, &bundle_id).await,
-                        None => Err(rootcause::report!("Moving an app's data isn't available on iOS 16 and earlier")),
+                        None => Err(rootcause::report!("Moving an app's data isn't available before iOS 17.4")),
                     };
                     match moved {
                         Ok(copied) => {

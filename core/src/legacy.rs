@@ -1,8 +1,10 @@
-//! Devices on iOS 16 and earlier, reached through usbmuxd and lockdown.
+//! iPhones and iPads before iOS 17.4 (Apple TVs before 17), reached through usbmuxd and lockdown.
 //!
 //! Everything else here talks to a device through its RemotePairing tunnel and RSD, which
 //! arrived with iOS 17 (an iOS 16 device answers remotepairingdeviced's pair-setup, but its
-//! pairing info has no `remotepairing_udid`: issue #14). Before that, the same services (AFC,
+//! pairing info has no `remotepairing_udid`: issue #14), over TCP only from 17.4: idevice-based
+//! tools, StikDebug among them, start there, so 17.0 to 17.3 (TrollStore's 17.0 too) come this
+//! way as well. Before the tunnel, the same services (AFC,
 //! installation_proxy) are lockdown services, so a device that trusts this computer (usbmuxd's
 //! pair record, from Finder, Apple Devices or `apparition pair --usb`) needs no pairing of its
 //! own. Over the cable, or Wi-Fi sync once the device allows it. Installing, listing and removing
@@ -10,7 +12,7 @@
 //! and its own protocol), and Apparition itself needs a newer iOS, so there's nothing on the
 //! device to refresh apps: they are refreshed by installing them again from the computer.
 //!
-//! Best effort: written against the protocol, not yet run on an iOS 16 device. The desktop app
+//! Best effort: written against the protocol, not yet run on a device that old. The desktop app
 //! and the command line say so, and ask people to report how it went.
 
 use std::path::Path;
@@ -26,7 +28,7 @@ use serde_json::Value;
 
 use crate::api::{DeviceInfo, installed_ids, installed_name, usb_provider};
 
-/// Where to say how the iOS 16 route went: the issue that asked for it.
+/// Where to say how the route before iOS 17.4 went: the issue that asked for it.
 pub const REPORT_URL: &str = "https://github.com/illixion/Apparition/issues/14";
 
 /// A device reached over usbmuxd. Each call opens its own lockdown service connection.
