@@ -48,6 +48,10 @@ impl RequestError {
         if let Some(refusal) = apple_refusal(error) {
             return write!(f, "{refusal}");
         }
+        // A national interception CA (isideload's tls), which rustls would print as a Debug.
+        if let Some(intercepted) = isideload::tls::intercepted(error) {
+            return write!(f, "{intercepted}");
+        }
         write!(f, "{unhooked}")?;
         while let Some(cause) = source {
             write!(f, ": {cause}")?;
@@ -116,5 +120,41 @@ mod tests {
             ["Apple ID sign-in failed", "GrandSlam error during initial login request", "Auth error -80045: This action cannot be completed at this time."]
         );
         assert!(!text.contains('●') && !text.contains('╰'));
+    }
+
+    /// A connection refused for a national interception CA (isideload's tls) is said in words,
+    /// not as rustls's Debug of its error.
+    #[test]
+    fn a_national_ca_refusal_reads_as_a_sentence() {
+        use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair};
+        use std::sync::Arc;
+        install_hooks();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+        let mut name = DistinguishedName::new();
+        name.push(DnType::CountryName, "KZ");
+        name.push(DnType::CommonName, "Qaznet Trust Network");
+        ca.distinguished_name = name;
+        ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let issuer = Issuer::new(ca, KeyPair::generate().unwrap());
+        let key = KeyPair::generate().unwrap();
+        let leaf = CertificateParams::new(vec!["gsa.apple.com".into()]).unwrap().signed_by(&key, &issuer).unwrap();
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![leaf.der().clone()], rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into()))
+            .unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = rustls::ServerConnection::new(Arc::new(server)).unwrap().complete_io(&mut stream);
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let client = isideload::tls::client_builder().resolve("gsa.apple.com", address).build().unwrap();
+        let sent: Result<_, Report> = runtime.block_on(client.get(format!("https://gsa.apple.com:{}/", address.port())).send()).map_err(|error| report!(error).into_dynamic());
+        let text = describe(&sent.unwrap_err());
+        assert!(text.contains("certified by Kazakhstan's interception CA (Qaznet Trust Network)"), "{text}");
+        assert!(!text.contains("OtherError"), "{text}");
     }
 }

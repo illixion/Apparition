@@ -9,6 +9,8 @@ pub mod auth;
 pub mod dev;
 pub mod sideload;
 pub mod util;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tls;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SideloadError {

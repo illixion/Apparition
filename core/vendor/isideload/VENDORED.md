@@ -77,6 +77,15 @@ captures or reverse-engineering notes.
     through the client and its answer as structure only (names, sizes, flags,
     Apple's own error text; no secret values), under its own tracing target.
     Off unless the host enables it.
+22. **Refuse national interception CAs** (`src/tls.rs`, `src/tls/`, and every client:
+    `src/auth/grandslam.rs`, `src/auth/edge.rs`, `src/anisette/remote_v3/mod.rs`): each
+    HTTPS client is built from `tls::client_builder()`, which runs
+    rustls-platform-verifier (the operating system's check, with Apple's roots added for
+    GrandSlam) behind a refusal of Russia's and Kazakhstan's national root CAs, by key and
+    by name, issued-by included, and of any CA in those countries for Apple's hosts.
+    Windows connections now go through it too, not native-tls, which upstream used to get
+    around a platform-verifier bug with Apple's root (since fixed; checked against
+    gsa.apple.com on Windows 10).
 
 The vendored manifest requests `zip` 9.0.5 to match the core dependency and avoid
 the known parser differential addressed by that release; this is a dependency

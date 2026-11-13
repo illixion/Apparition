@@ -22,6 +22,8 @@ use rootcause::prelude::*;
 
 pub mod api;
 pub mod release;
+/// Every HTTPS client starts from `tls::client_builder()`: it refuses national interception CAs.
+pub use isideload::tls;
 pub mod verbose;
 pub(crate) mod account;
 pub mod errors;
@@ -554,7 +556,7 @@ pub struct AnisetteCheck {
 /// info and, from a Mac, its headers, without an Apple ID. For checking a setup.
 pub async fn check_anisette(requested: &str, data_dir: &std::path::Path) -> Result<AnisetteCheck, Report> {
     let url = anisette_address(requested, data_dir).await?;
-    let client = reqwest::Client::new();
+    let client = isideload::tls::client_builder().build()?;
     let info: Value = client.get(format!("{url}/v3/client_info")).send().await?.error_for_status()?.json().await.context("the client info isn't JSON")?;
     let serves = info.get("apparition_anisette").and_then(Value::as_str).map(str::to_string);
     let claims = info.get("client_info").and_then(Value::as_str).and_then(|text| text.split('>').next()).map(|model| model.trim_start_matches('<').to_string()).unwrap_or_default();

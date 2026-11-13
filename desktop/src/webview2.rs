@@ -73,7 +73,7 @@ pub fn ensure(runtime: &tokio::runtime::Runtime) -> bool {
 }
 
 async fn install() -> Result<(), Report> {
-    let response = reqwest::Client::builder()
+    let response = apparition_core::tls::client_builder()
         .user_agent(concat!("Apparition/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(120))
         .build()?

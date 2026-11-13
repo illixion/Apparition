@@ -92,7 +92,7 @@ impl Upstream {
     /// For the server at `address` (see [`normalize`]).
     pub fn new(address: &str) -> Result<Upstream, Report> {
         let base = normalize(address).map_err(|why| report!("{why}"))?;
-        let client = reqwest::Client::builder().timeout(REQUEST).build().context("making the anisette server's client")?;
+        let client = isideload::tls::client_builder().timeout(REQUEST).build().context("making the anisette server's client")?;
         Ok(Upstream { base, client })
     }
 

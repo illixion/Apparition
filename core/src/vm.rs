@@ -741,7 +741,7 @@ async fn ensure_image(image: &RestoreImage, cache: &Path, given: Option<&Path>, 
 
 /// Downloads `image` into `partial`, resuming what is there, retrying a dropped connection.
 async fn download(image: &RestoreImage, partial: &Path, say: Say<'_>) -> Result<(), Report> {
-    let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(30)).read_timeout(Duration::from_secs(60)).build()?;
+    let client = isideload::tls::client_builder().connect_timeout(Duration::from_secs(30)).read_timeout(Duration::from_secs(60)).build()?;
     let mut failures = 0;
     loop {
         let have = std::fs::metadata(partial).map(|m| m.len()).unwrap_or(0);

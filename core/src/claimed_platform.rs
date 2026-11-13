@@ -140,7 +140,7 @@ pub async fn claim_for_server(url: &str) -> Result<Claim, Report> {
 }
 
 async fn fetch_claim(url: &str, who: &str, subject: &str) -> Result<Claim, Report> {
-    let response = reqwest::Client::new()
+    let response = isideload::tls::client_builder().build()?
         .get(format!("{}/v3/client_info", url.trim_end_matches('/')))
         .timeout(std::time::Duration::from_secs(20))
         .send().await.context(format!("Couldn't reach {who}"))?

@@ -3611,6 +3611,7 @@ dependencies = [
  "rootcause",
  "rsa",
  "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha1 0.11.0",

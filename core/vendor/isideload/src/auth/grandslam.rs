@@ -297,14 +297,17 @@ impl GrandSlam {
         #[cfg(feature = "wasm")] _debug: bool,
         proxy_url: Option<String>,
     ) -> Result<reqwest_middleware::ClientWithMiddleware, Report> {
+        // Apparition: Apple's roots on top of the operating system's, through crate::tls, which
+        // refuses national interception CAs. `debug` keeps reqwest's own TLS, for its
+        // accept-anything switch.
         #[cfg(not(feature = "wasm"))]
-        let cert = Certificate::from_der(APPLE_ROOT)?;
+        let client = if debug {
+            ClientBuilder::new().add_root_certificate(Certificate::from_der(APPLE_ROOT)?).add_root_certificate(Certificate::from_der(APPLE_ROOT_G3)?)
+        } else {
+            crate::tls::client_builder_with_roots(&[APPLE_ROOT, APPLE_ROOT_G3])
+        };
         #[cfg(not(feature = "wasm"))]
-        let cert_g3 = Certificate::from_der(APPLE_ROOT_G3)?;
-        #[cfg(not(feature = "wasm"))]
-        let client = ClientBuilder::new()
-            .add_root_certificate(cert)
-            .add_root_certificate(cert_g3)
+        let client = client
             .http1_title_case_headers()
             .danger_accept_invalid_certs(debug)
             .connection_verbose(debug)

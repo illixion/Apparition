@@ -41,7 +41,7 @@ fn address(raw: &str) -> Result<Url, String> {
 }
 
 fn client() -> Result<Client, String> {
-    Client::builder()
+    apparition_core::tls::client_builder()
         .timeout(Duration::from_secs(95))
         .connect_timeout(Duration::from_secs(10))
         // Never forward a service password or bearer token through a redirect.

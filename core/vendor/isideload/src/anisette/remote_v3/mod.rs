@@ -7,10 +7,9 @@ use web_time::SystemTime;
 
 use base64::prelude::*;
 use plist_macro::plist;
-use reqwest::{
-    ClientBuilder,
-    header::{CONTENT_TYPE, HeaderMap, HeaderValue},
-};
+#[cfg(feature = "wasm")]
+use reqwest::ClientBuilder;
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest_middleware::ClientBuilder as MwClientBuilder;
 use rootcause::option_ext::OptionExt;
 use rootcause::prelude::*;
@@ -111,9 +110,11 @@ impl RemoteV3AnisetteProvider {
         // A server that doesn't answer must not hang a sign-in (from the PR #17 contributor's change): connecting
         // gets 10 seconds. A whole request gets 120, not their 20, because Apparition's own server may be waiting
         // for the anisette VM to resume (a second) or boot (about a minute) before it answers.
+        #[cfg(feature = "wasm")]
         let builder = ClientBuilder::new();
+        // Apparition: through crate::tls, which refuses national interception CAs.
         #[cfg(not(feature = "wasm"))]
-        let builder = builder
+        let builder = crate::tls::client_builder()
             .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(120));
         if let Some(websocket_proxy) = websocket_proxy {

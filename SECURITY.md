@@ -17,7 +17,18 @@ these matter most:
 - pairing or the companion's encrypted channel accepting a device that was not approved;
 - the debug server, the Store or the update path accepting a request, a file or a release that was not signed or
   approved;
-- a downloaded release or library being used without its hash and signature being checked.
+- a downloaded release being used without its hash and signature being checked, or a library file you import
+  without its hash (Apple's own download of the libraries is trusted for coming from Apple over HTTPS);
+- a connection accepting a national interception certificate authority (below).
+
+## Connections
+
+Every HTTPS connection Apparition makes is checked by the operating system, as usual, and first refused when its
+certificates are, or were issued by, the national root CAs that Russia and Kazakhstan ask people to install (the
+list, the certificates themselves and why are in `core/vendor/isideload/src/tls.rs`), even where the device trusts
+them; a connection to Apple's own servers is also refused when any CA in either country issued a certificate in it.
+Such a CA can read what goes through the connection, an Apple ID password included. Only updates use a fixed set of
+roots of their own (Mozilla's, through signed-update), and are signature-checked besides.
 
 ## Releases
 

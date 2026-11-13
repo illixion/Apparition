@@ -108,7 +108,7 @@ fn app_asset<'a>(release: &'a Release, platform: &str) -> Option<&'a Asset> {
 }
 
 fn http() -> Result<reqwest::Client, Report> {
-    Ok(reqwest::Client::builder()
+    Ok(isideload::tls::client_builder()
         .user_agent(concat!("Apparition/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(std::time::Duration::from_secs(10))
         .read_timeout(std::time::Duration::from_secs(30))

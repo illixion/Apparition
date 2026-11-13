@@ -138,7 +138,7 @@ fn parse_doh(answer: &serde_json::Value) -> Vec<IpAddr> {
 /// A client per lookup: these are rare, and a shared one would be tied to the first lookup's
 /// runtime.
 async fn ask_doh(endpoint: &str, host: &str) -> Vec<IpAddr> {
-    let client = match reqwest::Client::builder().timeout(DOH_TIMEOUT).build() {
+    let client = match crate::tls::client_builder().timeout(DOH_TIMEOUT).build() {
         Ok(client) => client,
         Err(error) => {
             debug!("No client for DNS-over-HTTPS: {error}");

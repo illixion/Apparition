@@ -227,7 +227,7 @@ pub(crate) async fn libraries(cache: &Path) -> Result<(Vec<u8>, Vec<u8>), Report
         return Ok((services, core));
     }
     let download = async {
-        let client = reqwest::Client::builder().user_agent(concat!("Apparition/", env!("CARGO_PKG_VERSION"))).build()?;
+        let client = isideload::tls::client_builder().user_agent(concat!("Apparition/", env!("CARGO_PKG_VERSION"))).build()?;
         let (services, core) = fetch(&Source::Remote(client)).await?;
         for (name, bytes) in [(SERVICES, &services), (CORE, &core)] {
             if !is_known(name, bytes) {

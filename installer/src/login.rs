@@ -51,7 +51,7 @@ pub(crate) fn address(raw: &str) -> Result<Url, Error> {
 }
 
 fn client() -> Result<reqwest::Client, Error> {
-    reqwest::Client::builder()
+    apparition_core::tls::client_builder()
         .user_agent(concat!("Apparition/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         // A Store's slowest answers (a debug call into an app) take up to ~90 s; an upload of
