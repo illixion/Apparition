@@ -489,7 +489,8 @@ fi
 windows_runtime_check() {
   local dump="" tool file dlls bad
   for tool in llvm-objdump x86_64-w64-mingw32-objdump objdump; do
-    if command -v "$tool" >/dev/null && "$tool" -p "$1" 2>/dev/null | grep -q 'DLL Name'; then dump="$tool"; break; fi
+    # grep reads it all: -q would stop at the first line, and the cut-off objdump fail the pipe.
+    if command -v "$tool" >/dev/null && "$tool" -p "$1" 2>/dev/null | grep 'DLL Name' >/dev/null; then dump="$tool"; break; fi
   done
   if [[ -z "$dump" ]]; then echo "error: no objdump here reads Windows programs' imports (LLVM's llvm-objdump, or mingw-w64's)" >&2; exit 1; fi
   for file in "$@"; do
