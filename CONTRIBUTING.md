@@ -15,12 +15,11 @@ a public issue. It is a `.trace.zip`; attach it as it is, to the **Trace** box o
 device and OS filled in.
 
 **In the desktop app,** open **Settings > Troubleshooting > Report a problem…**. It opens the desktop form with the
-version and your computer's OS filled in; nothing is sent by the app itself. The desktop app and the command line make
-no encrypted trace, so whatever you attach is public. For a sign-in that fails, run with `APPARITION_LOG=<file>`,
-which writes the sign-in's progress without secrets, and attach it. If Apple turns the request away, turn on the
-verbose record too ([how](docs/ANISETTE.md#seeing-what-a-sign-in-sent-to-apple-and-what-came-back)): it shows what was
-sent and what Apple answered, as structure and sizes with no passwords, tokens or anisette values. Read it before you
-attach it, since Apple's error text can name a team.
+version and your computer's OS filled in; the app itself sends and attaches nothing. The desktop app and the command
+line don't make an encrypted report yet, so an issue there is public: describe the problem and paste the error text,
+and don't attach log files unless you're asked for a specific one. Logs, the sign-in record
+([how](docs/ANISETTE.md#seeing-what-a-sign-in-sent-to-apple-and-what-came-back)) and screenshots can show your Apple
+ID, device names, team or app IDs and network addresses, so read and cover those first.
 
 ## Building
 
