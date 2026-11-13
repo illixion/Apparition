@@ -27,7 +27,10 @@ Every HTTPS connection Apparition makes is checked by the operating system, as u
 certificates are, or were issued by, the national root CAs that Russia and Kazakhstan ask people to install (the
 list, the certificates themselves and why are in `core/vendor/isideload/src/tls.rs`), even where the device trusts
 them; a connection to Apple's own servers is also refused when any CA in either country issued a certificate in it.
-Such a CA can read what goes through the connection, an Apple ID password included. Only updates use a fixed set of
+Such a CA can read what goes through the connection, an Apple ID password included, and change it. The Apparition app
+on a device does the same for what it downloads itself (`Probe/NationalCAs.swift`: app sources, GitHub releases, IPA
+links and builds from the Store, which it then signs and installs), checking the chain the system built, root included,
+and Apple's and GitHub's hosts against any CA in either country; it takes sources and app downloads only over https. Only updates use a fixed set of
 roots of their own (Mozilla's, through signed-update), and are signature-checked besides.
 
 ## Releases

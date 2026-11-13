@@ -36,10 +36,17 @@ struct BuildServicePasswords {
 /// A build-service session is independent of pairing, Apple ID and live debug access.
 /// Keep its bearer in memory; optionally remember the password in this device's
 /// Keychain, separately for each service origin. Never follow credential redirects.
+/// Refuses national interception CAs (NationalCAs) as the app's other downloads do: builds are code.
 private final class BuildServiceRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        let (disposition, credential) = NationalCAs.handle(challenge)
+        completionHandler(disposition, credential)
+    }
 }
 
 @MainActor @Observable
@@ -310,7 +317,7 @@ final class BuildService {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await NationalCAs.explained(request.url) { try await self.session.bytes(for: request) }
         guard let response = response as? HTTPURLResponse else { throw Failure.response }
         guard response.statusCode == 200 else {
             // The service explains a refused request in `{error}`; keep that sentence, bounded.
@@ -488,7 +495,7 @@ final class BuildService {
         var request = URLRequest(url: url)
         request.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
         stamp(&request, token: token)
-        let (temporary, response) = try await session.download(for: request)
+        let (temporary, response) = try await NationalCAs.explained(request.url) { try await self.session.download(for: request) }
         guard let response = response as? HTTPURLResponse else { throw Failure.response }
         guard response.statusCode == 200 else { throw Failure.rejected(response.statusCode) }
         let values = try temporary.resourceValues(forKeys: [.fileSizeKey])
@@ -606,7 +613,7 @@ final class BuildService {
         var request = URLRequest(url: url)
         request.setValue("text/plain", forHTTPHeaderField: "Accept")
         stamp(&request, token: token)
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response) = try await NationalCAs.explained(request.url) { try await self.session.bytes(for: request) }
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw Failure.response }
         let limit = 8 * 1024 * 1024
         guard response.expectedContentLength <= limit else { throw Failure.response }

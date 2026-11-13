@@ -1561,9 +1561,10 @@ final class LibraryModel {
         let destination = AccountModel.appsDir.appendingPathComponent(file)
         if FileManager.default.fileExists(atPath: destination.path) { return file }
         guard let url = URL(string: app.downloadURL) else { throw IDevice.ProbeError("bad download URL") }
+        guard url.scheme == "https" else { throw IDevice.ProbeError("\(app.name)'s download isn't over https://, so anyone on the way could change it; Apparition doesn't take it") }
         status = "downloading \(app.name) \(app.version)"
         // Held so Stop can cancel it: the core's stop doesn't reach URLSession.
-        let fetch = Task { try await URLSession.shared.download(from: url) }
+        let fetch = Task { try await SafeSession.download(from: url) }
         downloading = fetch
         defer { downloading = nil }
         let (temporary, response) = try await fetch.value

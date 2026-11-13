@@ -367,12 +367,17 @@ final class AccountModel {
 
     func download(_ urlString: String) async {
         guard let url = URL(string: urlString), !busy else { return }
+        // As the build service's rule: https, or http on this device itself.
+        guard url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1"].contains(url.host() ?? "")) else {
+            lastError = "download failed: only https:// links (over plain HTTP anyone on the way could change the app)"
+            return
+        }
         busy = true
         lastError = nil
         defer { busy = false; downloadProgress = nil }
         downloadProgress = "downloading \(url.lastPathComponent)"
         do {
-            let (temporary, response) = try await URLSession.shared.download(from: url)
+            let (temporary, response) = try await SafeSession.download(from: url)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw IDevice.ProbeError("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
             }

@@ -40,6 +40,8 @@ enum Sources {
         guard let url = URL(string: source.id), url.scheme == "https" || url.scheme == "http" else {
             throw IDevice.ProbeError("not a source URL: \(source.id)")
         }
+        // A source lists code to install: over plain HTTP anyone on the way could change it.
+        guard url.scheme == "https" else { throw IDevice.ProbeError("\(url.host() ?? "that source") is an http:// source; Apparition takes sources only over https://") }
         return try parseAltStore(try await get(url))
     }
 
@@ -107,7 +109,7 @@ enum Sources {
     private static func get(_ url: URL) async throws -> Data {
         var request = URLRequest(url: url)
         request.setValue("Apparition", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await SafeSession.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw IDevice.ProbeError("HTTP \(status) from \(url.host() ?? "?")") }
         return data

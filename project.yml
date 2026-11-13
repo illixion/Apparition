@@ -29,6 +29,11 @@ targets:
       - path: Probe
         excludes:
           - Info.plist
+      # The national interception CAs the app refuses (Probe/NationalCAs.swift): the core's own
+      # files, bundled as the folder `national/`.
+      - path: core/vendor/isideload/src/tls/national
+        type: folder
+        buildPhase: resources
     # Written out rather than left for Xcode to make, because Xcode makes no scheme for a
     # target that another scheme already builds. It builds the app alone; the tests are built
     # only by its Test action.
