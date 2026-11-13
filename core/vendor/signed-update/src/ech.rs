@@ -13,37 +13,36 @@ use std::time::Duration;
 
 use rustls::client::{EchConfig, EchMode};
 use rustls::crypto::aws_lc_rs;
+use rustls::client::danger::ServerCertVerifier;
 use rustls::pki_types::EchConfigListBytes;
-use rustls::{ClientConfig, RootCertStore};
+use rustls::ClientConfig;
 
 use crate::dns;
 use crate::error::{Error, Result, fail};
 
-pub(crate) async fn client(host: &str, doh: &[String], user_agent: &str) -> Result<reqwest::Client> {
-    let record = dns::lookup(host, doh, user_agent).await?;
+pub(crate) async fn client(host: &str, doh: &[String], user_agent: &str, verifier: Arc<dyn ServerCertVerifier>) -> Result<reqwest::Client> {
+    let record = dns::lookup(host, doh, user_agent, verifier.clone()).await?;
     let Some(list) = record.ech else {
         fail!("{host} publishes no ECH config");
     };
     if record.addrs.is_empty() {
         fail!("{host} has no address");
     }
-    build(host, list, &record.addrs, user_agent)
+    build(host, list, &record.addrs, user_agent, verifier)
 }
 
-/// The client for `host` with ECH config `list`, connecting to `addrs`.
-fn build(host: &str, list: Vec<u8>, addrs: &[std::net::IpAddr], user_agent: &str) -> Result<reqwest::Client> {
+/// The client for `host` with ECH config `list`, connecting to `addrs`, trusting what `verifier` does.
+fn build(host: &str, list: Vec<u8>, addrs: &[std::net::IpAddr], user_agent: &str, verifier: Arc<dyn ServerCertVerifier>) -> Result<reqwest::Client> {
     let ech = EchConfig::new(EchConfigListBytes::from(list), aws_lc_rs::hpke::ALL_SUPPORTED_SUITES)
         .map_err(|e| format!("{host}'s ECH config isn't usable: {e}"))?;
-    let roots = RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-    let mut tls = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
+    // aws-lc-rs for the connection (ring has no HPKE); the verifier keeps its own provider.
+    let builder = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
         .with_ech(EchMode::Enable(ech))
-        .map_err(|e| format!("ECH isn't available: {e}"))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+        .map_err(|e| format!("ECH isn't available: {e}"))?;
+    let tls = crate::tls::finish(builder, verifier);
     let addrs: Vec<SocketAddr> = addrs.iter().map(|ip| SocketAddr::new(*ip, 443)).collect();
     reqwest::Client::builder()
-        .use_preconfigured_tls(tls)
+        .tls_backend_preconfigured(tls)
         // A proxy would be told the name in its CONNECT, and would look it up itself; plain http
         // would put it in the Host header in the clear.
         .no_proxy()
@@ -63,15 +62,19 @@ mod tests {
 
     const UA: &str = "signed-update-test";
 
+    fn system() -> Arc<dyn ServerCertVerifier> {
+        crate::tls::verifier(&crate::Config::new("t", "t", "")).unwrap()
+    }
+
     fn live_doh() -> Vec<String> {
         vec!["https://1.1.1.1/dns-query".into(), "https://1.0.0.1/dns-query".into()]
     }
 
     #[tokio::test]
     async fn a_blocked_resolver_is_an_error_not_a_fallback() {
-        let error = client("apps.illixion.com", &["https://127.0.0.1:1/dns-query".into()], UA).await.unwrap_err().to_string();
+        let error = client("apps.illixion.com", &["https://127.0.0.1:1/dns-query".into()], UA, system()).await.unwrap_err().to_string();
         assert!(error.contains("no DNS-over-HTTPS resolver answered"), "{error}");
-        let none = client("apps.illixion.com", &[], UA).await.unwrap_err().to_string();
+        let none = client("apps.illixion.com", &[], UA, system()).await.unwrap_err().to_string();
         assert!(none.contains("no DNS-over-HTTPS resolver answered"), "{none}");
     }
 
@@ -79,7 +82,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the network"]
     async fn live_a_host_without_ech_is_refused() {
-        let error = client("github.com", &live_doh(), UA).await.unwrap_err().to_string();
+        let error = client("github.com", &live_doh(), UA, system()).await.unwrap_err().to_string();
         // github.com publishes no HTTPS record at all, so there is no ECH config to be had.
         assert!(error.contains("no HTTPS record") || error.contains("no ECH config"), "{error}");
     }
@@ -110,10 +113,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the network"]
     async fn live_the_wire_shows_no_illixion() {
-        let record = dns::lookup("apps.illixion.com", &live_doh(), UA).await.unwrap();
+        let record = dns::lookup("apps.illixion.com", &live_doh(), UA, system()).await.unwrap();
         let (port, first_flight) = capturing_proxy(SocketAddr::new(record.addrs[0], 443)).await;
         // The URL's port is the proxy's; the name in it is the one that must not leave the machine.
-        let client = build("apps.illixion.com", record.ech.unwrap(), &[std::net::Ipv4Addr::LOCALHOST.into()], UA).unwrap();
+        let client = build("apps.illixion.com", record.ech.unwrap(), &[std::net::Ipv4Addr::LOCALHOST.into()], UA, system()).unwrap();
         let response = client.get(format!("https://apps.illixion.com:{port}/")).send().await.expect("a handshake through the proxy");
         assert!(response.status().as_u16() < 500, "{}", response.status());
         let wire = first_flight.lock().unwrap().clone();
@@ -129,9 +132,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the network"]
     async fn live_control_an_ordinary_client_names_the_host() {
-        let record = dns::lookup("apps.illixion.com", &live_doh(), UA).await.unwrap();
+        let record = dns::lookup("apps.illixion.com", &live_doh(), UA, system()).await.unwrap();
         let (port, first_flight) = capturing_proxy(SocketAddr::new(record.addrs[0], 443)).await;
         let client = reqwest::Client::builder()
+            .tls_backend_preconfigured(crate::tls::client_config(system()).unwrap())
             .resolve("apps.illixion.com", SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port))
             .build()
             .unwrap();
@@ -145,7 +149,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the network"]
     async fn live_apps_illixion_com_accepts_ech() {
-        let client = client("apps.illixion.com", &live_doh(), UA).await.expect("a private client");
+        let client = client("apps.illixion.com", &live_doh(), UA, system()).await.expect("a private client");
         let response = client.get("https://apps.illixion.com/").send().await.expect("a handshake the server accepted");
         assert!(response.status().as_u16() < 500, "{}", response.status());
     }

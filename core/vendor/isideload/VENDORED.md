@@ -86,6 +86,9 @@ captures or reverse-engineering notes.
     Windows connections now go through it too, not native-tls, which upstream used to get
     around a platform-verifier bug with Apple's root (since fixed; checked against
     gsa.apple.com on Windows 10).
+    The anisette provisioning WebSocket (`src/anisette/remote_v3/websocket.rs`) connects
+    with `tls::websocket_config()`, the same check over HTTP/1.1, and tokio-tungstenite is
+    built with `__rustls-tls` alone, so it carries no webpki-roots of its own.
 
 The vendored manifest requests `zip` 9.0.5 to match the core dependency and avoid
 the known parser differential addressed by that release; this is a dependency

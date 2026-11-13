@@ -147,7 +147,9 @@ impl Upstream {
             Some(rest) => format!("wss://{rest}/v3/provisioning_session"),
             None => format!("ws://{}/v3/provisioning_session", self.base.strip_prefix("http://").unwrap_or(&self.base)),
         };
-        let (mut server, _) = tokio::time::timeout(Duration::from_secs(30), tokio_tungstenite::connect_async(url))
+        // Through the same certificate check as every other connection (crate::tls).
+        let tls = tokio_tungstenite::Connector::Rustls(crate::tls::websocket_config().context("TLS settings")?);
+        let (mut server, _) = tokio::time::timeout(Duration::from_secs(30), tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(tls)))
             .await
             .context("The anisette server's provisioning socket didn't answer")?
             .context("Couldn't open the anisette server's provisioning socket")?;

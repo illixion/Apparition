@@ -38,6 +38,8 @@ mod dns;
 mod ech;
 #[cfg(feature = "http")]
 mod net;
+#[cfg(feature = "http")]
+mod tls;
 
 pub use error::{Error, Result};
 pub use manifest::{Manifest, parse_sums};
@@ -47,3 +49,6 @@ pub use version::is_newer;
 
 #[cfg(feature = "http")]
 pub use check::{Update, check};
+/// The rustls a [`Config::verifier`] is written against.
+#[cfg(feature = "http")]
+pub use rustls;

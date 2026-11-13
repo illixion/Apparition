@@ -179,12 +179,25 @@ fn installation(app: &AppHandle) -> Result<Installation, Report> {
 /// Always on: the fallback costs nothing but the skipped source. The other TLS in this process keeps
 /// ring, which `api::init` installs as the default before anything connects (`ech` compiles
 /// rustls's aws-lc-rs provider in too, which only the private client uses).
+///
+/// Every connection a check makes, the resolver and the ECH handshake included, goes through the
+/// same certificate check as the rest of Apparition (`apparition_core::tls`: the operating system's
+/// trust, refusing national interception CAs). That decides only who can see or block a check; what
+/// gets installed is what the release signature says.
 fn update_config() -> signed_update::Config {
-    signed_update::Config::new("Apparition", release::NAMESPACE, release::signers())
+    let config = signed_update::Config::new("Apparition", release::NAMESPACE, release::signers())
         .source(signed_update::Source::apps("apparition"))
         .source(signed_update::Source::github("illixion/Apparition"))
         .user_agent(format!("Apparition/{VERSION}"))
-        .privacy(signed_update::Privacy::Ech)
+        .privacy(signed_update::Privacy::Ech);
+    match apparition_core::tls::verifier(&[]) {
+        Ok(verifier) => config.verifier(verifier),
+        // The system's certificates couldn't be read: signed-update's own system check fails the same way.
+        Err(error) => {
+            eprintln!("update TLS settings: {error}");
+            config
+        }
+    }
 }
 
 fn publish(app: &AppHandle, status: Status) {

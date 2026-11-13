@@ -3192,7 +3192,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.11",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -3399,7 +3399,7 @@ dependencies = [
  "tracing",
  "uuid",
  "web-time",
- "webpki-roots 1.0.11",
+ "webpki-roots",
  "x25519-dalek",
  "x509-cert 0.2.5",
 ]
@@ -5733,7 +5733,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "webpki-roots 1.0.11",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -6560,13 +6560,13 @@ dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
  "libc",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "rustls",
+ "rustls-platform-verifier",
  "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tracing",
- "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -7561,7 +7561,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tungstenite 0.29.0",
- "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -8314,15 +8313,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "0.26.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
-dependencies = [
- "webpki-roots 1.0.11",
 ]
 
 [[package]]

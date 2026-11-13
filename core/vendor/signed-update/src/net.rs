@@ -19,6 +19,8 @@ pub(crate) struct Net {
     doh: Vec<String>,
     /// Hosts that [`Privacy::Ech`] reaches only privately, normalised ([`normal_host`]).
     concealed: Vec<String>,
+    /// Every connection's certificate check ([`crate::tls`]).
+    verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
     plain: reqwest::Client,
     /// Private clients by host, so a check's three requests share one lookup.
     private: Arc<Mutex<HashMap<String, reqwest::Client>>>,
@@ -26,7 +28,9 @@ pub(crate) struct Net {
 
 impl Net {
     pub(crate) fn new(config: &Config) -> Result<Self> {
+        let verifier = crate::tls::verifier(config)?;
         let plain = reqwest::Client::builder()
+            .tls_backend_preconfigured(crate::tls::client_config(verifier.clone())?)
             .user_agent(&config.user_agent)
             .connect_timeout(Duration::from_secs(10))
             .read_timeout(Duration::from_secs(30))
@@ -38,6 +42,7 @@ impl Net {
             privacy: config.privacy,
             doh: config.doh.clone(),
             concealed: config.sources.iter().filter(|s| s.is_concealed()).filter_map(|s| s.host()).collect(),
+            verifier,
             plain,
             private: Arc::default(),
         })
@@ -60,7 +65,7 @@ impl Net {
         if let Some(client) = self.private.lock().unwrap().get(host) {
             return Ok(client.clone());
         }
-        let client = private_client(host, &self.doh, &self.user_agent).await?;
+        let client = private_client(host, &self.doh, &self.user_agent, self.verifier.clone()).await?;
         self.private.lock().unwrap().insert(host.to_string(), client.clone());
         Ok(client)
     }
@@ -89,13 +94,13 @@ impl Net {
 }
 
 #[cfg(feature = "ech")]
-async fn private_client(host: &str, doh: &[String], user_agent: &str) -> Result<reqwest::Client> {
-    crate::ech::client(host, doh, user_agent).await
+async fn private_client(host: &str, doh: &[String], user_agent: &str, verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>) -> Result<reqwest::Client> {
+    crate::ech::client(host, doh, user_agent, verifier).await
 }
 
 /// Without the `ech` feature a concealed host can't be reached privately, and is never reached in
 /// the clear instead.
 #[cfg(not(feature = "ech"))]
-async fn private_client(host: &str, _doh: &[String], _user_agent: &str) -> Result<reqwest::Client> {
+async fn private_client(host: &str, _doh: &[String], _user_agent: &str, _verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>) -> Result<reqwest::Client> {
     fail!("{host} can only be reached privately, which needs the signed-update `ech` feature")
 }

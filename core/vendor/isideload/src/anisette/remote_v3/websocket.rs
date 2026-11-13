@@ -35,9 +35,17 @@ impl AppWebSocket {
         {
             use tokio::time::{Duration, timeout};
 
+            // The same certificate check as every other connection (crate::tls), not a root
+            // list of tungstenite's own.
+            let tls = crate::tls::websocket_config()?;
             let (stream, _) = timeout(
                 Duration::from_secs(30),
-                tokio_tungstenite::connect_async(&target_url),
+                tokio_tungstenite::connect_async_tls_with_config(
+                    &target_url,
+                    None,
+                    false,
+                    Some(tokio_tungstenite::Connector::Rustls(tls)),
+                ),
             )
             .await?
             .context(

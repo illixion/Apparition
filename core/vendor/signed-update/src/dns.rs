@@ -3,9 +3,12 @@
 //! reaching the resolver sends no name at all, and the lookup never touches the system's DNS.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::prelude::*;
+
+use rustls::client::danger::ServerCertVerifier;
 
 use crate::error::{Error, Result, fail};
 
@@ -146,8 +149,9 @@ async fn ask(client: &reqwest::Client, endpoint: &str, name: &str, rtype: u16) -
 
 /// `host`'s HTTPS record through the first endpoint that answers, with its addresses (the record's
 /// hints, else an A and AAAA lookup through the same endpoint).
-pub(crate) async fn lookup(host: &str, endpoints: &[String], user_agent: &str) -> Result<Https> {
+pub(crate) async fn lookup(host: &str, endpoints: &[String], user_agent: &str, verifier: Arc<dyn ServerCertVerifier>) -> Result<Https> {
     let client = reqwest::Client::builder()
+        .tls_backend_preconfigured(crate::tls::client_config(verifier)?)
         .user_agent(user_agent)
         // Straight to the resolver's IP: a proxy from the environment would see which name we ask.
         .no_proxy()

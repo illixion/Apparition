@@ -127,6 +127,9 @@ pub struct Config {
     /// DNS-over-HTTPS endpoints for [`Privacy::Ech`], asked in order. By IP, so reaching them sends
     /// no name: a certificate for the IP is what is checked.
     pub doh: Vec<String>,
+    /// Decides which servers' certificates are trusted, for every request; see [`Config::verifier`].
+    #[cfg(feature = "http")]
+    pub verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
 }
 
 impl Config {
@@ -139,7 +142,20 @@ impl Config {
             user_agent: format!("{product}-updater"),
             privacy: Privacy::Off,
             doh: vec!["https://1.1.1.1/dns-query".into(), "https://1.0.0.1/dns-query".into()],
+            #[cfg(feature = "http")]
+            verifier: None,
         }
+    }
+
+    /// The app's own certificate verifier, for every request a check and a download make (DNS-over-
+    /// HTTPS and ECH included), instead of the operating system's trust store alone: one that also
+    /// refuses CAs the app knows intercept, say. It decides who can see or block a check, never what
+    /// is installed, which only the release signature does. Built on this crate's rustls
+    /// ([`crate::rustls`]).
+    #[cfg(feature = "http")]
+    pub fn verifier(mut self, verifier: std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>) -> Self {
+        self.verifier = Some(verifier);
+        self
     }
 
     pub fn privacy(mut self, privacy: Privacy) -> Self {

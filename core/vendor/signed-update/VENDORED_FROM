@@ -1,1 +1,1 @@
-7e780fecc827e4701481970fe52bbc78ec45864d Close the ways a concealed host could be reached in the clear, and bound every request
+a04fc6e95bdf52262a53638b8d419f88868e3c8c Trust the operating system's certificates, or the app's own verifier

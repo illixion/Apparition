@@ -162,22 +162,40 @@ impl ServerCertVerifier for RefuseNational {
     }
 }
 
-/// The TLS settings: the operating system's trust (and `extra_roots`, as reqwest's
-/// `add_root_certificate` would add them), with [`refusal`] first. HTTP/2 or 1.1.
-pub fn config(extra_roots: &[&[u8]]) -> Result<rustls::ClientConfig, rustls::Error> {
-    let provider = rustls::crypto::CryptoProvider::get_default().cloned().unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+/// The certificate check: the operating system's trust (and `extra_roots`, as reqwest's
+/// `add_root_certificate` would add them), with [`refusal`] first. For a client built elsewhere
+/// (the desktop app's updater).
+pub fn verifier(extra_roots: &[&[u8]]) -> Result<Arc<dyn ServerCertVerifier>, rustls::Error> {
+    let provider = provider();
     let system = if extra_roots.is_empty() {
-        rustls_platform_verifier::Verifier::new(provider.clone())?
+        rustls_platform_verifier::Verifier::new(provider)?
     } else {
-        rustls_platform_verifier::Verifier::new_with_extra_roots(extra_roots.iter().map(|der| CertificateDer::from(der.to_vec())), provider.clone())?
+        rustls_platform_verifier::Verifier::new_with_extra_roots(extra_roots.iter().map(|der| CertificateDer::from(der.to_vec())), provider)?
     };
-    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+    Ok(Arc::new(RefuseNational { system }))
+}
+
+fn provider() -> Arc<rustls::crypto::CryptoProvider> {
+    rustls::crypto::CryptoProvider::get_default().cloned().unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()))
+}
+
+/// The TLS settings over [`verifier`]. HTTP/2 or 1.1.
+pub fn config(extra_roots: &[&[u8]]) -> Result<rustls::ClientConfig, rustls::Error> {
+    let mut config = rustls::ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(RefuseNational { system }))
+        .with_custom_certificate_verifier(verifier(extra_roots)?)
         .with_no_client_auth();
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(config)
+}
+
+/// [`config`] for a WebSocket (`tokio_tungstenite::Connector::Rustls`): HTTP/1.1 only, as the
+/// upgrade is an HTTP/1.1 request.
+pub fn websocket_config() -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
+    let mut config = config(&[])?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(Arc::new(config))
 }
 
 /// A reqwest client builder with [`config`]: what every HTTPS client in Apparition starts from.
@@ -291,6 +309,32 @@ mod tests {
     /// (by a new key, here) fails, and the refusal is found under reqwest's error.
     #[test]
     fn a_real_handshake_is_refused_and_says_why() {
+        let address = lookalike_server();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let client = client_builder().resolve("national.example", address).build().unwrap();
+        let error = runtime.block_on(client.get(format!("https://national.example:{}/", address.port())).send()).unwrap_err();
+        let found = intercepted(&error).unwrap_or_else(|| panic!("not found under {error:?}"));
+        assert!(found.0.contains("Russian Trusted Sub CA"), "{found}");
+    }
+
+    /// The anisette servers' provisioning WebSocket gets the same refusal.
+    #[cfg(feature = "tokio-mt")]
+    #[test]
+    fn a_websocket_handshake_is_refused_too() {
+        let address = lookalike_server();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let connector = tokio_tungstenite::Connector::Rustls(websocket_config().unwrap());
+        let error = runtime
+            .block_on(tokio_tungstenite::connect_async_tls_with_config(format!("wss://{address}/"), None, false, Some(connector)))
+            .map(|_| ())
+            .unwrap_err();
+        let found = intercepted(&error).unwrap_or_else(|| panic!("not found under {error:?}"));
+        assert!(found.0.contains("Russian Trusted Sub CA"), "{found}");
+    }
+
+    /// A TLS server on localhost for one connection, its certificate issued by a CA named as
+    /// Russia's Sub CA (another key), for `national.example`.
+    fn lookalike_server() -> std::net::SocketAddr {
         use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair};
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -315,11 +359,7 @@ mod tests {
                 let _ = connection.complete_io(&mut stream);
             }
         });
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let client = client_builder().resolve("national.example", address).build().unwrap();
-        let error = runtime.block_on(client.get(format!("https://national.example:{}/", address.port())).send()).unwrap_err();
-        let found = intercepted(&error).unwrap_or_else(|| panic!("not found under {error:?}"));
-        assert!(found.0.contains("Russian Trusted Sub CA"), "{found}");
+        address
     }
 
     /// A real connection to Apple with these settings works (the operating system's own check,
@@ -336,5 +376,21 @@ mod tests {
             let response = runtime.block_on(client_builder_with_roots(roots).build().unwrap().get(url).send());
             assert!(response.is_ok(), "{url}: {response:?}");
         }
+    }
+
+    /// The default anisette server's provisioning WebSocket opens with these settings. Needs the
+    /// internet: APPARITION_NET=1.
+    #[cfg(feature = "tokio-mt")]
+    #[test]
+    fn opens_an_anisette_websocket() {
+        if std::env::var_os("APPARITION_NET").is_none() {
+            return;
+        }
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let url = format!("{}/v3/provisioning_session", crate::anisette::remote_v3::DEFAULT_ANISETTE_V3_URL.replace("https://", "wss://"));
+        let connector = tokio_tungstenite::Connector::Rustls(websocket_config().unwrap());
+        let opened = runtime.block_on(tokio_tungstenite::connect_async_tls_with_config(url.as_str(), None, false, Some(connector)));
+        assert!(opened.is_ok(), "{url}: {:?}", opened.err());
     }
 }

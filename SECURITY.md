@@ -30,8 +30,11 @@ them; a connection to Apple's own servers is also refused when any CA in either 
 Such a CA can read what goes through the connection, an Apple ID password included, and change it. The Apparition app
 on a device does the same for what it downloads itself (`Probe/NationalCAs.swift`: app sources, GitHub releases, IPA
 links and builds from the Store, which it then signs and installs), checking the chain the system built, root included,
-and Apple's and GitHub's hosts against any CA in either country; it takes sources and app downloads only over https. Only updates use a fixed set of
-roots of their own (Mozilla's, through signed-update), and are signature-checked besides.
+and Apple's and GitHub's hosts against any CA in either country; it takes sources and app downloads only over https. That includes the desktop app's
+update checks (signed-update, given the same check, for its DNS-over-HTTPS and ECH connections too) and the anisette
+servers' provisioning WebSocket. No list of roots is compiled in anywhere: a CA the operating system stops trusting
+stops working in Apparition with the system's own update. The one addition is Apple's two roots, trusted for Apple's
+sign-in servers, which not every system carries.
 
 ## Releases
 

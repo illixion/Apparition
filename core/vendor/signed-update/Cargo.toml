@@ -10,11 +10,11 @@ repository = "https://github.com/illixion/signed-update"
 default = ["http"]
 # Checking for and downloading releases. Without it the crate is only the verification half
 # (SSHSIG, SHA256SUMS, versions, the macOS bundle swap), for code that fetches on its own.
-http = ["dep:reqwest", "dep:tokio"]
+http = ["dep:reqwest", "dep:tokio", "dep:rustls", "dep:rustls-platform-verifier"]
 # Privacy::Ech: reaching a concealed source (apps.illixion.com) over DNS-over-HTTPS and Encrypted
 # Client Hello, so a network log shows neither the lookup nor the name. ECH needs rustls's aws-lc-rs
 # provider (ring has no HPKE), which compiles C: check each target you ship.
-ech = ["http", "dep:rustls", "dep:webpki-roots"]
+ech = ["http", "rustls/aws-lc-rs"]
 
 [dependencies]
 base64 = "0.22"
@@ -22,11 +22,14 @@ sha2 = "0.10"
 ed25519-dalek = "2"
 tracing = "0.1"
 # rustls on ring: builds for Windows from a Mac (windows-gnu) without a C toolchain beyond mingw.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+# No provider and no roots of reqwest's own: every client gets the ClientConfig built in src/tls.rs.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"], optional = true }
 # Deadlines on whole requests (reqwest's own runtime; only its timer is used).
 tokio = { version = "1", features = ["time"], optional = true }
-rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"], optional = true }
-webpki-roots = { version = "1", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+# The operating system's trust store, so a CA it stops trusting (a distrust, a revocation) stops
+# working here with the OS's own update, not only with a new release built against a newer list.
+rustls-platform-verifier = { version = "0.7", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # renamex_np swaps the running bundle for the new one in one step.
