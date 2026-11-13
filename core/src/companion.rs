@@ -199,20 +199,20 @@ impl Companion {
     }
 
     /// Serves Apparition's own Android anisette (libraries fetched into `data_dir` on first use) and offers it
-    /// through the encrypted channel to paired devices. Fails where it isn't available (Windows, or switched off by
+    /// through the encrypted channel to paired devices. Fails where it isn't available (a build without it, or switched off by
     /// [`crate::anisette::ANDROID_LIBRARIES`]).
     pub async fn share_android_anisette(&self, data_dir: PathBuf) -> Result<(), Report> {
-        #[cfg(all(feature = "anisette", unix))]
+        #[cfg(feature = "anisette")]
         {
             if !crate::android_anisette_available() {
                 bail!("Apparition's own Android anisette is switched off in this build.");
             }
             self.share(AnisetteSource::Android, Offer::Android(data_dir)).await
         }
-        #[cfg(not(all(feature = "anisette", unix)))]
+        #[cfg(not(feature = "anisette"))]
         {
             let _ = data_dir;
-            bail!("Apparition's own Android anisette runs on macOS and Linux, not here. Pair with a Mac, run an anisette server in Docker, or give a third-party server's address.")
+            bail!("This build has no Android anisette. Pair with a Mac, run an anisette server in Docker, or give a third-party server's address.")
         }
     }
 
@@ -228,7 +228,7 @@ impl Companion {
         let mut served = self.served.lock().await;
         let address = match &offer {
             Offer::Server(address) => Some(address.clone()),
-            #[cfg(all(feature = "anisette", unix))]
+            #[cfg(feature = "anisette")]
             _ => None,
         };
         // Serving already the same thing: nothing to restart.
@@ -245,7 +245,7 @@ impl Companion {
                 Offer::Native => crate::anisette::start(bind, access).await,
                 #[cfg(all(feature = "anisette", target_os = "macos"))]
                 Offer::Vm(bundle) => crate::anisette::start_vm(bind, access, bundle).await,
-                #[cfg(all(feature = "anisette", unix))]
+                #[cfg(feature = "anisette")]
                 Offer::Android(data_dir) => crate::anisette::start_android(&data_dir, bind, access).await,
                 Offer::Server(address) => crate::anisette::start_remote(bind, access, &address).await,
             };
@@ -276,7 +276,7 @@ enum Offer {
     Native,
     #[cfg(all(feature = "anisette", target_os = "macos"))]
     Vm(PathBuf),
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "anisette")]
     Android(PathBuf),
     /// The third-party server at this (normalised) address.
     Server(String),
@@ -523,7 +523,7 @@ async fn accept_pairings(listener: TcpListener, devices: Arc<PairedDevices>, log
     }
 }
 
-#[cfg(all(test, feature = "anisette", unix))]
+#[cfg(all(test, feature = "anisette"))]
 mod android_offer_tests {
     use super::*;
 

@@ -438,7 +438,7 @@ pub async fn builtin_anisette() -> bool {
 }
 
 /// Whether this build can run its own Android anisette (see `api::ANDROID_ANISETTE`): off where
-/// `anisette::ANDROID_LIBRARIES` is off, and on Windows.
+/// `anisette::ANDROID_LIBRARIES` is off.
 #[tauri::command]
 pub fn android_anisette() -> bool {
     api::android_anisette_available()

@@ -45,8 +45,8 @@ pub enum AnisetteMode {
     Builtin,
     /// This Mac's anisette VM (the Companion tab sets it up), the same way: for a Mac on macOS 27.
     Vm,
-    /// Apparition's own Android anisette, run in this app (macOS and Linux) and passed on the same way: for a Mac
-    /// with no room for the VM (8 GB), or on macOS 27 without one, and for a Linux computer.
+    /// Apparition's own Android anisette, run in this app and passed on the same way: for a Mac with no room for
+    /// the VM (8 GB), or on macOS 27 without one, and for a Windows or Linux computer.
     Android,
     /// A third-party anisette server at the address in `Settings::anisette_server`, passed through the same way.
     /// The one mode every computer has, so a Windows or Linux PC (or a Mac with no anisette of its own) can offer it.
@@ -279,7 +279,7 @@ impl CompanionState {
                 "server": settings.anisette_server,
                 "port": ports().1,
                 "builtinAvailable": api::builtin_anisette_available(),
-                // Apparition's own Android anisette can be offered here (macOS and Linux, and switched on).
+                // Apparition's own Android anisette can be offered here (it is switched on in this build).
                 "androidAvailable": api::android_anisette_available(),
                 // This Mac gives its own anisette (macOS 26 or earlier, or a VM set up for it).
                 "native": tokio::task::spawn_blocking(api::native_anisette).await.unwrap_or(false),
@@ -594,7 +594,7 @@ pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode, serve
         return Err("Only a Mac on macOS 26 or earlier, or a macOS VM set up for it, offers its own anisette. Pair your devices with that Mac's Apparition instead.".into());
     }
     if mode == AnisetteMode::Android && !api::android_anisette_available() {
-        return Err("Apparition's own Android anisette runs on macOS and Linux only, and this build has it switched off. Offer a Mac's, a Docker server's or a third-party server's instead.".into());
+        return Err("Apparition's own Android anisette is switched off in this build. Offer a Mac's, a Docker server's or a third-party server's instead.".into());
     }
     #[cfg(target_os = "macos")]
     if mode == AnisetteMode::Vm && !api::vm::default_bundle().join("ready").exists() {

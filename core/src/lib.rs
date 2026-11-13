@@ -306,11 +306,11 @@ pub const ANDROID_ANISETTE: &str = "android";
 
 /// Whether this build can run Apple Music's Android libraries for its own anisette.
 pub fn android_anisette_available() -> bool {
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "anisette")]
     {
         anisette::ANDROID_LIBRARIES
     }
-    #[cfg(not(all(feature = "anisette", unix)))]
+    #[cfg(not(feature = "anisette"))]
     {
         false
     }
@@ -382,12 +382,12 @@ pub struct AnisetteLibraries {
 /// `"checksum"` [`failure_kind`] unless `accept_unverified` says to go on (Apple may update them and
 /// take the old address down). For the Apple ID folder `data_dir`, as [`sign_in`] takes it.
 pub async fn import_anisette_libraries(data_dir: &std::path::Path, paths: &[std::path::PathBuf], accept_unverified: bool) -> Result<AnisetteLibraries, Report> {
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "anisette")]
     {
         let imported = anisette::import_libraries(&anisette_dir(data_dir), paths, accept_unverified).await?;
         Ok(AnisetteLibraries { services: imported.services, core: imported.core, unverified: imported.unverified })
     }
-    #[cfg(not(all(feature = "anisette", unix)))]
+    #[cfg(not(feature = "anisette"))]
     {
         let _ = (data_dir, paths, accept_unverified);
         bail!("This build has no Android anisette")
@@ -397,11 +397,11 @@ pub async fn import_anisette_libraries(data_dir: &std::path::Path, paths: &[std:
 /// Whether the Android anisette's libraries include one supplied by the person that didn't match
 /// the checksum of the tested version (see [`import_anisette_libraries`]): an unsupported setup.
 pub fn anisette_libraries_unverified(data_dir: &std::path::Path) -> bool {
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "anisette")]
     {
         anisette::libraries_unverified(&anisette_dir(data_dir))
     }
-    #[cfg(not(all(feature = "anisette", unix)))]
+    #[cfg(not(feature = "anisette"))]
     {
         let _ = data_dir;
         false
@@ -411,11 +411,11 @@ pub fn anisette_libraries_unverified(data_dir: &std::path::Path) -> bool {
 /// Forgets the Android anisette's cached libraries, supplied or fetched, so the next start fetches
 /// Apple's own. A process that already loaded them keeps them until it restarts.
 pub fn reset_anisette_libraries(data_dir: &std::path::Path) -> Result<(), Report> {
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "anisette")]
     {
         anisette::reset_libraries(&anisette_dir(data_dir))
     }
-    #[cfg(not(all(feature = "anisette", unix)))]
+    #[cfg(not(feature = "anisette"))]
     {
         let _ = data_dir;
         Ok(())
@@ -433,11 +433,11 @@ pub fn reset_anisette_libraries(data_dir: &std::path::Path) -> Result<(), Report
 ///   no longer accepts it (pair again, or check that the Mac's companion runs).
 pub fn failure_kind(error: &Report) -> Option<&'static str> {
     error.iter_reports().find_map(|cause| {
-        #[cfg(all(feature = "anisette", unix))]
+        #[cfg(feature = "anisette")]
         if cause.downcast_current_context::<anisette::LibraryDownload>().is_some() {
             return Some("libraries");
         }
-        #[cfg(all(feature = "anisette", unix))]
+        #[cfg(feature = "anisette")]
         if cause.downcast_current_context::<anisette::ChecksumMismatch>().is_some() {
             return Some("checksum");
         }
@@ -494,7 +494,7 @@ async fn builtin_address() -> Result<String, Report> {
 }
 
 async fn android_address(data_dir: &std::path::Path) -> Result<String, Report> {
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "anisette")]
     {
         static SERVER: tokio::sync::OnceCell<anisette::Server> = tokio::sync::OnceCell::const_new();
         let server = SERVER
@@ -505,7 +505,7 @@ async fn android_address(data_dir: &std::path::Path) -> Result<String, Report> {
             .context("Couldn't start Apparition's own Android anisette")?;
         Ok(server.url())
     }
-    #[cfg(not(all(feature = "anisette", unix)))]
+    #[cfg(not(feature = "anisette"))]
     {
         let _ = data_dir;
         bail!("This build has no Android anisette. Pair this computer with a Mac, or give the address of a third-party anisette server.")

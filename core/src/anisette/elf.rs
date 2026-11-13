@@ -5,7 +5,8 @@
 //! AArch64 ELF ABI and the x86-64 psABI (relocation types). The steps:
 //!
 //! 1. read the program headers and pick where the image goes (see `placement`);
-//! 2. reserve one anonymous region, and copy each PT_LOAD segment to its virtual address;
+//! 2. reserve one anonymous region (`host`: `mmap`, or `VirtualAlloc` on Windows), and copy each
+//!    PT_LOAD segment to its virtual address;
 //! 3. apply the RELA relocations. Symbols the library defines point into the image; the rest
 //!    are asked of a resolver the caller supplies, which is how the library gets its "libc";
 //! 4. give every page the protection its segments ask for.
@@ -117,9 +118,98 @@ impl Bytes<'_> {
     }
 }
 
-fn page_size() -> usize {
-    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+/// What a page may be used for, as the union of its segments' flags. A page no segment covers
+/// gets none of them and can't be touched.
+const READ: u8 = 1;
+const WRITE: u8 = 2;
+const EXECUTE: u8 = 4;
+
+/// The memory calls the loader makes of the system it runs on.
+#[cfg(unix)]
+mod host {
+    use std::ffi::c_void;
+
+    use super::{EXECUTE, READ, WRITE};
+
+    pub(super) fn page_size() -> usize {
+        unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize }
+    }
+
+    /// `length` bytes of zeroed memory that can be read and written, never given back.
+    pub(super) fn reserve(length: usize) -> std::io::Result<usize> {
+        let region = unsafe { libc::mmap(std::ptr::null_mut(), length, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0) };
+        if region == libc::MAP_FAILED { Err(std::io::Error::last_os_error()) } else { Ok(region as usize) }
+    }
+
+    pub(super) fn protect(start: usize, length: usize, wanted: u8) -> std::io::Result<()> {
+        let mut protection = libc::PROT_NONE;
+        if wanted & READ != 0 {
+            protection |= libc::PROT_READ;
+        }
+        if wanted & WRITE != 0 {
+            protection |= libc::PROT_WRITE;
+        }
+        if wanted & EXECUTE != 0 {
+            protection |= libc::PROT_EXEC;
+        }
+        if unsafe { libc::mprotect(start as *mut c_void, length, protection) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    }
 }
+
+/// The same on Windows, from the Win32 memory API (`VirtualAlloc`, `VirtualProtect`).
+#[cfg(windows)]
+mod host {
+    use std::ffi::c_void;
+
+    use super::{EXECUTE, READ, WRITE};
+
+    const MEM_COMMIT: u32 = 0x1000;
+    const MEM_RESERVE: u32 = 0x2000;
+    const PAGE_NOACCESS: u32 = 0x01;
+    const PAGE_READONLY: u32 = 0x02;
+    const PAGE_READWRITE: u32 = 0x04;
+    const PAGE_EXECUTE_READ: u32 = 0x20;
+    const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn VirtualAlloc(address: *mut c_void, size: usize, kind: u32, protection: u32) -> *mut c_void;
+        fn VirtualProtect(address: *mut c_void, size: usize, protection: u32, old: *mut u32) -> i32;
+        #[cfg(target_arch = "aarch64")]
+        fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
+        #[cfg(target_arch = "aarch64")]
+        fn GetCurrentProcess() -> *mut c_void;
+    }
+
+    /// Windows has 4 KiB pages on both x86-64 and ARM64.
+    pub(super) fn page_size() -> usize {
+        0x1000
+    }
+
+    pub(super) fn reserve(length: usize) -> std::io::Result<usize> {
+        let region = unsafe { VirtualAlloc(std::ptr::null_mut(), length, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) };
+        if region.is_null() { Err(std::io::Error::last_os_error()) } else { Ok(region as usize) }
+    }
+
+    pub(super) fn protect(start: usize, length: usize, wanted: u8) -> std::io::Result<()> {
+        let protection = match (wanted & WRITE != 0, wanted & EXECUTE != 0) {
+            (false, false) if wanted & READ == 0 => PAGE_NOACCESS,
+            (false, false) => PAGE_READONLY,
+            (true, false) => PAGE_READWRITE,
+            (false, true) => PAGE_EXECUTE_READ,
+            (true, true) => PAGE_EXECUTE_READWRITE,
+        };
+        let mut old = 0;
+        if unsafe { VirtualProtect(start as *mut c_void, length, protection, &mut old) } != 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub(super) fn invalidate_instruction_cache(start: *mut c_void, length: usize) {
+        unsafe { FlushInstructionCache(GetCurrentProcess(), start, length) };
+    }
+}
+
+use host::page_size;
 
 fn round_up(value: usize, to: usize) -> usize {
     value.div_ceil(to) * to
@@ -206,13 +296,11 @@ impl Library {
         let page = page_size();
         let shift = placement(&segments, low, page)?;
         let length = round_up(shift + (high - low) as usize, page);
-        let region = unsafe {
-            libc::mmap(std::ptr::null_mut(), length, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANON, -1, 0)
+        let region = match host::reserve(length) {
+            Ok(region) => region,
+            Err(error) => bail!("couldn't reserve {length} bytes: {error}"),
         };
-        if region == libc::MAP_FAILED {
-            bail!("couldn't reserve {length} bytes: {}", std::io::Error::last_os_error());
-        }
-        let bias = (region as usize + shift).wrapping_sub(low as usize);
+        let bias = (region + shift).wrapping_sub(low as usize);
         for segment in &segments {
             let from = &file[segment.offset as usize..(segment.offset + segment.filesz) as usize];
             unsafe { std::ptr::copy_nonoverlapping(from.as_ptr(), bias.wrapping_add(segment.vaddr as usize) as *mut u8, from.len()) };
@@ -254,7 +342,7 @@ impl Library {
             }
         }
 
-        library.protect(&segments, region as usize, low, shift, length, page)?;
+        library.protect(&segments, region, low, shift, length, page)?;
         Ok(library)
     }
 
@@ -309,16 +397,16 @@ impl Library {
     /// Gives every page the union of what its segments ask for, and makes sure what was written
     /// as data is visible as code.
     fn protect(&self, segments: &[Segment], region: usize, low: u64, shift: usize, length: usize, page: usize) -> Result<(), Report> {
-        let mut wanted = vec![0; length / page];
+        let mut wanted = vec![0u8; length / page];
         for segment in segments {
             let start = shift + (segment.vaddr - low) as usize;
             let end = start + segment.memsz as usize;
-            let mut protection = libc::PROT_READ;
+            let mut protection = READ;
             if segment.flags & PF_W != 0 {
-                protection |= libc::PROT_WRITE;
+                protection |= WRITE;
             }
             if segment.flags & PF_X != 0 {
-                protection |= libc::PROT_EXEC;
+                protection |= EXECUTE;
                 invalidate_instruction_cache((region + start) as *mut c_void, end - start);
             }
             for entry in &mut wanted[start / page..=(end - 1) / page] {
@@ -328,10 +416,10 @@ impl Library {
         let mut index = 0;
         while index < wanted.len() {
             let run = wanted[index..].iter().take_while(|&&p| p == wanted[index]).count();
-            if wanted[index] != libc::PROT_READ | libc::PROT_WRITE {
-                let result = unsafe { libc::mprotect((region + index * page) as *mut c_void, run * page, wanted[index]) };
-                if result != 0 {
-                    bail!("mprotect: {}", std::io::Error::last_os_error());
+            // The region was reserved readable and writable.
+            if wanted[index] != READ | WRITE {
+                if let Err(error) = host::protect(region + index * page, run * page, wanted[index]) {
+                    bail!("couldn't protect the image's pages: {error}");
                 }
             }
             index += run;
@@ -408,7 +496,7 @@ fn invalidate_instruction_cache(start: *mut c_void, length: usize) {
 /// line, with barriers between. Written out rather than calling the compiler runtime's
 /// `__clear_cache`, which a static musl build doesn't link. Linux lets user space read CTR_EL0
 /// and run both maintenance instructions.
-#[cfg(all(target_arch = "aarch64", not(target_vendor = "apple")))]
+#[cfg(all(target_arch = "aarch64", unix, not(target_vendor = "apple")))]
 fn invalidate_instruction_cache(start: *mut c_void, length: usize) {
     use std::arch::asm;
     let ctr: u64;
@@ -439,6 +527,9 @@ fn invalidate_instruction_cache(start: *mut c_void, length: usize) {
         asm!("isb", options(nostack));
     }
 }
+
+#[cfg(all(target_arch = "aarch64", windows))]
+use host::invalidate_instruction_cache;
 
 // x86-64 keeps the instruction cache coherent.
 #[cfg(target_arch = "x86_64")]

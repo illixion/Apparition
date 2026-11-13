@@ -1,15 +1,21 @@
 //! The "libc" a loaded Android library sees: what its imports resolve to.
 //!
-//! Most of Bionic's functions mean the same here and are passed straight through. The ones that
-//! don't are written out below, from the Linux kernel's UAPI headers (`asm-generic/stat.h`,
+//! Most of Bionic's functions mean the same here and are passed on to this system's own (`unix`,
+//! or `windows` where there is no POSIX layer to pass them to). The ones that don't are written
+//! out below, from the Linux kernel's UAPI headers (`asm-generic/stat.h`,
 //! `arch/x86/include/uapi/asm/stat.h`, `asm-generic/fcntl.h`) rather than from any other loader:
 //!
-//! - `struct stat` and `struct timeval` have other layouts on macOS;
+//! - `struct stat` and `struct timeval` have other layouts on macOS and Windows;
 //! - `open` takes its mode as a variadic argument, which Apple's arm64 calling convention passes
 //!   on the stack and Linux's passes in a register, so the mode is a plain parameter here, and
 //!   the flag bits are the Linux numbers;
-//! - `mode_t` is 16 bits here and 32 there;
-//! - `errno` lives behind `__errno` rather than `__error`.
+//! - `mode_t` is 16 bits on macOS and 32 on Linux;
+//! - `errno` lives behind `__errno` rather than `__error`;
+//! - `long` is 64 bits to the libraries and 32 on Windows.
+//!
+//! The libraries call these, and are called, with the calling convention they were built for:
+//! System V's on x86-64, which isn't Windows' own there (`guest!`, `guest_fn_type!`). On ARM64 the
+//! two systems agree for the functions used here.
 //!
 //! Locks are no-ops, because everything that calls into the library runs on one thread (see
 //! `adi.rs`). Anything else the libraries import resolves to a stub that aborts when called, so
@@ -21,13 +27,46 @@ use std::sync::{Mutex, OnceLock};
 
 use super::elf::{Import, Library};
 
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+use unix as host;
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as host;
+
+/// Functions the libraries call, with the calling convention the libraries use.
+macro_rules! guest {
+    ($($(#[$meta:meta])* unsafe fn $name:ident($($arg:ident: $ty:ty),* $(,)?) $(-> $ret:ty)? $body:block)*) => {$(
+        #[cfg(target_arch = "x86_64")]
+        $(#[$meta])*
+        unsafe extern "sysv64" fn $name($($arg: $ty),*) $(-> $ret)? $body
+        #[cfg(not(target_arch = "x86_64"))]
+        $(#[$meta])*
+        unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
+    )*};
+}
+
+/// The type of a pointer to a function in a library, or to one it is given to call back.
+macro_rules! guest_fn_type {
+    ($($(#[$meta:meta])* $vis:vis type $name:ident = fn($($arg:ident: $ty:ty),* $(,)?) $(-> $ret:ty)?;)*) => {$(
+        #[cfg(target_arch = "x86_64")]
+        $(#[$meta])*
+        $vis type $name = unsafe extern "sysv64" fn($($arg: $ty),*) $(-> $ret)?;
+        #[cfg(not(target_arch = "x86_64"))]
+        $(#[$meta])*
+        $vis type $name = unsafe extern "C" fn($($arg: $ty),*) $(-> $ret)?;
+    )*};
+}
+pub(super) use guest_fn_type;
+
 // Linux values (asm-generic/fcntl.h; the same on arm64 and x86-64 for these).
 const LINUX_O_ACCMODE: c_int = 0o3;
 const LINUX_O_CREAT: c_int = 0o100;
 const LINUX_O_EXCL: c_int = 0o200;
 const LINUX_O_TRUNC: c_int = 0o1000;
 const LINUX_O_APPEND: c_int = 0o2000;
-const LINUX_O_CLOEXEC: c_int = 0o2000000;
 
 /// `struct stat` as Linux lays it out (asm-generic/stat.h, which arm64 uses).
 #[cfg(target_arch = "aarch64")]
@@ -84,152 +123,265 @@ struct LinuxTimeval {
     usec: i64,
 }
 
-fn convert(stat: &libc::stat, out: &mut LinuxStat) {
+/// What this system says of a file, for `convert` to lay out as Linux does. The mode is in
+/// Linux's bits, which are POSIX's.
+struct FileStat {
+    dev: u64,
+    ino: u64,
+    mode: u32,
+    nlink: u64,
+    uid: u32,
+    gid: u32,
+    rdev: u64,
+    size: i64,
+    blksize: i64,
+    blocks: i64,
+    /// Seconds and nanoseconds since 1970: access, modification, status change.
+    times: [(i64, u64); 3],
+}
+
+/// How the library wants a file opened: `open`'s Linux flags, taken apart.
+struct OpenHow {
+    read: bool,
+    write: bool,
+    create: bool,
+    exclusive: bool,
+    truncate: bool,
+    append: bool,
+    /// The permission bits of a file this creates, where the system has them.
+    #[cfg_attr(windows, allow(dead_code))]
+    mode: u32,
+}
+
+fn convert(stat: &FileStat, out: &mut LinuxStat) {
     // Zero first, so the padding is zero too.
     unsafe { std::ptr::write_bytes(out, 0, 1) };
-    out.dev = stat.st_dev as u64;
-    out.ino = stat.st_ino;
-    out.mode = u32::from(stat.st_mode);
-    out.nlink = stat.st_nlink as _;
-    out.uid = stat.st_uid;
-    out.gid = stat.st_gid;
-    out.rdev = stat.st_rdev as u64;
-    out.size = stat.st_size;
-    out.blksize = stat.st_blksize as _;
-    out.blocks = stat.st_blocks;
-    out.atime = stat.st_atime;
-    out.atime_nsec = stat.st_atime_nsec as u64;
-    out.mtime = stat.st_mtime;
-    out.mtime_nsec = stat.st_mtime_nsec as u64;
-    out.ctime = stat.st_ctime;
-    out.ctime_nsec = stat.st_ctime_nsec as u64;
+    out.dev = stat.dev;
+    out.ino = stat.ino;
+    out.mode = stat.mode;
+    out.nlink = stat.nlink as _;
+    out.uid = stat.uid;
+    out.gid = stat.gid;
+    out.rdev = stat.rdev;
+    out.size = stat.size;
+    out.blksize = stat.blksize as _;
+    out.blocks = stat.blocks;
+    [(out.atime, out.atime_nsec), (out.mtime, out.mtime_nsec), (out.ctime, out.ctime_nsec)] = stat.times;
 }
 
-unsafe extern "C" fn shim_fstat(fd: c_int, out: *mut LinuxStat) -> c_int {
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    let result = unsafe { libc::fstat(fd, &mut stat) };
-    if result == 0 {
-        convert(&stat, unsafe { &mut *out });
-    }
-    result
-}
-
-unsafe extern "C" fn shim_lstat(path: *const c_char, out: *mut LinuxStat) -> c_int {
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    let result = unsafe { libc::lstat(path, &mut stat) };
-    if result == 0 {
-        convert(&stat, unsafe { &mut *out });
-    }
-    result
-}
-
-unsafe extern "C" fn shim_open(path: *const c_char, flags: c_int, mode: u32) -> c_int {
-    let mut host = match flags & LINUX_O_ACCMODE {
-        1 => libc::O_WRONLY,
-        2 => libc::O_RDWR,
-        _ => libc::O_RDONLY,
-    };
-    for (linux, mine) in [
-        (LINUX_O_CREAT, libc::O_CREAT),
-        (LINUX_O_EXCL, libc::O_EXCL),
-        (LINUX_O_TRUNC, libc::O_TRUNC),
-        (LINUX_O_APPEND, libc::O_APPEND),
-        (LINUX_O_CLOEXEC, libc::O_CLOEXEC),
-    ] {
-        if flags & linux != 0 {
-            host |= mine;
+guest! {
+    unsafe fn shim_fstat(fd: c_int, out: *mut LinuxStat) -> c_int {
+        match unsafe { host::fstat(fd) } {
+            Some(stat) => {
+                convert(&stat, unsafe { &mut *out });
+                0
+            }
+            None => -1,
         }
     }
-    unsafe { libc::open(path, host, mode as libc::c_uint) }
-}
 
-unsafe extern "C" fn shim_gettimeofday(out: *mut LinuxTimeval, _timezone: *mut c_void) -> c_int {
-    let mut now = libc::timeval { tv_sec: 0, tv_usec: 0 };
-    let result = unsafe { libc::gettimeofday(&mut now, std::ptr::null_mut()) };
-    if !out.is_null() {
-        unsafe { out.write(LinuxTimeval { sec: now.tv_sec as i64, usec: i64::from(now.tv_usec) }) };
-    }
-    result
-}
-
-unsafe extern "C" fn shim_chmod(path: *const c_char, mode: u32) -> c_int {
-    unsafe { libc::chmod(path, mode as libc::mode_t) }
-}
-
-unsafe extern "C" fn shim_mkdir(path: *const c_char, mode: u32) -> c_int {
-    unsafe { libc::mkdir(path, mode as libc::mode_t) }
-}
-
-unsafe extern "C" fn shim_umask(mask: u32) -> u32 {
-    u32::from(unsafe { libc::umask(mask as libc::mode_t) })
-}
-
-unsafe extern "C" fn shim_errno() -> *mut c_int {
-    #[cfg(target_vendor = "apple")]
-    unsafe {
-        libc::__error()
-    }
-    #[cfg(not(target_vendor = "apple"))]
-    unsafe {
-        libc::__errno_location()
-    }
-}
-
-unsafe extern "C" fn shim_arc4random() -> u32 {
-    let mut bytes = [0u8; 4];
-    // (The libc crate has no getentropy for musl.)
-    #[cfg(target_vendor = "apple")]
-    unsafe {
-        libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len())
-    };
-    #[cfg(not(target_vendor = "apple"))]
-    unsafe {
-        libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0)
-    };
-    u32::from_ne_bytes(bytes)
-}
-
-unsafe extern "C" fn shim_memcpy_chk(to: *mut c_void, from: *const c_void, length: usize, _capacity: usize) -> *mut c_void {
-    unsafe { libc::memcpy(to, from, length) }
-}
-
-unsafe extern "C" fn shim_memmove_chk(to: *mut c_void, from: *const c_void, length: usize, _capacity: usize) -> *mut c_void {
-    unsafe { libc::memmove(to, from, length) }
-}
-
-/// No Android system properties here: every one reads as unset.
-unsafe extern "C" fn shim_property_get(_name: *const c_char, value: *mut c_char) -> c_int {
-    unsafe { *value = 0 };
-    0
-}
-
-unsafe extern "C" fn shim_ok() -> c_int {
-    0
-}
-
-unsafe extern "C" fn shim_ok_finalize(_dso: *mut c_void) {}
-
-/// Bionic's `pthread_once_t` is one `int`, 0 until the routine has run.
-unsafe extern "C" fn shim_pthread_once(once: *mut c_int, routine: unsafe extern "C" fn()) -> c_int {
-    unsafe {
-        if *once == 0 {
-            *once = 1;
-            routine();
+    unsafe fn shim_lstat(path: *const c_char, out: *mut LinuxStat) -> c_int {
+        match unsafe { host::lstat(path) } {
+            Some(stat) => {
+                convert(&stat, unsafe { &mut *out });
+                0
+            }
+            None => -1,
         }
     }
-    0
+
+    unsafe fn shim_open(path: *const c_char, flags: c_int, mode: u32) -> c_int {
+        let access = flags & LINUX_O_ACCMODE;
+        let how = OpenHow {
+            read: access != 1,
+            write: access != 0,
+            create: flags & LINUX_O_CREAT != 0,
+            exclusive: flags & LINUX_O_EXCL != 0,
+            truncate: flags & LINUX_O_TRUNC != 0,
+            append: flags & LINUX_O_APPEND != 0,
+            mode,
+        };
+        unsafe { host::open(path, &how) }
+    }
+
+    unsafe fn shim_close(fd: c_int) -> c_int {
+        unsafe { host::close(fd) }
+    }
+
+    unsafe fn shim_read(fd: c_int, to: *mut c_void, count: usize) -> isize {
+        unsafe { host::read(fd, to, count) }
+    }
+
+    unsafe fn shim_write(fd: c_int, from: *const c_void, count: usize) -> isize {
+        unsafe { host::write(fd, from, count) }
+    }
+
+    unsafe fn shim_ftruncate(fd: c_int, length: i64) -> c_int {
+        unsafe { host::ftruncate(fd, length) }
+    }
+
+    unsafe fn shim_gettimeofday(out: *mut LinuxTimeval, timezone: *mut c_void) -> c_int {
+        let _ = timezone;
+        let (sec, usec) = host::now();
+        if !out.is_null() {
+            unsafe { out.write(LinuxTimeval { sec, usec }) };
+        }
+        0
+    }
+
+    unsafe fn shim_chmod(path: *const c_char, mode: u32) -> c_int {
+        unsafe { host::chmod(path, mode) }
+    }
+
+    unsafe fn shim_mkdir(path: *const c_char, mode: u32) -> c_int {
+        unsafe { host::mkdir(path, mode) }
+    }
+
+    unsafe fn shim_umask(mask: u32) -> u32 {
+        host::umask(mask)
+    }
+
+    unsafe fn shim_errno() -> *mut c_int {
+        host::errno()
+    }
+
+    unsafe fn shim_arc4random() -> u32 {
+        host::random()
+    }
+
+    unsafe fn shim_memcpy_chk(to: *mut c_void, from: *const c_void, length: usize, capacity: usize) -> *mut c_void {
+        let _ = capacity;
+        unsafe { libc::memcpy(to, from, length) }
+    }
+
+    unsafe fn shim_memmove_chk(to: *mut c_void, from: *const c_void, length: usize, capacity: usize) -> *mut c_void {
+        let _ = capacity;
+        unsafe { libc::memmove(to, from, length) }
+    }
+
+    /// No Android system properties here: every one reads as unset.
+    unsafe fn shim_property_get(name: *const c_char, value: *mut c_char) -> c_int {
+        let _ = name;
+        unsafe { *value = 0 };
+        0
+    }
+
+    unsafe fn shim_ok() -> c_int {
+        0
+    }
+
+    unsafe fn shim_ok_finalize(dso: *mut c_void) {
+        let _ = dso;
+    }
+
+    /// Bionic's `pthread_once_t` is one `int`, 0 until the routine has run.
+    unsafe fn shim_pthread_once(once: *mut c_int, routine: Routine) -> c_int {
+        unsafe {
+            if *once == 0 {
+                *once = 1;
+                routine();
+            }
+        }
+        0
+    }
+
+    unsafe fn shim_abort() -> ! {
+        std::process::abort()
+    }
+
+    unsafe fn shim_unresolved() -> ! {
+        let names = MISSING.lock().map(|names| names.join(", ")).unwrap_or_default();
+        eprintln!("anisette: a library called something that isn't provided (one of: {names})");
+        std::process::abort()
+    }
 }
 
-unsafe extern "C" fn shim_abort() -> ! {
-    std::process::abort()
+guest_fn_type! {
+    type Routine = fn();
 }
 
 static MISSING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-unsafe extern "C" fn shim_unresolved() -> ! {
-    let names = MISSING.lock().map(|names| names.join(", ")).unwrap_or_default();
-    eprintln!("anisette: a library called something that isn't provided (one of: {names})");
-    std::process::abort()
+// MARK: The C library
+
+// These take and return the same things as the Linux versions, on every system this runs on;
+// only how they are called differs (see `guest!`). `strtol` gives a Linux `long`, 64 bits.
+guest! {
+    unsafe fn shim_malloc(size: usize) -> *mut c_void {
+        unsafe { libc::malloc(size) }
+    }
+
+    unsafe fn shim_free(pointer: *mut c_void) {
+        unsafe { libc::free(pointer) }
+    }
+
+    unsafe fn shim_calloc(count: usize, size: usize) -> *mut c_void {
+        unsafe { libc::calloc(count, size) }
+    }
+
+    unsafe fn shim_realloc(pointer: *mut c_void, size: usize) -> *mut c_void {
+        unsafe { libc::realloc(pointer, size) }
+    }
+
+    unsafe fn shim_memchr(bytes: *const c_void, byte: c_int, length: usize) -> *mut c_void {
+        unsafe { libc::memchr(bytes, byte, length) }
+    }
+
+    unsafe fn shim_memcmp(a: *const c_void, b: *const c_void, length: usize) -> c_int {
+        unsafe { libc::memcmp(a, b, length) }
+    }
+
+    unsafe fn shim_memcpy(to: *mut c_void, from: *const c_void, length: usize) -> *mut c_void {
+        unsafe { libc::memcpy(to, from, length) }
+    }
+
+    unsafe fn shim_memmove(to: *mut c_void, from: *const c_void, length: usize) -> *mut c_void {
+        unsafe { libc::memmove(to, from, length) }
+    }
+
+    unsafe fn shim_memset(to: *mut c_void, byte: c_int, length: usize) -> *mut c_void {
+        unsafe { libc::memset(to, byte, length) }
+    }
+
+    unsafe fn shim_strlen(text: *const c_char) -> usize {
+        unsafe { libc::strlen(text) }
+    }
+
+    unsafe fn shim_strcmp(a: *const c_char, b: *const c_char) -> c_int {
+        unsafe { libc::strcmp(a, b) }
+    }
+
+    unsafe fn shim_strncmp(a: *const c_char, b: *const c_char, length: usize) -> c_int {
+        unsafe { libc::strncmp(a, b, length) }
+    }
+
+    unsafe fn shim_strncpy(to: *mut c_char, from: *const c_char, length: usize) -> *mut c_char {
+        unsafe { libc::strncpy(to, from, length) }
+    }
+
+    unsafe fn shim_strcasecmp(a: *const c_char, b: *const c_char) -> c_int {
+        unsafe { host::strcasecmp(a, b) }
+    }
+
+    unsafe fn shim_strtol(text: *const c_char, end: *mut *mut c_char, base: c_int) -> i64 {
+        unsafe { libc::strtoll(text, end, base) }
+    }
+
+    unsafe fn shim_strtoll(text: *const c_char, end: *mut *mut c_char, base: c_int) -> i64 {
+        unsafe { libc::strtoll(text, end, base) }
+    }
+
+    unsafe fn shim_strtoull(text: *const c_char, end: *mut *mut c_char, base: c_int) -> u64 {
+        unsafe { libc::strtoull(text, end, base) }
+    }
+
+    unsafe fn shim_strtod(text: *const c_char, end: *mut *mut c_char) -> f64 {
+        unsafe { libc::strtod(text, end) }
+    }
+
+    unsafe fn shim_atof(text: *const c_char) -> f64 {
+        unsafe { libc::atof(text) }
+    }
 }
 
 // MARK: dlopen and friends
@@ -241,38 +393,38 @@ pub(super) fn register(name: &str, library: &'static Library) {
     LOADED.lock().expect("loaded libraries").push((name.to_owned(), library));
 }
 
-unsafe extern "C" fn shim_dlopen(path: *const c_char, _flags: c_int) -> *mut c_void {
-    if path.is_null() {
-        return std::ptr::dangling_mut();
+guest! {
+    unsafe fn shim_dlopen(path: *const c_char, flags: c_int) -> *mut c_void {
+        let _ = flags;
+        if path.is_null() {
+            return std::ptr::dangling_mut();
+        }
+        let path = unsafe { CStr::from_ptr(path) }.to_string_lossy();
+        let name = path.rsplit('/').next().unwrap_or(&path);
+        let loaded = LOADED.lock().expect("loaded libraries");
+        match loaded.iter().find(|(known, _)| known == name) {
+            Some((_, library)) => std::ptr::from_ref::<Library>(library).cast_mut().cast(),
+            None => std::ptr::null_mut(),
+        }
     }
-    let path = unsafe { CStr::from_ptr(path) }.to_string_lossy();
-    let name = path.rsplit('/').next().unwrap_or(&path);
-    let loaded = LOADED.lock().expect("loaded libraries");
-    match loaded.iter().find(|(known, _)| known == name) {
-        Some((_, library)) => std::ptr::from_ref::<Library>(library).cast_mut().cast(),
-        None => std::ptr::null_mut(),
-    }
-}
 
-unsafe extern "C" fn shim_dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
-    let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
-    let loaded = LOADED.lock().expect("loaded libraries");
-    let found = match loaded.iter().find(|(_, library)| std::ptr::from_ref::<Library>(library).cast::<c_void>() == handle.cast_const()) {
-        Some((_, library)) => library.symbol(&name),
-        // The program itself (a null or placeholder handle): the libraries, then the shims.
-        None => loaded.iter().find_map(|(_, library)| library.symbol(&name)).or_else(|| function(&name)),
-    };
-    found.map_or(std::ptr::null_mut(), |address| address as *mut c_void)
+    unsafe fn shim_dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void {
+        let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+        let loaded = LOADED.lock().expect("loaded libraries");
+        let found = match loaded.iter().find(|(_, library)| std::ptr::from_ref::<Library>(library).cast::<c_void>() == handle.cast_const()) {
+            Some((_, library)) => library.symbol(&name),
+            // The program itself (a null or placeholder handle): the libraries, then the shims.
+            None => loaded.iter().find_map(|(_, library)| library.symbol(&name)).or_else(|| function(&name)),
+        };
+        found.map_or(std::ptr::null_mut(), |address| address as *mut c_void)
+    }
 }
 
 // MARK: Resolution
 
 /// The address of the replacement for the function `name`, if there is one.
 fn function(name: &str) -> Option<usize> {
-    macro_rules! direct {
-        ($($libc:ident),* $(,)?) => { match name { $(stringify!($libc) => Some(libc::$libc as *const () as usize),)* _ => None } };
-    }
-    let mine: Option<usize> = match name {
+    match name {
         "fstat" => Some(shim_fstat as *const () as usize),
         "lstat" => Some(shim_lstat as *const () as usize),
         "open" => Some(shim_open as *const () as usize),
@@ -292,15 +444,31 @@ fn function(name: &str) -> Option<usize> {
         "dlopen" => Some(shim_dlopen as *const () as usize),
         "dlsym" => Some(shim_dlsym as *const () as usize),
         "dlclose" => Some(shim_ok as *const () as usize),
+        "malloc" => Some(shim_malloc as *const () as usize),
+        "free" => Some(shim_free as *const () as usize),
+        "calloc" => Some(shim_calloc as *const () as usize),
+        "realloc" => Some(shim_realloc as *const () as usize),
+        "memchr" => Some(shim_memchr as *const () as usize),
+        "memcmp" => Some(shim_memcmp as *const () as usize),
+        "memcpy" => Some(shim_memcpy as *const () as usize),
+        "memmove" => Some(shim_memmove as *const () as usize),
+        "memset" => Some(shim_memset as *const () as usize),
+        "strlen" => Some(shim_strlen as *const () as usize),
+        "strcmp" => Some(shim_strcmp as *const () as usize),
+        "strncmp" => Some(shim_strncmp as *const () as usize),
+        "strncpy" => Some(shim_strncpy as *const () as usize),
+        "strcasecmp" => Some(shim_strcasecmp as *const () as usize),
+        "strtol" => Some(shim_strtol as *const () as usize),
+        "strtoll" => Some(shim_strtoll as *const () as usize),
+        "strtoull" => Some(shim_strtoull as *const () as usize),
+        "strtod" => Some(shim_strtod as *const () as usize),
+        "atof" => Some(shim_atof as *const () as usize),
+        "close" => Some(shim_close as *const () as usize),
+        "read" => Some(shim_read as *const () as usize),
+        "write" => Some(shim_write as *const () as usize),
+        "ftruncate" => Some(shim_ftruncate as *const () as usize),
         _ => None,
-    };
-    // These take and return the same things as the Linux versions.
-    mine.or_else(|| {
-        direct!(
-            malloc, free, calloc, realloc, memchr, memcmp, memcpy, memmove, memset, strlen, strcmp, strncmp, strncpy,
-            strcasecmp, strtol, strtoll, strtoull, strtod, atof, close, read, write, ftruncate,
-        )
-    })
+    }
 }
 
 /// Zeroed storage for the data symbols a library imports (CoreFoundation's constants and the
@@ -321,4 +489,70 @@ pub(super) fn resolve(import: &Import) -> Option<usize> {
         MISSING.lock().expect("missing").push(import.name.to_owned());
         Some(shim_unresolved as *const () as usize)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::CString;
+
+    use super::*;
+
+    const O_WRONLY: c_int = 1;
+    const EEXIST: c_int = 17;
+
+    /// The file calls as a library makes them, with Linux's flags and layouts, in a folder whose
+    /// name isn't ASCII: what the library does with its `adi.pb`.
+    #[test]
+    fn files_are_made_written_and_read_back_through_the_shims() {
+        let folder = std::env::temp_dir().join(format!("apparition-shim-\u{e5}\u{43a}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        // The library joins names with a slash, whatever the system's separator.
+        let name = |last: &str| CString::new(format!("{}/{last}", folder.to_str().unwrap())).unwrap();
+        let folder_name = CString::new(folder.to_str().unwrap()).unwrap();
+        let file = name("adi.pb");
+        unsafe {
+            assert_eq!(shim_mkdir(folder_name.as_ptr(), 0o700), 0);
+            assert_eq!(shim_mkdir(folder_name.as_ptr(), 0o700), -1);
+            assert_eq!(*shim_errno(), EEXIST);
+
+            let mut stat: LinuxStat = std::mem::zeroed();
+            assert_eq!(shim_lstat(folder_name.as_ptr(), &mut stat), 0);
+            assert_eq!(stat.mode & 0o170000, 0o040000, "a folder");
+            assert_eq!(shim_lstat(file.as_ptr(), &mut stat), -1, "not there yet");
+            assert_eq!(shim_open(file.as_ptr(), 0, 0), -1);
+
+            let fd = shim_open(file.as_ptr(), O_WRONLY | LINUX_O_CREAT | LINUX_O_TRUNC, 0o600);
+            assert!(fd > 2, "{fd}");
+            assert_eq!(shim_write(fd, b"provisioned".as_ptr().cast(), 11), 11);
+            assert_eq!(shim_ftruncate(fd, 4), 0);
+            assert_eq!(shim_fstat(fd, &mut stat), 0);
+            assert_eq!((stat.size, stat.mode & 0o170000), (4, 0o100000));
+            assert!(stat.mtime > 1_700_000_000, "{}", stat.mtime);
+            assert_eq!(shim_close(fd), 0);
+            assert_eq!(shim_close(fd), -1, "closed already");
+            assert_eq!(shim_open(file.as_ptr(), O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL, 0o600), -1);
+            assert_eq!(*shim_errno(), EEXIST);
+            assert_eq!(shim_chmod(file.as_ptr(), 0o644), 0);
+
+            let fd = shim_open(file.as_ptr(), 0, 0);
+            let mut bytes = [0u8; 16];
+            assert_eq!(shim_read(fd, bytes.as_mut_ptr().cast(), bytes.len()), 4);
+            assert_eq!(&bytes[..4], b"prov");
+            assert_eq!(shim_read(fd, bytes.as_mut_ptr().cast(), bytes.len()), 0, "the end");
+            assert_eq!(shim_close(fd), 0);
+        }
+        assert_eq!(std::fs::read(folder.join("adi.pb")).unwrap(), b"prov");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// A Linux `long` is 64 bits, which this system's own `strtol` may not give; and the time is
+    /// today's, in Linux's `struct timeval`.
+    #[test]
+    fn long_is_sixty_four_bits_and_the_clock_is_set() {
+        let text = CString::new("123456789012").unwrap();
+        assert_eq!(unsafe { shim_strtol(text.as_ptr(), std::ptr::null_mut(), 10) }, 123_456_789_012);
+        let mut now = LinuxTimeval { sec: 0, usec: 0 };
+        unsafe { shim_gettimeofday(&mut now, std::ptr::null_mut()) };
+        assert!(now.sec > 1_700_000_000 && (0..1_000_000).contains(&now.usec));
+    }
 }

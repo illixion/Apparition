@@ -13,7 +13,10 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-apparition-core = { path = "../core", features = ["desktop"] }
+# `anisette`: the anisette provider in this process (core/src/anisette). A Mac's own on macOS, and Apple
+# Music's Android libraries on macOS, Linux and Windows (switched by anisette::ANDROID_LIBRARIES). The anisette
+# can also come from a paired Mac or a server the person runs.
+apparition-core = { path = "../core", features = ["desktop", "anisette"] }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
@@ -35,12 +38,6 @@ apparition-service = { path = "../service", features = ["hosted"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
-# The anisette provider in this process (core/src/anisette): a Mac's own on macOS, Apple Music's Android
-# libraries on macOS and Linux (switched by anisette::ANDROID_LIBRARIES), not Windows (the loader maps ELF
-# libraries with POSIX calls). Elsewhere the anisette comes from a paired Mac or a server the person runs.
-[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-apparition-core = { path = "../core", features = ["anisette"] }
-
 [target.'cfg(windows)'.dependencies]
 base64 = "0.22"
 dunce = "1"

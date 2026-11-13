@@ -35,7 +35,7 @@ const state = {
   handOff: true,
   /** @type {any} */ settings: {},
   /** This Mac gives its own anisette (never off a Mac). */ builtinAnisette: false,
-  /** Apparition can make its own Android anisette here (core's `ANDROID_LIBRARIES` is on; macOS and Linux). */ androidAnisette: false,
+  /** Apparition can make its own Android anisette here (core's `ANDROID_LIBRARIES` is on). */ androidAnisette: false,
   /** This Mac's anisette VM is set up (Companion tab). */ vmAnisette: false,
   /** The anisette VM's state (vm_status), while the Companion tab shows it. @type {any} */ vm: null,
   /** The Mac this computer is paired with for anisette: {macName, address, paired}, or null. @type {any} */ pairedMac: null,

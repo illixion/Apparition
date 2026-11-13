@@ -63,7 +63,8 @@ hkdf = { version = "0.12", optional = true }
 # The companion's cross-platform implementation of RAVECompanion's TLS 1.2-PSK channel.
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 tokio-openssl = { version = "0.6", optional = true }
-# The anisette provider (anisette/): this Mac's own, from macOS, served over the v3 protocol.
+# The anisette provider (anisette/): this Mac's own, from macOS, or Apple Music's Android libraries run in this
+# process (libc is their C library), served over the v3 protocol.
 libc = { version = "0.2", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json"], optional = true }
 # A third-party anisette server offered through the companion (anisette/remote.rs) is bridged to its
@@ -77,7 +78,8 @@ desktop = ["anisette-server", "dep:dirs", "dep:mdns-sd", "dep:if-addrs", "dep:x2
 # The anisette v3 server (anisette/server.rs) on every platform: the desktop companion offers a third-party
 # server's anisette to paired devices through it (anisette/remote.rs).
 anisette-server = ["dep:axum", "dep:tokio-tungstenite", "dep:futures-util", "tokio/net", "tokio/time", "tokio/sync"]
-# This Mac's own anisette, served in-process (macOS only, see anisette/mod.rs).
+# Anisette made in this process: this Mac's own (macOS only), and Apple Music's Android libraries on macOS, Linux
+# and Windows (see anisette/mod.rs).
 anisette = ["anisette-server", "dep:libc"]
 
 

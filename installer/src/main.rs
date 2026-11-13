@@ -152,7 +152,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Be the companion for Apparition on your devices: relay its connection back to the
       device (port 49160), and on a Mac that gives its own anisette (macOS 26 or earlier, or a
       macOS VM set up for it), offer that anisette (builtin, the default there; android offers Apparition's
-      own Android anisette, on macOS or Linux; none offers nothing). Runs until Ctrl-C. Anisette goes only to devices and computers paired with this
+      own Android anisette, on any computer; none offers nothing). Runs until Ctrl-C. Anisette goes only to devices and computers paired with this
       Mac: one asks to pair (port 49161), both show a six-digit code, and you answer in this
       terminal. Without a terminal, or with --no-prompt, requests are declined: pair in a
       terminal once (paired devices are remembered). All anisette requests use the encrypted

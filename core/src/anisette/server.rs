@@ -9,7 +9,7 @@
 //!   headers, and whatever else AuthKit puts on the request.
 //!
 //! A Mac's own anisette and its VM's answer from macOS (`mac`, macOS only). Apple Music's Android libraries
-//! answer from `android` (macOS and Linux, switched by `ANDROID_LIBRARIES`). A third-party server
+//! answer from `android` (macOS, Linux and Windows, switched by `ANDROID_LIBRARIES`). A third-party server
 //! is passed through as it is (`remote`, every platform). `/v3/client_info` of the first two also
 //! says what this server serves (`apparition_anisette`: `mac`), with the matching client info,
 //! which the sign-in claims (see claimed_platform).
@@ -52,7 +52,7 @@ enum Backend {
     #[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
     Vm { bundle: std::path::PathBuf, client: reqwest::Client },
     /// Apple Music's Android libraries, loaded in this process (`android`): where this computer has no Mac's own.
-    #[cfg(all(feature = "anisette", unix))]
+    #[cfg(feature = "anisette")]
     Android(super::android::Android),
     /// A third-party server at an address the person gave, on any platform: everything it answers is
     /// passed through, so a device paired with this companion gets that server's anisette.
@@ -80,7 +80,7 @@ impl Drop for Server {
 
 /// Serves Apple Music's Android libraries on `bind` (see `android`), fetched into `data_dir` on first use: the
 /// address [`crate::ANDROID_ANISETTE`] starts. Fails when [`super::ANDROID_LIBRARIES`] is off.
-#[cfg(all(feature = "anisette", unix))]
+#[cfg(feature = "anisette")]
 pub async fn start_android(data_dir: &std::path::Path, bind: SocketAddr, access: Access) -> Result<Server, Report> {
     if !super::ANDROID_LIBRARIES {
         bail!("Apparition's own Android anisette is switched off in this build (anisette::ANDROID_LIBRARIES).");
@@ -181,7 +181,7 @@ async fn client_info(State(shared): State<Arc<Shared>>) -> Response {
             Ok(info) => Json(info).into_response(),
             Err(error) => (StatusCode::SERVICE_UNAVAILABLE, format!("{error}\n")).into_response(),
         },
-        #[cfg(all(feature = "anisette", unix))]
+        #[cfg(feature = "anisette")]
         Backend::Android(_) => super::android::client_info().into_response(),
         Backend::Remote(upstream) => upstream.client_info().await,
     }
@@ -212,7 +212,7 @@ async fn get_headers(State(shared): State<Arc<Shared>>, Json(body): Json<Value>)
             Err(error) => serde_json::json!({ "result": "GetHeadersError", "message": format!("{error}").replace("rovision", "repar") }),
         })
         .into_response(),
-        #[cfg(all(feature = "anisette", unix))]
+        #[cfg(feature = "anisette")]
         Backend::Android(android) => Json(super::android::get_headers(android, body).await).into_response(),
         Backend::Remote(upstream) => upstream.get_headers(body).await,
     }
@@ -226,7 +226,7 @@ async fn provisioning_session(State(shared): State<Arc<Shared>>, upgrade: WebSoc
             Backend::Native => super::mac::provision(socket).await,
             #[cfg(all(feature = "desktop", feature = "anisette", target_os = "macos"))]
             Backend::Vm { .. } => super::mac::provision(socket).await,
-            #[cfg(all(feature = "anisette", unix))]
+            #[cfg(feature = "anisette")]
             Backend::Android(android) => super::android::provision(android, socket).await,
             Backend::Remote(upstream) => upstream.provision(socket).await,
         };
@@ -294,5 +294,43 @@ mod tests {
         for name in ["X-Apple-I-MD", "X-Apple-I-MD-M", "X-Mme-Device-Id"] {
             assert!(headers.get(name).is_some_and(|value| value.len() > 8), "{name} missing or empty");
         }
+    }
+}
+
+#[cfg(all(test, feature = "anisette"))]
+mod android_tests {
+    use super::*;
+
+    /// Provisions and makes headers from Apple Music's Android libraries through isideload's own client, which is
+    /// every call the libraries are asked for, on whatever system this is built for. Fetches the libraries and
+    /// reaches Apple's URL bag, needs no Apple ID: `APPARITION_NET=1`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_android_backend_provisions_and_gets_headers_through_isideloads_client() {
+        use isideload::anisette::AnisetteDataGenerator;
+        use isideload::anisette::remote_v3::RemoteV3AnisetteProvider;
+        use isideload::auth::grandslam::GrandSlam;
+        use isideload::util::storage::InMemoryStorage;
+
+        if std::env::var_os("APPARITION_NET").is_none() {
+            return;
+        }
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::tempdir().unwrap();
+        let server = start_android(dir.path(), "127.0.0.1:0".parse().unwrap(), None).await.unwrap();
+        let info: Value = reqwest::get(format!("{}/v3/client_info", server.url())).await.unwrap().json().await.unwrap();
+        assert_eq!(info["apparition_anisette"], "android");
+
+        let provider = RemoteV3AnisetteProvider::new(&server.url(), Box::new(InMemoryStorage::new()), "0".to_string()).unwrap();
+        let mut generator = AnisetteDataGenerator::new(Arc::new(tokio::sync::RwLock::new(provider)));
+        let client_info = generator.get_client_info().await.unwrap();
+        let grandslam = Arc::new(GrandSlam::new(client_info, false, None).await.unwrap());
+        let data = generator.get_anisette_data(grandslam.clone()).await.unwrap();
+        let headers = data.get_headers();
+        for name in ["X-Apple-I-MD", "X-Apple-I-MD-M", "X-Mme-Device-Id"] {
+            assert!(headers.get(name).is_some_and(|value| value.len() > 8), "{name} missing or empty");
+        }
+        // Once more, now that the identity is provisioned: headers alone.
+        let again = generator.get_anisette_data(grandslam).await.unwrap();
+        assert!(again.get_headers().get("X-Apple-I-MD").is_some_and(|value| value.len() > 8));
     }
 }

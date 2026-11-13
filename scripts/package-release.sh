@@ -158,7 +158,7 @@ $3
 Or from a terminal:
 
 $2 pair        (with Settings > General > Remote Devices open on the headset)
-$2 install --apple-id you@example.com      (add --anisette <url> on Windows)
+$2 install --apple-id you@example.com
 $2 relay       (the companion, until Ctrl-C)
 
 Run it without arguments for every command. https://apparition.illixion.com

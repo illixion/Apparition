@@ -7,7 +7,9 @@
 //! The libraries' entry points have obfuscated names. Their names and signatures are taken from
 //! the SideStore project's `omnisette` crate (MPL-2.0), which documents them; everything else
 //! here is written for this crate. Every call goes through one dedicated thread, so the
-//! libraries never run concurrently (their locks are no-ops, see `shim.rs`).
+//! libraries never run concurrently (their locks are no-ops, see `shim.rs`). They are called with
+//! the calling convention they were built for, which on x86-64 Windows isn't the system's own
+//! (`shim::guest_fn_type!`).
 
 use std::ffi::{CString, c_char};
 use std::path::Path;
@@ -21,15 +23,17 @@ use super::shim;
 /// The directory-services ID ADI uses for "no Apple ID": the device, not a user.
 const DS_ID: i64 = -2;
 
-type LoadWithPath = unsafe extern "C" fn(path: *const c_char) -> i32;
-type SetIdentifier = unsafe extern "C" fn(id: *const u8, length: u32) -> i32;
-type SetPath = unsafe extern "C" fn(path: *const c_char) -> i32;
-type Destroy = unsafe extern "C" fn(session: u32) -> i32;
-type EndProvisioning = unsafe extern "C" fn(session: u32, ptm: *const u8, ptm_length: u32, tk: *const u8, tk_length: u32) -> i32;
-type StartProvisioning = unsafe extern "C" fn(ds_id: i64, spim: *const u8, spim_length: u32, cpim: *mut *const u8, cpim_length: *mut u32, session: *mut u32) -> i32;
-type LoginCode = unsafe extern "C" fn(ds_id: i64) -> i32;
-type Dispose = unsafe extern "C" fn(pointer: *const u8) -> i32;
-type RequestOtp = unsafe extern "C" fn(ds_id: i64, mid: *mut *const u8, mid_length: *mut u32, otp: *mut *const u8, otp_length: *mut u32) -> i32;
+shim::guest_fn_type! {
+    type LoadWithPath = fn(path: *const c_char) -> i32;
+    type SetIdentifier = fn(id: *const u8, length: u32) -> i32;
+    type SetPath = fn(path: *const c_char) -> i32;
+    type Destroy = fn(session: u32) -> i32;
+    type EndProvisioning = fn(session: u32, ptm: *const u8, ptm_length: u32, tk: *const u8, tk_length: u32) -> i32;
+    type StartProvisioning = fn(ds_id: i64, spim: *const u8, spim_length: u32, cpim: *mut *const u8, cpim_length: *mut u32, session: *mut u32) -> i32;
+    type LoginCode = fn(ds_id: i64) -> i32;
+    type Dispose = fn(pointer: *const u8) -> i32;
+    type RequestOtp = fn(ds_id: i64, mid: *mut *const u8, mid_length: *mut u32, otp: *mut *const u8, otp_length: *mut u32) -> i32;
+}
 
 /// The library's entry points. Only used on the ADI thread.
 pub(crate) struct Exports {
@@ -127,7 +131,32 @@ fn find<T: Copy>(library: &Library, name: &str) -> Result<T, Report> {
     Ok(unsafe { std::mem::transmute_copy(&address) })
 }
 
+/// Makes the whole of this thread's stack usable at once.
+///
+/// Windows hands a thread's stack out a page at a time: the page below the used part is a guard
+/// page, and touching it brings in the next. Code built for Windows touches every page of a large
+/// frame in turn for that reason; code built for Linux doesn't, and a frame that reaches past the
+/// guard page is an access violation. Touching every page once, downwards, leaves none to skip.
+/// The lowest 64 KiB stay as they are, for the system's own handling of a stack overflow.
+#[cfg(windows)]
+fn commit_stack() {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
+    }
+    let (mut low, mut high) = (0usize, 0usize);
+    unsafe { GetCurrentThreadStackLimits(&mut low, &mut high) };
+    let mut page = (&raw const low as usize) & !0xfff;
+    while page > low + 0x1_1000 {
+        page -= 0x1000;
+        unsafe { std::ptr::read_volatile(page as *const u8) };
+    }
+}
+
 fn setup(services: &[u8], core: &[u8], folder: &Path) -> Result<Exports, Report> {
+    #[cfg(windows)]
+    commit_stack();
+
     // Loaded images stay for the life of the process, as `dlopen`ed libraries would.
     let services: &'static Library = Box::leak(Box::new(Library::load(services, &shim::resolve).context("loading libstoreservicescore")?));
     let core: &'static Library = Box::leak(Box::new(Library::load(core, &shim::resolve).context("loading libCoreADI")?));
