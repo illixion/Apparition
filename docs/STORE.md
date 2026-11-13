@@ -517,10 +517,12 @@ and advertise it over Bonjour (`_debugtrace._tcp`). The Store browses for them i
 process that holds the Mac's Local Network permission. The **Debug** view, and the desktop app's
 **Debug** tab (Running now: **Tune**, **Log**, **Profile** and **Memory** buttons open that view in a window titled
 with the app's name), list the ones running on your network. For each one:
-a live tail of its log (filter by level or text, pause), the **Tune** tab, **Profile** and
+a live tail of its log (filter by level, pause), the **Tune** tab, **Profile** and
 **Memory** (views of the app's `_profile` and `_memory`), **Crashes & traces** for that app, the generic **Endpoints** browser and
-caller, **Info**, and a button that captures a trace and uploads it here. A device chip in **Apps**
-shows *live* while its app runs.
+caller, **Info**, and **Capture trace…**, which asks for an optional note, captures a trace and uploads it here. The search box
+in the header (⌘F or `/`) searches whichever tab is open: it narrows tunables (by key, label or group), endpoints (by name or
+description), profile rows, memory regions and reports to the matches, asks the app for matching log lines only, and
+highlights matches in Info and endpoint results. A device chip in **Apps** shows *live* while its app runs.
 
 - **Finding and trusting apps.** An app is addressed by its build's key ID. The address comes from
   discovery (or from the launch record `apparition build --run --mcp` writes under

@@ -202,6 +202,14 @@
   .streamstate.waiting { color: var(--warn); }
   .streamstate.waiting::before { background: var(--warn); }
   .logbar .spacer { flex: 1; }
+  .consearch { position: relative; display: inline-flex; align-items: center; }
+  .consearch input { padding-right: 70px; }
+  .searchcount { position: absolute; right: 26px; font-family: var(--mono); font-size: .68rem; color: var(--dim2); pointer-events: none; }
+  .traceform { flex-basis: 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .traceform[hidden] { display: none; }
+  .traceform input { flex: 1; min-width: 200px; width: auto; }
+  ::highlight(dtsearch) { background: color-mix(in srgb, var(--warn) 45%, transparent); color: inherit; }
+  #console [hidden] { display: none !important; }
   #loglines { flex: 1; overflow: auto; margin: 0; padding: 6px 0 40px; list-style: none; background: #07090c;
     font: .76rem/1.55 var(--mono); }
   #loglines li { display: grid; grid-template-columns: 92px 14px 130px minmax(0, 1fr); gap: 10px; padding: 0 14px; }
@@ -999,7 +1007,7 @@ $('#upSettle').addEventListener('change', () => { if ($('#upAuto').checked) save
 // ---- live debugging ----
 // D.id is the build's key id: the server maps it to the app's address and
 // token, so neither ever reaches this page.
-const D = { apps: [], error: null, id: null, tab: 'log', es: null, level: 'debug', filter: '', paused: false,
+const D = { apps: [], error: null, id: null, tab: 'log', es: null, level: 'debug', filter: '', query: '', paused: false,
             pending: [], help: null, ep: null, stream: 'idle', clientName: 'Apparition Store page', per: {} };
 const MAX_LINES = 5000;
 const LEVEL_LETTER = { debug: 'D', info: 'I', notice: 'N', default: 'N', error: 'E', fault: 'F' };
@@ -1066,7 +1074,6 @@ function renderConsole(){
         <select id="loglevel" aria-label="Lowest level shown">
           ${['debug','info','notice','error','fault'].map(l => `<option value="${l}" ${D.level===l?'selected':''}>${l} and up</option>`).join('')}
         </select>
-        <input type="search" id="logfilter" placeholder="Filter text" value="${esc(D.filter)}" aria-label="Show only lines containing">
         <button class="ghost" id="logpause">${D.paused ? 'Resume' : 'Pause'}</button>
         <button class="ghost" id="logclear">Clear</button>
         <span class="spacer"></span>
@@ -1107,15 +1114,23 @@ function renderConsoleHead(){
   const name = a ? (a.appName || a.bundleId) : 'Not running';
   const meta = a ? [a.bundleId, a.build && `build ${a.build}`, a.device && `on ${a.device}`].filter(Boolean).map(esc).join(', ') : 'This build is no longer advertising. It comes back when the app is open again.';
   const keepNote = head.querySelector('#tracenote')?.value || '';
+  const noteOpen = !!head.querySelector('#traceform:not([hidden])');
   head.innerHTML = `<h2>${esc(name)}</h2><span class="meta">${meta}</span><span class="spacer"></span>
-    <input type="search" id="tracenote" class="field" placeholder="What are you looking into?" value="${esc(keepNote)}" aria-label="Note for the trace">
-    <button id="capturetrace" ${a ? '' : 'disabled'} title="Capture logs, breadcrumbs and a snapshot from the app, and upload them here">Capture trace</button>`;
+    <span class="consearch"><input type="search" id="consearch" class="field" placeholder="Search ${esc(TAB_NAMES[D.tab] || 'this tab')}" value="${esc(D.query)}" aria-label="Search the open tab" autocomplete="off" spellcheck="false">
+      <span class="searchcount" id="searchcount" aria-live="polite"></span></span>
+    <button id="tracetoggle" ${a ? '' : 'disabled'} aria-expanded="${noteOpen}" aria-controls="traceform" title="Capture logs, breadcrumbs and a snapshot from the app, and upload them here">Capture trace…</button>
+    <form class="traceform" id="traceform" ${noteOpen ? '' : 'hidden'}>
+      <input type="text" id="tracenote" class="field" placeholder="What are you looking into? (optional)" value="${esc(keepNote)}" aria-label="Note for the trace">
+      <button class="primary" type="submit" id="capturetrace" ${a ? '' : 'disabled'}>Capture and upload</button>
+      <button class="ghost" type="button" id="tracecancel">Cancel</button>
+    </form>`;
 }
 
 function stopStream(){ if (D.es) { D.es.close(); D.es = null; } }
 
 function startStream(){
   stopStream();
+  D.filter = D.query.trim();
   const q = new URLSearchParams({ level: D.level });
   if (D.filter) q.set('contains', D.filter);
   setStreamState('connecting');
@@ -1166,6 +1181,7 @@ function addLines(entries, fromBacklog){
   list.insertAdjacentHTML('beforeend', entries.map(lineHTML).join(''));
   while (list.children.length > MAX_LINES) list.firstElementChild.remove();
   stickToBottom(list, atBottom || fromBacklog);
+  if (D.tab === 'log') scheduleSearch();
 }
 
 function stickToBottom(list, stick){
@@ -1184,10 +1200,11 @@ async function loadHelp(){
     } catch (e) { $('#eplist').innerHTML = `<p class="railnote">${esc(e.message)}</p>`; return; }
   }
   const eps = D.help.endpoints || [];
-  $('#eplist').innerHTML = eps.map(ep => `<button class="ep" data-ep="${esc(ep.name)}" aria-current="${D.ep===ep.name}">
+  $('#eplist').innerHTML = eps.map(ep => `<button class="ep" data-ep="${esc(ep.name)}" data-search="${esc([ep.description, ...(ep.parameters || []).map(p => p.name)].join(' '))}" aria-current="${D.ep===ep.name}">
     <span class="en">${esc(ep.name)}</span><span class="ek ${ep.kind==='command'?'cmd':''}">${ep.kind==='command'?'command':'query'}</span></button>`).join('')
     || '<p class="railnote">This app registers no endpoints.</p>';
   if (D.ep) renderEndpoint();
+  applySearch();
 }
 
 function paramInput(p){
@@ -1256,6 +1273,7 @@ async function showCall(endpoint, args, out, button){
   } catch (e) { out.innerHTML = errorHTML({ message: e.message, hint: 'Check that the Apparition Store is still running.' }); }
   out.dataset.done = '1'; clearInterval(slow);
   if (button) button.disabled = false;
+  scheduleSearch();
 }
 
 // ---- profile and memory: first-class views of _profile and _memory ----
@@ -1464,6 +1482,7 @@ function renderProfileResult(){
       <span class="legend"><span class="own">Your code${own.imageNames.length ? ' (' + own.imageNames.map(esc).join(', ') + ')' : ''}</span><span>System libraries</span></span>
     </div>
     ${(r.threads || []).map((t, i) => threadHTML(t, i, own)).join('') || '<p class="lede">No threads were sampled.</p>'}`;
+  scheduleSearch();
 }
 
 function threadHTML(t, i, own){
@@ -1696,6 +1715,7 @@ function renderMemoryResult(){
       ${cell(k, 'virtualBytes', true)}${cell(k, 'residentBytes')}${cell(k, 'dirtyBytes')}${cell(k, 'swappedBytes', true)}</tr>`).join('')}</tbody></table></div>
     <p class="tablecap">The ${kinds.length} largest of ${int(d.regionKindCount)} region kinds. Dirty memory is what the app wrote and the system cannot simply drop; it is what counts toward the footprint. Read in ${d.sampledInMs} ms.</p>`;
   out.innerHTML = hero + stats + table;
+  scheduleSearch();
 }
 
 function memoryText(){
@@ -1862,6 +1882,8 @@ function renderPanels(){
     if (ps.sel === 'tunables') {
       const g = tunable(c.tunable)?.group || '';
       if (g !== last) { head = `<div class="tgroup">${esc(g || 'Ungrouped')}</div>`; last = g; }
+      const t = tunable(c.tunable);
+      return head + ctlHTML(c, i).replace('<div class="tctl', `<div data-search="${esc([g, t?.kind, ...(t?.choices || [])].join(' '))}" class="tctl`);
     }
     return head + ctlHTML(c, i);
   }).join('');
@@ -1879,6 +1901,7 @@ function renderPanels(){
         Ask an agent to add some, or to build a panel over the app's endpoints with its <code>panel</code> tool.
         Tuning on a Vision Pro? Use this page on your phone, or the Mac Virtual Display.</p>` : ''}
       ${body}</div></div>`;
+  applySearch();
 }
 function refreshPanelValues(){
   const ps = pstate();
@@ -2013,6 +2036,7 @@ function renderAppReports(){
         Capture trace in the header takes one now; a crash adds its report here by itself.</div>`
     : `<h3 class="subhead">Crash logs · ${mine.crashes.length}</h3><ul class="reportlist">${mine.crashes.map(crash).join('') || '<li class="muted">None.</li>'}</ul>
        <h3 class="subhead">Traces · ${mine.traces.length}</h3><ul class="reportlist">${mine.traces.map(trace).join('') || '<li class="muted">None.</li>'}</ul>`;
+  if (D.tab === 'reports') applySearch();
 }
 
 function showTab(name){
@@ -2024,6 +2048,9 @@ function showTab(name){
   if (D.tab === 'profile' || D.tab === 'memory') loadAppIdentity();
   if (D.tab === 'panels') loadPanels(true);
   if (D.tab === 'reports') renderAppReports();
+  const box = $('#consearch'); if (box) box.placeholder = `Search ${TAB_NAMES[D.tab] || 'this tab'}`;
+  if (D.tab === 'log' && D.filter !== D.query.trim()) startStream();
+  applySearch();
 }
 
 async function captureTrace(button){
@@ -2035,10 +2062,108 @@ async function captureTrace(button){
     const body = await r.json();
     const up = body.data?.upload;
     if (!r.ok || body.ok === false) toast(`Trace failed: ${body.error?.message || r.status}`);
-    else if (up && up.accepted) { toast('Trace captured and uploaded. It is in Traces.'); $('#tracenote').value = ''; pollTraces(); }
+    else if (up && up.accepted) { toast('Trace captured and uploaded. It is in Traces.'); $('#tracenote').value = ''; showTraceForm(false); pollTraces(); }
     else toast(`Trace captured, but the upload was refused${up?.response?.error ? ': ' + up.response.error : ''}. The app may not have an upload URL.`);
   } catch (e) { toast(`Trace failed: ${e.message}`); }
-  button.disabled = false; button.textContent = 'Capture trace';
+  button.disabled = false; button.textContent = 'Capture and upload';
+}
+function showTraceForm(open){
+  const form = $('#traceform'), toggle = $('#tracetoggle');
+  if (!form) return;
+  form.hidden = !open;
+  toggle?.setAttribute('aria-expanded', open);
+  if (open) $('#tracenote').focus(); else toggle?.focus();
+}
+document.addEventListener('submit', e => {
+  if (e.target.id !== 'traceform') return;
+  e.preventDefault();
+  captureTrace($('#capturetrace'));
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && e.target.id === 'tracenote') { showTraceForm(false); return; }
+  // Cmd/Ctrl-F (or /) jumps to the search box while the console is open.
+  const box = $('#consearch');
+  if (!box || !location.hash.startsWith('#debug')) return;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+  if (((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') || (e.key === '/' && !typing)) { e.preventDefault(); box.focus(); box.select(); }
+});
+
+// ---- search: one box in the console header filters whichever tab is open ----
+// Lists (tunables, endpoints, profile rows, memory regions, reports) hide what
+// doesn't match; the log asks the app for matching lines only; everything left
+// is highlighted. Case-insensitive, like the log's own filter on the device.
+const TAB_NAMES = { log: 'the log', panels: 'tunables', profile: 'the profile', memory: 'memory', reports: 'crashes and traces', endpoints: 'endpoints', info: 'info' };
+const SEARCH_ROWS = {
+  endpoints: '#eplist .ep',
+  profile: '.ftable tbody tr, ol.stacks > li',
+  memory: '.mtable tbody tr',
+  reports: '.reportlist > li:not(.muted)',
+};
+let searchQueued = false;
+function scheduleSearch(){
+  if (searchQueued) return;
+  searchQueued = true;
+  setTimeout(() => { searchQueued = false; applySearch(); }, 16);
+}
+const hayOf = el => ((el.dataset.search || '') + ' ' + el.textContent).toLowerCase();
+function applySearch(){
+  const pane = document.querySelector(`[data-pane="${D.tab}"]`);
+  const count = $('#searchcount');
+  if (!pane) return;
+  const s = D.query.trim().toLowerCase();
+  let shown = null, total = 0;
+  if (D.tab === 'panels') {
+    // A group heading that matches keeps its whole group; otherwise each control stands alone.
+    shown = 0;
+    let head = null, headHit = false, headShown = 0;
+    const close = () => { if (head) head.hidden = !!s && !headHit && !headShown; };
+    for (const el of pane.querySelectorAll('.tpanel > .tgroup, .tpanel > .tctl')) {
+      if (el.classList.contains('tgroup')) { close(); head = el; headHit = !!s && el.textContent.toLowerCase().includes(s); headShown = 0; continue; }
+      total++;
+      const hit = !s || headHit || hayOf(el).includes(s);
+      el.hidden = !hit;
+      if (hit) { shown++; headShown++; }
+    }
+    close();
+    let none = pane.querySelector('.searchnone');
+    if (s && total && !shown) { if (!none) pane.querySelector('.tpanel')?.insertAdjacentHTML('beforeend', '<p class="searchnone muted"></p>'); none = pane.querySelector('.searchnone'); if (none) none.textContent = `No tunables or controls match “${D.query.trim()}”.`; }
+    else none?.remove();
+  } else if (SEARCH_ROWS[D.tab]) {
+    shown = 0;
+    for (const el of pane.querySelectorAll(SEARCH_ROWS[D.tab])) {
+      total++;
+      const hit = !s || hayOf(el).includes(s);
+      el.hidden = !hit;
+      if (hit) shown++;
+    }
+  }
+  const marks = highlightMatches(pane, s);
+  if (count) {
+    count.textContent = !s ? '' : shown !== null ? `${shown} of ${total}` : D.tab === 'log' ? '' : marks ? `${marks} found` : 'none found';
+  }
+  if (s && shown === null && D.tab !== 'log' && marks) {
+    // Read-only views (Info, an endpoint's result): bring the first match into view.
+    const first = CSS.highlights?.get('dtsearch')?.values().next().value;
+    first?.startContainer?.parentElement?.scrollIntoView({ block: 'nearest' });
+  }
+}
+// Highlights through the CSS Custom Highlight API, so no markup is rewritten
+// under inputs or live-updating values. Older engines just get the filtering.
+function highlightMatches(root, s){
+  if (!window.CSS?.highlights || typeof Highlight === 'undefined') return 0;
+  CSS.highlights.delete('dtsearch');
+  if (!s) return 0;
+  const ranges = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: n =>
+    n.parentElement?.closest('[hidden], script, style, .ice') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+  for (let n = walker.nextNode(); n && ranges.length < 2000; n = walker.nextNode()) {
+    const text = n.nodeValue.toLowerCase();
+    for (let at = text.indexOf(s); at >= 0 && ranges.length < 2000; at = text.indexOf(s, at + s.length)) {
+      const r = new Range(); r.setStart(n, at); r.setEnd(n, at + s.length); ranges.push(r);
+    }
+  }
+  if (ranges.length) CSS.highlights.set('dtsearch', new Highlight(...ranges));
+  return ranges.length;
 }
 
 document.addEventListener('click', e => {
@@ -2051,7 +2176,8 @@ document.addEventListener('click', e => {
   const ep = t.closest?.('[data-ep]');
   if (ep) { D.ep = ep.dataset.ep; renderEndpoint(); return; }
   if (t.id === 'runep') { runEndpoint(); return; }
-  if (t.id === 'capturetrace') { captureTrace(t); return; }
+  if (t.id === 'tracetoggle') { showTraceForm($('#traceform')?.hidden); return; }
+  if (t.id === 'tracecancel') { showTraceForm(false); return; }
   if (t.id === 'logclear') { $('#loglines').innerHTML = ''; return; }
   if (t.id === 'jumpnew') { stickToBottom($('#loglines'), true); return; }
   if (t.id === 'logpause') {
@@ -2066,9 +2192,12 @@ document.addEventListener('change', e => {
 });
 let filterTimer = null;
 document.addEventListener('input', e => {
-  if (e.target.id !== 'logfilter') return;
+  if (e.target.id !== 'consearch') return;
+  D.query = e.target.value;
+  applySearch();
+  // The log is filtered on the device, so restart its stream once typing settles.
   clearTimeout(filterTimer);
-  filterTimer = setTimeout(() => { D.filter = e.target.value.trim(); startStream(); }, 400);
+  if (D.tab === 'log') filterTimer = setTimeout(() => { if (D.filter !== D.query.trim()) startStream(); }, 400);
 });
 document.addEventListener('scroll', e => {
   if (e.target.id === 'loglines') {
