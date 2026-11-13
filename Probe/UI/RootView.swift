@@ -39,6 +39,7 @@ struct RootView: View {
     let account: AccountModel
     let library: LibraryModel
     let companions: CompanionFinder
+    let debugAccess: DebugAccessModel
     /// The build service, which project each app belongs to, and installing a project's build here.
     @State private var developer: DeveloperModel
     /// The Developer tab's navigation: a project opens its page, on a tab.
@@ -57,11 +58,13 @@ struct RootView: View {
     @Environment(\.openWindow) private var openWindow
     #endif
 
-    init(model: ProbeModel, account: AccountModel, library: LibraryModel, companions: CompanionFinder) {
+    init(model: ProbeModel, account: AccountModel, library: LibraryModel, companions: CompanionFinder,
+         debugAccess: DebugAccessModel) {
         self.model = model
         self.account = account
         self.library = library
         self.companions = companions
+        self.debugAccess = debugAccess
         _developer = State(initialValue: DeveloperModel(service: BuildService(), library: library, probe: model))
         _tab = State(initialValue: SetupStatus.opensOnLibrary(model: model, account: account) ? .library : .setup)
     }
@@ -267,7 +270,8 @@ struct RootView: View {
                     tab = .library
                 }
             case .settings:
-                SettingsView(model: model, account: account, library: library, companions: companions, onSetup: openSetup)
+                SettingsView(model: model, account: account, library: library, companions: companions,
+                             debugAccess: debugAccess, onSetup: openSetup)
             case .diagnostics:
                 DiagnosticsView(model: model, account: account, library: library, companions: companions)
             }

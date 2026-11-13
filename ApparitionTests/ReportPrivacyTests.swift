@@ -281,6 +281,8 @@ private struct SeededApp {
         DebugScreens.register(on: surface)
         VaultEndpoints.register(on: surface)
         IntentEndpoints.register(probe: probe, account: account, library: library, on: surface)
+        // Release-safe: its state names no computer, address or secret, so it is in every report.
+        DebugAccessEndpoints.register(DebugAccessModel(), on: surface)
     }
 
     /// Does what makes Apparition write log lines about the person's own things.

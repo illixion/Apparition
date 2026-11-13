@@ -10,6 +10,7 @@ struct SettingsView: View {
     let account: AccountModel
     let library: LibraryModel
     let companions: CompanionFinder
+    let debugAccess: DebugAccessModel
     let onSetup: () -> Void
 
     @AppStorage("pairedUDID") private var pairedUDID: String?
@@ -38,7 +39,9 @@ struct SettingsView: View {
                 #endif
                 advancedSection
                 troubleshootingSection
+                reportSection
                 traceSection
+                developerSection
                 Section { RAVESupportCard(RAVESupportConfig(appName: "Apparition", appID: "com.illixion.apparition")) }
                 aboutSection
             }
@@ -248,6 +251,45 @@ struct SettingsView: View {
             #endif
         }
         .onAppear { verboseBytes = VerboseLog.bytes }
+    }
+
+    /// A problem report for Apparition's public issue tracker: a trace the person reads through
+    /// first, redacted as a released app's is, and encrypted to the maintainer so the file can
+    /// be attached to a public issue (docs/design/PUBLIC_DEBUGGING_PLAN.md, section 1).
+    private var reportSection: some View {
+        Section {
+            DebugTraceReportButton("Report a Problem…", configuration: ProblemReport.configuration)
+        } footer: {
+            Text("Collects Apparition's recent log, what it was doing and its state, with personal details left out, and shows you every file before anything leaves this \(ThisDevice.noun). You choose what stays in. The report is encrypted so that only Apparition's maintainer can open it, even attached to a public issue on GitHub. Nothing is sent on its own.")
+        }
+    }
+
+    /// Letting a computer the person paired debug this copy (DebugAccess.swift).
+    private var developerSection: some View {
+        Section {
+            NavigationLink {
+                DebugAccessView(model: debugAccess)
+            } label: {
+                LabeledContent {
+                    Text(debugAccessSummary)
+                } label: {
+                    Label("Debugging from a Computer", systemImage: "laptopcomputer.and.iphone")
+                }
+            }
+        } header: {
+            Text("Developer")
+        } footer: {
+            Text("For finding a problem with a computer's help, or working on Apparition itself. Off unless you turn it on.")
+        }
+    }
+
+    private var debugAccessSummary: String {
+        switch debugAccess.status {
+        case .off: "Off"
+        case .starting: "Starting…"
+        case .failed: "Couldn't start"
+        case .on(let until): until == nil ? "On" : "On for an hour"
+        }
     }
 
     /// A debug trace of this run, sent to the Apparition Store that built this copy. Only a copy

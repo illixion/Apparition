@@ -10,11 +10,14 @@ struct ApparitionApp: App {
     @State private var account: AccountModel
     @State private var library: LibraryModel
     @State private var companions = CompanionFinder()
+    @State private var debugAccess: DebugAccessModel
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier ?? "Apparition"]))
         DebugTraceServer.startIfRequested()
+        let debugAccess = DebugAccessModel()
+        _debugAccess = State(initialValue: debugAccess)
         // Before any model reads its files: brings back what a tvOS storage purge removed.
         StateVault.sync()
         let model = ProbeModel()
@@ -48,11 +51,15 @@ struct ApparitionApp: App {
         #endif
         ShortcutActions.register(probe: model, account: account, library: library)
         IntentEndpoints.register(probe: model, account: account, library: library)
+        // Debugging from a computer, if the person left it on: an hour that has not run out
+        // continues, "until I turn it off" starts again.
+        DebugAccessEndpoints.register(debugAccess)
+        debugAccess.restore()
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(model: model, account: account, library: library, companions: companions)
+            RootView(model: model, account: account, library: library, companions: companions, debugAccess: debugAccess)
                 .debugApprovalPrompts()
                 .raveSupportWelcome(RAVESupportConfig(appName: "Apparition", appID: "com.illixion.apparition"))
                 .task { await library.scheduleRefreshIfNeeded() }
@@ -63,6 +70,8 @@ struct ApparitionApp: App {
                     if phase != .active { StateVault.sync() }
                     // A computer may have handed over a pairing while Apparition was away.
                     if phase == .active { model.refreshPairing() }
+                    // An hour of debugging from a computer may have run out while Apparition was away.
+                    if phase == .active { debugAccess.checkDeadline() }
                     if phase == .background { model.companionMayHaveMoved() }
                 }
         }

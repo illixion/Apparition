@@ -50,6 +50,10 @@ targets:
       # Pairing and TLS-PSK anisette channel to the desktop companion.
       - package: RAVESDK
         product: RAVECompanion
+      # Settings > Developer > Debugging from a Computer: a computer paired with this copy
+      # reaches its debug server over TLS-PSK (docs/design/PUBLIC_DEBUGGING_PLAN.md).
+      - package: RAVESDK
+        product: RAVEDebugAccess
     info:
       path: Probe/Info.plist
       properties:
@@ -137,11 +141,18 @@ targets:
           - com.illixion.apparition.refresh-processing
         NSLocationWhenInUseUsageDescription: Location access is needed to keep Apparition running in the background while it is an app's JIT debugger, so the app keeps its JIT. Apparition never reads, stores or sends your location.
         NSLocalNetworkUsageDescription: Apparition finds this device's own developer services, an Apparition companion on your computer, and your other devices that share a signing key, and connects to them and to the build service you set up.
+        # The last three are debugging from a computer (Settings > Developer): the paired
+        # listener and its pairing screen (RAVEDebugAccess), and the password listener
+        # (DebugTrace). Each is advertised only while the person has that turned on, and
+        # none of the records names the app or the device.
         NSBonjourServices:
           - _remotepairing._tcp
           - _remotepairing-manual-pairing._tcp
           - _apparition._tcp
           - _apparition-key._tcp
+          - _ravedebug._tcp
+          - _ravedebug-pair._tcp
+          - _debugtrace._tcp
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition
