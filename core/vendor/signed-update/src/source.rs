@@ -57,6 +57,8 @@ impl Source {
     }
 
     /// apps.illixion.com's redirects for `app`: `/<app>/latest/*` and `/<app>/releases/<version>/*`.
+    /// That domain serves only this crate's author's apps; for your own, put the same redirects on
+    /// a domain of yours and use `Source::mirror("https://yours.example", app).concealed()`.
     pub fn apps(app: &str) -> Self {
         Self::mirror("https://apps.illixion.com", app).concealed()
     }
