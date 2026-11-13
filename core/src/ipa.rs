@@ -243,6 +243,61 @@ pub async fn install(
     }))
 }
 
+/// [`install`] for a device on iOS 16 or earlier, through usbmuxd and lockdown instead of the
+/// RemotePairing tunnel ([`crate::legacy`]). The same IPA, upload and installd request; what it
+/// can't do is close a running copy first (that is CoreDevice's appservice, from iOS 17), so an
+/// update of an open app waits until it's closed. Untested on a real iOS 16 device so far.
+pub async fn install_lockdown(
+    provider: &idevice::provider::UsbmuxdProvider,
+    app_path: &Path,
+    source: Option<&Path>,
+    detach_after_ms: u64,
+) -> Result<serde_json::Value, Report> {
+    use idevice::IdeviceService;
+    let started = Instant::now();
+    let out = std::env::temp_dir().join(format!(
+        "{}.ipa",
+        app_path.file_stem().ok_or_else(|| report!("bad app path"))?.to_string_lossy()
+    ));
+    let packed = pack(app_path, source, &out).context("Packing the IPA failed")?;
+    let pack_ms = started.elapsed().as_millis() as u64;
+    tracing::info!("packed {} files ({} reused) into {} bytes in {pack_ms} ms", packed.files, packed.reused, packed.bytes);
+    let result = async {
+        let staged = format!("PublicStaging/{}", out.file_name().ok_or_else(|| report!("bad IPA path"))?.to_string_lossy());
+        let mut afc = AfcClient::connect(provider).await.context("AFC connect failed")?;
+        upload_staged(&mut afc, &out, &staged, packed.bytes).await?;
+        let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
+        let mut installer = InstallationProxyClient::connect(provider).await.context("installation_proxy connect failed")?;
+        if detach_after_ms == 0 {
+            installer.install(staged, None).await.context("Install failed")?;
+            return Ok::<_, Report>((upload_ms, false));
+        }
+        match tokio::time::timeout(Duration::from_millis(detach_after_ms), installer.install(staged, None)).await {
+            Ok(done) => {
+                done.context("Install failed")?;
+                Ok((upload_ms, false))
+            }
+            Err(_) => {
+                tracing::info!("install still waiting after {detach_after_ms} ms; leaving it queued");
+                Ok((upload_ms, true))
+            }
+        }
+    }
+    .await;
+    let _ = std::fs::remove_file(&out);
+    let (upload_ms, queued) = result?;
+    Ok(json!({
+        "elapsedMs": started.elapsed().as_millis() as u64,
+        "packMs": pack_ms,
+        "uploadMs": upload_ms,
+        "bytes": packed.bytes,
+        "files": packed.files,
+        "reused": packed.reused,
+        "queued": queued,
+        "closed": false,
+    }))
+}
+
 /// Installs an IPA that is already signed for the device, as it is: uploaded to PublicStaging
 /// and handed to installd, with no unpacking, signing or repacking. For build tools that sign
 /// themselves (`apparition push`). `bundle_id` is the app's, so a running copy is closed first.

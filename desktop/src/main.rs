@@ -89,6 +89,7 @@ fn main() {
             flow::open_downloads,
             flow::open_developer_link,
             flow::open_help,
+            flow::open_ios16_report,
             report::open_issue,
             flow::paired_devices,
             flow::discover,

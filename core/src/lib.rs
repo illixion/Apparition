@@ -32,6 +32,7 @@ mod share;
 mod nearby;
 mod identity;
 mod ipa;
+pub mod legacy;
 mod migrate;
 mod container;
 pub mod package;

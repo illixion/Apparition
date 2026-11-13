@@ -228,6 +228,12 @@ pub fn open_help(app: AppHandle) -> Result<(), Failure> {
     app.opener().open_url(QUESTIONS, None::<&str>).map_err(|error| Failure::new(error.to_string()))
 }
 
+/// Where to report how installing to iOS 16 or earlier went (it's untested so far).
+#[tauri::command]
+pub fn open_ios16_report(app: AppHandle) -> Result<(), Failure> {
+    app.opener().open_url(apparition_core::legacy::REPORT_URL, None::<&str>).map_err(|error| Failure::new(error.to_string()))
+}
+
 /// The Developer view's two links, chosen by name so the page never hands over a URL.
 #[tauri::command]
 pub fn open_developer_link(app: AppHandle, which: String) -> Result<(), Failure> {
@@ -252,6 +258,8 @@ pub struct DeviceView {
     /// "visionOS", "iOS" (iPhone and iPad) or "tvOS".
     platform: &'static str,
     os_version: Option<String>,
+    /// iOS 16 or earlier, reached over usbmuxd: installs only, and untested so far.
+    legacy: bool,
 }
 
 impl DeviceView {
@@ -263,6 +271,7 @@ impl DeviceView {
             product_type: device.product_type.clone(),
             platform: device.platform().os_name(),
             os_version: info.map(|i| i.os_version.clone()),
+            legacy: device.legacy,
         }
     }
 }
@@ -1042,10 +1051,15 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
         };
         stage(&app, "connecting", json!(device.name));
         let result = block_on(async {
-            let mut tunnel = state.store.connect(&device, pin).await?;
+            let mut tunnel = state.store.open(&device, pin).await?;
             let info = tunnel.device_info().await?;
             let inventory = apparition_core::install_plan::inspect(&prepared.path)?;
             let is_apparition = inventory.id == APPARITION_ID;
+            // Refused before signing, which would spend one of a free account's App IDs on an app
+            // installd turns down for its minimum iOS.
+            if is_apparition && tunnel.tunnel().is_none() {
+                return Err(rootcause::report!("Apparition itself needs iOS 17 or later, and {} runs iOS {}. Choose another app to install there.", info.name, info.os_version));
+            }
             // A watch app needs the paired Watch registered on the team; only the iPhone can say which.
             let watches = if (inventory.has_watch_app() || apparition_core::install_plan::is_watch_only(&prepared.path)) && api::Platform::of_product(&info.product_type) == api::Platform::IOS {
                 tunnel.paired_watches().await.unwrap_or_default()
@@ -1162,7 +1176,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                     stage(&app, "watch", json!({ "name": watch.name, "trust": false }));
                     let waiting = |_: &str| stage(&app, "watch", json!({ "name": watch.name, "trust": true }));
                     let result = async {
-                        let mut companion = tunnel.watch(&watch.udid, &state.store.dir, &waiting).await?;
+                        let mut companion = tunnel.tunnel().ok_or_else(|| rootcause::report!("no tunnel to the iPhone"))?.watch(&watch.udid, &state.store.dir, &waiting).await?;
                         companion.install(&signed_path, &|_| {}).await
                     }
                     .await;
@@ -1204,7 +1218,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                     stage(&app, "watch", json!({ "name": watch.name, "trust": false }));
                     let waiting = |_: &str| stage(&app, "watch", json!({ "name": watch.name, "trust": true }));
                     let result = async {
-                        let mut companion = tunnel.watch(&watch.udid, &state.store.dir, &waiting).await?;
+                        let mut companion = tunnel.tunnel().ok_or_else(|| rootcause::report!("no tunnel to the iPhone"))?.watch(&watch.udid, &state.store.dir, &waiting).await?;
                         companion.install(&watch_app, &|_| {}).await
                     }
                     .await;
@@ -1221,7 +1235,12 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 && tunnel.installed_app(from).await?.is_some() {
                 migration_pending = true;
                 if reply["queued"].as_bool() != Some(true) {
-                    match tunnel.migrate_data(from, &bundle_id).await {
+                    // Moving an app's data needs the tunnel's container access, which iOS 16 lacks.
+                    let moved = match tunnel.tunnel() {
+                        Some(tunnel) => tunnel.migrate_data(from, &bundle_id).await,
+                        None => Err(rootcause::report!("Moving an app's data isn't available on iOS 16 and earlier")),
+                    };
+                    match moved {
                         Ok(copied) => {
                             let complete = copied["failed"].as_array().is_some_and(|f| f.is_empty());
                             migration = copied;
@@ -1241,10 +1260,10 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let mut handoff = Value::Null;
             let mut handoff_error = Value::Null;
             let mut pairing_handed_over = false;
-            if options.hand_off && is_apparition {
+            if options.hand_off && is_apparition && let Some(tunnel) = tunnel.tunnel() {
                 stage(&app, "handoff", Value::Null);
                 // An iPhone or iPad paired over USB: Apparition gets its own pairing record.
-                match state.store.hand_over_pairing(&mut tunnel, &bundle_id, &info.udid).await {
+                match state.store.hand_over_pairing(tunnel, &bundle_id, &info.udid).await {
                     Ok(handed) => pairing_handed_over = handed,
                     Err(error) => handoff_error = json!(error.to_string()),
                 }

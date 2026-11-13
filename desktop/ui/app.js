@@ -562,7 +562,10 @@ function pair() {
       state.device = device;
       state.pairSkipped = false;
       const os = device.osVersion ? ` (${device.platform} ${device.osVersion})` : "";
-      setStatus(status, `Paired with ${device.name}${os}. This computer stays paired for next time.`, "good");
+      const legacy = device.legacy
+        ? " iOS 16 and earlier has no wireless pairing, so Apparition installs to it over the cable (or Wi-Fi sync). That route is untested so far: the next screens say more."
+        : "";
+      setStatus(status, `Paired with ${device.name}${os}. This computer stays paired for next time.${legacy}`, "good");
       start.textContent = "Continue";
       start.onclick = () => go("signing");
     } catch (error) {
@@ -1095,6 +1098,15 @@ function install() {
   const handoff = /** @type {HTMLInputElement} */ ($(panel, "handoff"));
 
   back.addEventListener("click", () => go("signing"));
+  // iOS 16 and earlier: installs only, over usbmuxd, untested. Apparition itself needs iOS 17.
+  const legacy = state.device?.legacy === true;
+  $(panel, "legacy-note").hidden = !legacy;
+  $(panel, "legacy-report").addEventListener("click", () => invoke("open_ios16_report").catch(() => {}));
+  if (legacy) {
+    const latest = /** @type {HTMLInputElement | undefined} */ ([...what].find((w) => w.value === "latest"));
+    if (latest) latest.disabled = true;
+    if (state.what === "latest") state.what = state.localPath ? "local" : "latest";
+  }
   handoff.checked = state.handOff;
   handoff.addEventListener("change", () => (state.handOff = handoff.checked));
 
@@ -1106,7 +1118,9 @@ function install() {
       ? `Signs this app for ${state.device?.name ?? "the device"} and installs it.`
       : `The latest official release, checked against Apparition's release signature before it's used, signed for ${state.device?.name ?? "the device"}.`;
     $(panel, "local-name").textContent = state.localPath ? basename(state.localPath) : "An .ipa, or a .deb such as Kodi's, on this computer.";
-    if (state.what === "local") advanced.open = true;
+    if (state.what === "local" || legacy) advanced.open = true;
+    // On iOS 16 and earlier only an app file can be installed (Apparition needs iOS 17).
+    start.disabled = legacy && state.what !== "local";
   };
   what.forEach((w) =>
     w.addEventListener("change", async () => {

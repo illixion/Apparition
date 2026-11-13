@@ -749,7 +749,11 @@ async fn devices() -> Result<(), Error> {
     if !paired.is_empty() {
         println!("Paired with this computer:");
         for device in &paired {
-            println!("  {} ({}) at {}", device.name, device.udid, device.address);
+            if device.legacy {
+                println!("  {} ({}) over usbmuxd (iOS 16 or earlier, untested)", device.name, device.udid);
+            } else {
+                println!("  {} ({}) at {}", device.name, device.udid, device.address);
+            }
         }
     }
     println!("Looking on this network for 3 seconds…");
@@ -1058,7 +1062,15 @@ async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
     };
     println!("Pairing with {udid} as \"{}\"…", api::hostname());
     let (device, info) = store().pair_usb(&udid, &|what| println!("{what}")).await?;
-    println!("Paired with {} ({} {}), reached at {}:{}.", info.name, info.product_type, info.os_version, device.address, device.port);
+    if device.legacy {
+        println!(
+            "Paired with {} ({} {}) over usbmuxd. iOS 16 and earlier has no RemotePairing, so Apparition can install and remove apps there (over the cable, or Wi-Fi sync), with no JIT.",
+            info.name, info.product_type, info.os_version
+        );
+        println!("{}", legacy_notice());
+    } else {
+        println!("Paired with {} ({} {}), reached at {}:{}.", info.name, info.product_type, info.os_version, device.address, device.port);
+    }
     Ok(())
 }
 
@@ -1482,15 +1494,32 @@ async fn latest_apparition(site: &str, dir: &Path, platform: api::Platform) -> R
     Ok(path)
 }
 
+/// What the command line says on a device on iOS 16 or earlier: the route is untested.
+fn legacy_notice() -> String {
+    format!(
+        "iOS 16 and earlier is new in Apparition and hasn't been tried on a real device yet. Please say how it went, working or not: {}",
+        apparition_core::legacy::REPORT_URL
+    )
+}
+
 async fn download_and_install(options: &mut Options, device: &Device, scratch: &Path) -> Result<(), Error> {
     if options.ipa.as_os_str().is_empty() {
+        // Refused before signing, which would spend one of a free account's App IDs on an app
+        // installd then turns down for its minimum iOS.
+        if device.legacy {
+            return Err(fail(format!("Apparition itself needs iOS 17 or later, which {} doesn't run. Give an IPA to install instead: `apparition install <app.ipa>`", device.name)));
+        }
         options.ipa = latest_apparition(&options.release_site, &scratch.join("download"), device.platform()).await?;
     }
     unpack_package(options, scratch)?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The headset wants to pair again. PIN: ");
-    let mut tunnel = store().connect(device, pin).await?;
+    let mut tunnel = store().open(device, pin).await?;
     let info = tunnel.device_info().await?;
+    if tunnel.tunnel().is_none() {
+        println!("{} runs iOS {}: installing over usbmuxd. Turn on Developer Mode there (Settings > Privacy & Security) to open the app.", info.name, info.os_version);
+        println!("{}", legacy_notice());
+    }
     // A watch app needs the paired Watch registered with it; only the iPhone can say which.
     if api::Platform::of_product(&info.product_type) == api::Platform::IOS
         && (apparition_core::install_plan::is_watch_only(&options.ipa)
@@ -1507,10 +1536,11 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
 async fn sign_and_install(
     options: &Options,
     info: &api::DeviceInfo,
-    tunnel: &mut api::Tunnel,
+    tunnel: &mut api::Connection,
     scratch: &Path,
     strip: bool,
 ) -> Result<(), Error> {
+    let tunnel_only = || fail(format!("{} runs iOS 16 or earlier: Apparition can only install apps there, not Apple Watch apps or Apparition's own pairing", info.name));
     // The Apple ID and team that signed, for handing the certificate to Apparition.
     let mut apple_id: Option<(String, String)> = None;
     let signed = if let Some(p12) = &options.p12 {
@@ -1532,7 +1562,7 @@ async fn sign_and_install(
     if signed["watchOnly"].as_bool() == Some(true) {
         // A watchOS app on its own: it goes to the Watch through the iPhone, and nothing to the phone.
         let watches = signed["watches"].as_array().cloned().unwrap_or_default();
-        if install_on_watches(&watches, &signed_path, tunnel).await? == 0 {
+        if install_on_watches(&watches, &signed_path, tunnel.tunnel().ok_or_else(tunnel_only)?).await? == 0 {
             return Err(fail("the watch app didn't install on any Apple Watch"));
         }
         return Ok(());
@@ -1561,6 +1591,10 @@ async fn sign_and_install(
     } else {
         println!("Installed in {seconds:.1} s.");
     }
+    let Some(tunnel) = tunnel.tunnel() else {
+        // Nothing past the install works without the tunnel.
+        return Ok(());
+    };
     install_watch_apps(&signed, &signed_path, tunnel).await?;
 
     if options.handoff && installed_id.starts_with(APPARITION_ID) {
