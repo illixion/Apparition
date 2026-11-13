@@ -139,9 +139,6 @@
   a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible, [tabindex]:focus-visible {
     outline: 2px solid var(--accent); outline-offset: 2px; }
   section.history, section.traces { margin-top: 0; }
-  .banner { background: color-mix(in srgb, var(--warn) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
-    color: var(--fg); border-radius: 10px; padding: 10px 14px; font-size: .82rem; margin-bottom: 14px; }
-  .banner code { font-family: var(--mono); font-size: .78rem; }
 
   /* a device chip whose app is running with its debug server */
   .chip .live { font-family: var(--mono); font-size: .68rem; color: var(--ok); padding: 1px 4px; border-radius: 4px;
@@ -152,9 +149,8 @@
   @keyframes beacon { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 70%,100% { box-shadow: 0 0 0 6px transparent; } }
 
   /* ---- debug view: the rail of running apps, and the console ---- */
-  /* The console fills what's left under the header, banner or not. */
+  /* The console fills what's left under the header. */
   main.debugging { max-width: none; padding: 0; height: calc(100vh - 57px); display: flex; flex-direction: column; }
-  main.debugging .banner { margin: 10px 16px 0; }
   main.debugging .view.active { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .debug { display: grid; grid-template-columns: 250px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
   .rail { border-right: 1px solid var(--line); overflow-y: auto; padding: 12px 10px; display: flex; flex-direction: column; gap: 4px; }
@@ -464,8 +460,6 @@
   </span>
 </header>
 <main id="main">
-  <div class="banner" id="openbanner" hidden>No password is set, so anyone who can reach this page can build, install and debug.
-    Set one with <code>node server.js set-password</code>.</div>
   <section class="view" data-view="deploy">
     <div class="fleet" id="apps"></div>
   </section>
@@ -580,7 +574,6 @@ function render() {
   $('#fleetcount').textContent = repos.reduce((n,r)=>n+r.platforms.length,0) || '';
   const live = (S.debugApps?.apps || []).filter(a => a.attachable);
   $('#livecount').textContent = live.length ? `${live.length} live` : '';
-  $('#openbanner').hidden = !!S.authRequired;
   $('#signout').hidden = !S.authRequired;
 
   projectList.update(S);
