@@ -731,6 +731,9 @@ details[open] > summary { margin-bottom: .85rem; }
 .modes.compact .mode input { top: 1rem; }
 
 .file-row { display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; }
+.tweaks { display: flex; flex-direction: column; gap: .5rem; margin-top: .9rem; max-width: var(--measure); }
+.tweaks .signed-list li { display: flex; align-items: baseline; gap: .6rem; }
+.tweaks .signed-list li span { overflow-wrap: anywhere; }
 .paired-mac { display: flex; flex-direction: column; gap: .6rem; }
 .server-config { display: flex; flex-direction: column; gap: .6rem; margin-top: .6rem; }
 .file-name { font-size: .9rem; color: var(--muted); overflow-wrap: anywhere; }

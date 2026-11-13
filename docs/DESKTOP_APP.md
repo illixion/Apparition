@@ -16,7 +16,8 @@ guided app, so nobody needs a terminal, and the companion, kept running from the
 tray after the window closes (its Settings tab: the relay and its connections, the anisette
 server offered to devices, opening at login). As an installer, it finds the headset over mDNS (or takes its address) and pairs with
 the PIN it shows, or pairs an iPhone or iPad over its cable (like `pair --usb`), signs in to an Apple ID (asking for the 2FA code) or opens a .p12 and
-profiles, installs the latest signed release (or an IPA or .deb you pick) with progress, and hands
+profiles, installs the latest signed release (or an IPA or .deb you pick, with any
+[tweaks](USING.md#tweaks) put into it under Advanced) with progress, and hands
 Apparition its signing at the end. When a free account's certificate or App ID slots are full
 it lists them and frees one only after you type `revoke` or `delete`. It drives the same
 `apparition_core::api` as the command line and shares its pairings and Apple ID data, so a
