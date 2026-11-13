@@ -82,7 +82,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       (run `pair --usb` first then, or `pair` for an Apple TV). Works over Wi-Fi.
   apparition install [<app.ipa or .deb>] [--device <name or UDID>]
           (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
-          [--keep-extensions] [--no-watch] [--no-handoff] [--release-site <url>]
+          [--keep-extensions] [--no-watch] [--no-handoff] [--tweak <file>]... [--release-site <url>]
       Sign and install. Without an IPA, installs the latest Apparition from
       apparition.illixion.com, checked against its release signature first. A .deb package
       (how Kodi is published) is unpacked first: the app inside is what gets installed. With an Apple
@@ -94,10 +94,16 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       earlier, or a macOS VM set up for it), else the Mac this computer is paired with
       (`apparition anisette pair`). --anisette <url> uses a third-party anisette v3 server instead.
   apparition sign <app.ipa or .deb> [--device <name or UDID>] [--keep-extensions] [--no-watch]
-          (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
+          [--tweak <file>]... (--apple-id <email> [--anisette <url>] | --p12 <file> --profile <file>...)
       Sign for a paired device without reaching it and install nothing. With an Apple ID,
       says which capabilities (increased memory limit, extended virtual addressing) the app
       got; with a .p12, which profile signed it.
+  apparition tweak <app.ipa or .deb> <tweak>... [--out <file.ipa>]
+      Put tweaks into an app, unsigned, for `install`/`sign` (which also take --tweak) or for
+      installing it some other way. A tweak is a .deb package, a .dylib, a .framework or .bundle,
+      or a .zip of those. Its code goes into the app's Frameworks folder and the app loads it;
+      Substrate, which most tweaks need, is ElleKit (BSD-3-Clause), added as CydiaSubstrate.framework.
+      Refused for an app still encrypted by the App Store, and for code built for another platform.
   apparition jit <bundle ID> [--attach [<pid>]] [--device <name or UDID>] [--wait <seconds>]
       Be the app's debugger from here, so it can use JIT: launch it (or with --attach, take
       its running process) and serve its JIT requests until it closes or says it's done. The
@@ -366,6 +372,7 @@ async fn run() -> ExitCode {
         Some("kill") => device_tools::kill(&args[1..]).await,
         Some("location") => device_tools::location(&args[1..]).await,
         Some("logs") => device_tools::logs(&args[1..]).await,
+        Some("tweak") => tweak(&args[1..]).await,
         Some("inject") => inject::run(&args[1..]).await,
         Some("build") => builder::run(&args[1..]).await,
         Some("forget") => forget(args.get(1).map(String::as_str)),
@@ -1177,6 +1184,8 @@ struct Options {
     /// Leave the app's watch app out, so the Watch (and its App ID) stays free of it.
     no_watch: bool,
     handoff: bool,
+    /// Tweaks injected into the app before it's signed (`--tweak`).
+    tweaks: Vec<PathBuf>,
 }
 
 fn parse_install(args: &[String]) -> Result<Options, Error> {
@@ -1191,6 +1200,7 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
         keep_extensions: false,
         no_watch: false,
         handoff: true,
+        tweaks: Vec::new(),
     };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -1204,11 +1214,15 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
             "--keep-extensions" => options.keep_extensions = true,
             "--no-watch" => options.no_watch = true,
             "--no-handoff" => options.handoff = false,
+            "--tweak" => options.tweaks.push(value()?.into()),
             "--release-site" => options.release_site = value()?,
             other if other.starts_with("--") => return Err(fail(format!("unknown option {other}"))),
             path if options.ipa.as_os_str().is_empty() => options.ipa = path.into(),
             extra => return Err(fail(format!("unexpected {extra}"))),
         }
+    }
+    if !options.tweaks.is_empty() && options.ipa.as_os_str().is_empty() {
+        return Err(fail("--tweak needs the app to put it in: name its .ipa or .deb (Apparition itself takes no tweaks)"));
     }
     match (&options.apple_id, &options.p12) {
         (Some(_), None) => Ok(options),
@@ -1219,8 +1233,68 @@ fn parse_install(args: &[String]) -> Result<Options, Error> {
 }
 
 /// A `.deb` package (how Kodi and many other apps are published) becomes an IPA in `scratch`;
-/// an IPA stays as it is.
+/// an IPA stays as it is. Then any `--tweak` goes into it.
 fn unpack_package(options: &mut Options, scratch: &Path) -> Result<(), Error> {
+    unpack_app_file(options, scratch)?;
+    if !options.tweaks.is_empty() {
+        let out = scratch.join("tweaked").join(options.ipa.file_name().unwrap_or_default());
+        std::fs::create_dir_all(out.parent().unwrap())?;
+        let injection = apparition_core::tweaks::inject_ipa(&options.ipa, &options.tweaks, &out, &scratch.join("tweak-work"))?;
+        print_injection(&injection);
+        options.ipa = out;
+    }
+    Ok(())
+}
+
+/// What `tweaks::inject_app` did, the way `tweak` and `install --tweak` say it.
+fn print_injection(injection: &apparition_core::tweaks::Injection) {
+    println!("Injected: the app now loads {}.", injection.loads.join(", "));
+    if injection.substrate {
+        println!("  Added ElleKit (BSD-3-Clause) as CydiaSubstrate.framework, which the tweak links.");
+    }
+    if injection.rewritten > 0 {
+        println!("  Pointed {} library path{} inside the app.", injection.rewritten, if injection.rewritten == 1 { "" } else { "s" });
+    }
+    for warning in &injection.warnings {
+        println!("  Warning: {warning}");
+    }
+}
+
+/// `tweak <app.ipa or .deb> <tweak>... [--out <file>]`: an IPA with the tweaks in it, unsigned,
+/// for signing or installing some other way (TrollStore, say).
+async fn tweak(args: &[String]) -> Result<(), Error> {
+    let usage = || fail("usage: apparition tweak <app.ipa or .deb> <tweak .deb, .dylib, .framework, .bundle or .zip>... [--out <file.ipa>]");
+    let (mut app, mut tweaks, mut out) = (None::<PathBuf>, Vec::new(), None::<PathBuf>);
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--out" | "-o" => out = Some(args.next().ok_or_else(usage)?.into()),
+            other if other.starts_with('-') => return Err(usage()),
+            path if app.is_none() => app = Some(path.into()),
+            path => tweaks.push(PathBuf::from(path)),
+        }
+    }
+    let app = app.ok_or_else(usage)?;
+    if tweaks.is_empty() {
+        return Err(usage());
+    }
+    let out = out.unwrap_or_else(|| {
+        let stem = app.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "app".into());
+        app.with_file_name(format!("{stem}-tweaked.ipa"))
+    });
+    let scratch = scratch::folder("tweak");
+    std::fs::create_dir_all(&scratch)?;
+    let result = (|| {
+        let ipa = apparition_core::package::ensure_ipa(&app, &scratch.join("package"))?;
+        apparition_core::tweaks::inject_ipa(&ipa, &tweaks, &out, &scratch)
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    print_injection(&result?);
+    println!("Wrote {} (unsigned: `apparition install` or `sign` signs it).", out.display());
+    Ok(())
+}
+
+fn unpack_app_file(options: &mut Options, scratch: &Path) -> Result<(), Error> {
     if options.ipa.as_os_str().is_empty() {
         return Ok(());
     }

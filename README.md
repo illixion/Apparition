@@ -160,7 +160,9 @@ The desktop app and its packaging are in [docs/DESKTOP_APP.md](docs/DESKTOP_APP.
 Contributions are welcome ([CONTRIBUTING.md](CONTRIBUTING.md)); security problems go through [SECURITY.md](SECURITY.md).
 
 Licensed MIT. Signing (`core/signer`) builds on [apple-codesign](https://github.com/indygreg/apple-platform-rs)
-(MPL-2.0), used unmodified from crates.io.
+(MPL-2.0), used unmodified from crates.io. Tweak injection adds [ElleKit](https://github.com/tealbathingsuit/ellekit)
+(BSD-3-Clause, `core/assets/ellekit`, built from its v1.1.3 tag by `scripts/build-ellekit.sh`) to an app
+whose tweak needs Substrate, with its licence beside it.
 
 ## Support
 

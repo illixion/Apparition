@@ -128,3 +128,32 @@ the old copy's files to it through the same tunnel (house_arrest), and removes t
 once every file arrived. Turn it off in Settings > Certificates & Profiles. Caches are left behind, and so are
 Keychain items and app group data, which belong to the signing team. Only a development-signed
 app can have its data read, so a distribution-signed one keeps its data in the old copy.
+
+## Tweaks
+
+A tweak changes how an app behaves from inside it: an ad blocker for a video app, a theme, extra
+settings. Jailbroken devices load tweaks into every app; without a jailbreak, a tweak has to be put
+into the one app it's for before that app is signed, which is what Apparition does (as cyan, Feather
+and Sideloadly do). A tweak can be a `.deb` package (rootful or rootless), a `.dylib`, a `.framework`
+or `.bundle` folder, or a `.zip` of those. From the command line:
+
+    apparition tweak YouTube.ipa YTLite.deb                   # YouTube-tweaked.ipa, unsigned
+    apparition install YouTube.ipa --tweak YTLite.deb --apple-id you@example.com
+
+What happens to it:
+- Its code goes into the app's `Frameworks` folder, and the app's executable gets a weak load
+  command for each tweak (what nothing else in the tweak links), so the app starts even if one
+  fails to load. Libraries a package brings for its tweak are copied, not loaded on their own.
+- Paths only a jailbreak has are pointed inside the app: Substrate, libhooker and blackjack become
+  `CydiaSubstrate.framework`, which is [ElleKit](https://github.com/tealbathingsuit/ellekit), added
+  with its licence when a tweak needs it; a package's own libraries and frameworks are found where
+  they were copied. A library nothing provides is named in a warning (add the package that has it,
+  Orion or Cephei say, as a second tweak).
+- A package's resource bundles go into the app's own folder. A tweak that looks for them at
+  `/Library/Application Support` may not find them, and Settings panes (PreferenceLoader) are left
+  out: both are said in warnings.
+
+Not possible: an app still encrypted by the App Store (its code can't be changed, and it wouldn't
+run re-signed anyway); code built for another platform than the app's (an iOS tweak in a native
+visionOS app); and, rarely, an executable with no room left for another load command. Tweaks are
+iOS code, and ElleKit is built for iOS 15 and later.

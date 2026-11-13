@@ -40,6 +40,8 @@ pub mod install_plan;
 mod jit;
 mod launch;
 pub mod tools;
+mod macho;
+pub mod tweaks;
 mod tunnel;
 pub mod watch;
 pub mod stop;

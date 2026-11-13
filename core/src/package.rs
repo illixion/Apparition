@@ -265,7 +265,7 @@ fn members(file: &mut File) -> Result<Vec<Member>, Report> {
 }
 
 /// The package's data archive, decompressed as it is read.
-fn data_archive(package: &Path) -> Result<tar::Archive<Box<dyn Read>>, Report> {
+pub(crate) fn data_archive(package: &Path) -> Result<tar::Archive<Box<dyn Read>>, Report> {
     let mut file = File::open(package).context("Opening the package failed")?;
     let members = members(&mut file)?;
     let member = members

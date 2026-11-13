@@ -170,6 +170,11 @@ char *apparition_stream_log(struct AdapterHandle *adapter, struct RsdHandshakeHa
 // Ends the location or log session key; its call then returns ended "stopped". {ok, stopped}.
 char *apparition_tool_stop(const char *key);
 
+// Injects the tweaks in tweaks_json (a JSON array of paths: .deb, .dylib, .framework, .bundle,
+// .zip) into the app in the IPA at ipa and writes the result, unsigned, to the IPA out (core/src/tweaks.rs);
+// scratch is a folder for the work. {ok, loads, added, substrate, rewritten, warnings}.
+char *apparition_inject_tweaks(const char *ipa, const char *tweaks_json, const char *out, const char *scratch);
+
 // A debugserver session lent to a StikDebug JIT script, which the caller runs: the script
 // attaches (only to this session's process), continues and answers breakpoints itself.
 typedef struct JitScript JitScript;
