@@ -18,9 +18,9 @@ fn fixture(config: Value, hosted: bool) -> Fixture {
     std::fs::write(dir.path().join("config.json"), config.to_string()).unwrap();
     let public = dir.path().join("public");
     std::fs::create_dir(&public).unwrap();
-    std::fs::write(public.join("index.html"), "<title>{{BRAND_TITLE}}</title>{{BRAND_NAME}}").unwrap();
-    std::fs::write(public.join("login.html"), "<title>{{BRAND_TITLE}}</title>{{BRAND_MARK}}{{BRAND_HEAD}}").unwrap();
-    std::fs::write(public.join("favicon.svg"), "<svg/>").unwrap();
+    std::fs::write(public.join("index.html"), "<title>Apparition Store</title>").unwrap();
+    std::fs::write(public.join("login.html"), "<title>Sign in</title>").unwrap();
+    std::fs::write(public.join("logo.svg"), "<svg/>").unwrap();
     std::fs::write(dir.path().join("secret-notes.txt"), "no").unwrap();
     let app = router(Settings {
         host_token: hosted.then(|| TOKEN.to_string()),
@@ -64,7 +64,7 @@ async fn open_store_without_password_serves_pages_and_reports_auth() {
     assert_eq!((status, serde_json::from_str::<Value>(&body).unwrap()), (StatusCode::OK, json!({ "required": false, "signedIn": true })));
     let (status, headers, body) = send(&f.app, "GET", "/", &[], None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, "<title>Apparition Store</title><b>Apparition Store</b>");
+    assert_eq!(body, "<title>Apparition Store</title>");
     assert_eq!(header(&headers, "cache-control"), Some("no-store"));
     // Open only to pages naming this Mac's loopback: a site that points its own name at
     // 127.0.0.1 (DNS rebinding) is not signed in.
@@ -83,14 +83,6 @@ async fn open_store_without_password_serves_pages_and_reports_auth() {
     assert_ne!(status, StatusCode::OK);
     let (_, _, body) = send(&f.app, "GET", "/api/auth", &[("host", "localhost"), ("sec-fetch-site", "same-origin")], None).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["signedIn"], true);
-}
-
-#[tokio::test]
-async fn branding_fills_the_page_and_escapes() {
-    let f = fixture(json!({ "branding": { "org": "Ixion <3", "icon": "🚀" } }), false);
-    let (_, _, body) = send(&f.app, "GET", "/login.html", &[], None).await;
-    assert!(body.starts_with("<title>Ixion &lt;3&#39;s Apparition Store</title><span class=\"brandicon\">🚀</span>"), "{body}");
-    assert!(body.contains("data:image/svg+xml,%3Csvg"));
 }
 
 #[tokio::test]
@@ -135,7 +127,7 @@ async fn cross_site_writes_are_refused() {
 #[tokio::test]
 async fn static_files_stay_inside_public() {
     let f = fixture(json!({}), false);
-    let (status, ..) = send(&f.app, "GET", "/favicon.svg", &[], None).await;
+    let (status, ..) = send(&f.app, "GET", "/logo.svg", &[], None).await;
     assert_eq!(status, StatusCode::OK);
     for uri in ["/../secret-notes.txt", "/%2e%2e/secret-notes.txt", "/..%2fsecret-notes.txt"] {
         let (status, ..) = send(&f.app, "GET", uri, &[], None).await;
@@ -232,7 +224,7 @@ async fn without_a_directory_the_compiled_in_ui_is_served() {
     }).unwrap();
     let (status, headers, body) = send(&app, "GET", "/", &[], None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("<title>Apparition Store</title>") && !body.contains("{{BRAND_"), "brand placeholders are filled");
+    assert!(body.contains("<title>Apparition Store</title>") && body.contains("/logo.svg"), "{body}");
     assert_eq!(header(&headers, "cache-control"), Some("no-store"));
     let (status, headers, _) = send(&app, "GET", "/shared/projects.js", &[], None).await;
     assert_eq!((status, header(&headers, "content-type")), (StatusCode::OK, Some("text/javascript")));

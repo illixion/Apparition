@@ -3,10 +3,6 @@
   "bundlePrefix": [
     "com.example"
   ],
-  "branding": {
-    "org": "Example",
-    "icon": "\ud83d\ude80"
-  },
   "debugtraceTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-mcp",
   "debugtraceInjectTool": "/Users/you/Projects/DebugTrace/Tools/debugtrace-inject/debugtrace-inject",
   "ledgerOnlyDevices": [],

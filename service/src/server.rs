@@ -36,7 +36,7 @@ use futures_util::StreamExt;
 use subtle::ConstantTimeEq;
 
 const WEB_UI_OFF: &str = "The web UI is off. Turn it on in Apparition: Developer › Devices & signing › Web UI and other devices.";
-const PUBLIC_FILES: [&str; 6] = ["/login.html", "/favicon.svg", "/favicon.ico", "/apple-touch-icon.png", "/mask-icon.svg", "/branding/icon"];
+const PUBLIC_FILES: [&str; 5] = ["/login.html", "/logo.svg", "/favicon.ico", "/apple-touch-icon.png", "/fonts/Fraunces-Soft.woff2"];
 const SERVICE_PREFIX: &str = "/api/service/v1";
 
 pub struct Settings {
@@ -451,25 +451,6 @@ fn safe_next(next: &str) -> &str {
     if ok { next } else { "/" }
 }
 
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
-}
-
-fn image_type(path: &str) -> Option<&'static str> {
-    let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        "svg" => "image/svg+xml", "png" => "image/png", "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif", "webp" => "image/webp", "ico" => "image/x-icon", _ => return None,
-    })
-}
-
-struct Brand {
-    title: String,
-    name: String,
-    mark: String,
-    head: String,
-}
-
 impl App {
     /// The config, reread when the file changes, as the Node store's watcher does.
     fn config(&self) -> Arc<Config> {
@@ -511,49 +492,7 @@ impl App {
         }
     }
 
-    fn brand_icon_file(&self, config: &Config) -> Option<PathBuf> {
-        let icon = config.branding.as_ref()?.icon.as_deref()?;
-        image_type(icon)?;
-        let icon = match icon.strip_prefix("~/") {
-            Some(rest) => crate::home().join(rest),
-            None => PathBuf::from(icon),
-        };
-        let file = self.settings.config_path.parent()?.join(icon);
-        file.is_file().then_some(file)
-    }
-
-    fn brand(&self) -> Brand {
-        let config = self.config();
-        let b = config.branding.as_ref();
-        let title = b.and_then(|b| b.title.clone().filter(|t| !t.is_empty()))
-            .or_else(|| b.and_then(|b| b.org.clone().filter(|o| !o.is_empty())).map(|o| format!("{o}'s Apparition Store")))
-            .unwrap_or_else(|| "Apparition Store".into());
-        let name = match (b.and_then(|b| b.title.as_deref()).filter(|t| !t.is_empty()), b.and_then(|b| b.org.as_deref()).filter(|o| !o.is_empty())) {
-            (Some(t), _) => format!("<b>{}</b>", escape_html(t)),
-            (None, Some(o)) => format!("<span class=\"org\">{}&#39;s</span> <b>Apparition Store</b>", escape_html(o)),
-            _ => "<b>Apparition Store</b>".into(),
-        };
-        let icon = b.and_then(|b| b.icon.as_deref()).map(str::trim).unwrap_or("");
-        let (mark, head);
-        if let Some(file) = self.brand_icon_file(&config) {
-            let version = fs::metadata(&file).and_then(|m| m.modified()).ok()
-                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
-            let href = format!("/branding/icon?v={version}");
-            mark = format!("<img class=\"brandicon\" src=\"{href}\" alt=\"\">");
-            head = format!("<link rel=\"icon\" href=\"{href}\"><link rel=\"apple-touch-icon\" href=\"{href}\">");
-        } else if !icon.is_empty() {
-            mark = format!("<span class=\"brandicon\">{}</span>", escape_html(icon));
-            let svg = format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\"><text x=\"50\" y=\"50\" font-size=\"80\" text-anchor=\"middle\" dominant-baseline=\"central\">{}</text></svg>", escape_html(icon));
-            head = format!("<link rel=\"icon\" href=\"data:image/svg+xml,{}\">", encode_uri_component(&svg));
-        } else {
-            mark = "<span class=\"tri\"></span>".into();
-            head = "<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\"><link rel=\"alternate icon\" href=\"/favicon.ico\" sizes=\"48x48 32x32 16x16\"><link rel=\"apple-touch-icon\" href=\"/apple-touch-icon.png\">".into();
-        }
-        Brand { title, name, mark, head }
-    }
-
-    /// `public/<rel>` with the brand placeholders filled in HTML, or None when it is not a file
-    /// under `public/`.
+    /// `public/<rel>`, or None when it is not a file under `public/`.
     fn static_file(&self, rel: &str) -> Option<Response> {
         let rel = Path::new(rel);
         if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
@@ -566,16 +505,11 @@ impl App {
         let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("");
         let content_type = match ext {
             "html" => "text/html; charset=utf-8", "js" => "text/javascript", "css" => "text/css",
-            "svg" => "image/svg+xml", "png" => "image/png", "ico" => "image/x-icon", _ => "application/octet-stream",
+            "svg" => "image/svg+xml", "png" => "image/png", "ico" => "image/x-icon", "woff2" => "font/woff2",
+            "txt" => "text/plain; charset=utf-8", _ => "application/octet-stream",
         };
         let res = if ext == "html" {
-            let brand = self.brand();
-            let page = String::from_utf8(bytes).ok()?
-                .replace("{{BRAND_TITLE}}", &escape_html(&brand.title))
-                .replace("{{BRAND_NAME}}", &brand.name)
-                .replace("{{BRAND_MARK}}", &brand.mark)
-                .replace("{{BRAND_HEAD}}", &brand.head);
-            with_header(reply(200, content_type, page), "cache-control", "no-store")
+            with_header(reply(200, content_type, bytes), "cache-control", "no-store")
         } else {
             reply(200, content_type, bytes)
         };
@@ -1233,14 +1167,6 @@ fn dispatch(app: &App, req: &Req) -> Response {
         }
         ("GET", "/api/auth") => {
             return json_reply(200, json!({ "required": config.password_hash.is_some(), "signedIn": app.signed_in(req) }));
-        }
-        ("GET", "/branding/icon") => {
-            let Some(file) = app.brand_icon_file(&config) else { return json_reply(404, json!({ "error": "no branding icon configured" })) };
-            let Ok(bytes) = fs::read(&file) else { return json_reply(404, json!({ "error": "no branding icon configured" })) };
-            let res = reply(200, image_type(file.to_str().unwrap_or("")).unwrap_or("application/octet-stream"), bytes);
-            // an SVG served from here must not run script of its own
-            let res = with_header(res, "content-security-policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:");
-            return with_header(with_header(res, "x-content-type-options", "nosniff"), "cache-control", "no-cache");
         }
         _ => {}
     }

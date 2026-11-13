@@ -1,6 +1,6 @@
 @font-face {
   font-family: "Fraunces Soft";
-  src: url("fonts/Fraunces-Soft.woff2") format("woff2");
+  src: url("shared/Fraunces-Soft.woff2") format("woff2");
   font-weight: 400 700;
   font-style: normal;
   font-display: block;

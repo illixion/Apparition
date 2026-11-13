@@ -3,14 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · {{BRAND_TITLE}}</title>
-{{BRAND_HEAD}}
+<title>Sign in · Apparition Store</title>
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#0a0c10">
 <style>
   :root {
     --bg: #0a0c10; --surface: #12151b; --surface2: #191d25; --line: #232833;
     --fg: #e6ebf3; --dim: #7d8699; --dim2: #565e6e; --accent: #4f8cff; --accent-fg: #06101f; --bad: #fa6464;
     --mono: ui-monospace, "SF Mono", "Menlo", monospace;
+    --display: "Fraunces Soft", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
     --sans: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
     font-size: 15px;
   }
@@ -18,14 +21,10 @@
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
     background: var(--bg); color: var(--fg); font-family: var(--sans); }
   form { width: min(340px, 100%); display: flex; flex-direction: column; gap: 14px; }
-  .wordmark { font-family: var(--mono); font-size: .92rem; font-weight: 700; color: var(--dim);
-    display: inline-flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-  .wordmark .tri { display: inline-block; width: 2rem; height: 2rem; background: var(--accent);
-    clip-path: polygon(50% 12%, 92% 88%, 8% 88%); }
-  .wordmark .brandicon { font-size: 2rem; line-height: 1; height: 2rem; width: auto; display: inline-block; }
-  .wordmark b { color: var(--fg); }
-  .wordmark b { text-transform: uppercase; letter-spacing: .04em; }
-  .wordmark .org { text-transform: none; letter-spacing: 0; }
+  @font-face { font-family: "Fraunces Soft"; src: url("/fonts/Fraunces-Soft.woff2") format("woff2");
+    font-weight: 400 700; font-style: normal; font-display: swap; }
+  .wordmark { font-family: var(--display); font-size: 1.3rem; font-weight: 600; color: var(--fg);
+    display: inline-flex; align-items: center; gap: .6rem; margin-bottom: 6px; }
   label { font-size: .82rem; color: var(--dim); display: flex; flex-direction: column; gap: 6px; }
   input { background: var(--surface2); color: var(--fg); border: 1px solid var(--line); border-radius: 8px;
     padding: 10px 12px; font: inherit; }
@@ -38,7 +37,7 @@
 </head>
 <body>
 <form id="form">
-  <span class="wordmark">{{BRAND_MARK}} {{BRAND_NAME}}</span>
+  <span class="wordmark"><img src="/logo.svg" alt="" width="36" height="36"> Apparition Store</span>
   <label>Password
     <input type="password" id="password" autocomplete="current-password" autofocus required>
   </label>

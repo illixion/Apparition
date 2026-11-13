@@ -168,7 +168,6 @@ are kept untouched, never rejected. A fresh Store starts with
 | `debugtraceTool` | Handed to `apparition inject` as `DEBUGTRACE_MCP`. The Store finds running apps with its own Bonjour browse and doesn't need it for that. |
 | `debugtraceInjectTool` | The `debugtrace-inject` binary, handed to builds and to `apparition inject` as `DEBUGTRACE_INJECT_TOOL`. The MCP `inject` tool looks for it in `DEBUGTRACE_INJECT_TOOL`, then `~/Projects/DebugTrace/Tools/debugtrace-inject/debugtrace-inject`, then `PATH`. |
 | `altSource` | The AltStore feed, see "AltStore source". |
-| `branding` | `org` ("&lt;org&gt;'s Apparition Store" in the header, login page and tab title), `title` (the full name, wins over `org`), `icon` (an emoji or short text, or an image path ending `.svg .png .jpg .gif .webp .ico`, relative to `config.json`, `~/` allowed; it is also the favicon). Unset keeps the triangle. |
 | `webUi`, `passwordHash` | Written by the app when you turn the web pages on (Developer › Devices & signing › Web UI and other devices). Don't edit them by hand. |
 
 Old configs may still carry `quietAppsDevices`, `crashLogs` and `builder`. They are no longer needed:

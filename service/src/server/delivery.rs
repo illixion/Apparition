@@ -256,12 +256,8 @@ impl App {
         json_reply(200, body)
     }
 
-    /// The store's own icon: the branding icon, else the page's touch icon.
+    /// The store's own icon: the page's touch icon.
     fn store_icon(&self) -> Option<(Vec<u8>, &'static str)> {
-        let config = self.config();
-        if let Some(file) = self.brand_icon_file(&config) {
-            return Some((fs::read(&file).ok()?, image_type(file.to_str()?).unwrap_or("image/png")));
-        }
         let bytes = match &self.settings.public_dir {
             Some(dir) => fs::read(dir.join("apple-touch-icon.png")).ok()?,
             None => crate::assets::get("apple-touch-icon.png")?.to_vec(),
@@ -301,8 +297,7 @@ impl App {
                     return Some(Ok(json_reply(404, json!({ "error": format!("no apps for platform {name}"), "platforms": altsource::source_platforms(&config.raw) }))));
                 }
             }
-            let title = self.brand().title;
-            let doc = self.alt.source(&title, &self.alt_cfg(), platform.as_deref(), &|path| self.alt_link(req, path));
+            let doc = self.alt.source("Apparition Store", &self.alt_cfg(), platform.as_deref(), &|path| self.alt_link(req, path));
             let res = reply(200, "application/json; charset=utf-8", serde_json::to_string_pretty(&doc).unwrap_or_default());
             return Some(Ok(with_header(res, "cache-control", "no-store")));
         }

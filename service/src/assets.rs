@@ -1,14 +1,15 @@
 //! The web UI (`service/public`) compiled in, so the service serves its pages with no folder
 //! on the Mac. One copy of the files: the desktop build copies a few of them.
 
-pub const FILES: [(&str, &[u8]); 9] = [
+pub const FILES: [(&str, &[u8]); 10] = [
     ("apple-touch-icon.png", include_bytes!("../public/apple-touch-icon.png")),
     ("favicon.ico", include_bytes!("../public/favicon.ico")),
-    ("favicon.svg", include_bytes!("../public/favicon.svg")),
+    ("fonts/Fraunces-OFL.txt", include_bytes!("../public/fonts/Fraunces-OFL.txt")),
+    ("fonts/Fraunces-Soft.woff2", include_bytes!("../public/fonts/Fraunces-Soft.woff2")),
     ("freshness.js", include_bytes!("../public/freshness.js")),
     ("index.html", include_bytes!("../public/index.html")),
     ("login.html", include_bytes!("../public/login.html")),
-    ("mask-icon.svg", include_bytes!("../public/mask-icon.svg")),
+    ("logo.svg", include_bytes!("../public/logo.svg")),
     ("shared/projects.css", include_bytes!("../public/shared/projects.css")),
     ("shared/projects.js", include_bytes!("../public/shared/projects.js")),
 ];

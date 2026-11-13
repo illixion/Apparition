@@ -2,7 +2,8 @@
 
 The desktop Developer tab and Apparition Store share the project list in
 `service/public/shared/projects.js` and `projects.css`. Freshness comes from
-`service/public/freshness.js`. Edit those sources for project cards, target
+`service/public/freshness.js`; the ghost logo (`logo.svg`) and the Fraunces Soft font
+(`fonts/`) live in `service/public` too, so both shells show the same mark. Edit those sources for project cards, target
 selection, branches, deploy flags, search, sorting, and request feedback.
 
 `desktop/build.rs` copies these assets into the ignored `desktop/ui/shared/`
