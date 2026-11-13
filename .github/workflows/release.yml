@@ -27,6 +27,15 @@
 # a weekly run with no version builds every part at its committed version to warm them, publishing
 # nothing, and a release tag starts from there. Run it by hand (no version) after changing
 # dependencies or the toolchain, so the next release starts warm.
+#
+# A part that fails (a macOS runner that never comes, say) holds up only itself: the parts build on
+# separate runners side by side (Windows and Linux never on a Mac), the others finish and upload
+# their files, and only Attest waits for all of them. "Re-run failed jobs" then builds just the
+# failed ones; the finished ones' artifacts stay with the run. Each build job also keeps its
+# finished files in a cache of their own, for that commit and version on that ref, and a later
+# run there ("Re-run all jobs", the tag pushed again, the same dispatch) takes them from it
+# instead of building again. The attestation then names the run that attests, though the files came
+# from an earlier run of this workflow, of the same commit.
 
 name: Release build
 
@@ -98,29 +107,41 @@ jobs:
         with:
           path: Apparition
           fetch-depth: 0 # the build number is the commit count
+      # This part's files from an earlier run of this commit and version (see the top): then
+      # nothing below builds, and they are uploaded as they are.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: finished
+        if: needs.plan.outputs.warm != 'true'
+        with:
+          path: |
+            Apparition/build/release
+            Apparition/build/dsyms
+          key: finished-${{ matrix.part }}-${{ matrix.version }}-${{ github.sha }}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: matrix.part == 'app'
+        if: matrix.part == 'app' && steps.finished.outputs.cache-hit != 'true'
         with: { repository: illixion/DebugTrace, path: DebugTrace }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: matrix.part == 'app'
+        if: matrix.part == 'app' && steps.finished.outputs.cache-hit != 'true'
         with: { repository: illixion/RAVESDK, path: RAVESDK }
       - name: Record the sibling packages' commits
-        if: matrix.part == 'app'
+        if: matrix.part == 'app' && steps.finished.outputs.cache-hit != 'true'
         run: |
           for repo in DebugTrace RAVESDK; do
             echo "$repo $(git -C "$repo" rev-parse HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
           done
       - name: Toolchain pins
+        if: steps.finished.outputs.cache-hit != 'true'
         run: grep -E '^[A-Z_]+=' Apparition/scripts/release-toolchain | tee -a "$GITHUB_ENV"
       # The macOS files are built from one fixed path, the same on the machine that audits them
       # (scripts/package-release.sh, FIXED): Cargo puts the source path into every crate's symbols.
       - name: Move to the fixed build path
-        if: matrix.part == 'macos'
+        if: matrix.part == 'macos' && steps.finished.outputs.cache-hit != 'true'
         run: |
           mkdir -p /private/tmp/apparition-build
           mv Apparition /private/tmp/apparition-build/Apparition
           ln -s /private/tmp/apparition-build/Apparition Apparition
       - name: Choose Xcode
+        if: steps.finished.outputs.cache-hit != 'true'
         run: |
           if [[ "${{ matrix.part }}" == macos ]]; then
             # Exactly the build scripts/release-toolchain names, which the audit rebuilds with.
@@ -140,19 +161,21 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks | grep -E 'xros|iphoneos|appletvos'
       - name: Tools
+        if: steps.finished.outputs.cache-hit != 'true'
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.targets }}"
           rustup default "$RUST_TOOLCHAIN"
           if [[ -n "${{ matrix.brew }}" ]]; then brew install ${{ matrix.brew }}; fi
       # Tauri's prebuilt CLI, checked against pinned hashes; compiling it took about 9 minutes.
       - name: Tauri CLI
-        if: matrix.part == 'macos'
+        if: matrix.part == 'macos' && steps.finished.outputs.cache-hit != 'true'
         working-directory: Apparition
         run: scripts/install-tauri-cli.sh
       # The two workspaces' dependencies (core, and the installer with the desktop app), compiled
       # for every target; Apparition's own crates always build afresh. Kept even when the build
       # fails, so a rerun starts warm.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: steps.finished.outputs.cache-hit != 'true'
         with:
           workspaces: |
             Apparition
@@ -164,8 +187,16 @@ jobs:
           cache-bin: false
           save-if: ${{ env.SAVE_CACHE == 'true' }}
       - name: Build
+        if: steps.finished.outputs.cache-hit != 'true'
         working-directory: Apparition
         run: scripts/package-release.sh "${{ matrix.version }}" --parts ${{ matrix.part }}
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: needs.plan.outputs.warm != 'true' && steps.finished.outputs.cache-hit != 'true'
+        with:
+          path: |
+            Apparition/build/release
+            Apparition/build/dsyms
+          key: ${{ steps.finished.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: needs.plan.outputs.warm != 'true'
         with:
@@ -197,10 +228,19 @@ jobs:
         with:
           path: Apparition
           fetch-depth: 0
+      # This architecture's files from an earlier run of this commit and version (see the top).
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: finished
+        if: needs.plan.outputs.warm != 'true'
+        with:
+          path: Apparition/build/release
+          key: finished-linux-${{ matrix.arch }}-${{ matrix.version }}-${{ github.sha }}
       # The desktop image (WebKitGTK, Rust and the Tauri CLI) from the layer cache, rather than
       # built afresh.
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.finished.outputs.cache-hit != 'true'
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        if: steps.finished.outputs.cache-hit != 'true'
         env:
           # No build record artifact: the attest job wants only the release's own.
           DOCKER_BUILD_RECORD_UPLOAD: false
@@ -214,11 +254,13 @@ jobs:
       # The registries and build output the containers keep (LINUX_CACHE in the script).
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         id: linux-cache
+        if: steps.finished.outputs.cache-hit != 'true'
         with:
           path: ~/linux-cache
           key: linux-${{ matrix.arch }}-${{ hashFiles('Apparition/Cargo.lock') }}
           restore-keys: linux-${{ matrix.arch }}-
       - name: Build, in the same Docker images as a local build
+        if: steps.finished.outputs.cache-hit != 'true'
         working-directory: Apparition
         env:
           LINUX_ARCHS: ${{ matrix.arch }}
@@ -226,10 +268,15 @@ jobs:
         run: |
           mkdir -p ~/linux-cache && export LINUX_CACHE=~/linux-cache
           scripts/package-release.sh "${{ matrix.version }}" --parts linux
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: needs.plan.outputs.warm != 'true' && steps.finished.outputs.cache-hit != 'true'
+        with:
+          path: Apparition/build/release
+          key: ${{ steps.finished.outputs.cache-primary-key }}
       # Saved even when the build fails, so a rerun starts warm; once per lock file, as each
       # takes a couple of gigabytes of the repository's 10.
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        if: always() && env.SAVE_CACHE == 'true' && steps.linux-cache.outputs.cache-hit != 'true'
+        if: always() && env.SAVE_CACHE == 'true' && steps.finished.outputs.cache-hit != 'true' && steps.linux-cache.outputs.cache-hit != 'true'
         with:
           path: ~/linux-cache
           key: ${{ steps.linux-cache.outputs.cache-primary-key }}
@@ -240,9 +287,9 @@ jobs:
           path: Apparition/build/release/*/*
           if-no-files-found: error
 
-  # The "windows" part's ARM64 half, natively on Windows on ARM (the x86_64 half is cross-compiled
-  # on a Mac, in the apple matrix): aarch64-pc-windows-msvc, with the image's Visual Studio and
-  # LLVM, whose clang ring and aws-lc need on this target.
+  # The "windows" part, natively with MSVC on Windows: x86_64-pc-windows-msvc on windows-2025 and
+  # aarch64-pc-windows-msvc on windows-11-arm, with the image's Visual Studio and LLVM (whose clang
+  # ring and aws-lc need on ARM64, and whose llvm-objdump checks the programs' imports).
   windows:
     name: Windows ${{ matrix.arch }} installer
     needs: plan
@@ -253,9 +300,8 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.windows) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    env:
-      # OpenSSL's /Gs0 is miscompiled by MSVC on ARM64 (scripts/package-release.sh says why).
-      CPPFLAGS: -Gs
+    # On ARM64, package-release.sh sets CPPFLAGS=-Gs itself (OpenSSL's /Gs0 is miscompiled by MSVC
+    # there; the script says why).
     defaults:
       run:
         shell: bash
@@ -264,30 +310,46 @@ jobs:
         with:
           path: Apparition
           fetch-depth: 0 # the build number is the commit count
+      # This architecture's files from an earlier run of this commit and version (see the top).
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: finished
+        if: needs.plan.outputs.warm != 'true'
+        with:
+          path: Apparition/build/release
+          key: finished-windows-${{ matrix.arch }}-${{ matrix.version }}-${{ github.sha }}
       - name: Toolchain pins
+        if: steps.finished.outputs.cache-hit != 'true'
         run: grep -E '^[A-Z_]+=' Apparition/scripts/release-toolchain | tee -a "$GITHUB_ENV"
       - name: Tools
+        if: steps.finished.outputs.cache-hit != 'true'
         run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target aarch64-pc-windows-msvc
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.target }}"
           rustup default "$RUST_TOOLCHAIN"
           printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
-          # NSIS makes the setup program (scripts/windows/setup.nsi). It is x86 and runs here
-          # under emulation; the image may or may not carry it.
+          # NSIS makes the setup program (scripts/windows/setup.nsi). It is x86, under emulation on
+          # ARM64; the image may or may not carry it.
           if ! command -v makensis >/dev/null && [[ ! -x "/c/Program Files (x86)/NSIS/makensis.exe" ]]; then
             choco install nsis --no-progress -y
           fi
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: steps.finished.outputs.cache-hit != 'true'
         with:
           workspaces: Apparition
-          key: windows-${{ matrix.arch }}
+          key: windows-${{ matrix.arch }}-msvc
           cache-on-failure: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHE == 'true' }}
       - name: Build
+        if: steps.finished.outputs.cache-hit != 'true'
         working-directory: Apparition
         env:
           WINDOWS_ARCHS: ${{ matrix.arch }}
         run: scripts/package-release.sh "${{ matrix.version }}" --parts windows
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        if: needs.plan.outputs.warm != 'true' && steps.finished.outputs.cache-hit != 'true'
+        with:
+          path: Apparition/build/release
+          key: ${{ steps.finished.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: needs.plan.outputs.warm != 'true'
         with:

@@ -42,7 +42,6 @@ def matrix(selected, versions, warm):
     for part, title, targets, brew in [
         ("app", "Apps (visionOS, iOS, tvOS)", "aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos", "xcodegen"),
         ("macos", "macOS installer", "aarch64-apple-darwin,x86_64-apple-darwin", ""),
-        ("windows", "Windows installer", "x86_64-pc-windows-gnu", "mingw-w64 makensis"),
     ]:
         if part in selected:
             version = versions["app" if part == "app" else "installers"]
@@ -50,9 +49,10 @@ def matrix(selected, versions, warm):
     linux = [dict(arch="x86_64", runner="ubuntu-24.04", version=versions["installers"]),
              dict(arch="arm64", runner="ubuntu-24.04-arm", version=versions["installers"])] \
         if "linux" in selected else []
-    # The "windows" part's other half: Windows on ARM, built natively (mingw, which the x86_64
-    # build on a Mac uses, has no ARM64 toolchain).
-    windows = [dict(arch="arm64", runner="windows-11-arm", version=versions["installers"])] \
+    # Windows, both architectures natively with MSVC, each on a Windows runner of its own: never on
+    # a Mac, so a Mac runner that is slow to come, or fails, holds up only the Apple parts.
+    windows = [dict(arch="x86_64", runner="windows-2025", target="x86_64-pc-windows-msvc", version=versions["installers"]),
+               dict(arch="arm64", runner="windows-11-arm", target="aarch64-pc-windows-msvc", version=versions["installers"])] \
         if "windows" in selected else []
     return dict(parts=",".join(selected), warm=json.dumps(warm), apple=apple, linux=linux, windows=windows)
 
