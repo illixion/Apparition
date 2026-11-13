@@ -428,10 +428,26 @@
       </div>
     </div>
 
+    <div class="unsupported" data-role="unsupported" role="alert" hidden>
+      <p class="warning"><strong>Unsupported setup.</strong> The Android anisette is using Apple library files given to the command line with <code>--accept-unverified</code>, which don't match the version Apparition was built and tested with. Sign-in may fail or behave unpredictably, and nothing checks that these files are Apple's, though they run inside Apparition.</p>
+      <div class="row"><button type="button" class="button quiet" data-role="reset-libraries">Go back to Apple's own libraries</button></div>
+      <p class="status" data-role="reset-status" hidden></p>
+    </div>
+
     <p class="status" data-role="status" hidden></p>
 
     <div class="recovery" data-role="recovery" hidden>
       <div class="row"><button type="button" class="button quiet" data-role="retry">Try again</button></div>
+      <details class="advanced" data-role="own-libraries" hidden>
+        <summary>Advanced: use Apple Music's libraries from a file</summary>
+        <p class="hint">If this computer can't download them from Apple, get the Apple Music APK for Android from Apple some other way and choose it here. Or choose <code>libstoreservicescore.so</code> and <code>libCoreADI.so</code> from inside it (its <code>lib/arm64-v8a</code> or <code>lib/x86_64</code> folder, whichever matches this computer). Then Try again.</p>
+        <p class="hint warning">Apparition runs these libraries inside its own process. It takes only files whose SHA-256 matches the version it was built and tested with, but it can't tell where a file came from, so use files you downloaded from Apple yourself.</p>
+        <div class="file-row">
+          <button type="button" class="button quiet" data-role="pick-libraries">Choose APK or libraries…</button>
+          <span class="file-name" data-role="libraries-name">No file chosen</span>
+        </div>
+        <p class="status" data-role="libraries-status" hidden></p>
+      </details>
     </div>
 
     <div class="actions">

@@ -788,11 +788,17 @@ function signing() {
   // next sign-in, by success, and when this step is left.
   /** @type {{email: string, password: string, anisette: string}|null} */ let retry = null;
   /** @type {number|undefined} */ let retryTimer;
+  const ownLibraries = /** @type {HTMLDetailsElement} */ ($(panel, "own-libraries"));
+  const librariesStatus = $(panel, "libraries-status");
   const clearRecovery = () => {
     if (retry) retry.password = "";
     retry = null;
     clearTimeout(retryTimer);
     recovery.hidden = true;
+    ownLibraries.hidden = true;
+    ownLibraries.open = false;
+    $(panel, "libraries-name").textContent = "No file chosen";
+    setStatus(librariesStatus, "");
   };
   leaveStep = clearRecovery;
   const attempt = async (/** @type {{email: string, password: string, anisette: string}} */ args) => {
@@ -812,10 +818,13 @@ function signing() {
       drawSetupBadge();
     } catch (error) {
       setStatus(status, signInError(error, args.anisette), error?.cancelled ? "" : "error");
-      if (error?.kind === "network" || error?.kind === "pairedMac") {
+      if (error?.kind === "network" || error?.kind === "pairedMac" || error?.kind === "libraries") {
         retry = { ...args };
         retryTimer = setTimeout(clearRecovery, 5 * 60 * 1000);
         recovery.hidden = false;
+        // Apple's CDN out of reach for the Android anisette's libraries: the files can come
+        // from the person instead, checked against the tested version's checksum.
+        ownLibraries.hidden = error?.kind !== "libraries";
         // The error and what can be done about it, together, rather than the error alone.
         status.scrollIntoView({ block: "start" });
       }
@@ -840,6 +849,47 @@ function signing() {
   $(panel, "retry").addEventListener("click", () => {
     if (retry) attempt({ ...retry });
     else setStatus(status, "Type your password again, then sign in.", "error");
+  });
+  const pickLibraries = /** @type {HTMLButtonElement} */ ($(panel, "pick-libraries"));
+  pickLibraries.addEventListener("click", async () => {
+    /** @type {string[]} */ let paths = [];
+    try {
+      paths = await invoke("pick_file", { kind: "libraries" });
+    } catch (error) {
+      setStatus(librariesStatus, messageOf(error), "error");
+      return;
+    }
+    if (!paths.length) return;
+    $(panel, "libraries-name").textContent = paths.map(basename).join(", ");
+    setBusy(pickLibraries, true);
+    setStatus(librariesStatus, "Checking the files…");
+    try {
+      const libraries = await invoke("import_anisette_libraries", { paths });
+      if (libraries.services && libraries.core) setStatus(librariesStatus, "Both libraries are in place. Try again to sign in with them.", "good");
+      else setStatus(librariesStatus, `Saved ${libraries.services ? "libstoreservicescore.so" : "libCoreADI.so"}. Choose ${libraries.services ? "libCoreADI.so" : "libstoreservicescore.so"} too, or the whole APK.`);
+    } catch (error) {
+      const message = messageOf(error);
+      setStatus(librariesStatus, error?.kind === "checksum"
+        ? `${message}\n\nApparition takes only the exact files it was tested with here. If Apple has updated the APK since, an update of Apparition will match it.`
+        : message, "error");
+    } finally {
+      setBusy(pickLibraries, false);
+    }
+  });
+  // Libraries the command line was told to use although they didn't match (--accept-unverified).
+  const unsupported = $(panel, "unsupported");
+  invoke("anisette_unverified").then((unverified) => { unsupported.hidden = !unverified; }, () => {});
+  $(panel, "reset-libraries").addEventListener("click", async () => {
+    const button = /** @type {HTMLButtonElement} */ ($(panel, "reset-libraries"));
+    setBusy(button, true);
+    try {
+      await invoke("reset_anisette_libraries");
+      unsupported.hidden = true;
+    } catch (error) {
+      setStatus($(panel, "reset-status"), messageOf(error), "error");
+    } finally {
+      setBusy(button, false);
+    }
   });
   drawSetupBadge();
 

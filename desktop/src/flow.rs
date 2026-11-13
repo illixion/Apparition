@@ -472,6 +472,38 @@ pub fn forget_paired_mac(state: Shared<'_>) -> bool {
     api::paired_mac::forget(&api::anisette_dir(&state.store.apple_id_dir()))
 }
 
+/// The Android anisette's libraries from files the person got themselves, offered only after
+/// fetching them from Apple's CDN failed (kind `"libraries"`): the Apple Music APK, or
+/// `libstoreservicescore.so` and `libCoreADI.so` from it. Only files that match the version
+/// this build was tested with are taken (kind `"checksum"` otherwise); there is no "use them
+/// anyway" here, only in the command line. Returns `{services, core, unverified}`.
+#[tauri::command]
+pub async fn import_anisette_libraries(state: Shared<'_>, paths: Vec<String>) -> Result<Value, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+        let libraries = block_on(api::import_anisette_libraries(&state.store.apple_id_dir(), &paths, false))?;
+        Ok(json!(libraries))
+    })
+    .await
+}
+
+/// Whether the Android anisette runs libraries supplied with the command line's
+/// `--accept-unverified`, which didn't match the tested version: an unsupported setup the page
+/// warns about.
+#[tauri::command]
+pub fn anisette_unverified(state: Shared<'_>) -> bool {
+    api::anisette_libraries_unverified(&state.store.apple_id_dir())
+}
+
+/// Forgets the Android anisette's cached libraries, supplied or fetched, so Apple's own are
+/// fetched again at its next start.
+#[tauri::command]
+pub async fn reset_anisette_libraries(state: Shared<'_>) -> Result<(), Failure> {
+    let state = state.inner().clone();
+    blocking(move || Ok(api::reset_anisette_libraries(&state.store.apple_id_dir())?)).await
+}
+
 /// Asks the third-party anisette server at `address` what it is, without an Apple ID: reachable, and what a
 /// sign-in through it would claim to be (`{platform, model}`, platform being `mac`, `android` or `windows`).
 /// For checking a setup before relying on it: whether Apple then accepts what the server serves is up to Apple,
@@ -738,7 +770,8 @@ pub fn allow_new_certificate(state: Shared<'_>) -> Result<(), Failure> {
     Ok(())
 }
 
-/// A file picker for "ipa", "p12", "key" or "profile" (several at once). Empty when cancelled.
+/// A file picker for "ipa", "p12", "key", "profile" or "libraries" (several at once), "folder"
+/// or "ipsw". Empty when cancelled.
 #[tauri::command]
 pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Failure> {
     blocking(move || {
@@ -760,6 +793,11 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
             "profile" => dialog
                 .set_title("Choose provisioning profiles")
                 .add_filter("Provisioning profiles", &["mobileprovision"])
+                .blocking_pick_files()
+                .unwrap_or_default(),
+            "libraries" => dialog
+                .set_title("Choose the Apple Music APK, or its two libraries")
+                .add_filter("Apple Music APK or libraries", &["apk", "so"])
                 .blocking_pick_files()
                 .unwrap_or_default(),
             "folder" => dialog.set_title("Choose the project's Git checkout").blocking_pick_folder().into_iter().collect(),

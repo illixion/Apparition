@@ -71,6 +71,7 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `vm-setup` | Sets up a macOS VM on this Mac as an anisette companion with no internet. |
 | `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Settings), offering this Mac's anisette to paired devices and computers on a Mac that gives it. |
 | `anisette pair <address>`, `status`, `check`, `forget` | Pair this computer with a Mac running the companion, for its anisette; say which anisette sign-ins use; forget the pairing. See [Anisette](ANISETTE.md#how-anisette-works). |
+| `anisette import [--accept-unverified] <file>...`, `import --reset` | Give the Android anisette Apple's libraries from the Apple Music APK or its `.so` files, when Apple's CDN can't be reached; checked against the tested version's SHA-256. See [Anisette](ANISETTE.md#when-apparition-cant-fetch-apples-libraries). |
 | `anisette serve` | Serve this Mac's own anisette on loopback, for other programs on this Mac. |
 | `mac pair <address>`, `status`, `forget` | Pair this computer with your build Mac: developer access to its Apparition Store and, where it offers it, its anisette, with one approval there. See [docs/REMOTE_DEVELOPER.md](REMOTE_DEVELOPER.md). |
 | `deploy <app.ipa> [--device <name>] [--keep]` | Send an app built here (xtool, Xcode) to the paired Mac. With a device named, the Mac installs it itself when it can (paired with the device, certificate imported); otherwise the device's Apparition installs it. |

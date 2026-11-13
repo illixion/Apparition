@@ -211,6 +211,16 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
   apparition anisette serve [--port <port>]      (macOS)
       Serve this Mac's own anisette (v3) on loopback (port 6969 by default), for programs on
       this Mac.
+  apparition anisette import [--accept-unverified] <Apple Music APK or .so file>...
+      For Apparition's own Android anisette, when Apple's download server can't be reached:
+      use the Apple Music APK for Android, or libstoreservicescore.so and libCoreADI.so from
+      its lib/<abi>/ folder, got from Apple some other way. The only check is a SHA-256 against
+      the version this build was tested with; it can't tell that a file came from Apple, and
+      these run inside Apparition. --accept-unverified uses files that differ (a newer version,
+      say) anyway: an unsupported setup, warned about at every start. What is imported
+      replaces the libraries Apparition would otherwise use, until replaced again.
+  apparition anisette import --reset
+      Forget the cached libraries, supplied or fetched; the next start fetches Apple's own.
   apparition browse
       List the companions mDNS finds from here, for 10 seconds: a check that multicast works.
   apparition vm setup [--ipsw <file>] | update | status | serve | quit | check | remove   (Mac with Apple silicon)
@@ -384,6 +394,10 @@ async fn run() -> ExitCode {
         Err(error) => {
             eprintln!("error: {}", api::describe(&error));
             match api::failure_kind(&error) {
+                Some("libraries") => eprintln!(
+                    "Run the command again to retry. If Apple's download server stays out of reach, give Apparition the files yourself: apparition anisette import <file>... (see `apparition help`)."
+                ),
+                Some("checksum") => eprintln!("If you got the file from Apple and want to use it anyway, add --accept-unverified."),
                 Some("network") => eprintln!("Run the command again to retry, or try another network."),
                 Some("pairedMac") => eprintln!("`apparition anisette status` shows the Mac this computer is paired with; `apparition anisette pair <address>` pairs again."),
                 _ => {}
@@ -1631,8 +1645,20 @@ fn anisette_for(requested: Option<&str>) -> Result<String, Error> {
     }
 }
 
+/// Said at every start that uses Apparition's own Android anisette while it runs libraries the
+/// person supplied that didn't match the tested version: an unsupported setup.
+fn warn_if_unsupported() {
+    if api::anisette_libraries_unverified(&store().apple_id_dir()) {
+        eprintln!("WARNING: unsupported setup. The Android anisette runs library files you supplied that don't match the version Apparition was built with.");
+        eprintln!("         Sign-in may fail or behave unpredictably, and nothing checks that the files are Apple's. `apparition anisette import --reset` goes back to Apple's own.");
+    }
+}
+
 async fn sign_in(email: &str, anisette: Option<&str>) -> Result<api::Session, Error> {
     let anisette = anisette_for(anisette)?;
+    if anisette == api::ANDROID_ANISETTE {
+        warn_if_unsupported();
+    }
     let password = ask_secret(&format!("Apple ID password for {email}: "));
     println!("Signing in…");
     let (session, _) = api::sign_in(email, password, &anisette, &store().apple_id_dir(), two_factor).await?;
@@ -1881,6 +1907,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
             println!("Offering this Mac's own anisette to paired devices and computers, over the encrypted channel; Apple TLS stays on the device.");
         }
         "android" => {
+            warn_if_unsupported();
             companion.share_android_anisette(anisette_dir()).await?;
             println!("Offering Apparition's own Android anisette to paired devices and computers, over the encrypted channel; Apple TLS stays on the device.");
         }
@@ -2010,6 +2037,37 @@ async fn anisette(args: &[String]) -> Result<(), Error> {
                 Err(fail("only a Mac serves its own anisette; pair this computer with one: apparition anisette pair <address>"))
             }
         }
-        _ => Err(fail("usage: apparition anisette pair <address> | status | check [--anisette <url>] | forget | serve [--port <port>]")),
+        ["import", rest @ ..] => anisette_import(rest).await,
+        _ => Err(fail("usage: apparition anisette pair <address> | status | check [--anisette <url>] | forget | serve [--port <port>] | import [--accept-unverified] <file>... | import --reset")),
     }
+}
+
+/// `anisette import`: the Android anisette's libraries from files the person got themselves
+/// (see `api::import_anisette_libraries`).
+async fn anisette_import(args: &[&str]) -> Result<(), Error> {
+    if args == ["--reset"] {
+        api::reset_anisette_libraries(&store().apple_id_dir())?;
+        println!("Forgot the cached libraries. The next start of the Android anisette fetches Apple's own again.");
+        return Ok(());
+    }
+    let accept_unverified = args.contains(&"--accept-unverified");
+    let paths: Vec<PathBuf> = args.iter().filter(|arg| **arg != "--accept-unverified").map(PathBuf::from).collect();
+    if paths.is_empty() || paths.iter().any(|path| path.as_os_str() == "--reset") {
+        return Err(fail("usage: apparition anisette import [--accept-unverified] <Apple Music APK or .so file>... | import --reset"));
+    }
+    if !api::android_anisette_available() {
+        return Err(fail("this build doesn't run Apparition's own Android anisette, so it has nothing to give the libraries to"));
+    }
+    let libraries = api::import_anisette_libraries(&store().apple_id_dir(), &paths, accept_unverified).await?;
+    if libraries.unverified {
+        println!("WARNING: unsupported setup. A file didn't match the version Apparition was built with and was used because of --accept-unverified.");
+        println!("         Apparition can't tell whether it is Apple's, sign-in may fail, and every start using the Android anisette says so until you run `apparition anisette import --reset`.");
+    }
+    match (libraries.services, libraries.core) {
+        (true, true) => println!("Done: both libraries are in place; the Android anisette uses them from its next start."),
+        (true, false) => println!("Saved libstoreservicescore.so. Give libCoreADI.so too (or the whole APK)."),
+        (false, true) => println!("Saved libCoreADI.so. Give libstoreservicescore.so too (or the whole APK)."),
+        (false, false) => return Err(fail("no library was saved")),
+    }
+    Ok(())
 }

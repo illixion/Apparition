@@ -207,7 +207,18 @@ Apple's CDN (`apps.mzstatic.com`), once. Where that fails (a firewall or proxy, 
 CDN, Apple moving the file), signing in stops with "Couldn't fetch Apple's anisette libraries from
 Apple's CDN". The desktop app shows a Try again button, which keeps what you typed for five
 minutes; on the command line run the command again. Most failures are the network: check that
-`apps.mzstatic.com` opens from this computer, and a VPN or proxy that blocks it. Apparition has no
-way yet to take the libraries from a file you supply. Until Apple's CDN is reachable, sign in with
-a Mac's anisette or a server's address instead.
+`apps.mzstatic.com` opens from this computer, and a VPN or proxy that blocks it.
+
+If the CDN stays out of reach, give Apparition the files yourself: the Apple Music APK for
+Android, got from Apple some other way, or the two libraries from its `lib/arm64-v8a` or
+`lib/x86_64` folder (whichever matches this computer). In the desktop app, after that error,
+open **Advanced: use Apple Music's libraries from a file** under Try again; on the command line,
+`apparition anisette import <APK or .so files>`. Either takes a file only when its SHA-256 is the
+one of the version Apparition was built and tested with: these libraries run inside Apparition, and
+the checksum is the only thing that says they are Apple's. If Apple has updated the APK since, no
+file of the new version matches. The command line can still use it with
+`apparition anisette import --accept-unverified <files>`, an unsupported setup that every start of
+the Android anisette warns about (the desktop app too, with a button to undo it);
+`apparition anisette import --reset` forgets the files, supplied or fetched, so Apple's own are
+fetched again. Otherwise sign in with a Mac's anisette or a server's address.
 
