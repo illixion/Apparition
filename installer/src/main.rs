@@ -1502,8 +1502,19 @@ fn legacy_notice() -> String {
     )
 }
 
+/// What the command line says when installing Apparition to a device below 26: it runs there, best effort.
+fn untested_notice(info: &api::DeviceInfo) -> String {
+    format!(
+        "Apparition runs on {} {}, but it has only been tried on 26 and later, so here it's best effort. If something doesn't work, please say what happened: {}",
+        api::Platform::of_product(&info.product_type).os_name(),
+        info.os_version,
+        api::DEVICE_REPORT_URL
+    )
+}
+
 async fn download_and_install(options: &mut Options, device: &Device, scratch: &Path) -> Result<(), Error> {
-    if options.ipa.as_os_str().is_empty() {
+    let official = options.ipa.as_os_str().is_empty();
+    if official {
         // Refused before signing, which would spend one of a free account's App IDs on an app
         // installd then turns down for its minimum iOS.
         if device.legacy {
@@ -1519,6 +1530,8 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
     if tunnel.tunnel().is_none() {
         println!("{} runs iOS {}: installing over usbmuxd. Turn on Developer Mode there (Settings > Privacy & Security) to open the app.", info.name, info.os_version);
         println!("{}", legacy_notice());
+    } else if official && api::is_untested_os(&info.product_type, &info.os_version) {
+        println!("{}", untested_notice(&info));
     }
     // A watch app needs the paired Watch registered with it; only the iPhone can say which.
     if api::Platform::of_product(&info.product_type) == api::Platform::IOS

@@ -260,6 +260,9 @@ pub struct DeviceView {
     os_version: Option<String>,
     /// iOS 17.3 or earlier, reached over usbmuxd: installs only, and untested so far.
     legacy: bool,
+    /// Below 26, where Apparition runs but is best effort ([`api::is_untested_os`]). Known only
+    /// once the device has been reached: the install's `untested-os` event says it then.
+    untested: bool,
 }
 
 impl DeviceView {
@@ -272,6 +275,7 @@ impl DeviceView {
             platform: device.platform().os_name(),
             os_version: info.map(|i| i.os_version.clone()),
             legacy: device.legacy,
+            untested: info.is_some_and(|i| api::is_untested_os(&i.product_type, &i.os_version)),
         }
     }
 }
@@ -1061,6 +1065,11 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 return Err(rootcause::report!("Apparition itself needs iOS 17.4 or later, and {} runs iOS {}. Choose another app to install there.", info.name, info.os_version));
             }
             api::check_app_os(&prepared.path, &info.product_type, &info.os_version)?;
+            // Best effort below 26: the page shows its notice, and the install goes on.
+            if is_apparition && api::is_untested_os(&info.product_type, &info.os_version) {
+                let platform = api::Platform::of_product(&info.product_type).os_name();
+                let _ = app.emit("untested-os", json!({ "platform": platform, "osVersion": info.os_version }));
+            }
             // A watch app needs the paired Watch registered on the team; only the iPhone can say which.
             let watches = if (inventory.has_watch_app() || apparition_core::install_plan::is_watch_only(&prepared.path)) && api::Platform::of_product(&info.product_type) == api::Platform::IOS {
                 tunnel.paired_watches().await.unwrap_or_default()

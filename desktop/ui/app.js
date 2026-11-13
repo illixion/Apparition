@@ -569,10 +569,12 @@ function pair() {
       state.device = device;
       state.pairSkipped = false;
       const os = device.osVersion ? ` (${device.platform} ${device.osVersion})` : "";
-      const legacy = device.legacy
+      const note = device.legacy
         ? " Before iOS 17.4 there's no wireless pairing Apparition can use, so it installs to it over the cable (or Wi-Fi sync). That route is untested so far: the next screens say more."
-        : "";
-      setStatus(status, `Paired with ${device.name}${os}. This computer stays paired for next time.${legacy}`, "good");
+        : device.untested
+          ? ` Apparition runs on ${device.platform} ${device.osVersion}, but it has only been tried on 26 and later, so here it's best effort.`
+          : "";
+      setStatus(status, `Paired with ${device.name}${os}. This computer stays paired for next time.${note}`, "good");
       start.textContent = "Continue";
       start.onclick = () => go("signing");
     } catch (error) {
@@ -1109,6 +1111,17 @@ function install() {
   const legacy = state.device?.legacy === true;
   $(panel, "legacy-note").hidden = !legacy;
   $(panel, "legacy-report").addEventListener("click", () => invoke("open_ios16_report").catch(() => {}));
+  // Below 26, Apparition itself is best effort: said up front when pairing just read the OS,
+  // else once the install reaches the device (its `untested-os` event).
+  const untested = $(panel, "untested-note");
+  const showUntested = () => {
+    const device = state.device;
+    untested.hidden = !(device?.untested && (state.what === "latest" || device.untestedApparition));
+    if (!untested.hidden) $(panel, "untested-title").textContent = `${device.platform} ${device.osVersion} is untested.`;
+  };
+  $(panel, "untested-report").addEventListener("click", () =>
+    invoke("open_untested_report", { platform: state.device?.platform ?? "", osVersion: state.device?.osVersion ?? "" }).catch(() => {}),
+  );
   if (legacy) {
     const latest = /** @type {HTMLInputElement | undefined} */ ([...what].find((w) => w.value === "latest"));
     if (latest) latest.disabled = true;
@@ -1128,6 +1141,7 @@ function install() {
     if (state.what === "local" || legacy) advanced.open = true;
     // Before iOS 17.4 only an app file can be installed (Apparition needs 17.4).
     start.disabled = legacy && state.what !== "local";
+    showUntested();
   };
   what.forEach((w) =>
     w.addEventListener("change", async () => {
@@ -1193,6 +1207,12 @@ function install() {
           stage === "connecting" ? detail : stage === "signing" ? signingLabel() : stage === "installing" ? (detail.update ? "Updating" : "")
           : stage === "watch" ? (detail.trust ? `Tap Trust on ${detail.name}` : detail.name) : "";
         reach(stage, text);
+      }),
+      await listen("untested-os", (/** @type {any} */ e) => {
+        if (!state.device) return;
+        // Sent only when what's being installed is Apparition, a downloaded release or a file.
+        Object.assign(state.device, { untested: true, untestedApparition: true, platform: e.payload.platform, osVersion: e.payload.osVersion });
+        showUntested();
       }),
     );
 
@@ -2319,16 +2339,18 @@ async function start() {
 /** Debug builds only (the backend passes `preview` only there): open on a step with sample data. */
 function preview(/** @type {string} */ step) {
   state.device = step === "pair" || step === "pin" || step === "usbpair" ? null : { udid: "PREVIEW", name: "Vision Pro", address: "192.0.2.10", osVersion: "27.2", platform: "visionOS" };
+  // `install-untested`: the install step for a headset below 26, where Apparition is best effort.
+  if (step === "install-untested") Object.assign(state.device, { osVersion: "2.4", untested: true });
   state.pairSkipped = step !== "pair";
   if (step === "usbpair") state.selected = { kind: "usb", name: "iPhone or iPad", udid: "00008120-000A1B2C3D4E5F60", usb: true, key: "u" };
   if (step === "pair" || step === "pin") state.selected = { kind: "pair", name: "Vision Pro", address: "192.0.2.10", port: 51967, key: "x" };
-  if (["signed", "install", "progress", "slots", "done"].includes(step)) {
+  if (["signed", "install", "install-untested", "progress", "slots", "done"].includes(step)) {
     state.signing = { mode: "appleId", email: "you@example.com", teamId: "ABCDE12345", team: { name: "Your Name" } };
   }
   if (step === "done") {
     state.result = { bundleId: "com.illixion.apparition", deviceName: "Vision Pro", seconds: 18.4, queued: false, handoff: "appleId", appleId: "you@example.com", label: "Apparition" };
   }
-  state.step = { signed: "signing", pin: "pair", usbpair: "pair", twofactor: "signing", progress: "install", slots: "install" }[step] ?? step;
+  state.step = { signed: "signing", pin: "pair", usbpair: "pair", twofactor: "signing", progress: "install", slots: "install", "install-untested": "install" }[step] ?? step;
   render();
   if (step === "progress" || step === "slots") {
     $(panel, "stages").hidden = false;

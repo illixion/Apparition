@@ -84,6 +84,27 @@ pub fn open_issue(app: AppHandle) -> Result<(), Failure> {
     app.opener().open_url(url, None::<&str>).map_err(|error| Failure::new(error.to_string()))
 }
 
+/// The phone and headset app's form (`bug_report.yml`) for a device below 26, where Apparition
+/// is best effort: its `where` and `os` filled in. The version is left for the app's own
+/// Settings to say, since the release installed may not be the one the page saw.
+fn device_issue_url(platform: &str, os_version: &str) -> String {
+    let place = match platform {
+        "visionOS" => "Apparition on Apple Vision Pro",
+        "tvOS" => "Apparition on Apple TV",
+        "iOS" => "Apparition on iPhone or iPad",
+        _ => "Not sure",
+    };
+    let system = format!("{platform} {os_version}");
+    tauri::Url::parse_with_params(apparition_core::api::DEVICE_REPORT_URL, [("where", place), ("os", system.as_str())])
+        .map_or_else(|_| apparition_core::api::DEVICE_REPORT_URL.to_string(), Into::into)
+}
+
+#[tauri::command]
+pub fn open_untested_report(app: AppHandle, platform: String, os_version: String) -> Result<(), Failure> {
+    let url = device_issue_url(&platform, &os_version);
+    app.opener().open_url(url, None::<&str>).map_err(|error| Failure::new(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +126,21 @@ mod tests {
     fn the_place_is_one_of_the_forms_options() {
         let form = include_str!("../../.github/ISSUE_TEMPLATE/desktop_bug.yml");
         assert!(form.contains(&format!("- {}\n", place())), "{} is not an option of desktop_bug.yml", place());
+    }
+
+    #[test]
+    fn an_untested_device_opens_the_device_form_with_its_place_and_os() {
+        let form = include_str!("../../.github/ISSUE_TEMPLATE/bug_report.yml");
+        for (platform, place) in [("visionOS", "Apparition on Apple Vision Pro"), ("iOS", "Apparition on iPhone or iPad"), ("tvOS", "Apparition on Apple TV"), ("watchOS", "Not sure")] {
+            let url = tauri::Url::parse(&device_issue_url(platform, "2.4")).unwrap();
+            assert_eq!(url.path(), "/illixion/Apparition/issues/new");
+            let fields: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(fields["template"], "bug_report.yml");
+            assert_eq!(fields["where"], place);
+            assert_eq!(fields["os"], format!("{platform} 2.4"));
+            assert_eq!(fields.len(), 3);
+            assert!(form.contains(&format!("- {place}\n")), "{place} is not an option of bug_report.yml");
+        }
     }
 
     #[test]

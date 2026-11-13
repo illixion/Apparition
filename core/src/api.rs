@@ -121,6 +121,18 @@ pub fn is_legacy_os(product_type: &str, os_version: &str) -> bool {
     }
 }
 
+/// Whether Apparition itself is best effort on this device: it runs on iOS and tvOS 17.4 and
+/// visionOS 2, but has only been tried on 26 and later, so the desktop app and the command line
+/// say so and ask how it went. A legacy device ([`is_legacy_os`]) doesn't count: Apparition
+/// can't run there at all, and it gets its own notice. Nor does a version that doesn't read as one.
+pub fn is_untested_os(product_type: &str, os_version: &str) -> bool {
+    let Some(Ok(major)) = os_version.split('.').next().map(str::parse::<u32>) else { return false };
+    major < 26 && !is_legacy_os(product_type, os_version)
+}
+
+/// The phone and headset app's bug form, for a report on a version [`is_untested_os`] counts.
+pub const DEVICE_REPORT_URL: &str = "https://github.com/illixion/Apparition/issues/new?template=bug_report.yml";
+
 /// usbmuxd's provider for `udid`: the cable when it's plugged in, else the network (Wi-Fi sync).
 pub(crate) async fn usb_provider(udid: &str) -> Result<idevice::provider::UsbmuxdProvider, Report> {
     let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.context("Can't reach usbmuxd")?;
@@ -1220,6 +1232,21 @@ mod tests {
         assert!(!super::is_legacy_os("RealityDevice14,1", "2.4"));
         assert!(!super::is_legacy_os("iPhone10,4", ""));
         assert!(!super::is_legacy_os("iPhone10,4", "beta"));
+    }
+
+    #[test]
+    fn apparition_is_untested_below_26_where_it_runs() {
+        assert!(super::is_untested_os("RealityDevice14,1", "2.4"));
+        assert!(super::is_untested_os("iPhone11,8", "18.7.2"));
+        assert!(super::is_untested_os("iPhone11,8", "17.4"));
+        assert!(super::is_untested_os("AppleTV11,1", "18.2"));
+        assert!(!super::is_untested_os("iPhone11,8", "17.3.1"), "legacy, with its own notice");
+        assert!(!super::is_untested_os("iPhone10,4", "16.7"));
+        assert!(!super::is_untested_os("RealityDevice14,1", "26.0"));
+        assert!(!super::is_untested_os("iPhone17,1", "26.1"));
+        assert!(!super::is_untested_os("AppleTV14,1", "27.0"));
+        assert!(!super::is_untested_os("iPhone11,8", ""));
+        assert!(!super::is_untested_os("iPhone11,8", "beta"));
     }
 
     #[cfg(feature = "desktop")]

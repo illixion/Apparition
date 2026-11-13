@@ -91,6 +91,7 @@ fn main() {
             flow::open_help,
             flow::open_ios16_report,
             report::open_issue,
+            report::open_untested_report,
             flow::paired_devices,
             flow::discover,
             flow::forget_device,
