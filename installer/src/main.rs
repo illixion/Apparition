@@ -628,6 +628,12 @@ async fn receive_signing(email: Option<&str>) -> Result<(), Error> {
         if !listening.advertised {
             println!("  (mDNS isn't working here, so this computer won't be listed: type the address there.)");
         }
+        // Windows blocks a program's listening port until it is allowed, and asks only on the desktop: a run
+        // over SSH, or a question left unanswered, is blocked silently, and the sender then finds nobody here.
+        if cfg!(windows) {
+            println!("  If the other side says this computer didn't answer, Windows Defender Firewall is blocking this program:");
+            println!("  allow it for private networks (Windows Security > Firewall & network protection > Allow an app through firewall).");
+        }
         println!("Both screens then show a six-digit code. Ctrl-C stops waiting.");
     }, compare_codes(), std::future::pending())
     .await?
