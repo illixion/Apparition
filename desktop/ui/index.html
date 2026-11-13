@@ -98,7 +98,7 @@
       <label class="check"><input type="checkbox" data-role="advertise-on"><span>Let devices on this network find this computer</span></label>
       <p class="hint" data-role="advertise-hint">Announces <strong data-role="computer-2">this computer</strong> over Bonjour (mDNS), so Find companion lists it. Anyone on the network can see that it runs Apparition; turn this off on networks you don't trust.</p>
       <p class="hint" data-role="advertise-off" hidden>Not announced: Find companion won't list this computer. In Apparition on the device, enter <strong data-role="relay-address">this computer's address</strong> as the companion instead. Devices already using this computer keep connecting as before.</p>
-      <p class="hint" data-role="windows-firewall" hidden>If Find companion doesn't list this PC, or connections never show up here, Windows Defender Firewall may be blocking Apparition: it adds a block rule when its question goes unanswered (at login, say). Allow Apparition for private networks in Windows Security &gt; Firewall &amp; network protection &gt; Allow an app through firewall.</p>
+      <p class="hint" data-role="windows-firewall" hidden>Windows Defender Firewall is blocking Apparition, so your devices can't reach this PC: Find companion won't list it and connections never show up here. (Windows blocks an app when its question goes unanswered, at login, say.) <button type="button" class="link" data-role="allow-firewall">Allow Apparition through the firewall</button></p>
       <p class="status error" data-role="relay-error" hidden></p>
       <table class="connections" data-role="connections" hidden>
         <thead><tr><th>Started</th><th>From</th><th>Port</th><th>To device</th><th>From device</th><th>State</th></tr></thead>

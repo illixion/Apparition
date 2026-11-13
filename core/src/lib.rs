@@ -39,6 +39,8 @@ mod launch;
 mod tunnel;
 pub mod watch;
 pub mod stop;
+#[cfg(feature = "desktop")]
+pub mod firewall;
 #[cfg(feature = "anisette-server")]
 pub mod anisette;
 #[cfg(feature = "desktop")]

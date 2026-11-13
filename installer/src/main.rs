@@ -610,9 +610,25 @@ fn compare_codes() -> api::nearby::Compare {
     })
 }
 
+/// Before listening for devices on Windows: lets their connections through Windows Defender Firewall, which drops
+/// them until a rule allows this program. Windows asks about that only on the desktop and only once, so a run over
+/// SSH, or a question left unanswered, is blocked without a word and the other side finds nobody here. Carries on
+/// either way: the person may have other arrangements (another firewall, a rule by port).
+fn open_firewall() {
+    if api::firewall::inbound().is_none_or(|inbound| inbound == api::firewall::Inbound::Allowed) {
+        return;
+    }
+    println!("Windows Defender Firewall keeps your devices from reaching this program. Allowing it (Windows may ask you to approve)…");
+    match tokio::task::block_in_place(api::firewall::allow) {
+        Ok(()) => println!("Allowed."),
+        Err(error) => println!("{error}"),
+    }
+}
+
 /// Waits for Apparition on another device or computer to hand over its certificate key, and
 /// imports it. `email`: the Apple ID it's wanted for, for the instructions.
 async fn receive_signing(email: Option<&str>) -> Result<(), Error> {
+    open_firewall();
     let name = api::hostname();
     let email_flag = email.unwrap_or("<your Apple ID>");
     let imported = api::nearby::receive(store().apple_id_dir(), &name, |listening| {
@@ -627,12 +643,6 @@ async fn receive_signing(email: Option<&str>) -> Result<(), Error> {
         println!("  Another computer: apparition signing send --apple-id {email_flag}{to}");
         if !listening.advertised {
             println!("  (mDNS isn't working here, so this computer won't be listed: type the address there.)");
-        }
-        // Windows blocks a program's listening port until it is allowed, and asks only on the desktop: a run
-        // over SSH, or a question left unanswered, is blocked silently, and the sender then finds nobody here.
-        if cfg!(windows) {
-            println!("  If the other side says this computer didn't answer, Windows Defender Firewall is blocking this program:");
-            println!("  allow it for private networks (Windows Security > Firewall & network protection > Allow an app through firewall).");
         }
         println!("Both screens then show a six-digit code. Ctrl-C stops waiting.");
     }, compare_codes(), std::future::pending())
@@ -1781,6 +1791,7 @@ async fn relay(args: &[String]) -> Result<(), Error> {
         }
     }
     let log: relay::Log = std::sync::Arc::new(|line: &str| println!("{line}"));
+    open_firewall();
     let companion = std::sync::Arc::new(Companion::start(port, relay::ANISETTE_PORT, advertise, &anisette_dir(), log).await?);
     println!("Apparition companion relay listening on port {}.", companion.relay.port());
     let address = relay::primary_address().map(|ip| ip.to_string()).unwrap_or_else(|| "this computer's address".into());

@@ -266,6 +266,9 @@ impl CompanionState {
         let running = self.running.lock().await.clone();
         let offered = running.as_ref().and_then(|c| c.anisette());
         json!({
+            // What Windows Defender Firewall does with connections coming in for this app ("allowed", "blocked",
+            // "unasked"), or null where there is nothing to manage (see core's firewall.rs).
+            "firewall": tokio::task::spawn_blocking(apparition_core::firewall::inbound).await.ok().flatten().map(|inbound| inbound.name()),
             "relay": {
                 "on": settings.relay,
                 "running": running.is_some(),
@@ -604,6 +607,14 @@ pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode, serve
     state.save();
     state.apply().await;
     state.update_tray().await;
+    Ok(state.status().await)
+}
+
+/// Lets devices' connections through Windows Defender Firewall for this app: adds the rule, which Windows asks an
+/// administrator to approve (core's firewall.rs).
+#[tauri::command]
+pub async fn companion_allow_firewall(state: Shared<'_>) -> Result<Value, Failure> {
+    tokio::task::spawn_blocking(apparition_core::firewall::allow).await.map_err(|error| Failure::new(error.to_string()))??;
     Ok(state.status().await)
 }
 

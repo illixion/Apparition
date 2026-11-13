@@ -72,9 +72,13 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"], optional = true }
 futures-util = { version = "0.3.31", optional = true }
 
+# Reading Windows Defender Firewall's rules (firewall.rs), with the desktop front ends.
+[target.'cfg(windows)'.dependencies]
+windows-registry = { version = "0.6", optional = true }
+
 [features]
 # For the desktop installer and app; the headset's static library leaves it out.
-desktop = ["anisette-server", "dep:dirs", "dep:mdns-sd", "dep:if-addrs", "dep:x25519-dalek", "dep:hkdf", "dep:openssl", "dep:tokio-openssl", "tokio/time", "tokio/net", "tokio/io-util", "tokio/process"]
+desktop = ["anisette-server", "dep:windows-registry", "dep:dirs", "dep:mdns-sd", "dep:if-addrs", "dep:x25519-dalek", "dep:hkdf", "dep:openssl", "dep:tokio-openssl", "tokio/time", "tokio/net", "tokio/io-util", "tokio/process"]
 # The anisette v3 server (anisette/server.rs) on every platform: the desktop companion offers a third-party
 # server's anisette to paired devices through it (anisette/remote.rs).
 anisette-server = ["dep:axum", "dep:tokio-tungstenite", "dep:futures-util", "tokio/net", "tokio/time", "tokio/sync"]

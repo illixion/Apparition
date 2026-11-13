@@ -194,6 +194,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
+ "windows-registry",
  "x25519-dalek",
  "x509-cert 0.2.5",
  "xz2",

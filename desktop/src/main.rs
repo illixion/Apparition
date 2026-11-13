@@ -108,6 +108,7 @@ fn main() {
             flow::signing_key_from,
             flow::import_signing_key,
             flow::nearby_receive,
+            companion::companion_allow_firewall,
             flow::nearby_stop,
             flow::nearby_browse,
             flow::nearby_send,

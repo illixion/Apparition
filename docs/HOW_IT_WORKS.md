@@ -29,12 +29,18 @@ the desktop app, which keeps it running from
 the menu bar or tray, or `apparition relay` on the command line (see [the command line](COMMAND_LINE.md)); both run
 `core/src/companion.rs`.
 
-Windows asks to allow the companion through its firewall the first time it starts from a
-desktop session; elsewhere allow inbound TCP 49160, 49161 and 49162 to use the companion and its
-encrypted anisette channel, e.g.
-from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction Inbound
--Protocol TCP -LocalPort 49160,49161,49162 -Action Allow -Profile Private`. Port 6969 stays on
-the Mac's loopback and needs no rule.
+Windows Defender Firewall drops what your devices send until a rule allows Apparition, and
+Windows asks about that only once and only on the desktop: started at login or over SSH, the
+companion is blocked without a word. Apparition looks for itself in the firewall's rules and makes
+the rule when it is missing, with the administrator approval Windows asks for (`core/src/firewall.rs`):
+`apparition relay` and `apparition signing receive` do it before they listen, and the desktop app's
+Companion page offers it as a button while the firewall keeps devices out, and does it when you
+receive a signing key. The rule allows incoming connections to that one program, on the kinds of
+network (private, public, domain) the PC is on at that moment. To make one by hand, or with another
+firewall, allow inbound TCP 49160, 49161 and 49162 for the companion and its encrypted anisette
+channel, e.g. from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction
+Inbound -Protocol TCP -LocalPort 49160,49161,49162 -Action Allow -Profile Private`. Port 6969 stays
+on the Mac's loopback and needs no rule.
 On Linux, open the same ports if a firewall runs (`sudo ufw allow 49160,49161,49162/tcp`, or firewalld's `--add-port`), and
 UDP 5353 for mDNS. On macOS, Local Network
 privacy blocks an unbundled binary's multicast, so `apparition relay` there can't advertise

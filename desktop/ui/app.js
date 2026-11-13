@@ -1719,7 +1719,7 @@ function buildCompanion() {
   updatePreferences.draw();
   const where = state.info.platform === "macos-universal" ? "menu bar" : "tray";
   companionPanel.querySelectorAll('[data-role="where"]').forEach((el) => (el.textContent = where));
-  $(companionPanel, "windows-firewall").hidden = !state.info.platform.startsWith("windows");
+  $(companionPanel, "allow-firewall").addEventListener("click", () => companionCall("companion_allow_firewall", {}, "Windows asks you to approve the change…"));
   const relayOn = /** @type {HTMLInputElement} */ ($(companionPanel, "relay-on"));
   relayOn.addEventListener("change", () => companionCall("companion_set_relay", { on: relayOn.checked }));
   const advertiseOn = /** @type {HTMLInputElement} */ ($(companionPanel, "advertise-on"));
@@ -2084,6 +2084,8 @@ function drawCompanion(/** @type {any} */ status) {
   badge.className = `badge ${status.relay.running ? "online" : ""}`.trim();
   const relayError = $(companionPanel, "relay-error");
   setStatus(relayError, status.relay.error ?? "", "error");
+  // Only where there is a firewall to answer to (Windows), and only while it keeps devices out.
+  $(companionPanel, "windows-firewall").hidden = !status.firewall || status.firewall === "allowed";
 
   const table = $(companionPanel, "connections");
   const rows = status.connections.map((/** @type {any} */ c) => {
