@@ -260,8 +260,28 @@ fn ask_secret(prompt: &str) -> String {
     rpassword::prompt_password(prompt).unwrap_or_default()
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// A thread's stack here, the main one's included: what macOS and Linux give the main thread.
+const STACK: usize = 8 << 20;
+
+/// Runs the command line on a thread with [`STACK`] bytes of stack, and gives the runtime's
+/// threads the same. Windows gives a program's main thread 1 MiB and takes no more at run
+/// time; an unoptimised build's futures (the installer's and the signer's) are larger than
+/// that, and it overflowed before the first command ran.
+fn main() -> ExitCode {
+    let run = || {
+        tokio::runtime::Builder::new_multi_thread()
+            .thread_stack_size(STACK)
+            .enable_all()
+            .build()
+            .expect("couldn't start the async runtime")
+            .block_on(run())
+    };
+    let thread = std::thread::Builder::new().name("main".into()).stack_size(STACK).spawn(run).expect("couldn't start the main thread");
+    // A panic there has already printed itself; 101 is what Rust exits with for one.
+    thread.join().unwrap_or(ExitCode::from(101))
+}
+
+async fn run() -> ExitCode {
     api::init();
     // The log sits beside the desktop app's, so one file tells what either did. APPARITION_LOG=<file>
     // picks another and adds idevice's debug output; the content is safe to send (no secrets).
