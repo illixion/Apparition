@@ -57,7 +57,7 @@ On macOS the whole ad-hoc-signed `.app` (including its CLI and entitled anisette
 staged beside the installed app, its code-signing seal is checked, and the bundles are
 atomically exchanged. The Applications folder must be writable by your account; use
 `~/Applications` if necessary. Updating does not re-sign the helper or require a new
-quarantine exception. On Windows the portable app and `apparition-cli.exe` (and `WebView2Loader.dll`, which the x64 build ships)
+quarantine exception. On Windows the portable app and `apparition-cli.exe` (and `WebView2Loader.dll`, which the x64 zip carries for the updaters of 0.4.x copies)
 update together: a Windows PowerShell helper waits for the app to
 exit, replaces the files, restarts it, and rolls back if installation or launch fails.
 The helper is passed to PowerShell as a command, not a script file, so a Group Policy
@@ -125,6 +125,14 @@ After Apple ID sign-in, **Manage App IDs** is available on the signing and insta
 screens. It shows Apple's remaining allowance, registered bundle identifiers and expiry
 dates, with search, refresh and deletion after confirmation. Deleting an ID may not
 restore a free account's weekly allowance before it expires.
+
+On Windows the window is drawn by Microsoft Edge WebView2, which Windows 10 and 11 come with. Some
+tools that strip Windows down remove it along with Edge. The app checks for it before anything else
+and, when it is missing, says so in a Windows message box and offers to download Microsoft's
+WebView2 installer, check that Microsoft signed it, and run it; setup says so too. The programs need
+nothing else that Windows doesn't have: the release builds link the compiler's runtime in, and
+packaging refuses a program that would need `VCRUNTIME140.dll` or a mingw DLL. The command line and
+the Windows service don't use WebView2.
 
 ## Building it
 

@@ -18,6 +18,8 @@ mod report;
 mod service;
 mod updater;
 mod vm;
+#[cfg(windows)]
+mod webview2;
 
 use std::sync::Arc;
 
@@ -38,6 +40,11 @@ fn main() {
     tauri::async_runtime::set(runtime.handle().clone());
 
     apparition_core::api::init();
+    // No WebView2, no window: said, with Microsoft's installer offered, rather than nothing at all.
+    #[cfg(windows)]
+    if !webview2::ensure(runtime) {
+        return;
+    }
     // Sign-in and install progress, kept across launches: `<data>/Apparition Installer/apparition-core.log`.
     apparition_core::init_logging(&apparition_core::api::DeviceStore::default().dir.join("apparition-core.log"), false);
     let state = Arc::new(flow::State::new());

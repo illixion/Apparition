@@ -534,8 +534,9 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
         bail!("Rename the desktop executable to Apparition.exe before updating");
     }
     let mut files = Vec::new();
-    // Extract only the expected files, not paths supplied by the archive. The ARM64 build (MSVC)
-    // links the WebView2 loader in, so only the x86_64 one (mingw) ships WebView2Loader.dll.
+    // Extract only the expected files, not paths supplied by the archive. The release builds
+    // (MSVC) link the WebView2 loader in: the ARM64 zip has no WebView2Loader.dll, and the x64 one
+    // carries it only for the updaters of 0.4.x copies (mingw builds), which require it.
     for name in ["WebView2Loader.dll", "apparition-cli.exe", "Apparition.exe"] {
         let mut entry = match zip.by_name(name) {
             Err(zip::result::ZipError::FileNotFound) if name == "WebView2Loader.dll" => continue,

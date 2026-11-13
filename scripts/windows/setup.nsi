@@ -294,6 +294,22 @@ Section "Apparition"
     ${EndIf}
     Pop $0
   ${EndIf}
+
+  ; Microsoft Edge WebView2 draws the app's window. Windows 10 and 11 have it, but some tools that
+  ; remove Edge remove it too: said here, and the app offers Microsoft's installer when it opens
+  ; (desktop/src/webview2.rs). Its EdgeUpdate key is in the 32-bit view, for the PC or the person.
+  SetRegView 32
+  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  ${If} $0 == ""
+  ${OrIf} $0 == "0.0.0.0"
+    ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+  ${EndIf}
+  SetRegView 64
+  ${If} $0 == ""
+  ${OrIf} $0 == "0.0.0.0"
+    DetailPrint "Microsoft Edge WebView2 isn't installed; Apparition's window needs it."
+    MessageBox MB_ICONINFORMATION "Apparition's window is drawn by Microsoft Edge WebView2, which this PC doesn't seem to have (tools that remove Edge often remove it too). When you open Apparition, it offers to install it from Microsoft. The command line and the background service work without it." /SD IDOK
+  ${EndIf}
 SectionEnd
 
 ; Setup for everyone runs as an administrator. Explorer starts the app as the person whose

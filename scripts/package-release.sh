@@ -6,9 +6,10 @@
 #   Apparition-<version>-<visionOS|iOS|tvOS>.ipa            unsigned; signed on install
 #   Apparition-Installer-<version>-macos-universal.zip      arm64 + x86_64: the desktop app
 #                                                           and the command line
-#   Apparition-Installer-<version>-windows-<arch>.zip       the same two for Windows: x86_64
-#                                                           here, arm64 with WINDOWS_ARCHS=arm64
-#                                                           on a Windows ARM PC (CI's
+#   Apparition-Installer-<version>-windows-<arch>.zip       the same two for Windows: x86_64,
+#                                                           and arm64 with WINDOWS_ARCHS=arm64
+#                                                           on a Windows ARM PC (CI builds each
+#                                                           on Windows: windows-2025 and
 #                                                           windows-11-arm)
 #   Apparition-Setup-<version>-windows-<arch>.exe           those files as a setup program
 #                                                           (scripts/windows/setup.nsi): it makes
@@ -54,11 +55,15 @@
 # makensis from Homebrew), the Tauri CLI for the desktop app (scripts/install-tauri-cli.sh), and
 # Docker for --linux.
 #
-# Windows on ARM is built natively, as `WINDOWS_ARCHS=arm64 scripts/package-release.sh <version>
-# --parts windows` in Git Bash on a Windows ARM PC: aarch64-pc-windows-msvc, with the Visual Studio
-# C++ tools and LLVM's clang on PATH (ring and aws-lc compile their C and assembly with it there).
-# mingw has no ARM64 toolchain. The MSVC build links the WebView2 loader in, so that zip has no
-# WebView2Loader.dll. Setup is made there with NSIS (makensis on PATH, or where its own installer
+# The release's Windows files are built on Windows, with MSVC, in Git Bash:
+# `WINDOWS_ARCHS=x86_64` (x86_64-pc-windows-msvc) on an x64 PC and `WINDOWS_ARCHS=arm64`
+# (aarch64-pc-windows-msvc) on an ARM one, with the Visual Studio C++ tools and LLVM on PATH
+# (ring and aws-lc compile their C and assembly with LLVM's clang on ARM64; its llvm-objdump reads
+# the programs' imports, below). mingw has no ARM64 toolchain. The MSVC builds link the WebView2
+# loader in, so their zips have no WebView2Loader.dll. On a Mac, x86_64 is cross-compiled with
+# mingw-w64 instead (x86_64-pc-windows-gnu, which ships the DLL), for trying a change on a PC
+# without a Windows build machine. Either way no program may need a compiler's runtime DLL
+# (windows_runtime_check). Setup is made with NSIS (makensis on PATH, or where its own installer
 # puts it); the setup program itself is x86 on every PC, which Windows on ARM runs.
 #
 # The Linux desktop app is built in an image made from scripts/desktop-linux.Dockerfile
@@ -477,10 +482,33 @@ elif has macos; then
   zip_tree "$WORK/macos" "$OUT/Apparition-Installer-$VERSION-macos-universal.zip" "$bin" "$helper" "$app_name.app" README.txt
 fi
 
+# Every DLL a Windows program loads at start has to be on every Windows 10 and 11 PC, stripped-down
+# ("debloated") ones included, or the program doesn't start: Windows' own, and WebView2Loader.dll,
+# which the mingw build ships beside it. A compiler runtime is not one of those: VCRUNTIME140.dll
+# and MSVCP140.dll come with the Visual C++ Redistributable, libgcc and libwinpthread with mingw.
+windows_runtime_check() {
+  local dump="" tool file dlls bad
+  for tool in llvm-objdump x86_64-w64-mingw32-objdump objdump; do
+    if command -v "$tool" >/dev/null && "$tool" -p "$1" 2>/dev/null | grep -q 'DLL Name'; then dump="$tool"; break; fi
+  done
+  if [[ -z "$dump" ]]; then echo "error: no objdump here reads Windows programs' imports (LLVM's llvm-objdump, or mingw-w64's)" >&2; exit 1; fi
+  for file in "$@"; do
+    dlls="$("$dump" -p "$file" | sed -n 's/^[[:space:]]*DLL Name:[[:space:]]*//p' | tr 'A-Z' 'a-z' | sort -u)"
+    bad="$(printf '%s\n' "$dlls" | grep -E '^(vcruntime|msvcp|concrt|vccorlib|ucrtbased|libgcc|libwinpthread|libstdc|libssp)' || true)"
+    if [[ -n "$bad" ]]; then
+      echo "error: $(basename "$file") needs a DLL that Windows doesn't have: $(echo $bad)" >&2
+      exit 1
+    fi
+  done
+}
+
 if has windows; then
   for arch in ${WINDOWS_ARCHS:-x86_64}; do
     case "$arch" in
-      x86_64) target=x86_64-pc-windows-gnu ;;
+      # MSVC when this runs on Windows (CI's windows-2025 runner), like ARM64: one toolchain for
+      # both release builds, the WebView2 loader linked in and the VC runtime too (installer/build.rs).
+      # On a Mac, mingw-w64's cross-compiler, for building and trying Windows files locally.
+      x86_64) case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) target=x86_64-pc-windows-msvc ;; *) target=x86_64-pc-windows-gnu ;; esac ;;
       # MSVC's ARM64 compiler miscompiles OpenSSL under the /Gs0 its VC-WIN64-ARM config passes
       # (a __chkstk call before the link register is saved in tls_parse_all_extensions, so every
       # TLS server handshake crashes: openssl/openssl#26239). /Gs in CPPFLAGS lands after those
@@ -491,6 +519,7 @@ if has windows; then
     esac
     echo "==> installer and desktop app for Windows ($arch)"
     cargo build -q --release --locked --target "$target" "${both[@]}"
+    windows_runtime_check "target/$target/release/$bin.exe" "target/$target/release/apparition-app.exe"
     mkdir -p "$WORK/windows-$arch"
     # Windows is case-insensitive: apparition.exe collides with the desktop's Apparition.exe.
     cp "target/$target/release/$bin.exe" "$WORK/windows-$arch/$bin-cli.exe"
@@ -502,6 +531,15 @@ if has windows; then
       cp "target/$target/release/WebView2Loader.dll" "$WORK/windows-$arch/"
       entries+=(WebView2Loader.dll)
       keep="Keep WebView2Loader.dll beside it. $keep"
+    elif [[ "$arch" == x86_64 ]]; then
+      # The x64 zip carries it anyway, unused: up to 0.4.5 the x64 app's updater (mingw builds)
+      # refuses a zip without it, and swaps it in with the rest. Microsoft's own copy, from the
+      # webview2-com-sys release the lock file names.
+      webview2_sys="$(sed -n '/^name = "webview2-com-sys"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock | head -1)"
+      loader_dll="$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/"webview2-com-sys-$webview2_sys/x64/WebView2Loader.dll" 2>/dev/null | head -1)"
+      [[ -n "$webview2_sys" && -f "$loader_dll" ]] || { echo "error: no WebView2Loader.dll from webview2-com-sys $webview2_sys for the x64 zip" >&2; exit 1; }
+      cp "$loader_dll" "$WORK/windows-$arch/WebView2Loader.dll"
+      entries+=(WebView2Loader.dll)
     fi
     readme "$WORK/windows-$arch" "$bin-cli.exe" "Open $app_name.exe for a guided install; it then stays in the tray as the companion (it uses Microsoft Edge WebView2, which Windows 10 and 11 normally have). $keep"
     entries+=(README.txt)
