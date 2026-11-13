@@ -95,7 +95,6 @@ body:
       This issue is **public**, and the desktop app and the command line can't yet make an encrypted report like the iPhone and Vision Pro app does. So **don't attach log files** unless you're asked to for one specific thing, and read anything you paste or screenshot first: logs and windows can show your Apple ID, device names, team or app IDs, computer name and network addresses. Cover or delete those. If a log would help, we'll say which part to send.
 
       Tip: You can attach images by clicking this area to highlight it and then dragging files in.
-    render: text
   validations:
     required: false
 - type: textarea
