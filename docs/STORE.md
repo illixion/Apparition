@@ -435,7 +435,10 @@ report, and any other zip is a trace.
   pair. The private half is `~/.local/state/debugtrace/report-keys/<key id>.key`, mode 600
   (`DEBUGTRACE_REPORT_KEYS` names another folder); the public half is built into the app. A file
   names the key it needs, so old keys keep opening old reports. Back the folder up: nothing else
-  opens a report.
+  opens a report. **Or keep the key in 1Password only:** put `<key id>.op` in the folder instead,
+  holding no secret, just `ref: op://<vault>/<item>/password` and optionally `account: <account>`.
+  The Store and `debugtrace-decrypt` then run `op read` (Touch ID) when a report needs that key and
+  keep it in memory for that report alone.
 - **Adding one.** Drop the `.trace.zip` (or `.trace`) on the **Crashes & traces** page (or **Upload trace…**), or
   run `apparition crash-reports add <file.trace>...`, which needs no running Store. Either way it
   is decrypted, checked and unpacked into `data/traces/<traceId>/` like any trace, so

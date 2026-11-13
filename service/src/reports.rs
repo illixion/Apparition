@@ -122,6 +122,52 @@ pub fn key_id(public: &[u8; 32]) -> String {
 
 /// The stored private key whose public half has the id `wanted`. Ids are computed from the keys,
 /// as `debugtrace-decrypt` does, so a file's name decides nothing.
+/// The 1Password CLI, where Homebrew and the installer put it, else on `PATH`. The desktop app
+/// is started without a shell's `PATH`, so the usual places come first.
+fn op_cli() -> PathBuf {
+    ["/opt/homebrew/bin/op", "/usr/local/bin/op"].iter().map(PathBuf::from).find(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from("op"))
+}
+
+/// A key kept in 1Password rather than in a file: `<key id>.op` in the key folder holds no
+/// secret, only where the key is, as `ref: op://<vault>/<item>/<field>` and optionally
+/// `account: <account>`. It is read with `op read` (Touch ID) when a report needs it, and kept
+/// in memory for that one report. `Ok(None)`: no such entry.
+fn one_password_key(dir: &Path, wanted: &str, op: &Path) -> Result<Option<StaticSecret>, TraceError> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    // The id comes from the file being opened: never let it name a path.
+    if wanted.is_empty() || wanted.len() > 64 || !wanted.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(None);
+    }
+    let Ok(entry) = fs::read_to_string(dir.join(format!("{wanted}.op"))) else { return Ok(None) };
+    let field = |name: &str| entry.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim().eq_ignore_ascii_case(name)).then(|| value.trim().to_string())
+    }).filter(|v| !v.is_empty());
+    let reference = field("ref").filter(|r| r.starts_with("op://")).ok_or_else(|| TraceError(500, format!(
+        "{} names no 1Password item: it needs a line `ref: op://<vault>/<item>/<field>`", dir.join(format!("{wanted}.op")).display())))?;
+    let mut command = std::process::Command::new(op);
+    command.arg("read").arg("--no-newline");
+    if let Some(account) = field("account") {
+        command.arg("--account").arg(account);
+    }
+    let output = command.arg(&reference).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output()
+        .map_err(|e| TraceError(503, format!("key {wanted} is in 1Password, but its CLI (op) did not run: {e}. Install it, or open the report with debugtrace-decrypt")))?;
+    let mut text = output.stdout;
+    let decoded = STANDARD.decode(String::from_utf8_lossy(&text).trim());
+    text.iter_mut().for_each(|b| *b = 0);
+    if !output.status.success() {
+        return Err(TraceError(503, format!("1Password did not give key {wanted} ({reference}); approve the request in 1Password and try again")));
+    }
+    let raw: [u8; 32] = decoded.ok().and_then(|d| d.try_into().ok())
+        .ok_or_else(|| TraceError(500, format!("{reference} is not a base64 X25519 private key")))?;
+    let secret = StaticSecret::from(raw);
+    if key_id(PublicKey::from(&secret).as_bytes()) != wanted {
+        return Err(TraceError(500, format!("{reference} holds another key than {wanted}")));
+    }
+    Ok(Some(secret))
+}
+
 fn stored_key(dir: &Path, wanted: &str) -> Option<StaticSecret> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let mut names: Vec<PathBuf> = fs::read_dir(dir).ok()?.flatten().map(|e| e.path())
@@ -139,7 +185,11 @@ pub fn open(buf: &[u8], key_dir: &Path) -> Result<(Vec<u8>, String), TraceError>
     let unwrapped = unwrap(buf);
     let buf = unwrapped.as_deref().unwrap_or(buf);
     let envelope = envelope(buf)?;
-    let secret = stored_key(key_dir, &envelope.key_id).ok_or_else(|| TraceError(403, format!(
+    let secret = match stored_key(key_dir, &envelope.key_id) {
+        Some(secret) => Some(secret),
+        None => one_password_key(key_dir, &envelope.key_id, &op_cli())?,
+    };
+    let secret = secret.ok_or_else(|| TraceError(403, format!(
         "this report is encrypted to key {}, which is not in {}. Open it on the Mac that holds that key (`debugtrace-decrypt keys` lists a Mac's keys)",
         if envelope.key_id.is_empty() { "(unnamed)" } else { &envelope.key_id }, key_dir.display())))?;
     let zip = hpke_open(&secret, envelope.encapsulated, INFO, envelope.header, envelope.ciphertext)
@@ -258,6 +308,45 @@ pub fn seal(zip: &[u8], recipient: &[u8; 32]) -> Result<Vec<u8>, TraceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stands in for `op read`: prints the fixture's throwaway key, or fails.
+    #[cfg(unix)]
+    fn fake_op(dir: &Path, key_file: Option<&Path>) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("op");
+        let body = match key_file {
+            Some(file) => format!("#!/bin/sh\n[ \"$1 $2\" = \"read --no-newline\" ] || exit 9\ntr -d '\\n' < '{}'\n", file.display()),
+            None => "#!/bin/sh\nexit 1\n".to_string(),
+        };
+        fs::write(&script, body).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_in_1password_is_read_only_through_its_entry() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/report/keys/a5d2ee9eadd96f4a.key");
+        let work = tempfile::tempdir().unwrap();
+        let keys = work.path().join("keys");
+        fs::create_dir_all(&keys).unwrap();
+        let op = fake_op(work.path(), Some(&fixture));
+        // No entry: nothing is asked of 1Password.
+        assert!(one_password_key(&keys, "a5d2ee9eadd96f4a", &op).unwrap().is_none());
+        fs::write(keys.join("a5d2ee9eadd96f4a.op"), "ref: op://Private/report key/password\naccount: my.1password.eu\n").unwrap();
+        let secret = one_password_key(&keys, "a5d2ee9eadd96f4a", &op).unwrap().unwrap();
+        assert_eq!(key_id(PublicKey::from(&secret).as_bytes()), "a5d2ee9eadd96f4a");
+        // An id that isn't one never becomes a path.
+        assert!(one_password_key(&keys, "../keys/a5d2ee9eadd96f4a", &op).unwrap().is_none());
+        // 1Password holding another key than the entry names, op refusing, and an entry with no ref.
+        fs::write(keys.join("0000000000000000.op"), "ref: op://Private/report key/password\n").unwrap();
+        assert_eq!(one_password_key(&keys, "0000000000000000", &op).err().unwrap().0, 500);
+        fs::create_dir_all(work.path().join("refusing")).unwrap();
+        let refusing = fake_op(&work.path().join("refusing"), None);
+        assert_eq!(one_password_key(&keys, "a5d2ee9eadd96f4a", &refusing).err().unwrap().0, 503);
+        fs::write(keys.join("a5d2ee9eadd96f4a.op"), "account: nothing\n").unwrap();
+        assert_eq!(one_password_key(&keys, "a5d2ee9eadd96f4a", &op).err().unwrap().0, 500);
+    }
 
     fn hex(text: &str) -> Vec<u8> {
         (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect()
