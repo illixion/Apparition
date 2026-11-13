@@ -25,7 +25,7 @@ use serde_json::Value;
 pub const USAGE: &str = "usage: apparition crash-reports list [--app TEXT] [--device NAME]   crash logs, then traces, newest first
        apparition crash-reports show <id>                           a crash log's symbolicated stack, or a trace's MetricKit reports
        apparition crash-reports done <id>... [--dry-run]            investigated and fixed: move it to the Trash
-       apparition crash-reports add <file.trace>...                 open an encrypted problem report and keep its trace
+       apparition crash-reports add <file.trace.zip or .trace>...   open an encrypted problem report and keep its trace
        apparition crash-reports import-dsyms <dSYMs.zip>...         keep a release's symbols, so its crash reports symbolicate
        an id is any unambiguous prefix of what `list` prints; STORE_DATA names another data folder";
 
@@ -326,7 +326,7 @@ fn symbolicate(folders: &Folders, target: &str, out: &mut dyn Write) -> Result<i
 /// signature, which a public copy cannot make.
 fn add(folders: &Folders, args: &[String], out: &mut dyn Write) -> Result<(), String> {
     if args.is_empty() || args.iter().any(|a| a.starts_with("--")) {
-        return Err("usage: apparition crash-reports add <file.trace>...".into());
+        return Err("usage: apparition crash-reports add <file.trace.zip or file.trace>...".into());
     }
     let config = read_json(&folders.config).unwrap_or(Value::Null);
     let repo_for_bundle = |bundle: &str| -> Option<String> {
@@ -642,7 +642,7 @@ mod tests {
         let zip = report_fixture().join("report.zip");
         let error = cli(&f, &["add", zip.to_str().unwrap()]).0.unwrap_err();
         assert!(error.contains("report.zip: not an encrypted report: no magic."), "{error}");
-        assert_eq!(cli(&f, &["add"]).0, Err("usage: apparition crash-reports add <file.trace>...".into()));
+        assert_eq!(cli(&f, &["add"]).0, Err("usage: apparition crash-reports add <file.trace.zip or file.trace>...".into()));
         assert_eq!(cli(&f, &["import-dsyms"]).0, Err("usage: apparition crash-reports import-dsyms <dSYMs.zip>...".into()));
         assert!(!dir.path().join("data/traces/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee").exists());
     }

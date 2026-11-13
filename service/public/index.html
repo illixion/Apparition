@@ -493,7 +493,7 @@
   <section class="view traces" data-view="traces" id="traces">
     <div class="tracehead">
       <h3>Traces</h3>
-      <span class="hint">Uploaded from an app's Debug Trace sheet, or drop a trace .zip or an encrypted report (.trace) here</span>
+      <span class="hint">Uploaded from an app's Debug Trace sheet, or drop a trace .zip or an encrypted report (.trace.zip or .trace) here</span>
       <span style="margin-left:auto"></span>
       <button class="ghost" id="traceUploadBtn">Upload trace…</button>
       <input type="file" id="traceFile" accept=".zip,.trace,application/zip" style="display:none">
@@ -785,10 +785,26 @@ function renderTraces(){
     </tr>${files}`;
   }).join('');
 }
-// An encrypted report (.trace, from a public copy's Report a Problem) starts with this.
+// An encrypted report (from a public copy's Report a Problem) is a .trace file, which starts with
+// DTRCHPKE, or the .trace.zip a person attaches to an issue: a zip of exactly one entry whose
+// plain name ends .trace. Decided by content, since people rename attachments; the Store checks
+// again either way.
 async function isReportFile(file){
-  if (/\.trace$/i.test(file.name)) return true;
-  try { return new TextDecoder().decode(await file.slice(0, 8).arrayBuffer()) === 'DTRCHPKE'; } catch { return false; }
+  try {
+    if (new TextDecoder().decode(await file.slice(0, 8).arrayBuffer()) === 'DTRCHPKE') return true;
+    // The zip's end record: the last 22 bytes, plus a comment of up to 64 KB.
+    const tail = new DataView(await file.slice(Math.max(0, file.size - 22 - 0xffff)).arrayBuffer());
+    for (let at = tail.byteLength - 22; at >= 0; at--) {
+      if (tail.getUint32(at, true) !== 0x06054b50) continue;
+      if (tail.getUint16(at + 10, true) !== 1) return false;
+      const dir = tail.getUint32(at + 16, true);
+      const head = new DataView(await file.slice(dir, dir + 46 + 1024).arrayBuffer());
+      if (head.byteLength < 46 || head.getUint32(0, true) !== 0x02014b50) return false;
+      const name = new TextDecoder().decode(new Uint8Array(head.buffer, 46, Math.min(head.getUint16(28, true), head.byteLength - 46)));
+      return /^[^\/\\.][^\/\\]*\.trace$/i.test(name);
+    }
+  } catch {}
+  return false;
 }
 async function uploadTrace(file){
   if (!file) return;

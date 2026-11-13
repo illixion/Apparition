@@ -426,13 +426,17 @@ A copy from the release site has no build key, so its Report a Problem makes an 
 report**: a `.trace` file, the trace zip sealed to the maintainer's public key (HPKE, RFC 9180:
 X25519, HKDF-SHA256, ChaCha20-Poly1305; the layout is in DebugTrace's `Docs/traces.md`). The
 person attaches it to a public issue, and only the Mac holding the private key can open it.
+GitHub takes no `.trace` file on an issue, so the app shares it wrapped: `<name>.trace.zip`, a zip
+of exactly one entry, the `.trace`, unchanged. The Store takes either form, and tells them apart
+by content, not by name: a zip whose only entry is a plain name ending `.trace` is a wrapped
+report, and any other zip is a trace.
 
 - **The key.** `debugtrace-decrypt keygen` (in DebugTrace's `Tools/debugtrace-decrypt`) makes the
   pair. The private half is `~/.local/state/debugtrace/report-keys/<key id>.key`, mode 600
   (`DEBUGTRACE_REPORT_KEYS` names another folder); the public half is built into the app. A file
   names the key it needs, so old keys keep opening old reports. Back the folder up: nothing else
   opens a report.
-- **Adding one.** Drop the `.trace` on the **Crashes & traces** page (or **Upload trace…**), or
+- **Adding one.** Drop the `.trace.zip` (or `.trace`) on the **Crashes & traces** page (or **Upload trace…**), or
   run `apparition crash-reports add <file.trace>...`, which needs no running Store. Either way it
   is decrypted, checked and unpacked into `data/traces/<traceId>/` like any trace, so
   `crash-reports show`, the files view and symbolication read it the same way.

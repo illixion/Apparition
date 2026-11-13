@@ -281,6 +281,43 @@ async fn a_report_cryptokit_sealed_is_opened_and_kept_as_an_unsigned_report() {
     assert_eq!((status, body["error"].as_str().unwrap()), (403, "unsigned trace: only apps built by apparition build carry a key; share this one as a file instead"));
 }
 
+/// One stored entry per pair, the way DebugTrace's report sheet writes the attachable form.
+fn wrapper(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    zip_of(&entries.iter().map(|(name, data)| (name.to_string(), data.to_vec(), false)).collect::<Vec<_>>())
+}
+
+/// GitHub takes no `.trace` file on an issue, so a person attaches `<name>.trace.zip`: one entry,
+/// the `.trace`. It is a report however it is named, and nothing else shaped like a zip is.
+#[tokio::test]
+async fn a_report_wrapped_in_a_zip_is_taken_like_the_bare_file() {
+    use apparition_service::reports::{is_report, unwrap};
+    let sealed = std::fs::read(report_fixture("cryptokit.trace")).unwrap();
+    let wrapped = wrapper(&[("Public-App-trace-20261113-090005-aaaaaaaa.trace", &sealed)]);
+    assert_eq!(unwrap(&wrapped).as_deref(), Some(&sealed[..]));
+    assert!(is_report(&wrapped));
+    for shape in [
+        wrapper(&[("a.trace", &sealed), ("b.trace", &sealed)]),
+        wrapper(&[("a.txt", &sealed)]),
+        wrapper(&[("dir/a.trace", &sealed)]),
+        wrapper(&[(".trace", &sealed)]),
+        wrapper(&[("a.trace", b"not encrypted")]),
+        std::fs::read(report_fixture("report.zip")).unwrap(),
+    ] {
+        assert!(unwrap(&shape).is_none() && !is_report(&shape));
+    }
+
+    let work = tempfile::tempdir().unwrap();
+    let app = report_service(work.path(), &work.path().join("keys"), &report_fixture("keys"), json!({}));
+    // The app route refuses it as it refuses the bare file.
+    let (status, body) = post(&app, "/api/traces", &[], wrapped.clone()).await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().starts_with("this is an encrypted report"), "{body}");
+    let (status, body) = post(&app, "/api/traces/report", &[], wrapped).await;
+    assert_eq!(status, 201, "{body}");
+    assert_eq!(body["trace"]["id"], json!(REPORT_ID));
+    assert_eq!(body["trace"]["report"], json!({ "keyId": REPORT_KEY, "signed": false }));
+}
+
 #[tokio::test]
 async fn only_a_signed_in_page_adds_a_report() {
     let work = tempfile::tempdir().unwrap();
@@ -339,7 +376,7 @@ async fn a_report_is_held_to_every_rule_but_the_signature() {
 
     // (case, body, status, error or None, and for an accepted one whether a ledger key signed it)
     let cases: Vec<(&str, Vec<u8>, u16, Option<&str>, bool)> = vec![
-        ("a zip, not a report", unsigned(&|_| {}), 400, Some("not an encrypted report: no magic. A .trace file starts with DTRCHPKE; upload a .zip trace as a trace instead"), false),
+        ("a zip, not a report", unsigned(&|_| {}), 400, Some("not an encrypted report: no magic. A report is a .trace file, or the .trace.zip that holds one; upload a trace .zip as a trace instead"), false),
         ("sealed to a key this Mac lacks", apparition_service::reports::seal(&unsigned(&|_| {}), &stranger).unwrap(), 403, None, false),
         ("cut short", { let mut b = seal(unsigned(&|_| {})); b.truncate(b.len() - 9); b }, 400, Some("the report did not decrypt: it was changed or cut short. Ask for the original file again"), false),
         ("not a zip inside", seal(b"hello".to_vec()), 400, Some("not a readable trace zip: no end-of-central-directory record"), false),

@@ -45,13 +45,42 @@ pub fn default_key_dir() -> PathBuf {
     state.join("debugtrace/report-keys")
 }
 
-/// Whether `buf` starts as an encrypted report does.
+/// Whether `buf` is an encrypted report: the `.trace` file itself, or the zip a person attaches
+/// to an issue, which holds it (`unwrap`).
 pub fn is_report(buf: &[u8]) -> bool {
-    buf.starts_with(MAGIC)
+    buf.starts_with(MAGIC) || unwrap(buf).is_some()
+}
+
+/// The largest `.trace` a wrapper may hold: the same limit a trace upload has.
+const MAX_WRAPPED: u64 = crate::traces::MAX_UPLOAD as u64;
+
+/// The `.trace` inside the attachable form, `<name>.trace.zip`: GitHub takes no `.trace` file on
+/// an issue, so DebugTrace's report sheet wraps it in a zip of exactly one entry, `<name>.trace`,
+/// its bytes unchanged. A zip with any other shape (a trace zip with its manifest, two entries, a
+/// name with a directory part or not ending `.trace`) is not a report. Decided by content, never
+/// by the file's name: people rename attachments.
+pub fn unwrap(buf: &[u8]) -> Option<Vec<u8>> {
+    if !buf.starts_with(b"PK") {
+        return None;
+    }
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buf)).ok()?;
+    if archive.len() != 1 {
+        return None;
+    }
+    let mut entry = archive.by_index(0).ok()?;
+    let name = entry.name().ok()?.to_string();
+    let plain = !name.contains('/') && !name.contains('\\') && !name.starts_with('.');
+    if !plain || !name.ends_with(".trace") || name.len() <= ".trace".len() || entry.size() > MAX_WRAPPED {
+        return None;
+    }
+    let mut inner = Vec::with_capacity(entry.size() as usize);
+    // Bounded again while reading: the size in the header is the sender's word.
+    std::io::Read::read_to_end(&mut std::io::Read::take(&mut entry, MAX_WRAPPED + 1), &mut inner).ok()?;
+    (inner.len() as u64 <= MAX_WRAPPED && inner.starts_with(MAGIC)).then_some(inner)
 }
 
 fn not_a_report(what: &str) -> TraceError {
-    TraceError(400, format!("not an encrypted report: {what}. A .trace file starts with DTRCHPKE; upload a .zip trace as a trace instead"))
+    TraceError(400, format!("not an encrypted report: {what}. A report is a .trace file, or the .trace.zip that holds one; upload a trace .zip as a trace instead"))
 }
 
 /// The parts of an encrypted file, without opening it.
@@ -107,6 +136,8 @@ fn stored_key(dir: &Path, wanted: &str) -> Option<StaticSecret> {
 
 /// Opens an encrypted report with the key it names, giving the zip inside and that key's id.
 pub fn open(buf: &[u8], key_dir: &Path) -> Result<(Vec<u8>, String), TraceError> {
+    let unwrapped = unwrap(buf);
+    let buf = unwrapped.as_deref().unwrap_or(buf);
     let envelope = envelope(buf)?;
     let secret = stored_key(key_dir, &envelope.key_id).ok_or_else(|| TraceError(403, format!(
         "this report is encrypted to key {}, which is not in {}. Open it on the Mac that holds that key (`debugtrace-decrypt keys` lists a Mac's keys)",
