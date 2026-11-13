@@ -5,11 +5,14 @@
 //! at login with nobody to answer, the program is blocked without a word (an unanswered question
 //! leaves a block rule behind), and a device then finds that this computer "didn't answer".
 //!
-//! So Apparition looks for itself in the firewall's rules ([`inbound`]) and, where it isn't
-//! allowed, puts the rule there ([`allow`]): what answering Windows' own question does, with the
-//! same administrator approval. The rule names this program's file, covers incoming connections
-//! only, and is made for the kinds of network (private, public, domain) this computer is on at
-//! that moment, as Windows' own question would be.
+//! Windows' own question is the way in wherever it can be asked: it comes when a program first
+//! listens, needs nothing from Apparition, and its answer is remembered. Apparition steps in only
+//! where that question can't help ([`needs_rule`]): when it was left unanswered and Windows won't
+//! ask again, and when there is no desktop to ask on. It looks for itself in the firewall's rules
+//! ([`inbound`]) and puts the rule there ([`allow`]), with an administrator's approval when this
+//! program doesn't already run as one. The rule names this program's file, covers incoming
+//! connections only, and is made for the kinds of network (private, public, domain) this computer
+//! is on at that moment, as Windows' own question would be.
 //!
 //! The rules are read from where the firewall keeps them in the registry, which needs no rights
 //! and reads the same in every language (`netsh`'s output is translated). Everywhere but Windows
@@ -77,6 +80,26 @@ pub fn inbound() -> Option<Inbound> {
     }
 }
 
+/// Whether Apparition has to make the firewall's rule itself ([`allow`]) for devices to reach this
+/// program: a block rule is in the way, which Windows never asks about again, or no rule names
+/// the program and this isn't a desktop session (SSH, a service), so Windows has nobody to ask.
+/// On a desktop with no rule yet, Windows asks by itself when the program listens, and this says
+/// no.
+pub fn needs_rule() -> bool {
+    #[cfg(windows)]
+    {
+        match windows::inbound() {
+            Some(Inbound::Blocked) => true,
+            Some(Inbound::Unasked) => !windows::on_a_desktop(),
+            Some(Inbound::Allowed) | None => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// Lets connections in for this program: removes the rules that name it and adds one that
 /// allows it. Windows asks for an administrator's approval unless this program already runs as
 /// one. Fails when that is declined, or can't be asked (no desktop).
@@ -104,6 +127,18 @@ mod windows {
     const RULES: &str = r"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules";
     /// Keeps a console window from flashing up when the desktop app runs PowerShell.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    /// Whether this program runs in a session that has a desktop. Services, and what they start
+    /// (a command run over SSH), share session 0, which has none.
+    pub(super) fn on_a_desktop() -> bool {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcessId() -> u32;
+            fn ProcessIdToSessionId(process: u32, session: *mut u32) -> i32;
+        }
+        let mut session = 0;
+        unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) != 0 && session != 0 }
+    }
 
     fn program() -> Option<String> {
         std::env::current_exe().ok()?.to_str().map(str::to_owned)

@@ -2084,8 +2084,9 @@ function drawCompanion(/** @type {any} */ status) {
   badge.className = `badge ${status.relay.running ? "online" : ""}`.trim();
   const relayError = $(companionPanel, "relay-error");
   setStatus(relayError, status.relay.error ?? "", "error");
-  // Only where there is a firewall to answer to (Windows), and only while it keeps devices out.
-  $(companionPanel, "windows-firewall").hidden = !status.firewall || status.firewall === "allowed";
+  // Only when a rule blocks this app, which Windows doesn't ask about again. With no rule yet, Windows asks
+  // by itself when the companion starts listening.
+  $(companionPanel, "windows-firewall").hidden = status.firewall !== "blocked";
 
   const table = $(companionPanel, "connections");
   const rows = status.connections.map((/** @type {any} */ c) => {

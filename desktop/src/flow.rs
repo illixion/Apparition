@@ -662,10 +662,11 @@ fn nearby_compare(state: Arc<State>, app: AppHandle) -> api::nearby::Compare {
 pub async fn nearby_receive(app: AppHandle, state: Shared<'_>) -> Result<Option<Value>, Failure> {
     let state = state.inner().clone();
     blocking(move || {
-        // The other device connects to this computer, which Windows Defender Firewall must let in. The person
-        // asked for this just now, so its approval prompt comes when they expect something; if they decline,
-        // the wait goes on and the address typed on the other device may still be blocked.
-        if api::firewall::inbound().is_some_and(|inbound| inbound != api::firewall::Inbound::Allowed) {
+        // The other device connects to this computer, which Windows Defender Firewall must let in. Windows asks
+        // about that itself the first time; where it won't (a block rule left by a question nobody answered),
+        // Apparition makes the rule. The person asked for this just now, so the approval prompt comes when they
+        // expect something; if they decline, the wait goes on and the other device may find nobody here.
+        if api::firewall::needs_rule() {
             let _ = api::firewall::allow();
         }
         let (stop, stopped) = tokio::sync::oneshot::channel();

@@ -610,12 +610,13 @@ fn compare_codes() -> api::nearby::Compare {
     })
 }
 
-/// Before listening for devices on Windows: lets their connections through Windows Defender Firewall, which drops
-/// them until a rule allows this program. Windows asks about that only on the desktop and only once, so a run over
-/// SSH, or a question left unanswered, is blocked without a word and the other side finds nobody here. Carries on
-/// either way: the person may have other arrangements (another firewall, a rule by port).
+/// Before listening for devices on Windows: lets their connections through Windows Defender Firewall where Windows'
+/// own question can't. Windows asks about a program the first time it listens, on the desktop, and that is left to
+/// it. A run over SSH has no desktop to ask on, and a question once left unanswered isn't asked again: both are
+/// blocked without a word and the other side finds nobody here, so the rule is made here. Carries on either way:
+/// the person may have other arrangements (another firewall, a rule by port).
 fn open_firewall() {
-    if api::firewall::inbound().is_none_or(|inbound| inbound == api::firewall::Inbound::Allowed) {
+    if !api::firewall::needs_rule() {
         return;
     }
     println!("Windows Defender Firewall keeps your devices from reaching this program. Allowing it (Windows may ask you to approve)…");

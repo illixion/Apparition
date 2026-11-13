@@ -29,13 +29,15 @@ the desktop app, which keeps it running from
 the menu bar or tray, or `apparition relay` on the command line (see [the command line](COMMAND_LINE.md)); both run
 `core/src/companion.rs`.
 
-Windows Defender Firewall drops what your devices send until a rule allows Apparition, and
-Windows asks about that only once and only on the desktop: started at login or over SSH, the
-companion is blocked without a word. Apparition looks for itself in the firewall's rules and makes
-the rule when it is missing, with the administrator approval Windows asks for (`core/src/firewall.rs`):
-`apparition relay` and `apparition signing receive` do it before they listen, and the desktop app
-does it when its companion first starts and when you receive a signing key. Once approved the rule
-stays, so it is asked once; if it wasn't approved, the Companion page offers it as a button. The rule allows incoming connections to that one program, on the kinds of
+Windows Defender Firewall drops what your devices send until a rule allows Apparition. Windows
+asks about that itself the first time Apparition listens: allow it, and it is remembered. That
+question appears only on the desktop and only once, so two cases are left, where the companion
+would be blocked without a word, and Apparition handles them by making the rule itself
+(`core/src/firewall.rs`), with an administrator's approval when it doesn't already run as one. A
+question that went unanswered (at login, say) leaves a block rule and isn't asked again: the
+desktop app's Companion page then offers a button, and `apparition relay`, `apparition signing
+receive` and the app's receiving of a signing key replace the rule before they listen. And over SSH
+there is no desktop to ask on: the command line makes the rule there. The rule allows incoming connections to that one program, on the kinds of
 network (private, public, domain) the PC is on at that moment. To make one by hand, or with another
 firewall, allow inbound TCP 49160, 49161 and 49162 for the companion and its encrypted anisette
 channel, e.g. from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction
