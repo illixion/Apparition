@@ -42,7 +42,7 @@ def matrix(selected, versions, warm):
     for part, title, targets, brew in [
         ("app", "Apps (visionOS, iOS, tvOS)", "aarch64-apple-visionos,aarch64-apple-ios,aarch64-apple-tvos", "xcodegen"),
         ("macos", "macOS installer", "aarch64-apple-darwin,x86_64-apple-darwin", ""),
-        ("windows", "Windows installer", "x86_64-pc-windows-gnu", "mingw-w64"),
+        ("windows", "Windows installer", "x86_64-pc-windows-gnu", "mingw-w64 makensis"),
     ]:
         if part in selected:
             version = versions["app" if part == "app" else "installers"]

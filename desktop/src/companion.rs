@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use apparition_core::api;
-use apparition_core::companion::{AnisetteSource, Companion};
+use apparition_core::companion::{AnisetteSource, Companion, Front};
 use apparition_core::relay::{self, ANISETTE_PORT, RELAY_PORT};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -87,6 +87,9 @@ pub struct CompanionState {
     data_dir: PathBuf,
     settings: Mutex<Settings>,
     running: tokio::sync::Mutex<Option<Arc<Companion>>>,
+    /// This app's claim on the companion's ports while its relay is on, so that the background
+    /// service on a Windows PC set up for everyone leaves them to it.
+    front: Mutex<Option<Front>>,
     /// The relay's, or the anisette's, last failure, for the page.
     relay_error: Mutex<Option<String>>,
     anisette_error: Mutex<Option<String>>,
@@ -135,8 +138,18 @@ impl CompanionState {
             .map_err(|error| Failure::new(error.to_string()))?;
         serde_json::to_writer_pretty(&mut file, &next).map_err(|error| Failure::new(error.to_string()))?;
         file.persist(&self.path).map_err(|error| Failure::new(error.to_string()))?;
+        self.copy_for_service(&next);
         *settings = next;
         Ok(())
+    }
+
+    /// A copy of the settings in the companion's folder, which is all of this folder the
+    /// background service on a Windows PC may read (installer/src/windows.rs). Nothing reads it
+    /// elsewhere.
+    fn copy_for_service(&self, settings: &Settings) {
+        if cfg!(windows) && std::fs::create_dir_all(&self.data_dir).is_ok() {
+            let _ = std::fs::write(self.data_dir.join("companion.json"), serde_json::to_vec_pretty(settings).unwrap_or_default());
+        }
     }
 
     pub fn new(store: &api::DeviceStore) -> Self {
@@ -147,6 +160,7 @@ impl CompanionState {
             data_dir: store.dir.join("anisette"),
             settings: Mutex::new(settings),
             running: Default::default(),
+            front: Default::default(),
             relay_error: Default::default(),
             anisette_error: Default::default(),
             tray: Default::default(),
@@ -160,6 +174,7 @@ impl CompanionState {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = std::fs::write(&self.path, serde_json::to_vec_pretty(&*settings).unwrap_or_default());
+        self.copy_for_service(&settings);
     }
 
     /// Brings what runs in line with the settings: starts or stops the relay, and the
@@ -173,12 +188,31 @@ impl CompanionState {
             }
             *self.relay_error.lock().unwrap() = None;
             *self.anisette_error.lock().unwrap() = None;
+            *self.front.lock().unwrap() = None;
             return;
         }
         if running.is_none() {
+            // The service lets go of the ports within a second or two of this claim; the loop
+            // that keeps the relay current (setup) tries again until it has.
+            {
+                let mut front = self.front.lock().unwrap();
+                if !front.as_ref().is_some_and(Front::held) {
+                    *front = Some(Front::claim(&self.data_dir));
+                }
+            }
+            self.copy_for_service(&settings);
             let log: relay::Log = Arc::new(|line: &str| eprintln!("{line}"));
             let (relay_port, anisette_port) = ports();
-            match Companion::start(relay_port, anisette_port, settings.advertise, &self.data_dir, log).await {
+            let mut started = Companion::start(relay_port, anisette_port, settings.advertise, &self.data_dir, log.clone()).await;
+            // Give the service its second or two before saying the port is taken.
+            for _ in 0..3 {
+                if started.is_ok() || !cfg!(windows) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                started = Companion::start(relay_port, anisette_port, settings.advertise, &self.data_dir, log.clone()).await;
+            }
+            match started {
                 Ok(companion) => {
                     if let Some(app) = self.app.lock().unwrap().clone() {
                         companion.devices.on_pairing(Arc::new(move |id, request| {

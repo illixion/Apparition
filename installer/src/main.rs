@@ -34,6 +34,7 @@ mod login;
 mod scratch;
 mod store;
 mod vm;
+mod windows;
 
 const USAGE: &str = "\
 Apparition: puts Apparition (or any IPA) on your devices, and is their companion.
@@ -232,6 +233,23 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       ~/.local/bin, made if missing), and what to add to PATH if <dir> isn't on it already. From
       the Mac app, run it as /Applications/Apparition.app/Contents/MacOS/apparition-cli link.
       The link follows the app when it updates. --remove takes the link away again.
+  apparition-cli link [--system] [--remove]     (Windows)
+      Put this copy's folder on your PATH, so `apparition-cli` works in any terminal opened
+      afterwards; --system, as an administrator, on everyone's. --remove takes it off again.
+      Apparition's setup offers this.
+  apparition-cli firewall allow | remove | status [<program>...]     (Windows)
+      Windows Defender Firewall's rules for Apparition: allow lets your devices reach this copy
+      (the command line and the app beside it, or the programs you name) on private and domain
+      networks, and on a public one if this PC is on one now; remove takes the rules away.
+      Windows asks for an administrator's approval. Apparition's setup does this, so an
+      installed copy needs it only after its folder is moved.
+  apparition-cli service install [--data-dir <folder>] | uninstall | start | stop | status     (Windows)
+      The companion as a Windows service, for a PC that should serve your devices with nobody
+      signed in: the relay, and the anisette the app's Companion tab is set to offer. Setting
+      Apparition up for everyone installs it. It runs as LocalService with access to the
+      companion's folder only, declines new pairings (nobody can answer it) and steps aside
+      while the app or `relay` runs, where pairing happens. install and uninstall need an
+      administrator; status says where its log is.
   apparition --verbose <command>      (or APPARITION_VERBOSE=1 in the environment)
       Also writes what a sign-in sends to Apple and what comes back, as structure and sizes (no
       passwords, tokens or anisette values), to apparition-verbose.log beside the log, and says
@@ -268,6 +286,13 @@ const STACK: usize = 8 << 20;
 /// time; an unoptimised build's futures (the installer's and the signer's) are larger than
 /// that, and it overflowed before the first command ran.
 fn main() -> ExitCode {
+    // Started by Windows as its service: the service manager takes this thread until it stops.
+    #[cfg(windows)]
+    if std::env::args().skip(1).take(2).eq(["service", "run"])
+        && let Some(code) = windows::run_as_service()
+    {
+        return code;
+    }
     let run = || {
         tokio::runtime::Builder::new_multi_thread()
             .thread_stack_size(STACK)
@@ -333,7 +358,12 @@ async fn run() -> ExitCode {
         Some("browse") => {
             relay::browse(10, |found| println!("found {found}")).map_err(|e| fail(format!("{e}")))
         }
+        #[cfg(not(windows))]
         Some("link") => link(&args[1..]),
+        #[cfg(windows)]
+        Some("link") => windows::link(&args[1..]),
+        Some("firewall") => windows::firewall(&args[1..]),
+        Some("service") => windows::service(&args[1..]),
         Some("vm-setup") => vm_setup().await,
         Some("vm") => vm::run(&args[1..]).await,
         Some("--version" | "-V" | "version") => {
@@ -431,9 +461,9 @@ fn path_hint(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn link(_args: &[String]) -> Result<(), Error> {
-    Err(fail("link is for macOS and Linux; on Windows, put the folder holding apparition-cli.exe on PATH"))
+    Err(fail("link is for macOS, Linux and Windows"))
 }
 
 // MARK: Setting up a macOS VM
@@ -1793,7 +1823,18 @@ async fn relay(args: &[String]) -> Result<(), Error> {
     }
     let log: relay::Log = std::sync::Arc::new(|line: &str| println!("{line}"));
     open_firewall();
-    let companion = std::sync::Arc::new(Companion::start(port, relay::ANISETTE_PORT, advertise, &anisette_dir(), log).await?);
+    // On a PC whose background service holds the ports, it lets go within a second or two of
+    // this claim; elsewhere the claim is empty and the first try is the only one.
+    let front = companion::Front::claim(&anisette_dir());
+    let mut tries = if front.held() { 6 } else { 1 };
+    let companion = loop {
+        tries -= 1;
+        match Companion::start(port, relay::ANISETTE_PORT, advertise, &anisette_dir(), log.clone()).await {
+            Ok(companion) => break std::sync::Arc::new(companion),
+            Err(error) if tries == 0 => return Err(error),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
+        }
+    };
     println!("Apparition companion relay listening on port {}.", companion.relay.port());
     let address = relay::primary_address().map(|ip| ip.to_string()).unwrap_or_else(|| "this computer's address".into());
     if advertise {

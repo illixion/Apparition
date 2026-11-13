@@ -33,8 +33,10 @@ That makes `~/.local/bin/apparition`, a symlink into the app, and says what to a
 `--dir /usr/local/bin` links somewhere else (needs `sudo`) and `--remove` undoes it. The link
 points at the app's location, so run `link` again if you move the app. The command inside the
 app is called `apparition-cli` because a Mac treats `apparition` and the app's own `Apparition`
-as one name. On Linux, `link` does the same for wherever you unpacked the tarball; on Windows, put
-the folder holding `apparition-cli.exe` on your `PATH` and run `apparition-cli --version`.
+as one name. On Linux, `link` does the same for wherever you unpacked the tarball. On Windows, setup offers
+to make the command line available in every terminal, and `apparition-cli link` does it for any
+copy: it puts that copy's folder on your `PATH` (`--system`, as an administrator, on everyone's;
+`--remove` takes it off), for terminals opened afterwards.
 The Windows command line needs a distinct name too: `apparition.exe` collides with the
 desktop's `Apparition.exe` on a case-insensitive filesystem.
 
@@ -64,6 +66,8 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `mcp` | An MCP server on stdio for agents here: the debug servers of the apps the Mac sees, plus `deploy`. |
 | `browse` | Lists the companions mDNS finds, for 10 seconds: a check that multicast works. |
 | `link` | Puts `apparition` on your `PATH` (above). |
+| `firewall allow`, `remove`, `status` | Windows: Windows Defender Firewall's rules that let your devices reach Apparition. Setup makes them; a copy from the zip, or one whose folder moved, can ask for them here. See [How it works](HOW_IT_WORKS.md). |
+| `service install`, `uninstall`, `start`, `stop`, `status` | Windows: the companion as a background service, for a PC that serves your devices with nobody signed in. Setting Apparition up for everyone installs it. See [How it works](HOW_IT_WORKS.md). |
 
 **Apple Watch apps.** An iPhone app that carries a watch app (`Watch/` inside the IPA) installs
 on the paired Apple Watch too: Apparition asks the iPhone which Watch it is paired with, registers

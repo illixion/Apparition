@@ -570,7 +570,15 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
     };
     let plan = json!({ "pid": std::process::id(), "directory": parent, "executable": current, "arguments": arguments,
         "version": version, "files": files, "result": result });
-    std::fs::write(stage.join("plan.json"), serde_json::to_vec(&plan)?)?;
+    let plan = serde_json::to_vec(&plan)?;
+    std::fs::write(stage.join("plan.json"), &plan)?;
+    // A copy set up for everyone sits where only an administrator may write, and its service
+    // has to be stopped while its file is replaced: the helper then runs as an administrator,
+    // which Windows asks the person to approve.
+    #[cfg(test)]
+    let elevated = false;
+    #[cfg(not(test))]
+    let elevated = windows_needs_administrator(parent);
     let powershell = PathBuf::from(
         std::env::var_os("SystemRoot").ok_or_else(|| report!("SystemRoot is missing"))?,
     )
@@ -590,11 +598,21 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
     };
     #[cfg(not(test))]
     let lockdown = "";
-    let command = format!(
-        "{lockdown}& {{\n{}\n}} -Stage '{}'",
-        include_str!("update-windows.ps1"),
-        stage_text.replace('\'', "''")
-    );
+    let helper = include_str!("update-windows.ps1");
+    let stage_quoted = stage_text.replace('\'', "''");
+    let command = if elevated {
+        // The helper's text is too long to pass through the approval twice over, so the
+        // elevated PowerShell reads it from the staging folder, and runs it only if it is still
+        // this text; the helper checks the plan the same way.
+        let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        std::fs::write(stage.join("helper.ps1"), helper)?;
+        include_str!("update-windows-elevate.ps1")
+            .replace("{STAGE}", &stage_quoted)
+            .replace("{HELPER}", &digest(helper.as_bytes()))
+            .replace("{PLAN}", &digest(&plan))
+    } else {
+        format!("{lockdown}& {{\n{helper}\n}} -Stage '{stage_quoted}'")
+    };
     let encoded = BASE64_STANDARD.encode(
         command
             .encode_utf16()
@@ -623,7 +641,8 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
             "{WINDOWS_BLOCKED}: Windows wouldn't start PowerShell ({error}). {WINDOWS_MANUAL}"
         ),
     };
-    for _ in 0..600 {
+    // A minute, or with Windows' question to answer first, the two it waits and a little more.
+    for _ in 0..if elevated { 1500 } else { 600 } {
         if stage.join("ready").exists() {
             std::fs::write(stage.join("go"), b"go")?;
             return Ok(Finish::ExitForHelper);
@@ -651,6 +670,21 @@ fn install_windows(package: &Path, version: &str) -> Result<Finish, Report> {
     child.kill()?;
     let _ = child.wait();
     bail!("The Windows updater did not become ready; no files were replaced")
+}
+
+/// Whether replacing this copy's files takes an administrator: its folder can't be written to
+/// (Program Files, where setup puts a copy for everyone), or the background service runs from
+/// it and holds its file.
+#[cfg(all(windows, not(test)))]
+fn windows_needs_administrator(folder: &Path) -> bool {
+    let probe = folder.join(format!(".apparition-update-probe-{}", std::process::id()));
+    let writable = std::fs::File::create(&probe).is_ok();
+    let _ = std::fs::remove_file(&probe);
+    let service = windows_registry::LOCAL_MACHINE
+        .open(r"SYSTEM\CurrentControlSet\Services\Apparition")
+        .and_then(|key| key.get_string("ImagePath"))
+        .is_ok_and(|command| folder.to_str().is_some_and(|folder| command.to_lowercase().contains(&format!("{}\\", folder.to_lowercase()))));
+    !writable || service
 }
 
 /// Starts the message of a failure no retry fixes, so the banner offers the download instead.

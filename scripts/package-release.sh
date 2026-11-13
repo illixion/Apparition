@@ -10,6 +10,10 @@
 #                                                           here, arm64 with WINDOWS_ARCHS=arm64
 #                                                           on a Windows ARM PC (CI's
 #                                                           windows-11-arm)
+#   Apparition-Setup-<version>-windows-<arch>.exe           those files as a setup program
+#                                                           (scripts/windows/setup.nsi): it makes
+#                                                           the firewall's rules, and for a PC
+#                                                           set up for everyone, the service
 #   Apparition-Installer-<version>-linux-<arch>.tar.gz      with --linux, built in Docker: the
 #                                                           static command line, and the
 #                                                           desktop app as an AppImage and a .deb
@@ -46,15 +50,16 @@
 #
 # Needs: Xcode with the visionOS, iOS and tvOS SDKs, xcodegen, rustup targets
 # aarch64-apple-visionos, aarch64-apple-ios, aarch64-apple-tvos,
-# aarch64-apple-darwin, x86_64-apple-darwin and x86_64-pc-windows-gnu (with mingw-w64 from
-# Homebrew), the Tauri CLI for the desktop app (scripts/install-tauri-cli.sh), and Docker for
-# --linux.
+# aarch64-apple-darwin, x86_64-apple-darwin and x86_64-pc-windows-gnu (with mingw-w64 and
+# makensis from Homebrew), the Tauri CLI for the desktop app (scripts/install-tauri-cli.sh), and
+# Docker for --linux.
 #
 # Windows on ARM is built natively, as `WINDOWS_ARCHS=arm64 scripts/package-release.sh <version>
 # --parts windows` in Git Bash on a Windows ARM PC: aarch64-pc-windows-msvc, with the Visual Studio
 # C++ tools and LLVM's clang on PATH (ring and aws-lc compile their C and assembly with it there).
 # mingw has no ARM64 toolchain. The MSVC build links the WebView2 loader in, so that zip has no
-# WebView2Loader.dll.
+# WebView2Loader.dll. Setup is made there with NSIS (makensis on PATH, or where its own installer
+# puts it); the setup program itself is x86 on every PC, which Windows on ARM runs.
 #
 # The Linux desktop app is built in an image made from scripts/desktop-linux.Dockerfile
 # (Ubuntu 22.04 with WebKitGTK and the Tauri CLI), tagged per architecture and reused.
@@ -108,6 +113,15 @@ for part in ${PARTS//,/ }; do
 done
 has() { [[ ",$PARTS," == *",$1,"* ]]; }
 installers() { has macos || has windows || has linux; }
+
+# NSIS, for Windows' setup program: said now rather than after the build it would follow.
+MAKENSIS=""
+if has windows; then
+  for candidate in makensis "/c/Program Files (x86)/NSIS/makensis.exe" "/c/Program Files/NSIS/makensis.exe"; do
+    if command -v "$candidate" >/dev/null; then MAKENSIS="$candidate"; break; fi
+  done
+  [[ -n "$MAKENSIS" ]] || { echo "error: the windows part needs NSIS's makensis (brew install makensis; on Windows, winget install NSIS.NSIS or choco install nsis)" >&2; exit 1; }
+fi
 
 cd "$ROOT"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "error: $VERSION isn't major.minor.patch (Cargo needs all three)" >&2; exit 1; }
@@ -501,6 +515,14 @@ if has windows; then
       # Windows' own, for a PC with neither.
       (cd "$WORK/windows-$arch" && powershell.exe -NoProfile -Command "Compress-Archive -Path $(printf "'%s'," "${entries[@]}" | sed 's/,$//') -DestinationPath '$(cygpath -w "$zip_path")'")
     fi
+    # The same files as a setup program. makensis takes its options as -D on a Mac and on
+    # Windows alike; in Git Bash the paths it is given have to be Windows' own.
+    native() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+    loader=()
+    [[ -f "$WORK/windows-$arch/WebView2Loader.dll" ]] && loader=(-DLOADER)
+    "$MAKENSIS" -V2 -DVERSION="$VERSION" -DARCH="${arch/x86_64/x64}" \
+      -DSOURCE="$(native "$WORK/windows-$arch")" -DOUTFILE="$(native "$OUT/Apparition-Setup-$VERSION-windows-$arch.exe")" \
+      -DICON="$(native "$ROOT/desktop/icons/icon.ico")" ${loader[@]+"${loader[@]}"} "$(native "$ROOT/scripts/windows/setup.nsi")"
   done
 fi
 

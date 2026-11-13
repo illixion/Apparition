@@ -11,8 +11,13 @@
 //! ask again, and when there is no desktop to ask on. It looks for itself in the firewall's rules
 //! ([`inbound`]) and puts the rule there ([`allow`]), with an administrator's approval when this
 //! program doesn't already run as one. The rule names this program's file, covers incoming
-//! connections only, and is made for the kinds of network (private, public, domain) this computer
-//! is on at that moment, as Windows' own question would be.
+//! connections only, and is made for private and domain networks, and for a public one when this
+//! computer is on one at that moment.
+//!
+//! Apparition's setup for Windows (`scripts/windows/setup.nsi`) makes the rules before either
+//! program first runs ([`allow_programs`], through `apparition-cli firewall allow`), so an
+//! installed copy never meets the question, and takes them away when it is removed
+//! ([`remove_programs`]). The rest above is for a copy unpacked from the zip, or moved since.
 //!
 //! The rules are read from where the firewall keeps them in the registry, which needs no rights
 //! and reads the same in every language (`netsh`'s output is translated). Everywhere but Windows
@@ -106,10 +111,53 @@ pub fn needs_rule() -> bool {
 pub fn allow() -> Result<(), rootcause::Report> {
     #[cfg(windows)]
     {
-        windows::allow()
+        windows::allow(&[windows::program().ok_or_else(|| rootcause::report!("couldn't tell where this program is"))?])
     }
     #[cfg(not(windows))]
     {
+        Ok(())
+    }
+}
+
+/// What the firewall does with connections coming in for the program at `program`, as
+/// [`inbound`] says for this one.
+pub fn inbound_for(program: &std::path::Path) -> Option<Inbound> {
+    #[cfg(windows)]
+    {
+        windows::inbound_for(program.to_str()?)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = program;
+        None
+    }
+}
+
+/// [`allow`] for the programs at `programs`, with one approval for them all: what Apparition's
+/// setup does for the app and the command line it has just put in place, so that neither ever
+/// meets Windows' question.
+pub fn allow_programs(programs: &[std::path::PathBuf]) -> Result<(), rootcause::Report> {
+    #[cfg(windows)]
+    {
+        windows::allow(&windows::texts(programs)?)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = programs;
+        Ok(())
+    }
+}
+
+/// Takes away every rule for incoming connections that names one of `programs`: what removing
+/// Apparition does, so that no rule outlives the file it was for.
+pub fn remove_programs(programs: &[std::path::PathBuf]) -> Result<(), rootcause::Report> {
+    #[cfg(windows)]
+    {
+        windows::remove(&windows::texts(programs)?)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = programs;
         Ok(())
     }
 }
@@ -140,31 +188,57 @@ mod windows {
         unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) != 0 && session != 0 }
     }
 
-    fn program() -> Option<String> {
+    pub(super) fn program() -> Option<String> {
         std::env::current_exe().ok()?.to_str().map(str::to_owned)
     }
 
-    pub(super) fn inbound() -> Option<Inbound> {
-        let program = program()?;
-        let key = windows_registry::LOCAL_MACHINE.open(RULES).ok()?;
-        let rules: Vec<String> = key.values().ok()?.filter_map(|(_, value)| String::try_from(value).ok()).collect();
-        Some(verdict(rules.iter().map(String::as_str), &program))
+    /// Paths as the firewall's rules spell them.
+    pub(super) fn texts(programs: &[std::path::PathBuf]) -> Result<Vec<String>, Report> {
+        programs.iter().map(|program| program.to_str().map(str::to_owned).ok_or_else(|| report!("{} isn't a path the firewall can name", program.display()))).collect()
     }
 
-    /// The PowerShell that makes the rule, for `program`. Run as an administrator. The firewall
-    /// cmdlets take and give the same names in every language.
-    fn script(program: &str) -> String {
-        // A single-quoted PowerShell string takes everything literally but the quote itself.
-        let quoted = program.replace('\'', "''");
+    pub(super) fn inbound() -> Option<Inbound> {
+        inbound_for(&program()?)
+    }
+
+    pub(super) fn inbound_for(program: &str) -> Option<Inbound> {
+        let key = windows_registry::LOCAL_MACHINE.open(RULES).ok()?;
+        let rules: Vec<String> = key.values().ok()?.filter_map(|(_, value)| String::try_from(value).ok()).collect();
+        Some(verdict(rules.iter().map(String::as_str), program))
+    }
+
+    /// PowerShell's list of `programs`. A single-quoted PowerShell string takes everything
+    /// literally but the quote itself.
+    fn list(programs: &[String]) -> String {
+        programs.iter().map(|program| format!("'{}'", program.replace('\'', "''"))).collect::<Vec<_>>().join(", ")
+    }
+
+    /// The PowerShell that takes away the rules for `programs`. Run as an administrator. The
+    /// firewall cmdlets take and give the same names in every language.
+    fn removal(programs: &[String]) -> String {
         format!(
             r#"$ErrorActionPreference = 'Stop'
-$program = '{quoted}'
-$kinds = @(Get-NetConnectionProfile | ForEach-Object {{ if ($_.NetworkCategory -eq 'DomainAuthenticated') {{ 'Domain' }} else {{ "$($_.NetworkCategory)" }} }} | Sort-Object -Unique)
-if ($kinds.Count -eq 0) {{ $kinds = @('Private') }}
-Get-NetFirewallApplicationFilter -Program $program -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' }} | Remove-NetFirewallRule
-New-NetFirewallRule -DisplayName 'Apparition' -Description 'Lets your devices reach Apparition on this computer.' -Direction Inbound -Action Allow -Program $program -Profile $kinds | Out-Null
+foreach ($program in @({})) {{
+    Get-NetFirewallApplicationFilter -Program $program -ErrorAction SilentlyContinue | Get-NetFirewallRule | Where-Object {{ $_.Direction -eq 'Inbound' }} | Remove-NetFirewallRule
+}}
+"#,
+            list(programs)
+        )
+    }
+
+    /// The PowerShell that makes the rules, for `programs`: [`removal`], then a rule each for
+    /// private and domain networks, and for a public one when this computer is on one now (home
+    /// Wi-Fi is often left that way).
+    fn script(programs: &[String]) -> String {
+        format!(
+            r#"{}$kinds = @(@('Private', 'Domain') + @(Get-NetConnectionProfile | ForEach-Object {{ if ($_.NetworkCategory -eq 'DomainAuthenticated') {{ 'Domain' }} else {{ "$($_.NetworkCategory)" }} }}) | Sort-Object -Unique)
+foreach ($program in @({})) {{
+    New-NetFirewallRule -DisplayName 'Apparition' -Description 'Lets your devices reach Apparition on this computer.' -Direction Inbound -Action Allow -Program $program -Profile $kinds | Out-Null
+}}
 exit 0
-"#
+"#,
+            removal(programs),
+            list(programs)
         )
     }
 
@@ -181,22 +255,35 @@ exit 0
             .is_ok_and(|output| output.status.success())
     }
 
-    pub(super) fn allow() -> Result<(), Report> {
-        let program = program().ok_or_else(|| report!("couldn't tell where this program is"))?;
-        let rule = script(&program);
-        // As this program: enough when it runs as an administrator already (over SSH, say).
-        if !powershell(&rule) {
-            // Else as an administrator, which Windows asks the person to approve.
+    /// Runs `script` as this program, which is enough when it runs as an administrator already
+    /// (setup, or over SSH); else as an administrator, which Windows asks the person to approve.
+    fn as_administrator(script: &str) {
+        if !powershell(script) {
             let elevate = format!(
                 "$ErrorActionPreference = 'Stop'\n$run = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','{}'\nexit $run.ExitCode\n",
-                encoded(&rule)
+                encoded(script)
             );
             powershell(&elevate);
         }
-        match inbound() {
-            Some(Inbound::Allowed) => Ok(()),
-            _ => bail!("Windows Defender Firewall still blocks Apparition: the change wasn't approved, or couldn't be made. Allow it for your network in Windows Security > Firewall & network protection > Allow an app through firewall."),
+    }
+
+    pub(super) fn allow(programs: &[String]) -> Result<(), Report> {
+        as_administrator(&script(programs));
+        if programs.iter().all(|program| inbound_for(program) == Some(Inbound::Allowed)) {
+            return Ok(());
         }
+        bail!("Windows Defender Firewall still blocks Apparition: the change wasn't approved, or couldn't be made. Allow it for your network in Windows Security > Firewall & network protection > Allow an app through firewall.")
+    }
+
+    pub(super) fn remove(programs: &[String]) -> Result<(), Report> {
+        if programs.iter().all(|program| inbound_for(program) == Some(Inbound::Unasked)) {
+            return Ok(());
+        }
+        as_administrator(&format!("{}exit 0\n", removal(programs)));
+        if programs.iter().all(|program| inbound_for(program) == Some(Inbound::Unasked)) {
+            return Ok(());
+        }
+        bail!("Apparition's rules are still in Windows Defender Firewall: the change wasn't approved, or couldn't be made.")
     }
 }
 

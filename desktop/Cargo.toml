@@ -41,6 +41,8 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 base64 = "0.22"
 dunce = "1"
+# The updater asks whether the background service runs from this copy's folder.
+windows-registry = "0.6"
 
 [features]
 # Serves the bundled ui/ instead of a dev server. `cargo tauri build` turns it on; a plain

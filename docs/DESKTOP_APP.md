@@ -62,7 +62,13 @@ The helper is passed to PowerShell as a command, not a script file, so a Group P
 execution policy doesn't block it. PowerShell locked to Constrained Language mode
 (AppLocker or WDAC) does: the banner then says the computer's policy blocks the updater
 and links to the Releases page for a manual download.
-Keep all three in a user-writable folder. On Linux an AppImage replaces itself atomically and keeps
+A copy from the zip has to stay in a user-writable folder, and so does one set up for one person
+(`%LOCALAPPDATA%\Programs\Apparition`), which updates with no question asked. A copy set up for
+everyone sits in `%ProgramFiles%\Apparition`, where only an administrator may write, and its
+background service runs `apparition-cli.exe`: the helper then runs as an administrator, which
+Windows asks you to approve at each update, stops the service for the swap and starts it again,
+and the app is started again as you, not as the administrator who approved. Either way the helper
+brings the version in Windows' list of installed apps up to date. On Linux an AppImage replaces itself atomically and keeps
 its executable permissions. A Debian installation instead asks for system authorization
 through PolicyKit and installs the verified `.deb` with `dpkg`; it needs `pkexec` and a
 desktop authorization agent. If `dpkg` reports missing dependencies, repair them with
@@ -137,7 +143,8 @@ debug build opens on any step with `APPARITION_DESKTOP_PREVIEW=signing` (or `pai
 `APPARITION_RELEASE_SITE` and `APPARITION_RELEASE_SIGNERS`, and can move the companion's ports with
 `APPARITION_COMPANION_PORTS=<relay>,<anisette>`; release builds ignore all four.
 `scripts/package-release.sh` puts the app in the macOS and Windows installer zips next to the
-command line, and with `--linux` builds a .deb and an AppImage per architecture (Ubuntu 22.04,
+command line, wraps the Windows files in a setup program as well (NSIS, `scripts/windows/setup.nsi`;
+its first lines say what it does and why it starts unelevated), and with `--linux` builds a .deb and an AppImage per architecture (Ubuntu 22.04,
 so glibc 2.35 or newer). The Linux release includes direct .deb and AppImage downloads as well
 as an archive with both and the headless command line. Opening the app again shows the running
 one, which is also the way back to its window on a Linux desktop with no tray (niri or plain

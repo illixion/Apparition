@@ -29,20 +29,48 @@ the desktop app, which keeps it running from
 the menu bar or tray, or `apparition relay` on the command line (see [the command line](COMMAND_LINE.md)); both run
 `core/src/companion.rs`.
 
-Windows Defender Firewall drops what your devices send until a rule allows Apparition. Windows
+Windows Defender Firewall drops what your devices send until a rule allows Apparition, and a rule
+names a program by where its file is. Apparition's setup for Windows (`scripts/windows/setup.nsi`)
+puts the files where they stay and makes the rules for the app and the command line, so an
+installed copy is never asked; removing it takes the rules away. It does that through the command
+line (`apparition-cli firewall allow`, `core/src/firewall.rs`), which a copy from the zip can run
+too. A rule allows incoming connections to that one program on private and domain networks, and on
+a public one if the PC is on one at that moment.
+
+A copy unpacked from the zip has no rule yet. Windows
 asks about that itself the first time Apparition listens: allow it, and it is remembered. That
 question appears only on the desktop and only once, so two cases are left, where the companion
-would be blocked without a word, and Apparition handles them by making the rule itself
-(`core/src/firewall.rs`), with an administrator's approval when it doesn't already run as one. A
+would be blocked without a word, and Apparition handles them by making the rule itself, with an
+administrator's approval when it doesn't already run as one. A
 question that went unanswered (at login, say) leaves a block rule and isn't asked again: the
 desktop app's Companion page then offers a button, and `apparition relay`, `apparition signing
 receive` and the app's receiving of a signing key replace the rule before they listen. And over SSH
-there is no desktop to ask on: the command line makes the rule there. The rule allows incoming connections to that one program, on the kinds of
-network (private, public, domain) the PC is on at that moment. To make one by hand, or with another
+there is no desktop to ask on: the command line makes the rule there. To make one by hand, or with another
 firewall, allow inbound TCP 49160, 49161 and 49162 for the companion and its encrypted anisette
 channel, e.g. from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction
 Inbound -Protocol TCP -LocalPort 49160,49161,49162 -Action Allow -Profile Private`. Port 6969 stays
 on the Mac's loopback and needs no rule.
+
+**With nobody signed in (Windows).** Setting Apparition up for everyone on a PC also installs the
+companion as a Windows service, `Apparition`, which starts with Windows: the relay, and the anisette
+the app's Companion tab is set to offer (Apparition's own, or a server's address). It is
+`apparition-cli service run`, and `apparition-cli service install` makes it from a copy unpacked
+from the zip. Three things differ from the app's companion:
+
+- It runs as `NT AUTHORITY\LocalService` with no privilege but the one every program has, not as
+  the system, since it takes connections from the network and runs the Android anisette's libraries
+  in its own process. Its own identity (`NT SERVICE\Apparition`) is given the companion's folder
+  (`%APPDATA%\Apparition Installer\anisette` of whoever ran setup: the paired devices and the
+  anisette's state) and nothing else of that person's, so not their pairings or signing keys.
+- Nobody can answer it, so it declines a device that asks to pair. Pair in the app.
+- It steps aside for an Apparition someone is using. The app, and `apparition relay` in a terminal,
+  hold a claim on the ports while they run (`companion::Front`, an open file in the companion's
+  folder); the service lets go within a second or two and takes the ports back when that program
+  ends, however it ends. The app keeps a copy of its companion settings in that folder for the
+  service, which starts again with them when they change.
+
+`apparition-cli service status` says whether it runs and where its log is.
+
 On Linux, open the same ports if a firewall runs (`sudo ufw allow 49160,49161,49162/tcp`, or firewalld's `--add-port`), and
 UDP 5353 for mDNS. On macOS, Local Network
 privacy blocks an unbundled binary's multicast, so `apparition relay` there can't advertise

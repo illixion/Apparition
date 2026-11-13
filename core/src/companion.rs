@@ -37,6 +37,61 @@ pub enum AnisetteSource {
     Android,
 }
 
+/// The claim an Apparition someone is using (the desktop app, `apparition relay` in a terminal)
+/// makes on the companion's ports, on a Windows PC where the background service
+/// (`apparition-cli service`, which setup installs for everyone) would otherwise hold them.
+///
+/// The service is the companion while nobody is signed in. An Apparition with a person in front
+/// of it can ask them to approve a pairing, which the service can't, so the service steps aside
+/// for as long as one holds this, and takes the ports back within a second or two of its going.
+/// The claim is a file in the companion's folder (`front.lock`), held open so that nothing else
+/// can open it: Windows lets go of it when the program ends, however it ends, so a crash never
+/// leaves the service waiting. Elsewhere there is no such service and a claim is empty.
+pub struct Front(#[allow(dead_code)] Option<std::fs::File>);
+
+impl Front {
+    const FILE: &str = "front.lock";
+
+    /// Claims the ports for this program, for as long as the value lives. Empty when another
+    /// Apparition holds the claim already (it has the ports too), or off Windows.
+    pub fn claim(data_dir: &Path) -> Front {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let _ = std::fs::create_dir_all(data_dir);
+            Front(std::fs::OpenOptions::new().write(true).create(true).truncate(false).share_mode(0).open(data_dir.join(Self::FILE)).ok())
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = data_dir;
+            Front(None)
+        }
+    }
+
+    /// Whether this program holds the claim.
+    pub fn held(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Whether some program holds the claim now: what the service asks.
+    pub fn claimed(data_dir: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const ERROR_SHARING_VIOLATION: i32 = 32;
+            match std::fs::OpenOptions::new().read(true).share_mode(0).open(data_dir.join(Self::FILE)) {
+                Ok(_) => false,
+                Err(error) => error.raw_os_error() == Some(ERROR_SHARING_VIOLATION),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = data_dir;
+            false
+        }
+    }
+}
+
 pub struct Companion {
     pub relay: Relay,
     /// Devices paired to use the anisette server, and the pairings waiting for the person.
