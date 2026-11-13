@@ -248,7 +248,10 @@ exit 0
     }
 
     fn powershell(script: &str) -> bool {
+        // (Without a PowerShell 7's module path, which this may have been started from and
+        // which makes Windows PowerShell load that version's modules.)
         Command::new("powershell.exe")
+            .env_remove("PSModulePath")
             .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded(script)])
             .creation_flags(CREATE_NO_WINDOW)
             .output()

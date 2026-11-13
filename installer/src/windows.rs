@@ -221,11 +221,7 @@ mod installed {
     /// process is there. `sc query` says so only in words, so this asks for the process's number.
     pub(super) fn service_running() -> bool {
         let script = format!("exit [int]((Get-CimInstance Win32_Service -Filter \"Name='{SERVICE}'\").ProcessId -gt 0)");
-        Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .is_ok_and(|output| output.status.code() == Some(1))
+        powershell(&script).is_ok_and(|output| output.status.code() == Some(1))
     }
 
     pub(super) fn stop_service() -> Result<(), Error> {
@@ -243,6 +239,27 @@ mod installed {
             std::thread::sleep(Duration::from_millis(200));
         }
         Err(fail("the Apparition service didn't stop"))
+    }
+
+    /// The service's identity as a number: Windows derives it from the service's name, so it is
+    /// the same on every PC, and still names the entries once the service is gone.
+    const IDENTITY_SID: &str = "S-1-5-80-1608185904-1558370571-3944578777-3032930172-4143467971";
+
+    /// Takes the service's entry off `dir`, and with it what the folder's contents inherited.
+    /// (`icacls /remove` leaves it there.)
+    fn revoke(dir: &str) {
+        let script = format!(
+            "$acl = Get-Acl -LiteralPath '{0}'; $acl.PurgeAccessRules((New-Object System.Security.Principal.SecurityIdentifier('{IDENTITY_SID}'))); Set-Acl -LiteralPath '{0}' -AclObject $acl",
+            dir.replace('\'', "''")
+        );
+        let _ = powershell(&script);
+    }
+
+    /// Runs `script` in Windows PowerShell. Without the module path of a PowerShell 7 this may
+    /// have been started from (over SSH, say), which makes Windows PowerShell load that
+    /// version's modules and fail at `Get-Acl`.
+    fn powershell(script: &str) -> std::io::Result<std::process::Output> {
+        Command::new("powershell.exe").env_remove("PSModulePath").args(["-NoProfile", "-NonInteractive", "-Command", script]).creation_flags(CREATE_NO_WINDOW).output()
     }
 
     fn icacls(args: &[&str]) -> bool {
@@ -271,7 +288,7 @@ mod installed {
         std::fs::create_dir_all(dir).map_err(|error| fail(format!("can't make {dir_text}: {error}")))?;
         let key = windows_registry::LOCAL_MACHINE.create(format!(r"{KEY}\Parameters")).map_err(|error| fail(format!("can't keep the service's settings: {error}")))?;
         if let Some(old) = key.get_string("DataDir").ok().filter(|old| !old.eq_ignore_ascii_case(dir_text)) {
-            icacls(&[&old, "/remove", IDENTITY, "/C", "/Q"]);
+            revoke(&old);
         }
         key.set_string("DataDir", dir_text).map_err(|error| fail(format!("can't keep the service's settings: {error}")))?;
         // The folder, what is in it and what will be: read, write and delete, to the service only.
@@ -280,7 +297,13 @@ mod installed {
         if !icacls(&[dir_text, "/grant", &format!("{IDENTITY}:(OI)(CI)M"), "/C", "/Q"]) {
             return Err(fail(format!("couldn't give the service {dir_text}")));
         }
-        sc(&["start", SERVICE])
+        // Access denied at this point isn't about who is asking: the service's account can't
+        // read the program, which is the case inside someone's own folders.
+        match sc_code(&["start", SERVICE])? {
+            0 => Ok(()),
+            5 => Err(fail(format!("the service is installed but Windows can't start it: its account (LocalService) can't read {program}. Put Apparition where every account can read it, as setup does (Program Files), and install the service from there"))),
+            code => Err(fail(format!("the service is installed but didn't start (Windows error {code})"))),
+        }
     }
 
     pub(super) fn uninstall_service() -> Result<(), Error> {
@@ -290,12 +313,11 @@ mod installed {
             Err(_) if sc_code(&["query", SERVICE])? == ERROR_SERVICE_DOES_NOT_EXIST => return Ok(()),
             Err(error) => return Err(error),
         }
-        // Before the service goes: its identity's name means nothing to Windows afterwards, and
-        // the folder would keep an entry for nobody.
+        sc(&["delete", SERVICE])?;
         if let Some(dir) = dir.as_deref().and_then(Path::to_str) {
-            icacls(&[dir, "/remove", IDENTITY, "/C", "/Q"]);
+            revoke(dir);
         }
-        sc(&["delete", SERVICE])
+        Ok(())
     }
 
     const USER_ENVIRONMENT: &str = "Environment";
