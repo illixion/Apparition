@@ -33,9 +33,9 @@ Windows Defender Firewall drops what your devices send until a rule allows Appar
 Windows asks about that only once and only on the desktop: started at login or over SSH, the
 companion is blocked without a word. Apparition looks for itself in the firewall's rules and makes
 the rule when it is missing, with the administrator approval Windows asks for (`core/src/firewall.rs`):
-`apparition relay` and `apparition signing receive` do it before they listen, and the desktop app's
-Companion page offers it as a button while the firewall keeps devices out, and does it when you
-receive a signing key. The rule allows incoming connections to that one program, on the kinds of
+`apparition relay` and `apparition signing receive` do it before they listen, and the desktop app
+does it when its companion first starts and when you receive a signing key. Once approved the rule
+stays, so it is asked once; if it wasn't approved, the Companion page offers it as a button. The rule allows incoming connections to that one program, on the kinds of
 network (private, public, domain) the PC is on at that moment. To make one by hand, or with another
 firewall, allow inbound TCP 49160, 49161 and 49162 for the companion and its encrypted anisette
 channel, e.g. from an elevated PowerShell: `New-NetFirewallRule -DisplayName "Apparition" -Direction

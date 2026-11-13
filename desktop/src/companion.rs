@@ -192,6 +192,7 @@ impl CompanionState {
                     }
                     *running = Some(Arc::new(companion));
                     *self.relay_error.lock().unwrap() = None;
+                    allow_through_firewall_once();
                 }
                 Err(error) => {
                     *self.relay_error.lock().unwrap() = Some(relay_failure(&error.to_string()));
@@ -608,6 +609,22 @@ pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode, serve
     state.apply().await;
     state.update_tray().await;
     Ok(state.status().await)
+}
+
+/// The first time the companion starts in this run, on a PC whose firewall keeps devices out: asks Windows to let
+/// them in, which shows its approval prompt. Once approved the rule stays, so later starts find it and ask nothing.
+/// Once per run, in the background: a person who says no isn't asked again until the app next starts, and the
+/// Companion page keeps the button.
+fn allow_through_firewall_once() {
+    static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ASKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    tokio::task::spawn_blocking(|| {
+        if apparition_core::firewall::inbound().is_some_and(|inbound| inbound != apparition_core::firewall::Inbound::Allowed) {
+            let _ = apparition_core::firewall::allow();
+        }
+    });
 }
 
 /// Lets devices' connections through Windows Defender Firewall for this app: adds the rule, which Windows asks an
