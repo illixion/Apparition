@@ -1,8 +1,8 @@
 # The desktop app
 
 The first time it opens, the app asks what you want to do. **Install apps** shows the install
-steps and Settings. **Develop apps** adds a Develop tab (a checklist of what is ready, your
-projects, builds and reports) and turns Install into Devices, where you pair a device and set up
+steps and Settings. **Develop apps** adds Apps, Debug and Builds tabs (Apps starts with a
+"Ready to build?" checklist and your projects; crash and trace reports are under Debug) and turns Install into Devices, where you pair a device and set up
 signing. Both modes share the same pairing and signing, and the buttons in the header's corner
 switch between them at any time; the choice is remembered. To add a project, choose its folder: the
 Apparition Store reads its schemes and bundle IDs and writes a small `build-signing.conf` with no
@@ -24,7 +24,7 @@ headset paired with one is paired with both. Passwords go from the app's own fie
 core and nowhere else.
 
 Desktop update checks are **off by default**, including for existing installations.
-Choose automatic checks on step 6, **Done**, or with the **Companion > Updates** toggle.
+Choose automatic checks on step 6, **Done**, or with the **Settings > Updates** toggle.
 When enabled, the app contacts apps.illixion.com (which only redirects, to wherever the release is
 hosted: GitHub Releases, or a self-hosted copy while GitHub is down; GitHub directly if that domain
 is down) on launch and every six hours of
@@ -57,8 +57,8 @@ On macOS the whole ad-hoc-signed `.app` (including its CLI and entitled anisette
 staged beside the installed app, its code-signing seal is checked, and the bundles are
 atomically exchanged. The Applications folder must be writable by your account; use
 `~/Applications` if necessary. Updating does not re-sign the helper or require a new
-quarantine exception. On Windows the portable app, `apparition-cli.exe` and
-`WebView2Loader.dll` update together: a Windows PowerShell helper waits for the app to
+quarantine exception. On Windows the portable app and `apparition-cli.exe` (and `WebView2Loader.dll`, which the x64 build ships)
+update together: a Windows PowerShell helper waits for the app to
 exit, replaces the files, restarts it, and rolls back if installation or launch fails.
 The helper is passed to PowerShell as a command, not a script file, so a Group Policy
 execution policy doesn't block it. PowerShell locked to Constrained Language mode

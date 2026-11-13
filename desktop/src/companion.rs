@@ -631,7 +631,7 @@ pub async fn companion_set_anisette(state: Shared<'_>, mode: AnisetteMode, serve
         return Err("Only a Mac on macOS 26 or earlier, or a macOS VM set up for it, offers its own anisette. Pair your devices with that Mac's Apparition instead.".into());
     }
     if mode == AnisetteMode::Android && !api::android_anisette_available() {
-        return Err("Apparition's own Android anisette is switched off in this build. Offer a Mac's, a Docker server's or a third-party server's instead.".into());
+        return Err("Apparition's own Android anisette is switched off in this build. Offer a Mac's or a third-party server's instead.".into());
     }
     #[cfg(target_os = "macos")]
     if mode == AnisetteMode::Vm && !api::vm::default_bundle().join("ready").exists() {

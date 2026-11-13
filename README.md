@@ -39,8 +39,8 @@ because Apple wants an "anisette" source for that, and a Mac is the most reliabl
 
 **What "no Mac" means.** On Windows and Linux the app installs and refreshes everything without one.
 Only the Apple ID sign-in needs an anisette source, and you have four: a Mac of your own, Apparition's
-own Android anisette on Linux (and macOS), an anisette server you run yourself in Docker, or a third-party
-server's address. The last two work on any computer, Windows included. Apple
+own Android anisette, an anisette server you run yourself in Docker, or a third-party server's address. The
+last three work on any computer, Windows included. Apple
 decides what it accepts and has changed that several times since October, so a Mac you own is the
 setup least likely to break; the others work today, and Apparition keeps them for as long as Apple lets them. If you have a Mac at all, even an old Intel MacBook left on a shelf, pair it as a companion.
 
@@ -93,11 +93,10 @@ comparison of anisette sources is in [docs/ANISETTE.md](docs/ANISETTE.md).
 3. Sign in with your Apple ID, or choose your own certificate and profile, and install. The sign-in's
    **Anisette data** choice depends on your computer:
    - **Mac on macOS 26 or earlier:** nothing to choose, it uses the Mac's own.
-   - **Mac on macOS 27:** the anisette VM (Companion > Set up the anisette VM).
-   - **Windows:** From my paired Mac, or From a third-party anisette server and its address, which can be
-     one you run yourself in [Docker](docs/ANISETTE.md#run-your-own-anisette-server-with-docker).
-     Apparition's own isn't available on Windows.
-   - **Linux:** Apparition's own (Android libraries) with nothing to set up, or either of the Windows choices.
+   - **Mac on macOS 27:** the anisette VM (Settings > Anisette VM on this Mac).
+   - **Windows or Linux:** Apparition's own (Android libraries) with nothing to set up, or From my paired Mac,
+     or From a third-party anisette server and its address, which can be one you run yourself in
+     [Docker](docs/ANISETTE.md#run-your-own-anisette-server-with-docker).
 
    Apparition opens on the device ready to sign: the desktop app hands it the pairing and the signing it used.
 4. If the device won't open Apparition, it needs one of two settings. Turn on Developer Mode

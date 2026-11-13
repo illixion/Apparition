@@ -20,7 +20,7 @@ Sharing or a game streaming PC from anywhere, for example with
    network (where it can also wake a sleeping Mac, below), the Tailscale address anywhere else.
    Nothing to switch when you leave home or come back, and before it uses another address it
    checks that the same computer answers there.
-3. Under Anisette, choose Use Companion's Anisette: Apparition reaches it at the same Tailscale
+3. Under Apple Sign-In Companion, choose Pair and Use next to your computer's name: Apparition reaches it at the same Tailscale
    address, so signing in works away from home too. Anisette for your devices comes from a Mac, from Apparition's own
    Android anisette or from a third-party server (see [Anisette](ANISETTE.md#how-anisette-works)): use your Mac (a Mac on macOS 26
    or earlier, Intel included, is best; a macOS VM gives SMS codes only), or Apparition's own (a Mac with 8 GB,

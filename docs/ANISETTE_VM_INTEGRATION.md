@@ -1,13 +1,13 @@
 # Anisette VM inside the app: scope
 
-Status, 2026-11-04: **in the app.** The Companion tab sets the VM up with one button (no administrator password, no
+Status, 2026-11-04: **in the app.** The app's Settings sets the VM up with one button (no administrator password, no
 typing, no Python), the companion offers its anisette to paired devices, and sign-ins on the Mac use it; `apparition
 vm` does the same from a terminal. A fresh setup from a local copy of the restore image took about 11 minutes and
 ended with Apple accepting the anisette. This document is the scope that got it there, and what is still open.
 
 ## What the person sees
 
-On a Mac that has no anisette of its own (macOS 27, with SIP and AMFI on), the desktop app's Companion tab offers
+On a Mac that has no anisette of its own (macOS 27, with SIP and AMFI on), the desktop app's Settings offers
 **Set up the anisette VM** (and "Use a restore image I have…"). One click, a progress bar, and about 11 minutes
 of waiting with the restore image on the Mac, 45 with its 20 GB download. No UTM, no Terminal, no typing in
 recoveryOS, no administrator password. Once set up, the companion offers it ("This Mac's anisette VM"), the sign-in
@@ -50,7 +50,7 @@ Windows PC; the VM sits behind the companion as its anisette source (see "Reachi
   first with `Apparition-VMGuest-*`), and the app's launch-time hand-off, which is the same code.
 
 Not verified: a real account signing in through a VM-hosted companion end to end; a device pairing with a
-companion that offers the VM; the Companion tab's VM group in the running app (built, not yet clicked through);
+companion that offers the VM; Settings' VM group in the running app (built, not yet clicked through);
 host sleep and wake with the VM running (it suspends on the sleep notification).
 
 ## Measured facts that shape the design
@@ -136,7 +136,7 @@ differ. That needs the host to serve them and the guest to keep the helper's sig
    The runner kept its window (recoveryOS needs one to be read), off screen in `serve`.
 4. **Companion source.** `AnisetteSource::Vm` done; left is the gate: a device signs in with a real account
    through the VM.
-5. **App and CLI.** Done: the Companion tab's group (progress, stop, check with Apple, remove), the companion's
+5. **App and CLI.** Done: Settings' VM group (progress, stop, check with Apple, remove), the companion's
    and sign-in form's VM choice, `apparition vm setup|status|serve|quit|shutdown|check|image|remove`, the bundle
    excluded from Time Machine, the image in `~/Library/Caches`. The cache's copy of the image is removed once the VM is
    set up (the person's own copy stays). Not done: a preflight for free disk (the app says what it needs; the copy

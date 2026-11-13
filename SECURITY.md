@@ -23,7 +23,8 @@ these matter most:
 
 Every release's files carry a build attestation (`gh attestation verify <file> -R illixion/Apparition`) and are
 listed in a `SHA256SUMS` signed with the release keys in [`release-signers`](release-signers). The desktop app checks
-both before it installs an update. [docs/RELEASES.md](docs/RELEASES.md) describes how.
+the `SHA256SUMS` signature and each download's hash before it installs an update; the attestation is for you to
+verify with `gh`. [docs/RELEASES.md](docs/RELEASES.md) describes how.
 
 ## Supported versions
 

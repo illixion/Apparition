@@ -43,7 +43,7 @@ question appears only on the desktop and only once, so two cases are left, where
 would be blocked without a word, and Apparition handles them by making the rule itself, with an
 administrator's approval when it doesn't already run as one. A
 question that went unanswered (at login, say) leaves a block rule and isn't asked again: the
-desktop app's Companion page then offers a button, and `apparition relay`, `apparition signing
+desktop app's Settings then offers a button, and `apparition relay`, `apparition signing
 receive` and the app's receiving of a signing key replace the rule before they listen. And over SSH
 there is no desktop to ask on: the command line makes the rule there. To make one by hand, or with another
 firewall, allow inbound TCP 49160, 49161 and 49162 for the companion and its encrypted anisette
@@ -53,7 +53,7 @@ on the Mac's loopback and needs no rule.
 
 **With nobody signed in (Windows).** Setting Apparition up for everyone on a PC also installs the
 companion as a Windows service, `Apparition`, which starts with Windows: the relay, and the anisette
-the app's Companion tab is set to offer (Apparition's own, or a server's address). It is
+the app's Settings is set to offer (Apparition's own, or a server's address). It is
 `apparition-cli service run`, and `apparition-cli service install` makes it from a copy unpacked
 from the zip. Three things differ from the app's companion:
 

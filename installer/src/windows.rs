@@ -8,7 +8,7 @@
 //! # The service
 //!
 //! A PC set up for everyone gets a Windows service, `Apparition`, that starts with Windows: the
-//! relay, and the anisette the desktop app's Companion tab was set to offer, with no one signed
+//! relay, and the anisette the desktop app's Settings was set to offer, with no one signed
 //! in. It is the same companion as `apparition relay`, with three differences.
 //!
 //! - It runs as `NT AUTHORITY\LocalService` with no privileges beyond the one every program has

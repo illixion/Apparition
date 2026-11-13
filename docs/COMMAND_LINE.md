@@ -57,8 +57,20 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `certificates`, `app-ids` | Show what uses up a free account's two certificates and ten App IDs, and free one you choose after you confirm. |
 | `signing receive`, `send`, `hand-off`, `share`, `import` | Move the Apple ID's certificate key between your devices and computers; see [Sharing one certificate](PAIRING_AND_SIGNING.md#sharing-one-certificate). |
 | `forget <name or UDID>` | Forgets a paired device. |
-| `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Companion tab), offering this Mac's anisette to paired devices and computers on a Mac that gives it. |
-| `anisette pair <address>`, `status`, `forget` | Pair this computer with a Mac running the companion, for its anisette; say which anisette sign-ins use; forget the pairing. See [Anisette](ANISETTE.md#how-anisette-works). |
+| `apps [--device <name or UDID>] [--all] [--json]` | What a paired device has installed, with versions, over this pairing's own tunnel. A sleeping Apple TV stays asleep. |
+| `push <signed.ipa>` | Installs an IPA that is already signed for the device, as it is, with no re-signing. |
+| `uninstall <bundle ID>` | Removes an app and its data container. |
+| `container pull`, `push`, `count <bundle ID>` | Copies an installed, development-signed app's Documents and Library out, back in, or counts them: for backing data up across a reinstall. |
+| `launch <bundle ID> [--console] [--jit]` | Launches an app (ending a running copy); `--console` streams its output here, `--jit` starts it suspended and serves its JIT requests. |
+| `inject [<app>]` | On a Mac: patches the Swift sources edited since the build into a running app. |
+| `build [--run] [--log] [--mcp] [--jit] [--inject]` | On a Mac, in a repo with a `build-signing.conf`: builds with Xcode, signs, keeps the build and installs it over this pairing; `--run` launches it. `apparition build --help` lists the rest. |
+| `updates [--check] [--run]` | Which apps on your devices are behind their branch, from the Mac's Store; `--run` builds and installs the updates. |
+| `store serve`, `status`, `projects`, `build`, … | Everything the Apparition Store does, without the app. `apparition store help` lists them. |
+| `crash-reports list`, `show`, `done`, `add`, `import-dsyms` | What the Store holds about crashes and uploaded traces; `add` opens an encrypted problem report from a device. |
+| `vm setup`, `update`, `status`, `serve`, `quit`, `check`, `remove` | The anisette VM for a Mac on macOS 27 (Apple silicon). `apparition vm help` lists the rest. |
+| `vm-setup` | Sets up a macOS VM on this Mac as an anisette companion with no internet. |
+| `relay` | Is the companion for Apparition on your devices until Ctrl-C (the same as the desktop app's Settings), offering this Mac's anisette to paired devices and computers on a Mac that gives it. |
+| `anisette pair <address>`, `status`, `check`, `forget` | Pair this computer with a Mac running the companion, for its anisette; say which anisette sign-ins use; forget the pairing. See [Anisette](ANISETTE.md#how-anisette-works). |
 | `anisette serve` | Serve this Mac's own anisette on loopback, for other programs on this Mac. |
 | `mac pair <address>`, `status`, `forget` | Pair this computer with your build Mac: developer access to its Apparition Store and, where it offers it, its anisette, with one approval there. See [docs/REMOTE_DEVELOPER.md](REMOTE_DEVELOPER.md). |
 | `deploy <app.ipa> [--device <name>] [--keep]` | Send an app built here (xtool, Xcode) to the paired Mac. With a device named, the Mac installs it itself when it can (paired with the device, certificate imported); otherwise the device's Apparition installs it. |

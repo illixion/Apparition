@@ -178,7 +178,7 @@ struct ConnectionView: View {
                 Note(text: "Paired companion selected. After updating an older companion, pair again to enable Apple connection relay access.", kind: .info)
             }
             Expander("Set up your computer") {
-                Text("Open Apparition on your Mac and offer this Mac's anisette in its Companion tab. Only a Mac you own provides it: one on macOS 26 or earlier, or a macOS VM on your Mac set up for it. A Windows or Linux companion relays only. Then use Find Companion here and choose Pair and Use. Local VPN can still handle installs while the paired Mac handles Apple connections.")
+                Text("Open Apparition on your computer and offer its anisette in Settings: a Mac you own (macOS 26 or earlier, or a macOS VM on it set up for it), or Apparition's own Android anisette on any computer. Then use Find Companion here and choose Pair and Use. Local VPN can still handle installs while the paired Mac handles Apple connections.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

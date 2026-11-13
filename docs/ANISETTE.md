@@ -29,7 +29,7 @@ from macOS on your own Mac, as Xcode does. In order of preference:
    push on your other Apple devices, with SMS offered as well. Tested on a 2019 MBP with macOS 15.8 and SIP/AMFI kept enabled.
 2. **A Mac on macOS 27, where macOS keeps its anisette to itself.**
    There are two ways around that:
-   - a small **macOS virtual machine** on it (Companion › **Set up the anisette VM**, or
+   - a small **macOS virtual machine** on it (Settings › **Set up the anisette VM**, or
      `apparition vm setup`; or make one in UTM, [how](../selfhost/macos-vm/README.md)). It costs no security
      on the Mac you use, but **Apple never prompts your devices for a sign-in made through a VM**:
      you get the 2FA code by SMS to your trusted phone number only, where a real Mac's sign-in
@@ -47,7 +47,7 @@ from macOS on your own Mac, as Xcode does. In order of preference:
    as a Mac, which Apple accepted in a full sign-in on 12 Nov 2026 (2FA, token, teams, app IDs,
    certificates). Apple has changed what it accepts several times since October, once turning this
    (`anisette::ANDROID_LIBRARIES`) and a future build may turn it off. It signs in on this
-   computer, and the companion can offer it to your devices too (Settings > Companion > Anisette for
+   computer, and the companion can offer it to your devices too (Settings > Anisette for
    your devices), which is how a Mac with 8 GB, too little for the anisette VM, or a Mac on macOS 27
    serves them without a VM. On Windows the libraries run through the same loader as elsewhere:
    it maps them with the Win32 memory calls and answers their file calls itself, so there is no
@@ -99,7 +99,7 @@ Android uses; nothing of Apple's is stored in this repository), loads them in it
 you prefer it, use a server: Apparition ships none, so enter the URL of
 any anisette-v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
 up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
-digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
+digest), and enter `http://localhost:6970` (or `http://<host>:6970` from another computer). The server sees this device's anisette identity
 and IP address, never the Apple ID or password, which go straight to Apple. A third-party
 server is optional now; use one only if you'd rather not have the built-in one.
 
@@ -139,11 +139,12 @@ the libraries into memory and makes them executable itself, so if the macOS apps
 notarized (hardened runtime), their entitlements must include
 `com.apple.security.cs.allow-unsigned-executable-memory`, or loading fails.
 
-The companion can offer the headset an anisette server too: this computer's own (built in,
-served to the network on port 6969), or the same compose file run with your Docker (Docker
-Desktop, OrbStack or Colima), from the desktop app's Companion tab or `apparition relay
---anisette builtin|local`. It then advertises the server, and Apparition offers "Use its
-anisette server" next to the companion; nothing switches on its own.
+The companion can offer your devices anisette too: this computer's own (built in on a Mac,
+or Apparition's own Android anisette on any computer), from the desktop app's Settings or
+`apparition relay --anisette builtin|android|none`. Devices paired with this computer get it over the
+encrypted channel on port 49162; the plain server stays on this computer's loopback (port 6969).
+Apparition on the device offers **Pair and Use** next to the companion's name; nothing switches on
+its own.
 
 Apple's servers sometimes refuse a request that another one would take: sign-in then fails "403
 Forbidden". Apparition retries on another server (`core/vendor/isideload/src/auth/edge.rs`): it
@@ -153,7 +154,7 @@ connected to. Only that lookup goes elsewhere, never the Apple ID. If every serv
 refuses, the error says so; try again later or on another network.
 
 The header corner of the desktop app always says where this computer's sign-in gets its anisette
-(built-in, Docker or another server) and what the companion offers, so a screenshot shows the
+(Mac, Android, VM, Paired Mac or a server's address) and what the companion offers, so a screenshot shows the
 setup.
 
 ## Seeing what a sign-in sent to Apple and what came back
@@ -167,7 +168,7 @@ Turn it on, repeat the failing sign-in, then read the file:
 | Where | How | The file |
 |---|---|---|
 | The device | Settings > Troubleshooting > Record sign-in requests (Share the record sends it from there) | `apparition-verbose.log` in Apparition's folder in the Files app |
-| The desktop app | Companion tab > Troubleshooting > Record what a sign-in sends to Apple (Show the file opens it) | `apparition-verbose.log` beside `apparition-core.log`, in the `Apparition Installer` data folder |
+| The desktop app | Settings > Troubleshooting > Record what a sign-in sends to Apple (Show the file opens it) | `apparition-verbose.log` beside `apparition-core.log`, in the `Apparition Installer` data folder |
 | The command line | `apparition --verbose <command>`, or `APPARITION_VERBOSE=1` in the environment | the same file; the command says where |
 | An agent | the app's debug server: `setVerboseLog` (`enabled`, `clear`), then `verboseLog` returns the end of the file | no need to pull it off the device |
 
@@ -201,47 +202,12 @@ a 403 before any Apple error code.
 
 ## When Apparition can't fetch Apple's libraries
 
-The built-in anisette needs two libraries, `libstoreservicescore.so` and `libCoreADI.so`, from
+The built-in Android anisette needs two libraries, `libstoreservicescore.so` and `libCoreADI.so`, from
 Apple's CDN (`apps.mzstatic.com`), once. Where that fails (a firewall or proxy, no route to the
 CDN, Apple moving the file), signing in stops with "Couldn't fetch Apple's anisette libraries from
-Apple's CDN". Work through this in order:
+Apple's CDN". The desktop app shows a Try again button, which keeps what you typed for five
+minutes; on the command line run the command again. Most failures are the network: check that
+`apps.mzstatic.com` opens from this computer, and a VPN or proxy that blocks it. Apparition has no
+way yet to take the libraries from a file you supply. Until Apple's CDN is reachable, sign in with
+a Mac's anisette or a server's address instead.
 
-1. **Try again.** The desktop app shows a Try again button, which keeps what you typed for five
-   minutes; on the command line run the command again. Most failures are the network. Check that
-   `apps.mzstatic.com` opens from this computer, and a VPN or proxy that blocks it.
-2. **Give Apparition the files yourself.** Only after step 1 fails does the desktop app show
-   "Advanced: use Apple Music's libraries from a file", under the Try again button; it isn't there
-   on a working setup, so nobody is sent looking for files they don't need. On the command line
-   it is always available:
-
-       apparition anisette import ~/Downloads/applemusic.apk
-       apparition anisette import libstoreservicescore.so libCoreADI.so
-
-   Either the Apple Music APK for Android, or both libraries from its `lib/arm64-v8a` or
-   `lib/x86_64` folder (the one for this computer's processor). What you give replaces what
-   Apparition would otherwise use, until you replace it again.
-3. **Where to get them.** From Apple only. The APK is at
-   `https://apps.mzstatic.com/content/android-apple-music-apk/applemusic.apk`, the address
-   Apple's own Android page links to; download it on a network that reaches it, such as a phone's
-   hotspot, and import it. Or copy the two libraries from another computer where Apparition has
-   already signed in: they are in the `anisette` folder beside its `apple-id` folder (macOS
-   `~/Library/Application Support/Apparition Installer/anisette`, Linux
-   `~/.local/share/Apparition Installer/anisette`, in the Flatpak
-   `~/.var/app/com.illixion.apparition.desktop/data/Apparition Installer/anisette`). Don't use an APK
-   from anywhere else: these libraries run inside Apparition, with everything Apparition can do,
-   and the app can't tell that a file came from Apple.
-4. **If no file matches.** Apparition checks one thing: each file's SHA-256 against the version it
-   was tested with (the APK Apple's CDN held on 29 October 2026), and refuses a mismatch with
-   "isn't the version of the libraries Apparition was built with". If Apple has updated the
-   libraries and taken the old address down, the desktop app offers "Use these files anyway", and
-   on the command line `--accept-unverified` does the same:
-
-       apparition anisette import --accept-unverified libstoreservicescore.so libCoreADI.so
-
-   It still checks that each is a 64-bit library for this computer's processor, under the right name.
-   This is an **unsupported setup**, and says so for as long as it lasts: in red in the desktop
-   app's header corner and above the sign-in form, and at every command that starts the built-in
-   anisette. Sign-in may fail or behave unpredictably; please say so in any bug report.
-5. **Going back.** `apparition anisette import --reset` (the desktop app's "Go back to Apple's own
-   libraries", on the red banner) forgets the cached libraries, supplied or fetched, and the next
-   sign-in fetches Apple's own.

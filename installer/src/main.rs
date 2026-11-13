@@ -215,7 +215,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       List the companions mDNS finds from here, for 10 seconds: a check that multicast works.
   apparition vm setup [--ipsw <file>] | update | status | serve | quit | check | remove   (Mac with Apple silicon)
       The anisette VM, for a Mac on macOS 27, which keeps its own anisette to itself: a macOS 26
-      VM that exists only for that, the one the app's Companion tab sets up. setup downloads
+      VM that exists only for that, the one the app's Settings sets up. setup downloads
       macOS 26.6.2 from Apple (or uses a copy already on this Mac, checked against Apple's
       SHA-256), installs it and prepares it with no questions: about 11 minutes with the image
       on this Mac, 45 with the download. It carries on where it stopped if interrupted. Then
@@ -245,7 +245,7 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       installed copy needs it only after its folder is moved.
   apparition-cli service install [--data-dir <folder>] | uninstall | start | stop | status     (Windows)
       The companion as a Windows service, for a PC that should serve your devices with nobody
-      signed in: the relay, and the anisette the app's Companion tab is set to offer. Setting
+      signed in: the relay, and the anisette the app's Settings is set to offer. Setting
       Apparition up for everyone installs it. It runs as LocalService with access to the
       companion's folder only, declines new pairings (nobody can answer it) and steps aside
       while the app or `relay` runs, where pairing happens. install and uninstall need an

@@ -572,7 +572,7 @@ pub async fn apple_id_sign_in(
     } else if anisette == api::VM_ANISETTE {
         #[cfg(target_os = "macos")]
         if !api::vm::default_bundle().join("ready").exists() {
-            return Err("Set up the anisette VM first (Companion tab).".into());
+            return Err("Set up the anisette VM first (Settings).".into());
         }
     } else {
         // A third-party anisette server: kept in its normal form, which is what the settings remember.
