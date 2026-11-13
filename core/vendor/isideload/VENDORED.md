@@ -56,12 +56,17 @@ captures or reverse-engineering notes.
 17. **Additional two-factor states** (`src/auth/apple_account.rs`): recognize
     phone-code and trusted-device response states and route the user to the
     corresponding verification step, including when a code has already been sent.
-18. **GrandSlam service URL handling** (`src/auth/grandslam.rs`): format the
-    service URL consistently before sending requests.
+18. **GrandSlam service URL ends in a slash** (`src/auth/grandslam.rs`): Apple's
+    edge answers a POST to exactly `/grandslam/GsService2` with a bare HTML 403 and
+    accepts `/grandslam/GsService2/`, and the URL bag omits the slash. Without it
+    every sign-in looked refused, whichever anisette it came from. Found by
+    adriano6574 (illixion/Apparition PR #17), who also reported it as not an
+    anisette problem. `core/examples/signin_e2e.rs` re-checks it.
 19. **Remote anisette provider validation** (`src/anisette/remote_v3/mod.rs`):
     normalize server addresses, bound connection and request time, and reject
-    incomplete provider metadata and required headers. The timeout allows for a
-    provider that needs time to resume or start.
+    incomplete provider metadata and required headers. Taken from adriano6574's
+    PR #17 and reworked: the timeout allows for a provider that needs time to
+    resume or start, and a missing scheme is http only for a local address.
 20. **Routing info and request time in every sign-in** (`src/anisette/mod.rs`):
     send `X-Apple-I-MD-RINFO` whenever the provider supplied routing info (it
     must), not only when it also supplied other headers, and add
