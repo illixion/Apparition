@@ -574,7 +574,7 @@ function render() {
   $('#fleetcount').textContent = repos.reduce((n,r)=>n+r.platforms.length,0) || '';
   const live = (S.debugApps?.apps || []).filter(a => a.attachable);
   $('#livecount').textContent = live.length ? `${live.length} live` : '';
-  $('#signout').hidden = !S.authRequired;
+  $('#signout').hidden = !S.authRequired || !!S.appWindow;
 
   projectList.update(S);
 

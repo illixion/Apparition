@@ -178,6 +178,8 @@ async fn the_app_opens_its_own_window_with_a_one_time_link_even_with_the_web_ui_
     assert!(!header(&headers, "set-cookie").unwrap().contains("Max-Age"));
     let (status, ..) = send(&f.app, "GET", "/", &[("cookie", &cookie)], None).await;
     assert_eq!(status, StatusCode::OK, "the window is signed in with the web UI off");
+    let (_, _, body) = send(&f.app, "GET", "/api/state", &[("cookie", &cookie)], None).await;
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["appWindow"], true, "the app's window hides Sign out");
     let (status, ..) = send(&f.app, "GET", &path, &[], None).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "a code works once");
 }

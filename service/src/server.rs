@@ -724,7 +724,13 @@ impl App {
                     _ => None,
                 }
             }
-            ["api", "state"] if get => Some(self.state_response()),
+            ["api", "state"] if get => {
+                // A page the desktop app opened signs in by itself (host-login), so it has no use for Sign out.
+                let mut bundle = self.state_bundle();
+                // Only then, so a browser's bundle keeps the Node store's exact fields.
+                if self.host_session(req) { bundle["appWindow"] = json!(true); }
+                Some(json_reply(200, bundle))
+            }
             ["api", "artifacts"] if get => Some(json_reply(200, json!({ "builds": artifacts::list_builds(&self.build_store(), 40) }))),
             ["api", "artifacts", id, which @ ("manifest" | "download")] if get && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') => {
                 let Ok(kept) = artifacts::read_build(id, &self.build_store()) else {
@@ -804,7 +810,7 @@ impl App {
         }
     }
 
-    fn state_response(&self) -> Response {
+    fn state_bundle(&self) -> Value {
         let mut bundle = self.state.bundle(&self.config(), system_ms(), &hostname(), &|repo| json!(self.mac.list(repo)));
         // The queue's own builds beside the Node store's, newest first.
         let jobs = self.queue.jobs();
@@ -819,7 +825,11 @@ impl App {
         // The last discovery; a fresh one runs in the background, so this never waits on Bonjour.
         bundle["debugApps"] = self.debug.cached_apps();
         self.debug.refresh_in_background();
-        json_reply(200, bundle)
+        bundle
+    }
+
+    fn state_response(&self) -> Response {
+        json_reply(200, self.state_bundle())
     }
 
     fn host_status(&self) -> Value {
