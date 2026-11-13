@@ -556,6 +556,41 @@ pub fn check_app_platform(app: &Path, platform: Platform) -> Result<(), Report> 
     )
 }
 
+/// Refuses an app whose `MinimumOSVersion` is newer than the device runs, before signing spends
+/// one of a free team's App IDs on something installd then turns down (Apparition 1.0.0 needs
+/// iOS 26, and an iPhone XS stops at iOS 18). Compared only when the app is built for the device's
+/// own OS, since an iPad app on Apple Vision Pro names an iOS version, and when both versions read
+/// as numbers. Anything else is let through, for installd to judge.
+pub fn check_app_os(app: &Path, product_type: &str, os_version: &str) -> Result<(), Report> {
+    let platform = Platform::of_product(product_type);
+    let Some(info) = app_info(app) else { return Ok(()) };
+    if !Platform::of_app(&info).contains(&platform) {
+        return Ok(());
+    }
+    let Some(minimum) = info.get("MinimumOSVersion").and_then(Plist::as_string) else { return Ok(()) };
+    let (Some(needed), Some(running)) = (version_parts(minimum), version_parts(os_version)) else { return Ok(()) };
+    if !newer(&needed, &running) {
+        return Ok(());
+    }
+    let os = platform.os_name();
+    bail!(
+        "This app needs {os} {minimum} or later, and this {} runs {os} {os_version}. Look for a version of it that supports {os} {os_version}",
+        platform.device_noun()
+    )
+}
+
+/// "17.4.1" as [17, 4, 1]; None for anything that isn't dotted numbers.
+fn version_parts(version: &str) -> Option<Vec<u32>> {
+    let parts: Option<Vec<u32>> = version.trim().split('.').map(|part| part.parse().ok()).collect();
+    parts.filter(|parts| !parts.is_empty())
+}
+
+/// Whether version `a` is newer than `b`, a missing part counting as 0 (17 is 17.0.0).
+fn newer(a: &[u32], b: &[u32]) -> bool {
+    let at = |parts: &[u32], i: usize| parts.get(i).copied().unwrap_or(0);
+    (0..a.len().max(b.len())).map(|i| at(a, i).cmp(&at(b, i))).find(|o| o.is_ne()) == Some(std::cmp::Ordering::Greater)
+}
+
 /// The entitlements an app was last signed with, from its main executable's code signature.
 /// None for an unsigned app or one this can't read.
 fn signed_entitlements(bundle_dir: &Path) -> Option<Dictionary> {
@@ -1480,6 +1515,37 @@ mod tests {
         assert!(check_app_platform(&dir, Platform::VisionOS).is_ok());
         assert!(check_app_platform(&dir.join("missing"), Platform::TvOS).is_ok());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_app_newer_than_the_device_is_refused_before_signing() {
+        let dir = std::env::temp_dir().join(format!("apparition-minimum-os-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let info = Dictionary::from_iter([
+            ("CFBundleSupportedPlatforms".to_string(), plist::Value::Array(vec![plist::Value::String("iPhoneOS".into())])),
+            ("MinimumOSVersion".to_string(), plist::Value::String("26.0".into())),
+        ]);
+        plist::to_file_xml(dir.join("Info.plist"), &info).unwrap();
+        let refused = check_app_os(&dir, "iPhone11,8", "18.7.2").unwrap_err().to_string();
+        assert!(refused.contains("needs iOS 26.0 or later, and this device runs iOS 18.7.2"), "{refused}");
+        assert!(check_app_os(&dir, "iPhone17,1", "26").is_ok());
+        assert!(check_app_os(&dir, "iPhone17,1", "26.1").is_ok());
+        // An iPad app on Vision Pro names an iOS version, not a visionOS one.
+        assert!(check_app_os(&dir, "RealityDevice14,1", "2.4").is_ok());
+        assert!(check_app_os(&dir, "iPhone11,8", "").is_ok());
+        assert!(check_app_os(&dir.join("missing"), "iPhone11,8", "16.0").is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn versions_compare_by_number() {
+        let v = |s| version_parts(s).unwrap();
+        assert!(newer(&v("17.4"), &v("17.3.1")));
+        assert!(newer(&v("17.10"), &v("17.9")));
+        assert!(!newer(&v("17"), &v("17.0.0")));
+        assert!(!newer(&v("16.7.10"), &v("17.0")));
+        assert_eq!(version_parts("beta"), None);
+        assert_eq!(version_parts(""), None);
     }
 
     #[test]

@@ -1060,6 +1060,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             if is_apparition && tunnel.tunnel().is_none() {
                 return Err(rootcause::report!("Apparition itself needs iOS 17 or later, and {} runs iOS {}. Choose another app to install there.", info.name, info.os_version));
             }
+            api::check_app_os(&prepared.path, &info.product_type, &info.os_version)?;
             // A watch app needs the paired Watch registered on the team; only the iPhone can say which.
             let watches = if (inventory.has_watch_app() || apparition_core::install_plan::is_watch_only(&prepared.path)) && api::Platform::of_product(&info.product_type) == api::Platform::IOS {
                 tunnel.paired_watches().await.unwrap_or_default()

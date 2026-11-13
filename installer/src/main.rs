@@ -1541,6 +1541,9 @@ async fn sign_and_install(
     strip: bool,
 ) -> Result<(), Error> {
     let tunnel_only = || fail(format!("{} runs iOS 16 or earlier: Apparition can only install apps there, not Apple Watch apps or Apparition's own pairing", info.name));
+    // Before signing, which would spend one of a free account's App IDs on an app installd
+    // turns down for its minimum iOS.
+    api::check_app_os(&options.ipa, &info.product_type, &info.os_version).map_err(|e| fail(format!("{}: {e}", info.name)))?;
     // The Apple ID and team that signed, for handing the certificate to Apparition.
     let mut apple_id: Option<(String, String)> = None;
     let signed = if let Some(p12) = &options.p12 {
