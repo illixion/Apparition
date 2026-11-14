@@ -189,26 +189,36 @@ final class ProbeModel {
     /// LAN address at home, where a knock wakes a sleeping Mac, its Tailscale address away, and
     /// switches to it. A companion with no record yet that was found by name is looked for
     /// again on this network; an address typed by hand is kept as it is.
-    func prepareRoute(host: String) async {
+    /// Returns false only when the companion was looked for and answered nowhere: then an
+    /// action through it can only time out.
+    @discardableResult
+    func prepareRoute(host: String) async -> Bool {
         guard host == Self.relayHost, connectionMode == .companion, !companionChecked, let old = relay,
-              let colon = old.lastIndex(of: ":"), let port = UInt16(old[old.index(after: colon)...]) else { return }
+              let colon = old.lastIndex(of: ":"), let port = UInt16(old[old.index(after: colon)...]) else { return true }
         let oldHost = String(old[..<colon]).trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         if let best = await CompanionRoutes.best(host: oldHost, port: port) {
             companionChecked = true
-            guard best != oldHost else { return }
+            guard best != oldHost else { return true }
             log.info("companion reached at another of its addresses, now using it")
             useCompanion("\(best):\(port)", name: companionName)
             unreachableMode = nil
             onCompanionMoved?(oldHost, best)
-            return
+            return true
         }
-        guard let name = companionName, let found = await locateCompanion?(name) else { return }
+        guard let name = companionName, let found = await locateCompanion?(name) else { return false }
         companionChecked = true
-        guard found.relay != old else { return }
+        guard found.relay != old else { return true }
         log.info("companion moved, now using its new address")
         useCompanion(found.relay, name: found.name)
         unreachableMode = nil
         if let newHost = found.relay.split(separator: ":").first.map(String.init) { onCompanionMoved?(oldHost, newHost) }
+        return true
+    }
+
+    /// Why an action through the companion can't start: it answered at none of its addresses.
+    var companionUnreachableMessage: String {
+        let name = companionName ?? "your computer"
+        return "\(name) didn't answer at its home address or over Tailscale. Away from home, check that Tailscale is connected on this \(ThisDevice.noun) and on \(name), and that Apparition is running there, then try again."
     }
 
     func tunnelTarget(host: String, port: Int) -> IDevice.Target {
@@ -733,7 +743,12 @@ final class ProbeModel {
             report(await run(action: "jit", host: host, port: port, exclusive: false) { _, _ in { _ in } })
             return
         }
-        await prepareRoute(host: host)
+        // Nowhere to reach the companion: say so now, instead of launching nothing and timing out.
+        guard await prepareRoute(host: host) else {
+            let message = companionUnreachableMessage
+            report(await run(action: "jit", host: host, port: port, exclusive: false) { _, _ in throw IDevice.ProbeError(message) })
+            return
+        }
         let target = tunnelTarget(host: host, port: port)
         jitSessions.insert(bundleId)
         await keepAlive.prepare()

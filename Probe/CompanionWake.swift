@@ -131,19 +131,35 @@ enum CompanionRoutes {
         var order = lan + record.tailscale + [host]
         var seen = Set<String>()
         order = order.filter { seen.insert($0).inserted }
-        // One quick round, all at once: the companion awake, wherever this device is.
-        let answered = await withTaskGroup(of: (String, Bool).self) { group in
-            for candidate in order {
-                group.addTask { (candidate, await same(candidate, record: record)) }
+        let tailscale = Set(record.tailscale)
+        // One round, all at once: the companion awake, wherever this device is. A Tailscale
+        // address gets longer: through Tailscale's relay (a phone's hotspot, say) the first
+        // connection after a network change takes seconds, and 2 s missed it on an Apple TV.
+        // Right after a network change Tailscale itself may still be reconnecting, so a round
+        // that finds nothing is tried once more.
+        func round() async -> Set<String> {
+            await withTaskGroup(of: (String, Bool).self) { group in
+                for candidate in order {
+                    let seconds: Double = tailscale.contains(candidate) ? 6 : 2
+                    group.addTask { (candidate, await same(candidate, record: record, seconds: seconds)) }
+                }
+                var answered = Set<String>()
+                for await (candidate, ok) in group where ok { answered.insert(candidate) }
+                return answered
             }
-            var answered = Set<String>()
-            for await (candidate, ok) in group where ok { answered.insert(candidate) }
-            return answered
+        }
+        var answered = await round()
+        if answered.isEmpty, !record.tailscale.isEmpty {
+            log.info("companion answered nowhere (LAN here: \(lan.count), Tailscale: \(record.tailscale.count)); trying again")
+            try? await Task.sleep(for: .seconds(3))
+            answered = await round()
         }
         if let first = order.first(where: answered.contains) {
-            if first != host { log.info("companion is now best reached at another of its addresses") }
+            let kind = lan.contains(first) ? "LAN" : tailscale.contains(first) ? "Tailscale" : "saved"
+            log.info("companion reached at its \(kind, privacy: .public) address\(first != host ? ", switching to it" : "", privacy: .public)")
             return first
         }
+        log.info("companion answered at none of its \(order.count, privacy: .public) addresses")
         // Nothing answered: asleep at home, perhaps. A knock at its LAN addresses wakes it.
         guard !lan.isEmpty, let woke = await CompanionWake.wakeIfAsleep(host: lan[0], port: record.relayPort, others: Array(lan.dropFirst())),
               await same(woke, record: record) else { return nil }
@@ -151,8 +167,8 @@ enum CompanionRoutes {
     }
 
     /// Whether the companion at `host` answers on its relay port as the one `record` describes.
-    private static func same(_ host: String, record: Record) async -> Bool {
-        guard let found = await CompanionFinder.probe(relay: "\(host):\(record.relayPort)", seconds: 2) else { return false }
+    private static func same(_ host: String, record: Record, seconds: Double = 2) async -> Bool {
+        guard let found = await CompanionFinder.probe(relay: "\(host):\(record.relayPort)", seconds: seconds) else { return false }
         return record.id == nil || found.companionID == record.id
     }
 }
