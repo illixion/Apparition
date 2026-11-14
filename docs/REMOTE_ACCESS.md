@@ -30,10 +30,19 @@ Sharing or a game streaming PC from anywhere, for example with
    Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion
    replaces LocalDevVPN.
 
-**A travel Apple TV.** LocalDevVPN has no Apple TV version, but Apple TV can run Tailscale (tvOS 17 or later),
-so the same steps work for one: pair it at home first, then on the road put it and a computer running the
-companion on the tailnet. JIT still needs that computer; there is no no-computer route on tvOS. This has not
-been tested on an Apple TV yet, and hotel Wi-Fi with a sign-in page may not suit it.
+**An Apple TV on the road** (an emulation box, say). LocalDevVPN has no Apple TV version, but Apple TV can run
+Tailscale (tvOS 17 or later), so the same steps work for one, and JIT still needs a computer running the companion,
+since tvOS has no no-computer route.
+
+- **Pair at home.** Pairing the Apple TV with the computer happens over the local network with the code the Apple TV
+  shows, so do it, and add the companion, before you leave. After that the Tailscale address is all JIT needs.
+- **Skip hotel and café Wi-Fi: use your phone.** Those networks often put the Apple TV behind a sign-in page it can't
+  complete. Join the Apple TV to your iPhone's Personal Hotspot instead (Settings > Network on the Apple TV, with the
+  hotspot screen open on the phone the first time), and connect the computer that runs the companion to the internet
+  separately (the same hotspot, or any network it can use). Both only need to reach each other through the tailnet, so
+  the phone does nothing but provide internet and does not need Tailscale itself.
+- Not yet tried on an Apple TV: the hotspot join and JIT over Tailscale from it are what the design implies, not
+  something we have run.
 
 **A sleeping Mac wakes up for the device.** With "Wake for network access" on (System Settings >
 Battery > Options, or Energy on a desktop Mac; `pmset -g` shows `womp 1`), a sleeping Mac keeps
