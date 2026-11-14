@@ -1182,6 +1182,10 @@ pub fn init_logging(path: &std::path::Path, idevice_debug: bool) {
     let targets = Targets::new()
         .with_default(LevelFilter::INFO)
         .with_target("idevice", if idevice_debug { LevelFilter::DEBUG } else { LevelFilter::INFO })
+        // Never idevice's pairing debug output, whatever `idevice_debug` says: it prints the
+        // RemotePairing pairing file (its private key included) and the decrypted pair-setup and
+        // pair-verify TLVs. The log is shared in debug traces and read by people and models.
+        .with_target("idevice::remote_pairing", LevelFilter::INFO)
         .with_target("apple_codesign", LevelFilter::ERROR)
         // Never the ordinary log: the verbose record has a file of its own.
         .with_target(isideload::auth::wire_log::TARGET, LevelFilter::OFF);
