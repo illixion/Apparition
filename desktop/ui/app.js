@@ -1507,7 +1507,7 @@ function done() {
   if (result.strippedExtensions?.length) notes.push(`Left out extensions: ${result.strippedExtensions.join(", ")}.`);
   if (result.tweaks) {
     const loads = result.tweaks.loads.map((/** @type {string} */ l) => l.replace(/^@rpath\//, "")).join(", ");
-    notes.push(`Tweaks in it: ${loads}${result.tweaks.substrate ? ", with ElleKit for Substrate" : ""}.`);
+    notes.push(`Tweaks in it: ${loads}${result.tweaks.substrate ? ", with Substrate support" : ""}.`);
     for (const warning of result.tweaks.warnings ?? []) notes.push(warning.endsWith(".") ? warning : `${warning}.`);
   }
   for (const w of result.watches ?? []) notes.push(w.error ? `The watch app didn't install on ${w.name}: ${w.error}` : `The watch app is on ${w.name}.`);

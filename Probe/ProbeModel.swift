@@ -630,6 +630,9 @@ final class ProbeModel {
     /// lasts as long as the app wants a debugger, which for Wine (Madeira) is the whole time it
     /// runs, so it doesn't hold `busy`: installs and refreshes go on beside it.
     private(set) var jitSessions: Set<String> = []
+    /// Reserve before the first await: duplicate links must not race to attach,
+    /// then let a failed call clear another live session's UI state.
+    private var jitReservations: Set<String> = []
     /// The device tools' sessions running now (a simulated location, a log stream), by key:
     /// like a JIT session they keep Apparition running behind other apps, and hold no `busy`.
     private(set) var toolSessions: Set<String> = []
@@ -668,11 +671,11 @@ final class ProbeModel {
     /// Takes the running process `pid` of `bundleId` (an app that asked for JIT itself, through
     /// an `enable-jit` link) and serves its JIT requests until it exits or detaches. The app is
     /// brought back to the front once attached.
-    func attachJIT(host: String, port: Int, bundleId: String, pid: Int) async {
+    func attachJIT(host: String, port: Int, bundleId: String, pid: Int, hooksOnly: Bool = false) async {
         await serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: true) { target, file, box in
             try IDevice.attachJIT(target: target, hostname: Self.hostname, file: file,
                                   pin: nil, context: box,
-                                  pid: UInt64(max(pid, 0)), bundleId: bundleId, waitSeconds: 0)
+                                  pid: UInt64(max(pid, 0)), bundleId: bundleId, waitSeconds: 0, hooksOnly: hooksOnly)
         }
     }
 
@@ -688,10 +691,11 @@ final class ProbeModel {
 
     private func serveJIT(host: String, port: Int, bundleId: String, reportsFailure: Bool = false,
                           _ body: @escaping @Sendable (IDevice.Target, IDevice.PairingFile, UnsafeMutableRawPointer) throws -> [String: Any]) async {
-        guard !jitSessions.contains(bundleId) else {
-            log.info("jit already serving this app")
+        guard jitReservations.insert(bundleId).inserted else {
+            log.info("jit already connecting to or serving this app")
             return
         }
+        defer { jitReservations.remove(bundleId) }
         let report = { [weak self] (outcome: String) in
             guard reportsFailure, outcome.hasPrefix("error"), let self else { return }
             self.jitFailure = JITFailure(bundleId: bundleId,

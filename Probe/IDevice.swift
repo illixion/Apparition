@@ -150,8 +150,11 @@ enum IDevice {
     /// serves its JIT requests, bringing it back to the front.
     static func attachJIT(target: Target, hostname: String, file: PairingFile,
                           pin: PinCallback?, context: UnsafeMutableRawPointer,
-                          pid: UInt64, bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
+                          pid: UInt64, bundleId: String, waitSeconds: UInt32, hooksOnly: Bool = false) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            if hooksOnly {
+                return AccountModel.call(apparition_attach_hooks(adapter, handshake, pid, bundleId, waitSeconds))
+            }
             return AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds))
         }
     }

@@ -1,4 +1,5 @@
 import DebugTrace
+import Foundation
 
 // A stable native Swift boundary. The rest of the module stays optimized;
 // this explicit boundary has no inlined or specialized copies to go stale.
@@ -34,11 +35,23 @@ enum EntryWorkflowLab {
     static var reads = 0
     static var receiver = EntryWorkflowValue()
     static func register() {
+        DebugSurface.shared.register(.command("hookPrepare", "Install hook fixtures for late JIT attachment") { _ in
+            lab_hooks_prepare()
+            return hookReport()
+        })
+        DebugSurface.shared.register(.query("hookProbe", "Read hook results before and after debugger detach", trace: .never) { _ in
+            hookReport()
+        })
         DebugSurface.shared.register(.query("entryProbe", "Verify native entry patching and state retention", trace: .never) { _ in
             reads += 1
             return Probe(value: entryWorkflowScalar(10), reads: reads, method: receiver.apply(10),
                          accumulated: receiver.accumulate(1), scaled: EntryWorkflowValue.scale(10), groupFirst: entryWorkflowGroupFirst(10, 0), groupSecond: entryWorkflowGroupSecond(10, 0))
         })
+    }
+    private static func hookReport() -> String {
+        var buffer = [CChar](repeating: 0, count: 1024)
+        lab_hooks_report(&buffer, buffer.count)
+        return String(cString: buffer)
     }
     struct Probe: Encodable { let value: Int; let reads: Int; let method: Int; let accumulated: Int; let scaled: Int; let groupFirst: Int; let groupSecond: Int }
 }

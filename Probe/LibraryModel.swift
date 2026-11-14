@@ -285,6 +285,7 @@ final class LibraryModel {
         let pid: Int
         /// A StikDebug JIT script (JavaScript) to be the app's debugger, from `script-data`.
         var script: String? = nil
+        var hooksOnly: Bool = false
     }
 
     /// An enable-jit link from an app Apparition didn't install, waiting to be allowed.
@@ -301,7 +302,9 @@ final class LibraryModel {
         guard let bundleId = value("bundle-id", "bundleId", "bundleID", "bundle_id"), !bundleId.isEmpty else { return nil }
         let pid = value("pid").flatMap(Int.init) ?? 0
         let script = value("script-data", "scriptData", "script_data").flatMap(jitScript)
-        return JITRequest(bundleId: bundleId, pid: max(pid, 0), script: script)
+        let hooksOnly = scheme == "apparition" && pid > 0 && script == nil &&
+            ["1", "true"].contains(value("hooks-only")?.lowercased() ?? "")
+        return JITRequest(bundleId: bundleId, pid: max(pid, 0), script: script, hooksOnly: hooksOnly)
     }
 
     /// A `script-data` value: base64 or base64url of UTF-8 JavaScript, as StikDebug reads it.

@@ -85,3 +85,41 @@ all-stop publication, image/instruction validation, and the same device approval
 DebugTrace injection; see [the developer workflow](DEVELOPER.md#live-patches).
 General optimized functions, caller dependency tracking and automatic type migration remain
 unsupported. No application performance claim follows from these correctness tests.
+
+## ApparitionHooks replacement (2026-11-14)
+
+Verified on Apple Vision Pro, visionOS 27.2, with Release builds:
+
+- Lab `hookPrepare`/`hookProbe`: app-owned entry returns 11 before attaching and
+  31 after redirecting; the saved original continues returning 11. A
+  behavior-preserving `atoi` replacement in shared-cache text is intercepted
+  after attach, and both replacement and original return 41 after detach.
+  Pending/failed hooks are zero; the debugger capability is revoked.
+- An actual injected IPA: `hooks/checks/device-tweak.m` links the Substrate ABI,
+  is injected into JIT Probe by the CLI, and is signed and installed normally.
+  Its Objective-C fixture returns 6 (original 5) without JIT. Before attaching,
+  a saved `atoi` entry returns 41 and is not intercepted. With the new CLI's
+  `jit ... --attach <pid> --hooks-only`, the debugger writes a 160-byte original
+  trampoline and publishes one validated entry redirect. It detaches cleanly.
+  `Documents/hook-framework-check.json` then records `objectiveC: 6`, `entry: 41`,
+  `original: 41`, `intercepted: true`, `pending: 0`, `ready: 0`, `traced: false`.
+  This checks the shipped dylib and injector, not only a statically linked engine.
+- The injected framework requires LC_UUID on visionOS. The pinned build creates
+  a UUID from binary content; two independent rebuilds match byte for byte.
+- The engine's macOS debugger fixtures also execute relocated ADR, ADRP,
+  literal-load, conditional-branch and BL instructions and stable original calls.
+
+Hook-only requests explicitly opt into detaching when the hooks finish. Ordinary
+JIT requests stay attached so an app can ask for executable memory later. The
+library's Turn On link uses `hooks-only=1`; CLI attachment uses `--hooks-only`.
+The CLI brings the app to the foreground: a background-suspended app cannot run
+its hook worker merely because a debugger has attached. Bulk image discovery
+replaces individual pathname reads that held the process stopped for ~16 seconds;
+the first-request timeout starts after discovery, not during connection setup.
+
+To reproduce the injected-IPA check, build JIT Probe without deploying, build the
+fixture for that SDK against `core/assets/hooks/<platform>.dylib`, inject it with
+`apparition tweak`, then sign/install that IPA with `build-and-sign --sign-only`.
+The fixture suppresses its informational JIT notice to avoid concurrent manual
+and automated requests. Pull its Documents report before and after hook-only
+attachment. Never run two debuggers against the same pid.

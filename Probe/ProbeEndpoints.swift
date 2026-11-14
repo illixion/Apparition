@@ -11,6 +11,7 @@ enum ProbeEndpoints {
         let advertised: [ProbeModel.Advertised]
         let reachability: [ProbeModel.Reachability]
         let attempts: [ProbeModel.Attempt]
+        let jitSessions: [String]
         let busy: Bool
         let pinRequested: Bool
         let hasPairingFile: Bool
@@ -23,7 +24,7 @@ enum ProbeEndpoints {
         State(browserStates: model.browserStates, interfaces: model.interfaces,
               advertised: model.advertised.values.sorted { $0.id < $1.id },
               reachability: model.reachability, attempts: model.attempts,
-              busy: model.busy, pinRequested: model.pinRequested, hasPairingFile: model.hasPairingFile,
+              jitSessions: model.jitSessions.sorted(), busy: model.busy, pinRequested: model.pinRequested, hasPairingFile: model.hasPairingFile,
               pairingProblem: model.pairingProblem, relay: model.relay)
     }
 
@@ -85,6 +86,11 @@ enum ProbeEndpoints {
                 let wait = args.int("waitSeconds") ?? 600
                 Task { await model.launchJIT(host: host, port: port, bundleId: bundleId, waitSeconds: wait) }
                 try await Task.sleep(for: .seconds(2))
+                return state(model)
+            },
+            .command("stopJIT", "Detach this app's JIT session; leaves the app running",
+                     parameters: [.string("bundleId", "The session's bundle ID", required: true)]) { args in
+                model.stopJIT(bundleId: try args.requireString("bundleId"))
                 return state(model)
             },
             .command("identify", "Read the device's UDID and name through the tunnel at host:port and save them for signing. Returns at once; poll probeState",

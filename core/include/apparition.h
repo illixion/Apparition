@@ -143,6 +143,9 @@ char *apparition_jit_stop(const char *key);
 // that app is brought back to the front once attached. bundle_id may be null if pid isn't 0.
 char *apparition_attach_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                         unsigned long long pid, const char *bundle_id, unsigned int wait_seconds);
+// Apply pending tweak hooks, then detach unless the app also asks for JIT.
+char *apparition_attach_hooks(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                        unsigned long long pid, const char *bundle_id, unsigned int wait_seconds);
 
 // Device tools (core/src/tools.rs). The device's running processes, apps first:
 // {ok, processes: [{pid, name, path, kind, bundleId, appName}]}; kind is app, systemApp, extension or system.

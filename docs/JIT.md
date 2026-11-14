@@ -32,3 +32,14 @@ companion on any computer (macOS, Windows or Linux) bounces that connection back
 on iPhone, iPad and Vision Pro does it with no computer (it takes the device's only VPN slot, so
 not alongside Tailscale). Apple TV has no VPN app, so it uses a companion. A computer is needed
 once, to install Apparition.
+
+
+### Tweak hook sessions
+
+ApparitionHooks uses an explicit hook-only request (`hooks-only=1` on its
+`apparition://enable-jit` link; `apparition jit <bundle> --attach --hooks-only`
+on the computer). Supported pending hooks upgrade in the running app and the
+debugger detaches after publication, unless the app also requested its own JIT
+memory. Ordinary JIT sessions stay attached for later requests. Closing a session
+requires a confirmed debugger detach; if an interrupted code write cannot be
+restored safely, Apparition closes that specific app rather than leaving it paused.

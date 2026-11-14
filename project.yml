@@ -208,6 +208,8 @@ targets:
         excludes:
           - Info.plist
           - Patches
+      - path: hooks/src
+      - path: hooks/include
     dependencies:
       - package: DebugTrace
         product: DebugTrace
@@ -233,6 +235,7 @@ targets:
         LLVM_LTO: "NO"
         TARGETED_DEVICE_FAMILY: "1,2,7"
         SWIFT_OBJC_BRIDGING_HEADER: Lab/ApparitionLab-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/hooks/include
         SWIFT_STRICT_CONCURRENCY: minimal
   # The smallest JIT26 client, for testing JIT through Apparition or inside LiveContainer.
   JITProbe:

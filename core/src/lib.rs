@@ -1618,6 +1618,27 @@ pub unsafe extern "C" fn apparition_attach_jit(
     })())
 }
 
+/// Like attach_jit, but ends a hook-only session after pending hooks apply.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_attach_hooks(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    pid: u64,
+    bundle_id: *const c_char,
+    wait_seconds: u32,
+) -> *mut c_char {
+    reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = if bundle_id.is_null() { None } else { Some(unsafe { text(bundle_id) }?) };
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let target = jit::Target::Hooks { pid, bring_back: bundle_id.as_deref() };
+        runtime().block_on(jit::serve(adapter, handshake, target, wait_seconds, &mut |_| {}))
+    })())
+}
+
 /// A debugserver session lent to a StikDebug JIT script (see `jit::Script`).
 pub struct JitScript(jit::Script);
 

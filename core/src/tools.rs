@@ -70,11 +70,7 @@ struct Bundle {
 
 /// The device's running processes, apps first (by name), then the rest (by name).
 pub async fn processes(adapter: &mut AdapterHandle, handshake: &mut RsdHandshake) -> Result<Vec<Process>, Report> {
-    let mut service = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
-        .await
-        .context("appservice connect failed")?;
-    let tokens = service.list_processes().await.context("Can't list the device's processes")?;
-    drop(service);
+    let tokens = process_tokens(adapter, handshake).await?;
     // Names are a nicety: a device that won't browse its apps still lists its processes.
     let bundles = installed_bundles(adapter, handshake).await.unwrap_or_else(|error| {
         tracing::warn!("couldn't browse the installed apps for process names: {}", crate::errors::describe(&error));
@@ -89,6 +85,22 @@ pub async fn processes(adapter: &mut AdapterHandle, handshake: &mut RsdHandshake
         .collect();
     sort_processes(&mut list);
     Ok(list)
+}
+
+/// A fresh appservice connection retries a transient closed device socket once.
+/// A process-list read is idempotent; reusing the failed service is not safe.
+pub(crate) async fn process_tokens(adapter: &mut AdapterHandle, handshake: &mut RsdHandshake)
+    -> Result<Vec<idevice::core_device::ProcessToken>, Report> {
+    for attempt in 0..2 {
+        let result: Result<_, Report> = async {
+            let mut service = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
+                .await.context("appservice connect failed")?;
+            Ok(service.list_processes().await.context("Couldn't list the device's running processes")?)
+        }.await;
+        if result.is_ok() || attempt == 1 { return result; }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    unreachable!()
 }
 
 fn sort_processes(list: &mut [Process]) {
