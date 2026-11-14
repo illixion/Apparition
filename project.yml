@@ -241,7 +241,7 @@ targets:
   JITProbe:
     type: application
     platform: auto
-    supportedDestinations: [iOS, visionOS]
+    supportedDestinations: [iOS, visionOS, tvOS]
     sources:
       - path: JITProbe
         excludes:
@@ -256,6 +256,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.jitprobe
-        TARGETED_DEVICE_FAMILY: "1,2,7"
+        TARGETED_DEVICE_FAMILY: "1,2,3,7"
+        TVOS_DEPLOYMENT_TARGET: "17.4"
         SWIFT_OBJC_BRIDGING_HEADER: JITProbe/JITProbe-Bridging-Header.h
         SWIFT_STRICT_CONCURRENCY: minimal
