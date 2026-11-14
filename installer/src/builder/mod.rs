@@ -743,6 +743,10 @@ impl Build {
                 "-derivedDataPath".into(), derived_data.display().to_string(),
                 "CODE_SIGN_IDENTITY=-".into(), "CODE_SIGNING_REQUIRED=NO".into(), "CODE_SIGNING_ALLOWED=NO".into(),
                 "DEVELOPMENT_TEAM=".into(), "PROVISIONING_PROFILE_SPECIFIER=".into(),
+                // Compiles in DebugTrace's development-only code (the in-process system-log hook,
+                // which names a private symbol) for Release builds too: everything built here is a
+                // development build. App Store archives aren't built here and leave it out.
+                "GCC_PREPROCESSOR_DEFINITIONS=$(inherited) DEBUGTRACE_DEVELOPMENT_BUILD=1".into(),
             ];
             xcb.extend(conf.extra_build_settings.iter().cloned());
             xcb.extend(o.settings.iter().cloned());
