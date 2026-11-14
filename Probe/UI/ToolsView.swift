@@ -8,11 +8,17 @@ enum ToolRoute: Hashable {
     case processes
     case location
     case console
+    case activity
+    case network
+    case conditions
+    case readiness
+    case appData
+    case appDataBrowser(String)
+    case sysdiagnose
 }
 
-/// Device tools beside JIT, the ones StikDebug users know: what runs on this device, a simulated
-/// location, and the device's log. They reach the device the way JIT does (LocalDevVPN or the
-/// companion), so each says so when that connection is missing.
+/// Device tools beside JIT: the process list, live monitors, app data, simulated conditions and
+/// location, developer services, and the device log. They share JIT's tunnel.
 struct ToolsView: View {
     let model: ProbeModel
     let account: AccountModel
@@ -39,8 +45,42 @@ struct ToolsView: View {
                         ToolRow(title: "Console", systemImage: "terminal",
                                 detail: "The \(ThisDevice.noun)'s log as it's written, one app's or everything.")
                     }
+                } header: {
+                    Text("Device")
+                }
+                Section("Monitor") {
+                    NavigationLink(value: ToolRoute.activity) {
+                        ToolRow(title: "Activity Monitor", systemImage: "gauge.with.dots.needle.67percent",
+                                detail: "Live CPU and memory readings for processes, when the OS exposes them.")
+                    }
+                    NavigationLink(value: ToolRoute.network) {
+                        ToolRow(title: "Network Monitor", systemImage: "network",
+                                detail: "Per-process connections, traffic, retransmits, and latency data.")
+                    }
+                }
+                Section {
+                    NavigationLink(value: ToolRoute.conditions) {
+                        ToolRow(title: "Connection Conditions", systemImage: "antenna.radiowaves.left.and.right",
+                                detail: "Apply the network and thermal profiles available on this OS build.")
+                    }
+                    NavigationLink(value: ToolRoute.readiness) {
+                        ToolRow(title: "Developer Services", systemImage: "checkmark.icloud",
+                                detail: "See which device services this pairing currently exposes.")
+                    }
+                    #if !os(tvOS)
+                    NavigationLink(value: ToolRoute.appData) {
+                        ToolRow(title: "App Data", systemImage: "folder",
+                                detail: "Browse development-readable data, export files, or move a backup.")
+                    }
+                    NavigationLink(value: ToolRoute.sysdiagnose) {
+                        ToolRow(title: "Sysdiagnose", systemImage: "waveform.path.ecg",
+                                detail: "Capture a diagnostic archive manually and review it before sharing.")
+                    }
+                    #endif
+                } header: {
+                    Text("Development")
                 } footer: {
-                    Text("These reach this \(ThisDevice.noun) the way JIT does: through LocalDevVPN or your computer.")
+                    Text("These reach this \(ThisDevice.noun) through the same paired tunnel as JIT. The OS may hide services or data, and monitoring support varies by device and OS version.")
                 }
                 #if !os(tvOS)
                 if let place = tools.location.place {
@@ -50,6 +90,12 @@ struct ToolsView: View {
                     }
                 }
                 #endif
+                if let condition = tools.activeCondition {
+                    Section("Simulated Condition") {
+                        Label(condition, systemImage: "antenna.radiowaves.left.and.right")
+                        Button("Stop Condition", systemImage: "stop.fill", role: .destructive) { tools.stopCondition() }
+                    }
+                }
             }
             .navigationTitle("Tools")
             .navigationDestination(for: ToolRoute.self) { route in
@@ -67,6 +113,28 @@ struct ToolsView: View {
                     #endif
                 case .console:
                     ConsoleView(tools: tools)
+                case .activity:
+                    ActivityMonitorView(tools: tools)
+                case .network:
+                    NetworkMonitorView(tools: tools)
+                case .conditions:
+                    ConnectionConditionsView(tools: tools)
+                case .readiness:
+                    DeveloperServicesView(tools: tools)
+                case .appData:
+                    AppDataAppsView(model: model)
+                case .appDataBrowser(let bundleId):
+                    #if os(tvOS)
+                    EmptyView()
+                    #else
+                    AppDataBrowserView(tools: tools, model: model, bundleId: bundleId)
+                    #endif
+                case .sysdiagnose:
+                    #if os(tvOS)
+                    EmptyView()
+                    #else
+                    SysdiagnoseView(tools: tools)
+                    #endif
                 }
             }
         }

@@ -78,6 +78,114 @@ enum ConsoleLevel: UInt32, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// A value in an Instruments sample. Fields are left dynamic because Apple changes the
+/// monitoring dictionary between OS releases.
+enum ToolJSONValue: Codable, Sendable {
+    case object([String: ToolJSONValue])
+    case array([ToolJSONValue])
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let bool = try? value.decode(Bool.self) { self = .bool(bool) }
+        else if let number = try? value.decode(Double.self) { self = .number(number) }
+        else if let string = try? value.decode(String.self) { self = .string(string) }
+        else if let object = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+            self = .object(try Dictionary(uniqueKeysWithValues: object.allKeys.map { ($0.stringValue, try object.decode(ToolJSONValue.self, forKey: $0)) }))
+        } else if var array = try? decoder.unkeyedContainer() {
+            var values: [ToolJSONValue] = []
+            while !array.isAtEnd { values.append(try array.decode(ToolJSONValue.self)) }
+            self = .array(values)
+        } else { self = .null }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        switch self {
+        case .object(let value): try value.encode(to: encoder)
+        case .array(let value): try value.encode(to: encoder)
+        case .string(let value): try value.encode(to: encoder)
+        case .number(let value): try value.encode(to: encoder)
+        case .bool(let value): try value.encode(to: encoder)
+        case .null: var container = encoder.singleValueContainer(); try container.encodeNil()
+        }
+    }
+
+    var numericValue: Double? {
+        switch self {
+        case .number(let value): value
+        case .object(let values): values.values.compactMap(\.numericValue).first
+        case .array(let values): values.compactMap(\.numericValue).first
+        default: nil
+        }
+    }
+
+    func number(matching fragments: [String]) -> Double? {
+        guard case .object(let values) = self else { return numericValue }
+        for fragment in fragments {
+            if let value = values.first(where: { $0.key.lowercased().contains(fragment) })?.value.numericValue { return value }
+        }
+        return values.values.lazy.compactMap { $0.number(matching: fragments) }.first
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+struct DeviceActivityReading: Sendable {
+    var cpu: Double?
+    var footprint: UInt64?
+}
+
+struct DeviceDataEntry: Codable, Identifiable, Hashable, Sendable {
+    let name: String
+    let path: String
+    let kind: String
+    let bytes: UInt64
+    var id: String { path }
+    var isDirectory: Bool { kind == "directory" }
+}
+
+struct DeviceConditionProfile: Codable, Identifiable, Hashable, Sendable {
+    let identifier: String
+    let description: String
+    var id: String { identifier }
+}
+
+struct DeviceConditionGroup: Codable, Identifiable, Hashable, Sendable {
+    let identifier: String
+    let profiles: [DeviceConditionProfile]
+    var id: String { identifier }
+}
+
+struct DeviceToolService: Codable, Identifiable, Hashable, Sendable {
+    let name: String
+    let port: Int
+    let remoteXpc: Bool
+    var id: String { name }
+}
+
+struct DeviceNetworkConnection: Identifiable, Sendable {
+    let serial: UInt64
+    var pid: Int
+    var local: String
+    var remote: String
+    var interfaceIndex: UInt32
+    var interfaceName: String?
+    var rxBytes: UInt64
+    var txBytes: UInt64
+    var retransmits: UInt64
+    var averageRTT: UInt64
+    var id: UInt64 { serial }
+}
+
 /// A place to simulate, with what to call it in the list of recent places.
 struct SimulatedPlace: Codable, Equatable, Hashable, Sendable {
     var name: String
@@ -172,7 +280,146 @@ extension ProbeModel {
         return outcome == "ok" && ended.value == "lost" ? "lost" : outcome
     }
 
-    /// Ends the location or log session `key`. False when none runs under it.
+    /// Ends a location, monitor, log or condition session `key`. False when none runs under it.
+    func streamActivity(key: String, onSample: @escaping @Sendable (Data) -> Void) async -> String {
+        let ended = ToolResult<String>()
+        let outcome = await runToolSession(key, action: "activity", host: defaultTunnelHost, port: defaultTunnelPort) { target, file, context in
+            let reply = try IDevice.streamActivity(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                   key: key, onSample: onSample)
+            guard reply["ok"] as? Bool == true else { throw IDevice.ProbeError(reply["error"] as? String ?? "the activity monitor failed") }
+            ended.value = reply["ended"] as? String
+            return { attempt in attempt.detail = "activity monitor \(reply["ended"] ?? "ended")" }
+        }
+        return outcome == "ok" && ended.value == "lost" ? "lost" : outcome
+    }
+
+    func streamNetwork(key: String, onEvent: @escaping @Sendable (Data) -> Void) async -> String {
+        let ended = ToolResult<String>()
+        let outcome = await runToolSession(key, action: "network-monitor", host: defaultTunnelHost, port: defaultTunnelPort) { target, file, context in
+            let reply = try IDevice.streamNetwork(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                  key: key, onEvent: onEvent)
+            guard reply["ok"] as? Bool == true else { throw IDevice.ProbeError(reply["error"] as? String ?? "the network monitor failed") }
+            ended.value = reply["ended"] as? String
+            return { attempt in attempt.detail = "network monitor \(reply["ended"] ?? "ended")" }
+        }
+        return outcome == "ok" && ended.value == "lost" ? "lost" : outcome
+    }
+
+    func runCondition(key: String, group: String, profile: String,
+                      onEnabled: @escaping @MainActor @Sendable () -> Void) async -> (String, Bool) {
+        let state = ToolResult<(String?, Bool?)>()
+        let outcome = await runToolSession(key, action: "condition", host: defaultTunnelHost, port: defaultTunnelPort) { target, file, context in
+            let reply = try IDevice.conditionSession(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                     key: key, condition: group, profile: profile) {
+                Task { @MainActor in onEnabled() }
+            }
+            guard reply["ok"] as? Bool == true else { throw IDevice.ProbeError(reply["error"] as? String ?? "the device refused this condition") }
+            state.value = (reply["ended"] as? String, reply["cleared"] as? Bool)
+            return { attempt in attempt.detail = "condition \(reply["ended"] ?? "ended")" }
+        }
+        return (outcome == "ok" ? state.value?.0 ?? "stopped" : outcome, outcome == "ok" && state.value?.1 == true)
+    }
+
+    func listConditionProfiles() async -> (String, [DeviceConditionGroup]?) {
+        await prepareRoute(host: defaultTunnelHost)
+        let target = tunnelTarget(host: defaultTunnelHost, port: defaultTunnelPort)
+        let result = ToolResult<[DeviceConditionGroup]>()
+        let outcome = await run(action: "conditions", host: defaultTunnelHost, port: defaultTunnelPort, exclusive: false) { file, context in
+            let reply = try IDevice.conditionProfiles(target: target, hostname: Self.hostname, file: file, pin: nil, context: context)
+            guard reply["ok"] as? Bool == true, let values = reply["groups"] else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "couldn't read connection conditions")
+            }
+            result.value = try JSONDecoder().decode([DeviceConditionGroup].self, from: JSONSerialization.data(withJSONObject: values))
+            return { attempt in attempt.detail = "\(result.value?.count ?? 0) condition groups" }
+        }
+        return (outcome, result.value)
+    }
+
+    func toolServices() async -> (String, [DeviceToolService]?, Bool?) {
+        await prepareRoute(host: defaultTunnelHost)
+        let target = tunnelTarget(host: defaultTunnelHost, port: defaultTunnelPort)
+        let result = ToolResult<([DeviceToolService], Bool)>()
+        let outcome = await run(action: "tool-readiness", host: defaultTunnelHost, port: defaultTunnelPort, exclusive: false) { file, context in
+            let reply = try IDevice.toolServiceReadiness(target: target, hostname: Self.hostname, file: file, pin: nil, context: context)
+            guard reply["ok"] as? Bool == true, let values = reply["services"] else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "couldn't read device services")
+            }
+            let services = try JSONDecoder().decode([DeviceToolService].self, from: JSONSerialization.data(withJSONObject: values))
+            result.value = (services, reply["instruments"] as? Bool ?? false)
+            return { attempt in attempt.detail = "\(services.count) advertised services" }
+        }
+        return (outcome, result.value?.0, result.value?.1)
+    }
+
+    func browseContainer(bundleId: String, path: String) async -> (String, [DeviceDataEntry]?) {
+        await prepareRoute(host: defaultTunnelHost)
+        let target = tunnelTarget(host: defaultTunnelHost, port: defaultTunnelPort)
+        let result = ToolResult<[DeviceDataEntry]>()
+        let outcome = await run(action: "app-data", host: defaultTunnelHost, port: defaultTunnelPort, exclusive: false) { file, context in
+            let reply = try IDevice.browseContainer(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                    bundleId: bundleId, path: path)
+            guard reply["ok"] as? Bool == true, let values = reply["entries"] else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "couldn't browse this app's data")
+            }
+            result.value = try JSONDecoder().decode([DeviceDataEntry].self, from: JSONSerialization.data(withJSONObject: values))
+            return { attempt in attempt.detail = "\(result.value?.count ?? 0) data entries" }
+        }
+        return (outcome, result.value)
+    }
+
+    func exportContainerFile(bundleId: String, path: String, destination: URL) async -> String {
+        await prepareRoute(host: defaultTunnelHost)
+        let target = tunnelTarget(host: defaultTunnelHost, port: defaultTunnelPort)
+        return await run(action: "app-data-export", host: defaultTunnelHost, port: defaultTunnelPort) { file, context in
+            let reply = try IDevice.exportContainerFile(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                        bundleId: bundleId, devicePath: path, destination: destination.path)
+            guard reply["ok"] as? Bool == true else { throw IDevice.ProbeError(reply["error"] as? String ?? "couldn't export this file") }
+            return { attempt in attempt.detail = "exported \(reply["bytes"] ?? 0) bytes" }
+        }
+    }
+
+    func exportContainerBackup(bundleId: String, destination: URL) async -> (String, [String: Any]?) {
+        await prepareRoute(host: defaultTunnelHost)
+        let target = tunnelTarget(host: defaultTunnelHost, port: defaultTunnelPort)
+        let result = ToolResult<[String: Any]>()
+        let outcome = await run(action: "app-data-backup", host: defaultTunnelHost, port: defaultTunnelPort) { file, context in
+            let reply = try IDevice.exportContainerBackup(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                          bundleId: bundleId, destination: destination.path)
+            guard reply["ok"] as? Bool == true else { throw IDevice.ProbeError(reply["error"] as? String ?? "couldn't back up this app") }
+            result.value = reply
+            return { attempt in attempt.detail = "\(reply["files"] ?? 0) files · \(reply["bytes"] ?? 0) bytes" }
+        }
+        return (outcome, result.value)
+    }
+
+    func restoreContainerBackup(bundleId: String, archive: URL) async -> (String, [String: Any]?) {
+        await prepareRoute(host: defaultTunnelHost)
+        let target = tunnelTarget(host: defaultTunnelHost, port: defaultTunnelPort)
+        let result = ToolResult<[String: Any]>()
+        let outcome = await run(action: "app-data-restore", host: defaultTunnelHost, port: defaultTunnelPort) { file, context in
+            let reply = try IDevice.restoreContainerBackup(target: target, hostname: Self.hostname, file: file, pin: nil, context: context,
+                                                           bundleId: bundleId, archive: archive.path)
+            guard reply["ok"] as? Bool == true else { throw IDevice.ProbeError(reply["error"] as? String ?? "couldn't restore this app backup") }
+            result.value = reply
+            return { attempt in attempt.detail = "restored \(reply["files"] ?? 0) files" }
+        }
+        return (outcome, result.value)
+    }
+
+    func captureSysdiagnose(destination: URL) async -> (String, [String: Any]?) {
+        await prepareRoute(host: defaultTunnelHost)
+        let target = tunnelTarget(host: defaultTunnelHost, port: defaultTunnelPort)
+        let result = ToolResult<[String: Any]>()
+        let outcome = await run(action: "sysdiagnose", host: defaultTunnelHost, port: defaultTunnelPort) { file, context in
+            let reply = try IDevice.captureSysdiagnose(target: target, hostname: Self.hostname, file: file,
+                                                       pin: nil, context: context, destination: destination.path)
+            guard reply["ok"] as? Bool == true else { throw IDevice.ProbeError(reply["error"] as? String ?? "sysdiagnose capture failed") }
+            result.value = reply
+            return { attempt in attempt.detail = "\(reply["bytes"] ?? 0) bytes" }
+        }
+        return (outcome, result.value)
+    }
+
     @discardableResult
     nonisolated func stopToolSession(_ key: String) -> Bool {
         AccountModel.call(apparition_tool_stop(key))["stopped"] as? Bool == true
@@ -184,10 +431,39 @@ extension ProbeModel {
     }
 }
 
+private struct ActivitySampleWire: Decodable, Sendable {
+    let type: String?
+    let processes: [String: ToolJSONValue]?
+    let systemCPUUsage: ToolJSONValue?
+}
+
+private struct NetworkAddressWire: Decodable, Sendable {
+    let address: String
+    let port: UInt16
+}
+
+private struct NetworkEventWire: Decodable, Sendable {
+    let type: String
+    let index: UInt32?
+    let name: String?
+    let pid: Int?
+    let serial: UInt64?
+    let interface: UInt32?
+    let local: NetworkAddressWire?
+    let remote: NetworkAddressWire?
+    let rxBytes: UInt64?
+    let txBytes: UInt64?
+    let retransmits: UInt64?
+    let avgRTT: UInt64?
+    let minRTT: UInt64?
+    let rxPackets: UInt64?
+    let txPackets: UInt64?
+    let time: UInt64?
+}
+
 // MARK: The Tools tab's state
 
-/// What the Tools tab shows and runs: the device's processes, a simulated location and the
-/// device's log. Each goes through the same connection as JIT (LocalDevVPN or the companion).
+/// What the Tools tab shows and runs through the same connection as JIT (LocalDevVPN or the companion).
 @MainActor @Observable
 final class DeviceToolsModel {
     let probe: ProbeModel
@@ -238,6 +514,322 @@ final class DeviceToolsModel {
         try? await Task.sleep(for: .milliseconds(600))
         await refreshProcesses()
         return nil
+    }
+
+    // MARK: Activity monitor
+
+    private static let activityKey = "activity"
+    private(set) var activityStarting = false
+    private(set) var activityRunning = false
+    private(set) var activityError: String?
+    private(set) var activityReadings: [Int: DeviceActivityReading] = [:]
+    private(set) var systemCPUFields: ToolJSONValue?
+
+    func startActivity() {
+        guard !activityStarting && !activityRunning else { return }
+        activityStarting = true
+        activityError = nil
+        activityReadings.removeAll()
+        systemCPUFields = nil
+        Task {
+            let outcome = await probe.streamActivity(key: Self.activityKey) { data in
+                guard let sample = try? JSONDecoder().decode(ActivitySampleWire.self, from: data) else { return }
+                Task { @MainActor in
+                    if sample.type == "started" {
+                        self.activityStarting = false
+                        self.activityRunning = true
+                        return
+                    }
+                    self.systemCPUFields = sample.systemCPUUsage
+                    var readings: [Int: DeviceActivityReading] = [:]
+                    for (pidText, fields) in sample.processes ?? [:] {
+                        guard let pid = Int(pidText) else { continue }
+                        let cpu = fields.number(matching: ["cpuusage", "cpu_percent", "cpupct", "cpu"])
+                        let memory = fields.number(matching: ["physfootprint", "physicalfootprint", "footprint", "resident", "memory"])
+                        let footprint = memory.flatMap { $0.isFinite && $0 >= 0 && $0 < Double(UInt64.max) ? UInt64($0) : nil }
+                        readings[pid] = DeviceActivityReading(cpu: cpu, footprint: footprint)
+                    }
+                    self.activityReadings = readings
+                }
+            }
+            activityStarting = false
+            activityRunning = false
+            if outcome != "ok" {
+                activityError = outcome == "lost" ? "The device ended its activity stream." : Self.message(outcome)
+            }
+        }
+    }
+
+    func stopActivity() {
+        guard activityRunning else { return }
+        probe.stopToolSession(Self.activityKey)
+    }
+
+    // MARK: Network monitor
+
+    private static let networkKey = "network-monitor"
+    private(set) var networkStarting = false
+    private(set) var networkRunning = false
+    private(set) var networkError: String?
+    private(set) var networkConnections: [DeviceNetworkConnection] = []
+    private var networkBySerial: [UInt64: DeviceNetworkConnection] = [:]
+    private var networkInterfaces: [UInt32: String] = [:]
+
+    func startNetwork() {
+        guard !networkStarting && !networkRunning else { return }
+        networkStarting = true
+        networkError = nil
+        networkConnections.removeAll()
+        networkBySerial.removeAll()
+        networkInterfaces.removeAll()
+        Task {
+            let outcome = await probe.streamNetwork(key: Self.networkKey) { data in
+                guard let event = try? JSONDecoder().decode(NetworkEventWire.self, from: data) else { return }
+                Task { @MainActor in self.receive(event) }
+            }
+            networkStarting = false
+            networkRunning = false
+            if outcome != "ok" {
+                networkError = outcome == "lost" ? "The device ended its network stream." : Self.message(outcome)
+            }
+        }
+    }
+
+    private func receive(_ event: NetworkEventWire) {
+        switch event.type {
+        case "started":
+            networkStarting = false
+            networkRunning = true
+        case "interface":
+            if let index = event.index, let name = event.name {
+                networkInterfaces[index] = name
+                for serial in Array(networkBySerial.keys) where networkBySerial[serial]?.interfaceIndex == index {
+                    guard var connection = networkBySerial[serial] else { continue }
+                    connection.interfaceName = name
+                    networkBySerial[serial] = connection
+                }
+            }
+        case "connection":
+            guard let serial = event.serial else { return }
+            let address: (NetworkAddressWire?) -> String = { value in
+                guard let value else { return "—" }
+                let host = value.address.contains(":") ? "[\(value.address)]" : value.address
+                return "\(host):\(value.port)"
+            }
+            networkBySerial[serial] = DeviceNetworkConnection(serial: serial, pid: event.pid ?? 0,
+                local: address(event.local), remote: address(event.remote), interfaceIndex: event.interface ?? 0,
+                interfaceName: networkInterfaces[event.interface ?? 0], rxBytes: 0, txBytes: 0,
+                retransmits: 0, averageRTT: 0)
+        case "update":
+            guard let serial = event.serial else { return }
+            var row = networkBySerial[serial] ?? DeviceNetworkConnection(serial: serial, pid: 0, local: "—", remote: "—",
+                interfaceIndex: 0, interfaceName: nil, rxBytes: 0, txBytes: 0, retransmits: 0, averageRTT: 0)
+            row.rxBytes = event.rxBytes ?? row.rxBytes
+            row.txBytes = event.txBytes ?? row.txBytes
+            row.retransmits = event.retransmits ?? row.retransmits
+            row.averageRTT = event.avgRTT ?? row.averageRTT
+            networkBySerial[serial] = row
+        default:
+            break
+        }
+        if networkBySerial.count > 500 {
+            let recent = Set(networkBySerial.keys.sorted().suffix(500))
+            networkBySerial = networkBySerial.filter { recent.contains($0.key) }
+        }
+        let totalBytes: (DeviceNetworkConnection) -> UInt64 = { connection in
+            let (total, overflow) = connection.rxBytes.addingReportingOverflow(connection.txBytes)
+            return overflow ? .max : total
+        }
+        networkConnections = networkBySerial.values.sorted {
+            totalBytes($0) > totalBytes($1)
+        }.prefix(100).map { $0 }
+    }
+
+    func stopNetwork() {
+        guard networkRunning else { return }
+        probe.stopToolSession(Self.networkKey)
+    }
+
+    // MARK: Connection conditions
+
+    private static let conditionKey = "condition"
+    private(set) var conditionGroups: [DeviceConditionGroup] = []
+    private(set) var loadingConditions = false
+    private(set) var conditionStarting = false
+    private(set) var conditionRunning = false
+    private(set) var activeCondition: String?
+    private(set) var conditionError: String?
+
+    func refreshConditions() async {
+        guard !loadingConditions else { return }
+        loadingConditions = true
+        defer { loadingConditions = false }
+        let (outcome, groups) = await probe.listConditionProfiles()
+        if let groups {
+            conditionGroups = groups
+            conditionError = nil
+        } else {
+            conditionError = Self.message(outcome)
+        }
+    }
+
+    func startCondition(group: DeviceConditionGroup, profile: DeviceConditionProfile) {
+        guard !conditionStarting && !conditionRunning else { return }
+        conditionStarting = true
+        conditionError = nil
+        Task {
+            let (ended, cleared) = await probe.runCondition(key: Self.conditionKey, group: group.identifier, profile: profile.identifier) {
+                self.conditionStarting = false
+                self.conditionRunning = true
+                self.activeCondition = profile.description.isEmpty ? profile.identifier : profile.description
+            }
+            conditionStarting = false
+            conditionRunning = false
+            activeCondition = nil
+            if ended == "lost" {
+                conditionError = "The device connection dropped. Apparition asked it to clear the condition; check the target app if the effect remains."
+            } else if ended != "stopped" || !cleared {
+                conditionError = Self.message(ended == "stopped" ? "The device did not confirm that it cleared the condition." : ended)
+            }
+        }
+    }
+
+    func stopCondition() {
+        guard conditionRunning else { return }
+        probe.stopToolSession(Self.conditionKey)
+    }
+
+    // MARK: Developer services
+
+    private(set) var toolServices: [DeviceToolService] = []
+    private(set) var instrumentsAvailable: Bool?
+    private(set) var loadingServices = false
+    private(set) var servicesError: String?
+
+    func refreshServices() async {
+        guard !loadingServices else { return }
+        loadingServices = true
+        defer { loadingServices = false }
+        let (outcome, services, instruments) = await probe.toolServices()
+        if let services {
+            toolServices = services.sorted { $0.name < $1.name }
+            instrumentsAvailable = instruments
+            servicesError = nil
+        } else {
+            servicesError = Self.message(outcome)
+        }
+    }
+
+    // MARK: App data
+
+    private(set) var dataBundleId: String?
+    private(set) var dataPath = "/Documents"
+    private(set) var dataEntries: [DeviceDataEntry] = []
+    private(set) var loadingData = false
+    private(set) var creatingDataBackup = false
+    private(set) var restoringDataBackup = false
+    private(set) var dataError: String?
+    private(set) var dataStatus: String?
+
+    func reportDataError(_ message: String) {
+        dataError = message
+    }
+
+    func browseData(bundleId: String, path: String) async {
+        guard !loadingData else { return }
+        loadingData = true
+        dataError = nil
+        dataStatus = nil
+        defer { loadingData = false }
+        let (outcome, entries) = await probe.browseContainer(bundleId: bundleId, path: path)
+        if let entries {
+            dataBundleId = bundleId
+            dataPath = path
+            dataEntries = entries
+        } else {
+            dataError = Self.message(outcome)
+        }
+    }
+
+    private func exportURL(name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ApparitionExports", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(name)
+    }
+
+    func exportDataFile(bundleId: String, entry: DeviceDataEntry) async -> URL? {
+        let name = entry.name.replacingOccurrences(of: "/", with: "_")
+        guard let destination = try? exportURL(name: "\(UUID().uuidString)-\(name)") else { return nil }
+        let outcome = await probe.exportContainerFile(bundleId: bundleId, path: entry.path, destination: destination)
+        guard outcome == "ok" else {
+            try? FileManager.default.removeItem(at: destination)
+            dataError = Self.message(outcome)
+            return nil
+        }
+        dataError = nil
+        return destination
+    }
+
+    func createDataBackup(bundleId: String) async -> URL? {
+        guard !creatingDataBackup else { return nil }
+        creatingDataBackup = true
+        dataError = nil
+        dataStatus = nil
+        defer { creatingDataBackup = false }
+        guard let destination = try? exportURL(name: "\(bundleId)-\(UUID().uuidString).apparition-backup.zip") else { return nil }
+        let (outcome, result) = await probe.exportContainerBackup(bundleId: bundleId, destination: destination)
+        guard outcome == "ok", (result?["failed"] as? [String] ?? []).isEmpty else {
+            try? FileManager.default.removeItem(at: destination)
+            dataError = Self.message(outcome == "ok" ? "Some app files could not be read; the backup is incomplete." : outcome)
+            return nil
+        }
+        let files = result?["files"] as? Int ?? 0
+        let bytes = result?["bytes"] as? Int ?? 0
+        dataStatus = "Backed up \(files) files · \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
+        dataError = nil
+        return destination
+    }
+
+    func restoreDataBackup(bundleId: String, archive: URL) async {
+        guard !restoringDataBackup else { return }
+        restoringDataBackup = true
+        dataError = nil
+        dataStatus = nil
+        defer { restoringDataBackup = false }
+        let (outcome, result) = await probe.restoreContainerBackup(bundleId: bundleId, archive: archive)
+        if outcome == "ok" {
+            let failed = result?["failed"] as? [String] ?? []
+            let files = result?["files"] as? Int ?? 0
+            await browseData(bundleId: bundleId, path: dataPath)
+            dataStatus = "Restored \(files) files" + (failed.isEmpty ? "" : " · \(failed.count) files failed")
+            if !failed.isEmpty { dataError = failed.prefix(5).joined(separator: "\n") }
+        } else {
+            dataError = Self.message(outcome)
+        }
+    }
+
+    // MARK: Sysdiagnose
+
+    private(set) var capturingSysdiagnose = false
+    private(set) var sysdiagnoseError: String?
+    private(set) var sysdiagnoseStatus: String?
+
+    func captureSysdiagnose() async -> URL? {
+        guard !capturingSysdiagnose else { return nil }
+        capturingSysdiagnose = true
+        sysdiagnoseError = nil
+        sysdiagnoseStatus = nil
+        defer { capturingSysdiagnose = false }
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent("apparition-sysdiagnose-\(UUID().uuidString).tar.gz")
+        let (outcome, result) = await probe.captureSysdiagnose(destination: destination)
+        guard outcome == "ok" else {
+            try? FileManager.default.removeItem(at: destination)
+            sysdiagnoseError = Self.message(outcome)
+            return nil
+        }
+        let bytes = result?["bytes"] as? Int ?? 0
+        sysdiagnoseStatus = "Captured \(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file))"
+        return destination
     }
 
     // MARK: Location

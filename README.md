@@ -68,9 +68,10 @@ comparison of anisette sources is in [docs/ANISETTE.md](docs/ANISETTE.md).
   no longer let an app run generated code just because a debugger attached once. **Launch with JIT**
   keeps the debugger attached and prepares the memory the app asks for, on the device itself. It speaks
   the JIT26 requests StikDebug defined, so apps built for them work as they are. See [docs/JIT.md](docs/JIT.md).
-- **Device tools** beside JIT, in the Tools tab and on the command line: the processes running on
-  the device (and ending one), a simulated location for every app, and the device's log as it's
-  written, one app's or everything.
+- **Device tools** beside JIT: process control, live CPU and memory readings, per-process network
+  activity, OS-provided connection and thermal profiles, simulated location, and the device log.
+  On supported devices, Tools can also browse development-readable app data, make or restore an
+  app backup, check developer services, and capture a sysdiagnose for review and sharing.
 - **Pair once, then work over Wi-Fi.** Vision Pro and Apple TV pair with the code they show; an iPhone or
   iPad pairs over USB once.
 - **Share one certificate** between your devices and computers, so a free account's two certificates

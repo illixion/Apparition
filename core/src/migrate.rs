@@ -36,7 +36,7 @@ pub(crate) const ROOTS: [&str; 2] = ["/Documents", "/Library"];
 pub(crate) fn skipped(path: &str) -> bool {
     ["/Library/Caches", "/Library/Saved Application State", "/Library/SplashBoard", "/Library/Caches.noindex"]
         .iter()
-        .any(|skip| path == *skip)
+        .any(|skip| path == *skip || path.strip_prefix(skip).is_some_and(|rest| rest.starts_with('/')))
 }
 
 /// The name `name` takes in the new container's `dir`: a preferences file is named after the

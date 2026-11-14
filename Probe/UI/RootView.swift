@@ -46,7 +46,7 @@ struct RootView: View {
     @State private var developer: DeveloperModel
     /// The Developer tab's navigation: a project opens its page, on a tab.
     @State private var developerPath: [DeveloperRoute] = []
-    /// The Tools tab's processes, simulated location and console.
+    /// The Tools tab's process controls, monitoring sessions, simulated location and console.
     @State private var tools: DeviceToolsModel
 
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
@@ -252,7 +252,8 @@ struct RootView: View {
             }
         }
         #if os(iOS)
-        .modifier(ActivityAccessory(active: activityText != nil || !model.jitSessions.isEmpty || tools.location.running) { activity })
+        .modifier(ActivityAccessory(active: activityText != nil || !model.jitSessions.isEmpty || tools.location.running
+                                    || tools.activityRunning || tools.networkRunning || tools.conditionRunning) { activity })
         #endif
     }
     #endif
@@ -290,7 +291,8 @@ struct RootView: View {
     /// tab, and the apps Apparition is debugging, each with a Stop.
     @ViewBuilder
     private var activity: some View {
-        if activityText != nil || !model.jitSessions.isEmpty || tools.location.running {
+        if activityText != nil || !model.jitSessions.isEmpty || tools.location.running
+            || tools.activityRunning || tools.networkRunning || tools.conditionRunning {
             #if os(visionOS)
             Divider().frame(height: 28)
             #endif
@@ -308,6 +310,21 @@ struct RootView: View {
                 }
                 if let place = tools.location.place {
                     simulatedLocation(place)
+                }
+                if tools.activityRunning {
+                    Label("Monitoring Activity", systemImage: "gauge.with.dots.needle.67percent")
+                        .font(.callout).lineLimit(1)
+                    Button("Stop") { tools.stopActivity() }.buttonStyle(.bordered).controlSize(.small)
+                }
+                if tools.networkRunning {
+                    Label("Monitoring Network", systemImage: "network")
+                        .font(.callout).lineLimit(1)
+                    Button("Stop") { tools.stopNetwork() }.buttonStyle(.bordered).controlSize(.small)
+                }
+                if tools.conditionRunning, let condition = tools.activeCondition {
+                    Label(condition, systemImage: "antenna.radiowaves.left.and.right")
+                        .font(.callout).lineLimit(1)
+                    Button("Stop") { tools.stopCondition() }.buttonStyle(.bordered).controlSize(.small)
                 }
             }
             .padding(.horizontal, 8)

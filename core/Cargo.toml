@@ -12,7 +12,7 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 # Linked here, rather than as a second static library, so the app carries one Rust runtime.
 idevice-ffi = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
-idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065", default-features = false, features = ["ring", "core_device", "debug_proxy", "rsd", "remote_pairing", "tcp", "tunnel_tcp_stack", "afc", "house_arrest", "installation_proxy", "usbmuxd", "pair", "companion_proxy", "dvt", "location_simulation", "syslog_relay"] }
+idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065", default-features = false, features = ["ring", "core_device", "debug_proxy", "rsd", "remote_pairing", "tcp", "tunnel_tcp_stack", "afc", "house_arrest", "installation_proxy", "usbmuxd", "pair", "companion_proxy", "dvt", "device_info", "sysmontap", "network_monitor", "condition_inducer", "location_simulation", "syslog_relay"] }
 # isideload 0.5.0 vendored with our changes; see vendor/isideload/VENDORED.md.
 # Release verification (SSHSIG, SHA256SUMS, versions), shared with the other apps; no HTTP here, the
 # core fetches on its own. Vendored: see scripts/vendor-signed-update.sh.
@@ -70,7 +70,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 # A third-party anisette server offered through the companion (anisette/remote.rs) is bridged to its
 # provisioning WebSocket with the client isideload already uses, at the version it uses.
 tokio-tungstenite = { version = "0.29.0", features = ["__rustls-tls"], optional = true }
-futures-util = { version = "0.3.31", optional = true }
+futures-util = "0.3.31"
 
 # Reading Windows Defender Firewall's rules (firewall.rs), with the desktop front ends.
 [target.'cfg(windows)'.dependencies]
@@ -81,7 +81,7 @@ windows-registry = { version = "0.6", optional = true }
 desktop = ["anisette-server", "dep:windows-registry", "dep:dirs", "dep:mdns-sd", "dep:if-addrs", "dep:x25519-dalek", "dep:hkdf", "dep:openssl", "dep:tokio-openssl", "tokio/time", "tokio/net", "tokio/io-util", "tokio/process"]
 # The anisette v3 server (anisette/server.rs) on every platform: the desktop companion offers a third-party
 # server's anisette to paired devices through it (anisette/remote.rs).
-anisette-server = ["dep:axum", "dep:tokio-tungstenite", "dep:futures-util", "tokio/net", "tokio/time", "tokio/sync"]
+anisette-server = ["dep:axum", "dep:tokio-tungstenite", "tokio/net", "tokio/time", "tokio/sync"]
 # Anisette made in this process: this Mac's own (macOS only), and Apple Music's Android libraries on macOS, Linux
 # and Windows (see anisette/mod.rs).
 anisette = ["anisette-server", "dep:libc"]

@@ -334,6 +334,112 @@ enum IDevice {
         }
     }
 
+    final class JSONEventBox {
+        let receive: @Sendable (Data) -> Void
+        init(_ receive: @escaping @Sendable (Data) -> Void) { self.receive = receive }
+    }
+
+    static func streamActivity(target: Target, hostname: String, file: PairingFile,
+                               pin: PinCallback?, context: UnsafeMutableRawPointer, key: String,
+                               onSample: @escaping @Sendable (Data) -> Void) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let box = Unmanaged.passRetained(JSONEventBox(onSample))
+            defer { box.release() }
+            return AccountModel.call(apparition_stream_activity(adapter, handshake, key, { raw, json in
+                guard let raw, let json else { return }
+                let data = Data(bytes: json, count: strlen(json))
+                Unmanaged<JSONEventBox>.fromOpaque(raw).takeUnretainedValue().receive(data)
+            }, box.toOpaque()))
+        }
+    }
+
+    static func streamNetwork(target: Target, hostname: String, file: PairingFile,
+                              pin: PinCallback?, context: UnsafeMutableRawPointer, key: String,
+                              onEvent: @escaping @Sendable (Data) -> Void) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let box = Unmanaged.passRetained(JSONEventBox(onEvent))
+            defer { box.release() }
+            return AccountModel.call(apparition_stream_network(adapter, handshake, key, { raw, json in
+                guard let raw, let json else { return }
+                let data = Data(bytes: json, count: strlen(json))
+                Unmanaged<JSONEventBox>.fromOpaque(raw).takeUnretainedValue().receive(data)
+            }, box.toOpaque()))
+        }
+    }
+
+    final class ConditionReadyBox {
+        let ready: @Sendable () -> Void
+        init(_ ready: @escaping @Sendable () -> Void) { self.ready = ready }
+    }
+
+    static func conditionSession(target: Target, hostname: String, file: PairingFile,
+                                 pin: PinCallback?, context: UnsafeMutableRawPointer, key: String,
+                                 condition: String, profile: String,
+                                 onEnabled: @escaping @Sendable () -> Void) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let box = Unmanaged.passRetained(ConditionReadyBox(onEnabled))
+            defer { box.release() }
+            return AccountModel.call(apparition_condition_session(adapter, handshake, key, condition, profile, { raw in
+                guard let raw else { return }
+                Unmanaged<ConditionReadyBox>.fromOpaque(raw).takeUnretainedValue().ready()
+            }, box.toOpaque()))
+        }
+    }
+
+    static func conditionProfiles(target: Target, hostname: String, file: PairingFile,
+                                  pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_condition_profiles(adapter, handshake))
+        }
+    }
+
+    static func toolServiceReadiness(target: Target, hostname: String, file: PairingFile,
+                                     pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_tool_service_readiness(adapter, handshake))
+        }
+    }
+
+    static func captureSysdiagnose(target: Target, hostname: String, file: PairingFile,
+                                   pin: PinCallback?, context: UnsafeMutableRawPointer,
+                                   destination: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_capture_sysdiagnose(adapter, handshake, destination))
+        }
+    }
+
+    static func browseContainer(target: Target, hostname: String, file: PairingFile,
+                                pin: PinCallback?, context: UnsafeMutableRawPointer,
+                                bundleId: String, path: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_container_browse(adapter, handshake, bundleId, path))
+        }
+    }
+
+    static func exportContainerFile(target: Target, hostname: String, file: PairingFile,
+                                    pin: PinCallback?, context: UnsafeMutableRawPointer,
+                                    bundleId: String, devicePath: String, destination: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_container_export_file(adapter, handshake, bundleId, devicePath, destination))
+        }
+    }
+
+    static func exportContainerBackup(target: Target, hostname: String, file: PairingFile,
+                                      pin: PinCallback?, context: UnsafeMutableRawPointer,
+                                      bundleId: String, destination: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_container_export_backup(adapter, handshake, bundleId, destination))
+        }
+    }
+
+    static func restoreContainerBackup(target: Target, hostname: String, file: PairingFile,
+                                       pin: PinCallback?, context: UnsafeMutableRawPointer,
+                                       bundleId: String, archive: String) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_container_restore_backup(adapter, handshake, bundleId, archive))
+        }
+    }
+
     /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
     /// return them (only pair-setup does), and signing needs the UDID.
     static func identify(target: Target, hostname: String, file: PairingFile,

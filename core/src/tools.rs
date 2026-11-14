@@ -1,6 +1,5 @@
-//! The device tools beside JIT, the ones StikDebug users know: what is running on the device
-//! (and ending it), a simulated location for the whole device, and the device's log as it's
-//! written.
+//! The device tools beside JIT: process control, whole-device location simulation, the device
+//! log, live Instruments monitors and OS-provided connection conditions.
 //!
 //! Each goes through the tunnel like everything else, from Apparition on the device (through
 //! LocalDevVPN or the companion) or from a computer paired with it:
@@ -12,8 +11,8 @@
 //!   location session runs until it's stopped, and the device goes back to its real location
 //!   when it ends.
 //!
-//! The two sessions (location, log) are registered by a key the caller picks, so a stop or a
-//! move reaches the right one from another thread.
+//! Long-running sessions are registered by a caller-picked key, so a stop or location move
+//! reaches the right one from another thread.
 
 use std::{
     collections::HashMap,
@@ -21,10 +20,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures_util::StreamExt;
 use idevice::{RsdService, rsd::RsdHandshake, tcp::handle::AdapterHandle};
 use rootcause::prelude::*;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Notify, watch};
 
 /// The service hub Instruments' channels (LocationSimulation among them) open on.
@@ -247,8 +248,8 @@ impl Drop for Registration {
     }
 }
 
-/// Ends the session `key` (a location goes back to the real one, a log stops). False when none
-/// runs under that key.
+/// Ends the session `key` (clearing a location or condition, or stopping a stream). False when
+/// none runs under that key.
 pub fn stop(key: &str) -> bool {
     let sessions = SESSIONS.lock().unwrap();
     match sessions.as_ref().and_then(|sessions| sessions.get(key)) {
@@ -627,6 +628,324 @@ mod tests {
     }
 }
 
+// MARK: Power-user tools
+
+/// Converts the plist values emitted by Instruments into JSON so the C bridge can stream
+/// samples without making assumptions about which fields a particular OS build returns.
+fn plist_json(value: &plist::Value) -> Value {
+    match value {
+        plist::Value::Boolean(value) => json!(value),
+        plist::Value::Integer(value) => value
+            .as_signed()
+            .map_or_else(|| json!(value.to_string()), |n| json!(n)),
+        plist::Value::Real(value) => json!(value),
+        plist::Value::String(value) => json!(value),
+        plist::Value::Array(values) => Value::Array(values.iter().map(plist_json).collect()),
+        plist::Value::Dictionary(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), plist_json(value)))
+                .collect(),
+        ),
+        plist::Value::Data(_) => json!("<data>"),
+        plist::Value::Date(value) => json!(value.to_xml_format()),
+        _ => json!("<unsupported>"),
+    }
+}
+
+/// Streams process CPU, footprint and system CPU samples until stopped or the tunnel drops.
+/// The actual fields are kept as supplied by Instruments: their names vary across OS releases.
+pub async fn stream_activity(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    key: &str,
+    on_sample: &mut (dyn FnMut(Value) + Send),
+) -> Result<Value, Report> {
+    if !handshake.services.contains_key(SERVICE_HUB) {
+        bail!(
+            "This device doesn't expose Instruments monitoring right now. Connect it to Xcode to prepare it for development, then try again."
+        );
+    }
+    let stop = Arc::new(Notify::new());
+    let _registration = Registration::new(
+        key,
+        Session {
+            stop: stop.clone(),
+            moves: None,
+        },
+    )?;
+    let mut hub = idevice::dvt::remote_server::RemoteServerClient::connect_rsd(adapter, handshake)
+        .await
+        .context("Couldn't reach Instruments' service hub")?;
+    hub.read_message(0)
+        .await
+        .context("Instruments' service hub didn't greet")?;
+
+    let mut info = idevice::dvt::device_info::DeviceInfoClient::new(&mut hub)
+        .await
+        .context("Couldn't query the device's monitoring fields")?;
+    let available = info
+        .sysmon_process_attributes()
+        .await
+        .context("The device didn't list its process monitoring fields")?;
+    let attributes = available
+        .into_iter()
+        .filter(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.contains("cpu") || lower.contains("footprint") || lower.contains("resident")
+        })
+        .collect();
+    drop(info);
+
+    let mut tap = idevice::dvt::sysmontap::SysmontapClient::new(&mut hub)
+        .await
+        .context("This device doesn't offer the Instruments activity monitor")?;
+    tap.set_config(&idevice::dvt::sysmontap::SysmontapConfig {
+        interval_ms: 1000,
+        process_attributes: attributes,
+        system_attributes: Vec::new(),
+    })
+    .await
+    .context("Couldn't configure activity sampling")?;
+    tap.start()
+        .await
+        .context("Couldn't start activity sampling")?;
+    on_sample(json!({ "type": "started" }));
+
+    let samples: Result<&'static str, Report> = loop {
+        tokio::select! {
+            biased;
+            _ = stop.notified() => break Ok("stopped"),
+            sample = tap.next_sample() => match sample {
+                Ok(sample) => {
+                    let processes = sample.processes.as_ref()
+                        .map(|dict| plist_json(&plist::Value::Dictionary(dict.clone())))
+                        .unwrap_or(Value::Null);
+                    let system_cpu = sample.system_cpu_usage.as_ref()
+                        .map(|dict| plist_json(&plist::Value::Dictionary(dict.clone())))
+                        .unwrap_or(Value::Null);
+                    on_sample(json!({
+                        "processes": processes,
+                        "systemCPUUsage": system_cpu,
+                    }));
+                }
+                Err(error) => break Err(report!("The activity monitor ended: {error}").into()),
+            }
+        }
+    };
+    let _ = tap.stop().await;
+    let ended = samples?;
+    Ok(json!({ "ended": ended }))
+}
+
+/// Available network and thermal profiles exposed by this OS build.
+pub async fn condition_profiles(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+) -> Result<Value, Report> {
+    if !handshake.services.contains_key(SERVICE_HUB) {
+        bail!(
+            "This device doesn't expose Instruments conditions right now. Connect it to Xcode to prepare it for development, then try again."
+        );
+    }
+    let mut hub = idevice::dvt::remote_server::RemoteServerClient::connect_rsd(adapter, handshake)
+        .await
+        .context("Couldn't reach Instruments' service hub")?;
+    hub.read_message(0)
+        .await
+        .context("Instruments' service hub didn't greet")?;
+    let mut inducer = idevice::dvt::condition_inducer::ConditionInducerClient::new(&mut hub)
+        .await
+        .context("This device doesn't offer connection condition controls")?;
+    let groups = inducer
+        .available_conditions()
+        .await
+        .context("Couldn't read available conditions")?;
+    Ok(json!({ "groups": groups.into_iter().map(|group| json!({
+        "identifier": group.identifier,
+        "profiles": group.profiles.into_iter().map(|profile| json!({
+            "identifier": profile.identifier,
+            "description": profile.description,
+        })).collect::<Vec<_>>(),
+    })).collect::<Vec<_>>() }))
+}
+
+/// Applies one condition while keeping its DVT connection alive. The periodic profile query
+/// notices a dropped connection; either path disables the condition before returning.
+pub async fn condition_session(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    key: &str,
+    condition: &str,
+    profile: &str,
+    on_enabled: &mut (dyn FnMut() + Send),
+) -> Result<Value, Report> {
+    if !handshake.services.contains_key(SERVICE_HUB) {
+        bail!(
+            "This device doesn't expose Instruments conditions right now. Connect it to Xcode to prepare it for development, then try again."
+        );
+    }
+    let stop = Arc::new(Notify::new());
+    let _registration = Registration::new(
+        key,
+        Session {
+            stop: stop.clone(),
+            moves: None,
+        },
+    )?;
+    let mut hub = idevice::dvt::remote_server::RemoteServerClient::connect_rsd(adapter, handshake)
+        .await
+        .context("Couldn't reach Instruments' service hub")?;
+    hub.read_message(0)
+        .await
+        .context("Instruments' service hub didn't greet")?;
+    let mut inducer = idevice::dvt::condition_inducer::ConditionInducerClient::new(&mut hub)
+        .await
+        .context("This device doesn't offer connection condition controls")?;
+    inducer
+        .enable_condition(condition, profile)
+        .await
+        .context("The device refused this condition profile")?;
+    on_enabled();
+
+    let ended = loop {
+        tokio::select! {
+            biased;
+            _ = stop.notified() => break "stopped",
+            _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                if let Err(error) = inducer.available_conditions().await {
+                    tracing::info!("condition session ended after a device connection error: {error}");
+                    break "lost";
+                }
+            }
+        }
+    };
+    let cleared = inducer.disable_condition().await.is_ok();
+    Ok(json!({ "ended": ended, "cleared": cleared }))
+}
+
+/// Streams per-process connections and cumulative traffic/latency counters.
+pub async fn stream_network(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    key: &str,
+    on_event: &mut (dyn FnMut(Value) + Send),
+) -> Result<Value, Report> {
+    if !handshake.services.contains_key(SERVICE_HUB) {
+        bail!(
+            "This device doesn't expose Instruments network monitoring right now. Connect it to Xcode to prepare it for development, then try again."
+        );
+    }
+    let stop = Arc::new(Notify::new());
+    let _registration = Registration::new(
+        key,
+        Session {
+            stop: stop.clone(),
+            moves: None,
+        },
+    )?;
+    let mut hub = idevice::dvt::remote_server::RemoteServerClient::connect_rsd(adapter, handshake)
+        .await
+        .context("Couldn't reach Instruments' service hub")?;
+    hub.read_message(0)
+        .await
+        .context("Instruments' service hub didn't greet")?;
+    let mut monitor = idevice::dvt::network_monitor::NetworkMonitorClient::new(&mut hub)
+        .await
+        .context("This device doesn't offer the Instruments network monitor")?;
+    monitor
+        .start_monitoring()
+        .await
+        .context("Couldn't start network monitoring")?;
+    on_event(json!({ "type": "started" }));
+
+    let ended = loop {
+        tokio::select! {
+            biased;
+            _ = stop.notified() => break "stopped",
+            event = monitor.next_event() => match event {
+                Ok(idevice::dvt::network_monitor::NetworkEvent::InterfaceDetection(event)) => on_event(json!({
+                    "type": "interface", "index": event.interface_index, "name": event.name,
+                })),
+                Ok(idevice::dvt::network_monitor::NetworkEvent::ConnectionDetection(event)) => on_event(json!({
+                    "type": "connection", "pid": event.pid, "serial": event.serial_number,
+                    "interface": event.interface_index, "kind": event.kind,
+                    "local": event.local_address.map(|address| json!({"address": address.addr, "port": address.port})),
+                    "remote": event.remote_address.map(|address| json!({"address": address.addr, "port": address.port})),
+                })),
+                Ok(idevice::dvt::network_monitor::NetworkEvent::ConnectionUpdate(event)) => on_event(json!({
+                    "type": "update", "serial": event.connection_serial,
+                    "rxBytes": event.rx_bytes, "txBytes": event.tx_bytes,
+                    "rxPackets": event.rx_packets, "txPackets": event.tx_packets,
+                    "retransmits": event.tx_retx, "minRTT": event.min_rtt, "avgRTT": event.avg_rtt,
+                    "time": event.time,
+                })),
+                Ok(idevice::dvt::network_monitor::NetworkEvent::Unknown(kind)) => on_event(json!({"type":"unknown", "kind":kind})),
+                Err(error) => {
+                    tracing::info!("network monitor ended: {error}");
+                    break "lost";
+                }
+            }
+        }
+    };
+    let _ = monitor.stop_monitoring().await;
+    Ok(json!({ "ended": ended }))
+}
+
+/// Captures the device's sysdiagnose directly into Apparition's sandbox, streaming to disk.
+/// The returned length is checked against CoreDevice's expected length before the export is shared.
+pub async fn capture_sysdiagnose(
+    adapter: &mut AdapterHandle,
+    handshake: &mut RsdHandshake,
+    destination: &std::path::Path,
+) -> Result<Value, Report> {
+    let mut service =
+        idevice::core_device::DiagnostisServiceClient::connect_rsd(adapter, handshake)
+            .await
+            .context("This device doesn't offer CoreDevice sysdiagnose capture")?;
+    let response = service
+        .capture_sysdiagnose(false)
+        .await
+        .context("Couldn't start sysdiagnose capture")?;
+    let expected = response.expected_length;
+    let filename = response.preferred_filename;
+    let mut stream = response.stream;
+    let mut file = tokio::fs::File::create(destination)
+        .await
+        .context("Couldn't create the sysdiagnose export")?;
+    let mut bytes = 0usize;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("Sysdiagnose transfer ended early")?;
+        file.write_all(&chunk)
+            .await
+            .context("Couldn't save the sysdiagnose")?;
+        bytes += chunk.len();
+    }
+    file.flush()
+        .await
+        .context("Couldn't finish saving the sysdiagnose")?;
+    if bytes != expected {
+        bail!("Sysdiagnose was incomplete: received {bytes} of {expected} bytes");
+    }
+    Ok(json!({ "filename": filename, "bytes": bytes }))
+}
+
+/// What the paired device currently advertises over its Remote Service Discovery tunnel.
+pub fn service_readiness(handshake: &RsdHandshake) -> Value {
+    let services = handshake
+        .services
+        .iter()
+        .map(|(name, service)| {
+            json!({
+                "name": name,
+                "port": service.port,
+                "remoteXPC": service.uses_remote_xpc,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "services": services, "instruments": handshake.services.contains_key(SERVICE_HUB) })
+}
+
 // MARK: C ABI (Apparition on the device)
 
 /// The device's running processes: `{processes: [{pid, name, path, kind, bundleId, appName}]}`,
@@ -749,5 +1068,140 @@ pub unsafe extern "C" fn apparition_tool_stop(key: *const std::ffi::c_char) -> *
     crate::reply((|| {
         let key = unsafe { crate::text(key) }?;
         Ok(json!({ "stopped": stop(&key) }))
+    })())
+}
+
+
+/// Streams Instruments process and system activity samples as JSON until stopped.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_stream_activity(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    key: *const std::ffi::c_char,
+    on_sample: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char)>,
+    context: *mut std::ffi::c_void,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let key = unsafe { crate::text(key) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let context = context as usize;
+        let mut callback = move |sample: Value| {
+            let (Some(callback), Ok(text)) = (on_sample, serde_json::to_string(&sample)) else { return };
+            let Ok(text) = std::ffi::CString::new(text) else { return };
+            unsafe { callback(context as *mut std::ffi::c_void, text.as_ptr()) }
+        };
+        crate::runtime().block_on(crate::stop::stoppable(stream_activity(adapter, handshake, &key, &mut callback)))
+    })())
+}
+
+/// Lists Instruments connection and thermal profiles available on this OS build.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_condition_profiles(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        crate::runtime().block_on(crate::stop::stoppable(condition_profiles(adapter, handshake)))
+    })())
+}
+
+/// Applies an Instruments condition until the keyed session is stopped or the tunnel drops.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_condition_session(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    key: *const std::ffi::c_char,
+    condition: *const std::ffi::c_char,
+    profile: *const std::ffi::c_char,
+    on_enabled: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+    context: *mut std::ffi::c_void,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let key = unsafe { crate::text(key) }?;
+        let condition = unsafe { crate::text(condition) }?;
+        let profile = unsafe { crate::text(profile) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let context = context as usize;
+        let mut callback = move || {
+            if let Some(callback) = on_enabled {
+                unsafe { callback(context as *mut std::ffi::c_void) }
+            }
+        };
+        crate::runtime().block_on(crate::stop::stoppable(condition_session(
+            adapter, handshake, &key, &condition, &profile, &mut callback,
+        )))
+    })())
+}
+
+/// Streams Instruments network interface, connection and traffic events as JSON until stopped.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_stream_network(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    key: *const std::ffi::c_char,
+    on_event: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const std::ffi::c_char)>,
+    context: *mut std::ffi::c_void,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let key = unsafe { crate::text(key) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let context = context as usize;
+        let mut callback = move |event: Value| {
+            let (Some(callback), Ok(text)) = (on_event, serde_json::to_string(&event)) else { return };
+            let Ok(text) = std::ffi::CString::new(text) else { return };
+            unsafe { callback(context as *mut std::ffi::c_void, text.as_ptr()) }
+        };
+        crate::runtime().block_on(crate::stop::stoppable(stream_network(adapter, handshake, &key, &mut callback)))
+    })())
+}
+
+/// Captures a sysdiagnose to a caller-owned path, streaming the archive to disk.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_capture_sysdiagnose(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    destination: *const std::ffi::c_char,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let destination = unsafe { crate::text(destination) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        let destination = std::path::Path::new(&destination);
+        crate::runtime().block_on(crate::stop::stoppable(capture_sysdiagnose(adapter, handshake, destination)))
+    })())
+}
+
+/// Lists services advertised by the paired device's RSD handshake.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_tool_service_readiness(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let handshake = unsafe { &(*handshake).0 };
+        Ok(service_readiness(handshake))
     })())
 }

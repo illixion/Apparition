@@ -130,6 +130,19 @@ char *apparition_uninstall(struct AdapterHandle *adapter, struct RsdHandshakeHan
 // Both must be development-signed. Remove the old copy only when failed is empty.
 char *apparition_migrate_container(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                                    const char *from, const char *to);
+// Reads an app's development-readable Documents/Library data through house_arrest:
+// browse returns {path, entries:[{name,path,kind,bytes}]}; cache paths stay excluded.
+char *apparition_container_browse(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                  const char *bundle_id, const char *path);
+// Exports one regular app-data file to a caller-owned local path: {bytes}.
+char *apparition_container_export_file(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                       const char *bundle_id, const char *device_path, const char *destination);
+// Creates a cache-free ZIP tagged with its originating bundle ID: {files, bytes, folders, failed}.
+char *apparition_container_export_backup(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                         const char *bundle_id, const char *destination);
+// Restores a matching Apparition backup, merging files and replacing duplicate names.
+char *apparition_container_restore_backup(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                          const char *bundle_id, const char *archive_path);
 // Launches bundle_id suspended, attaches debugserver over the tunnel and serves the
 // brk #0x69 (UTM) and brk #0xf00d (JIT26) protocols. Waits up to wait_seconds (0: no limit)
 // for the first request; once the app has asked, serves it until it exits or detaches.
@@ -170,8 +183,27 @@ char *apparition_move_location(const char *key, double latitude, double longitud
 char *apparition_stream_log(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                             const char *key, int64_t pid, uint32_t minimum_level,
                             void (*on_batch)(void *context, const char *json), void *context);
-// Ends the location or log session key; its call then returns ended "stopped". {ok, stopped}.
+// Ends a keyed location, monitor, log, or condition session; its call returns ended "stopped". {ok, stopped}.
 char *apparition_tool_stop(const char *key);
+// Streams process CPU, footprint and system CPU samples as JSON until stopped.
+char *apparition_stream_activity(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                 const char *key,
+                                 void (*on_sample)(void *context, const char *json), void *context);
+// Lists available Instruments connection and thermal profiles: {groups:[{identifier,profiles}]}.
+char *apparition_condition_profiles(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake);
+// Enables a profile until apparition_tool_stop(key), then clears it. Callback marks accepted.
+char *apparition_condition_session(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                   const char *key, const char *condition, const char *profile,
+                                   void (*on_enabled)(void *context), void *context);
+// Streams network interface, connection and traffic/RTT events as JSON until stopped.
+char *apparition_stream_network(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                const char *key,
+                                void (*on_event)(void *context, const char *json), void *context);
+// Captures a sysdiagnose to a caller-owned path: {filename,bytes}; streams to disk.
+char *apparition_capture_sysdiagnose(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                                     const char *destination);
+// Lists currently advertised RSD services: {services:[{name,port,remoteXpc}],instruments}.
+char *apparition_tool_service_readiness(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake);
 
 // Injects the tweaks in tweaks_json (a JSON array of paths: .deb, .dylib, .framework, .bundle,
 // .zip) into the app in the IPA at ipa and writes the result, unsigned, to the IPA out (core/src/tweaks.rs);

@@ -9,6 +9,7 @@
 //! container is vended.
 
 use std::{
+    io::{Read, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -21,6 +22,7 @@ use idevice::{
 use rootcause::prelude::*;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use crate::migrate::{CHUNK, ROOTS, skipped};
 
@@ -36,6 +38,402 @@ async fn open(
         .await
         .context(format!("{bundle_id}'s data isn't open to this computer (is it installed, and development-signed?)"))?)
 }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupManifest {
+    format: String,
+    bundle_id: String,
+    created_at: u64,
+}
+
+/// Normalizes a caller-supplied container path and limits browsing to the data folders the
+/// existing migration tool copies. In particular, caches and traversal paths are never exposed.
+fn checked_device_path(path: &str) -> Result<String, Report> {
+    let path = path.trim_start_matches('/');
+    let mut components = path.split('/');
+    let root = components.next().unwrap_or("");
+    if !matches!(root, "Documents" | "Library") {
+        bail!("Choose a path under Documents or Library");
+    }
+    if components.clone().any(|part| {
+        part.is_empty() || part == "." || part == ".." || part.contains('\\') || part.contains('\0')
+    }) {
+        bail!("The container path isn't valid");
+    }
+    let normalized = format!("/{path}");
+    if skipped(&normalized) {
+        bail!("This data folder is excluded from Apparition's app-data tools");
+    }
+    Ok(normalized)
+}
+
+/// Lists regular files and folders from an app's development-readable container.
+pub async fn browse(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    bundle_id: &str,
+    path: &str,
+) -> Result<Value, Report> {
+    let path = checked_device_path(path)?;
+    let mut afc = open(adapter, handshake, bundle_id).await?;
+    let names = match afc.list_dir(path.clone()).await {
+        Ok(names) => names,
+        // The app may never have created one of the two standard data folders.
+        Err(_) if ROOTS.contains(&path.as_str()) => Vec::new(),
+        Err(error) => return Err(report!("Couldn't list {path}: {error}").into()),
+    };
+    let mut entries = Vec::new();
+    for name in names.into_iter().filter(|n| n != "." && n != "..") {
+        if local_name(&name).is_none() {
+            continue;
+        }
+        let Ok(child) = checked_device_path(&format!("{path}/{name}")) else {
+            continue;
+        };
+        let Ok(info) = afc.get_file_info(child.clone()).await else {
+            continue;
+        };
+        let kind = match info.st_ifmt.as_str() {
+            "S_IFDIR" => "directory",
+            "S_IFREG" => "file",
+            _ => continue,
+        };
+        entries.push(json!({ "name": name, "path": child, "kind": kind, "bytes": info.size }));
+    }
+    entries.sort_by(|a, b| {
+        let directory = |v: &Value| v["kind"].as_str() == Some("directory");
+        directory(b)
+            .cmp(&directory(a))
+            .then_with(|| a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    Ok(json!({ "path": path, "entries": entries }))
+}
+
+/// Copies one regular file from an app container to a local, caller-owned path.
+pub async fn export_file(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    bundle_id: &str,
+    device_path: &str,
+    destination: &Path,
+) -> Result<Value, Report> {
+    let device_path = checked_device_path(device_path)?;
+    if device_path == "/Documents" || device_path == "/Library" {
+        bail!("Choose a file to export");
+    }
+    let mut afc = open(adapter, handshake, bundle_id).await?;
+    let info = afc
+        .get_file_info(device_path.clone())
+        .await
+        .context("Couldn't read this item")?;
+    if info.st_ifmt != "S_IFREG" {
+        bail!("This item isn't a regular file");
+    }
+    let bytes = pull_file(&mut afc, &device_path, destination, info.size as u64).await?;
+    Ok(json!({ "bytes": bytes }))
+}
+
+/// Streams a complete, cache-free Documents/Library backup to a ZIP on local storage.
+pub async fn export_backup(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    bundle_id: &str,
+    destination: &Path,
+) -> Result<Value, Report> {
+    let mut afc = open(adapter, handshake, bundle_id).await?;
+    let mut failed = Vec::new();
+    let found = walk(&mut afc, &mut failed).await?;
+    let file = std::fs::File::create(destination).context("Couldn't create the backup archive")?;
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    archive
+        .start_file("ApparitionBackup.json", options)
+        .context("Couldn't write backup metadata")?;
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let manifest = BackupManifest {
+        format: "apparition-app-data-v1".into(),
+        bundle_id: bundle_id.into(),
+        created_at,
+    };
+    archive
+        .write_all(&serde_json::to_vec(&manifest)?)
+        .context("Couldn't write backup metadata")?;
+
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    let mut folders = 0u64;
+    for (device_path, is_dir, size) in found {
+        let relative = device_path.trim_start_matches('/');
+        if relative.contains('\\') {
+            failed.push(format!("{device_path}: unsupported path separator"));
+            continue;
+        }
+        if is_dir {
+            archive
+                .add_directory(format!("{relative}/"), options)
+                .context("Couldn't add a folder to the backup")?;
+            folders += 1;
+            continue;
+        }
+        archive
+            .start_file(relative, options)
+            .context("Couldn't add a file to the backup")?;
+        let mut reader = afc.open(device_path, AfcFopenMode::RdOnly).await?;
+        let mut copied = 0u64;
+        loop {
+            let chunk = reader.read_n(CHUNK).await?;
+            if chunk.is_empty() {
+                break;
+            }
+            archive
+                .write_all(&chunk)
+                .context("Couldn't write a file to the backup")?;
+            copied += chunk.len() as u64;
+        }
+        reader.close().await?;
+        if copied != size {
+            bail!("A file changed during backup: copied {copied} of {size} bytes");
+        }
+        files += 1;
+        bytes += copied;
+    }
+    archive
+        .finish()
+        .context("Couldn't finish the backup archive")?;
+    Ok(json!({ "files": files, "bytes": bytes, "folders": folders, "failed": failed }))
+}
+
+fn backup_path(name: &str) -> Result<Option<String>, Report> {
+    if name == "ApparitionBackup.json" {
+        return Ok(None);
+    }
+    if name.contains('\\') || name.contains('\0') {
+        bail!("The backup contains an invalid path");
+    }
+    let path = name.strip_suffix('/').unwrap_or(name);
+    if path.starts_with('/') {
+        bail!("The backup contains a path outside the app data folders");
+    }
+    let enclosed: Vec<_> = path.split('/').collect();
+    if enclosed.iter().any(|part| part.is_empty() || *part == "." || *part == "..") {
+        bail!("The backup contains an invalid path");
+    }
+    if enclosed.len() < 2 || !matches!(enclosed[0], "Documents" | "Library") {
+        bail!("The backup contains a path outside Documents and Library");
+    }
+    let normalized = format!("/{}", enclosed.join("/"));
+    if skipped(&normalized) {
+        bail!("The backup contains an excluded cache path");
+    }
+    Ok(Some(normalized))
+}
+
+/// Validates an Apparition backup's app identity and safe paths, then merges it into that app's
+/// development-readable container. Existing files with the same names are replaced.
+pub async fn restore_backup(
+    adapter: &mut idevice::tcp::handle::AdapterHandle,
+    handshake: &mut idevice::rsd::RsdHandshake,
+    bundle_id: &str,
+    archive_path: &Path,
+) -> Result<Value, Report> {
+    let file = std::fs::File::open(archive_path).context("Couldn't open the selected backup")?;
+    let mut archive = ZipArchive::new(file).context("This isn't a readable ZIP backup")?;
+    let mut manifest = None;
+    let mut seen_paths = std::collections::HashSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .context("Couldn't read a backup entry")?;
+        let name = entry
+            .name()
+            .context("The backup contains an invalid entry name")?
+            .to_string();
+        let is_directory = entry.is_dir();
+        if let Some(mode) = entry.unix_mode() {
+            let kind = mode & 0o170000;
+            if kind == 0o120000 {
+                bail!("The backup contains a symbolic link");
+            }
+            if kind != 0 && kind != if is_directory { 0o040000 } else { 0o100000 } {
+                bail!("The backup contains a special file");
+            }
+        }
+        let Some(path) = backup_path(&name)? else {
+            if manifest.is_some() {
+                bail!("The backup contains duplicate metadata");
+            }
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .context("Couldn't read backup metadata")?;
+            manifest = Some(
+                serde_json::from_slice::<BackupManifest>(&bytes)
+                    .context("Backup metadata is invalid")?,
+            );
+            continue;
+        };
+        if !seen_paths.insert(path) {
+            bail!("The backup contains a duplicate path");
+        }
+    }
+    let manifest =
+        manifest.ok_or_else(|| report!("This ZIP isn't an Apparition app-data backup"))?;
+    if manifest.format != "apparition-app-data-v1" {
+        bail!("This backup format isn't supported");
+    }
+    if manifest.bundle_id != bundle_id {
+        bail!(
+            "This backup belongs to {}, not {bundle_id}",
+            manifest.bundle_id
+        );
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging =
+        std::env::temp_dir().join(format!("apparition-restore-{}-{stamp}", std::process::id()));
+    std::fs::create_dir_all(&staging).context("Couldn't create a temporary restore folder")?;
+    let unpacked = (|| -> Result<(), Report> {
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .context("Couldn't read a backup entry")?;
+            let name = entry
+                .name()
+                .context("The backup contains an invalid entry name")?
+                .to_string();
+            let Some(path) = backup_path(&name)? else {
+                continue;
+            };
+            let relative = path.trim_start_matches('/');
+            let destination = staging.join(relative);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&destination)?;
+            } else {
+                if let Some(parent) = destination.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut output = std::fs::File::create(destination)?;
+                std::io::copy(&mut entry, &mut output)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = unpacked {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    let result = push(adapter, handshake, bundle_id, &staging).await;
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// Lists entries from an app container through the on-device Tools bridge.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_container_browse(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    bundle_id: *const std::ffi::c_char,
+    path: *const std::ffi::c_char,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = unsafe { crate::text(bundle_id) }?;
+        let path = unsafe { crate::text(path) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        crate::runtime().block_on(crate::stop::stoppable(browse(
+            adapter, handshake, &bundle_id, &path,
+        )))
+    })())
+}
+
+/// Exports one regular app-data file to a caller-owned local path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_container_export_file(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    bundle_id: *const std::ffi::c_char,
+    device_path: *const std::ffi::c_char,
+    destination: *const std::ffi::c_char,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = unsafe { crate::text(bundle_id) }?;
+        let device_path = unsafe { crate::text(device_path) }?;
+        let destination = unsafe { crate::text(destination) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        crate::runtime().block_on(crate::stop::stoppable(export_file(
+            adapter,
+            handshake,
+            &bundle_id,
+            &device_path,
+            Path::new(&destination),
+        )))
+    })())
+}
+
+/// Creates a complete cache-free app-data archive at the caller-owned local path.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_container_export_backup(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    bundle_id: *const std::ffi::c_char,
+    destination: *const std::ffi::c_char,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = unsafe { crate::text(bundle_id) }?;
+        let destination = unsafe { crate::text(destination) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        crate::runtime().block_on(crate::stop::stoppable(export_backup(
+            adapter,
+            handshake,
+            &bundle_id,
+            Path::new(&destination),
+        )))
+    })())
+}
+
+/// Validates and restores a matching Apparition app-data archive into the selected container.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_container_restore_backup(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    bundle_id: *const std::ffi::c_char,
+    archive_path: *const std::ffi::c_char,
+) -> *mut std::ffi::c_char {
+    crate::reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let bundle_id = unsafe { crate::text(bundle_id) }?;
+        let archive_path = unsafe { crate::text(archive_path) }?;
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        crate::runtime().block_on(crate::stop::stoppable(restore_backup(
+            adapter,
+            handshake,
+            &bundle_id,
+            Path::new(&archive_path),
+        )))
+    })())
+}
+
 
 /// A name from the device that is safe to use as one path component here.
 fn local_name(name: &str) -> Option<&str> {
@@ -224,6 +622,42 @@ mod tests {
         assert_eq!(local_name("a.plist"), Some("a.plist"));
         for bad in ["", ".", "..", "a/b", "x\0y"] {
             assert_eq!(local_name(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn container_paths_stay_in_documents_and_library() {
+        assert_eq!(checked_device_path("/Documents").unwrap(), "/Documents");
+        assert_eq!(checked_device_path("Library/Preferences").unwrap(), "/Library/Preferences");
+        for bad in [
+            "/",
+            "/private/var/mobile/Library",
+            "/Documents/../Library",
+            "/Documents//file",
+            "/Documents/./file",
+            "/Documents/file\\name",
+            "/Library/Caches/database",
+            "/Library/Saved Application State/window.plist",
+        ] {
+            assert!(checked_device_path(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn restore_paths_reject_traversal_and_normalized_duplicates() {
+        assert_eq!(backup_path("Documents/config/settings.plist").unwrap(), Some("/Documents/config/settings.plist".into()));
+        assert_eq!(backup_path("Library/Preferences/").unwrap(), Some("/Library/Preferences".into()));
+        for bad in [
+            "/Documents/config.plist",
+            "Documents/../private",
+            "Documents/./config.plist",
+            "Documents//config.plist",
+            "Documents\\private",
+            "Library/Caches/private.db",
+            "Library/Saved Application State/state.plist",
+            "Other/file",
+        ] {
+            assert!(backup_path(bad).is_err(), "{bad:?}");
         }
     }
 }

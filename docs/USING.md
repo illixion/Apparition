@@ -144,6 +144,24 @@ or the companion); the command line has the same as `processes`, `kill`, `locati
 - **Console**: the device's log as it's written, one app's or everything, at the level you choose
   (Default leaves out info and debug lines, as `log stream` does). Pause, filter and copy it. Values an
   app logs as private arrive as `<private>`.
+- **Activity Monitor**: refresh the process list and start one-second CPU and physical-footprint
+  sampling. Instruments fields vary by OS, so unsupported readings stay blank.
+- **Network Monitor**: inspect the connections and traffic counters Instruments reports per process.
+  This is not packet capture; RTT units and available fields come from the device.
+- **Connection Conditions**: apply an OS-provided network or thermal profile. It affects the device
+  while active; use Stop to clear it. The profile list depends on the OS and developer services.
+- **Developer Services**: inspect the services advertised by the current pairing. This is a snapshot,
+  not a promise that every service will allow a request.
+- **App Data** (not available on tvOS): browse development-readable `Documents` and `Library` files,
+  export individual files, or create a ZIP backup. Caches, saved state, Keychain items, app-group data
+  and system files are outside this access. Only apps that grant development container access can be
+  opened. Restore merges into the matching bundle ID and replaces same-named files; close the target
+  app first.
+- **Sysdiagnose** (not available on tvOS): request an archive manually when CoreDevice exposes the
+  service, then review it before sharing. It can contain detailed logs and identifying information.
+
+These tools share the paired JIT tunnel. The OS may hide a service or refuse access, and some require
+Xcode to prepare the device. Each page explains what the target currently exposes.
 
 ## Tweaks
 
