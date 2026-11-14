@@ -30,7 +30,7 @@ Alpine VM) and ARMSX2, the PS2 emulator, running GTA San Andreas
 needs a way back to the device's own services, which the device won't connect to directly: a
 companion on any computer (macOS, Windows or Linux) bounces that connection back, or LocalDevVPN
 on iPhone, iPad and Vision Pro does it with no computer (it takes the device's only VPN slot, so
-not alongside Tailscale). Apple TV has no VPN app, so it uses a companion. A computer is needed
+not alongside Tailscale). Apple TV can run VPN apps, but LocalDevVPN has no Apple TV version, so it uses a companion. A computer is needed
 once, to install Apparition.
 
 

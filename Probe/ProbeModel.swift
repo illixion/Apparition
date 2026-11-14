@@ -55,7 +55,7 @@ final class ProbeModel {
         case companion, localVPN
         var id: String { rawValue }
 
-        /// The modes this device can use. tvOS is paired from a computer, with no VPN app.
+        /// The modes this device can use. tvOS is paired from a computer, and LocalDevVPN has no Apple TV version.
         static var offered: [ConnectionMode] {
             #if os(tvOS)
             [.companion]
