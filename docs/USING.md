@@ -129,6 +129,22 @@ once every file arrived. Turn it off in Settings > Certificates & Profiles. Cach
 Keychain items and app group data, which belong to the signing team. Only a development-signed
 app can have its data read, so a distribution-signed one keeps its data in the old copy.
 
+## Device tools
+
+The Tools tab holds what StikDebug users know, reaching the device the way JIT does (LocalDevVPN
+or the companion); the command line has the same as `processes`, `kill`, `location` and `logs`:
+
+- **Processes**: what runs on the device, apps first, each named after its app. Tap one to read its
+  log or end it. Ending a system process can make the device misbehave until the system starts it
+  again, which the confirmation says.
+- **Location** (iPhone, iPad and Vision Pro): every app sees the place you choose, from the map, a
+  search or coordinates, until you stop it, or the connection drops. Apparition keeps running in the
+  background meanwhile, and the place shows beside the tabs with a Stop. It needs the developer disk
+  image, which Xcode mounts when it prepares a device and a restart removes.
+- **Console**: the device's log as it's written, one app's or everything, at the level you choose
+  (Default leaves out info and debug lines, as `log stream` does). Pause, filter and copy it. Values an
+  app logs as private arrive as `<private>`.
+
 ## Tweaks
 
 A tweak changes how an app behaves from inside it: an ad blocker for a video app, a theme, extra
@@ -139,6 +155,12 @@ or `.bundle` folder, or a `.zip` of those. From the command line:
 
     apparition tweak YouTube.ipa YTLite.deb                   # YouTube-tweaked.ipa, unsigned
     apparition install YouTube.ipa --tweak YTLite.deb --apple-id you@example.com
+
+On the device, the review before an install (also its menu's Review Install Options) has a Tweaks
+section: Add Tweak picks one from Files, and Apparition tries it against the app straight away, saying
+what the app will load or why it can't. The tweaks are kept with the app and go into it each time it's
+signed, so refreshes and updates from its source keep them. In the desktop app they're under Advanced
+when you install an app file.
 
 What happens to it:
 - Its code goes into the app's `Frameworks` folder, and the app's executable gets a weak load

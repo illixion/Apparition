@@ -630,6 +630,9 @@ final class ProbeModel {
     /// lasts as long as the app wants a debugger, which for Wine (Madeira) is the whole time it
     /// runs, so it doesn't hold `busy`: installs and refreshes go on beside it.
     private(set) var jitSessions: Set<String> = []
+    /// The device tools' sessions running now (a simulated location, a log stream), by key:
+    /// like a JIT session they keep Apparition running behind other apps, and hold no `busy`.
+    private(set) var toolSessions: Set<String> = []
     private let keepAlive = JITKeepAlive()
     private let notice = JITSessionNotice()
     /// What the user calls an app (LibraryModel.displayName), for the session notification.
@@ -712,7 +715,7 @@ final class ProbeModel {
         defer {
             jitSessions.remove(bundleId)
             notice.remove(bundleId: bundleId)
-            keepAlive.update(active: !jitSessions.isEmpty)
+            updateKeepAlive()
         }
         let outcome = await run(action: "jit", host: host, port: port, exclusive: false) { file, box in
             let reply = try body(target, file, box)
@@ -729,12 +732,38 @@ final class ProbeModel {
         report(outcome)
     }
 
+    private func updateKeepAlive() {
+        keepAlive.update(active: !jitSessions.isEmpty || !toolSessions.isEmpty)
+    }
+
+    /// Runs a device tool's long session `key` (DeviceTools.swift) the way a JIT session runs:
+    /// beside other actions, keeping Apparition running behind other apps meanwhile.
+    func runToolSession(_ key: String, action: String, host: String, port: Int,
+                        _ body: @escaping @Sendable (IDevice.Target, IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async -> String {
+        refreshPairing()
+        if pairingProblem == .missing {
+            return await run(action: action, host: host, port: port, exclusive: false) { _, _ in { _ in } }
+        }
+        await prepareRoute(host: host)
+        let target = tunnelTarget(host: host, port: port)
+        toolSessions.insert(key)
+        await keepAlive.prepare()
+        updateKeepAlive()
+        defer {
+            toolSessions.remove(key)
+            updateKeepAlive()
+        }
+        return await run(action: action, host: host, port: port, exclusive: false) { file, box in
+            try body(target, file, box)
+        }
+    }
+
     /// With `exclusive` (everything but a JIT session), refuses to start while another
     /// exclusive action runs, and holds `busy` meanwhile. With `needsPairing` (everything but
     /// pairing and the diagnostic tunnel), fails at once when there's no pairing, rather than
     /// making up a new one the device has never seen.
     @discardableResult
-    private func run(action: String, host: String, port: Int, exclusive: Bool = true, needsPairing: Bool = true,
+    func run(action: String, host: String, port: Int, exclusive: Bool = true, needsPairing: Bool = true,
                      _ body: @escaping @Sendable (IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async -> String {
         if exclusive {
             guard !busy else { return "busy" }

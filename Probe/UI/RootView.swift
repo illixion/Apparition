@@ -6,6 +6,7 @@ enum AppTab: String, CaseIterable {
     case library = "Library"
     case browse = "Browse"
     case developer = "Developer"
+    case tools = "Tools"
     case setup = "Setup"
     case settings = "Settings"
     case diagnostics = "Diagnostics"
@@ -15,6 +16,7 @@ enum AppTab: String, CaseIterable {
         case .library: "square.grid.2x2"
         case .browse: "magnifyingglass"
         case .developer: "hammer"
+        case .tools: "wrench.and.screwdriver"
         case .setup: "checklist"
         case .settings: "gearshape"
         case .diagnostics: "stethoscope"
@@ -44,6 +46,8 @@ struct RootView: View {
     @State private var developer: DeveloperModel
     /// The Developer tab's navigation: a project opens its page, on a tab.
     @State private var developerPath: [DeveloperRoute] = []
+    /// The Tools tab's processes, simulated location and console.
+    @State private var tools: DeviceToolsModel
 
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @AppStorage(RootView.setupFinishedKey) private var setupFinished = false
@@ -66,6 +70,7 @@ struct RootView: View {
         self.companions = companions
         self.debugAccess = debugAccess
         _developer = State(initialValue: DeveloperModel(service: BuildService(), library: library, probe: model))
+        _tools = State(initialValue: DeviceToolsModel(probe: model))
         _tab = State(initialValue: SetupStatus.opensOnLibrary(model: model, account: account) ? .library : .setup)
     }
 
@@ -77,7 +82,16 @@ struct RootView: View {
     }
 
     private var visibleTabs: [AppTab] {
-        AppTab.allCases.filter { ($0 != .diagnostics || showDiagnostics) && ($0 != .setup || !setupHidden) }
+        #if os(iOS)
+        // An iPhone's tab bar holds five tabs and folds the rest under More, which would put Setup
+        // there on first run: Tools, which needs what Setup sets up, waits until Setup's tab goes.
+        let toolsShown = setupHidden
+        #else
+        let toolsShown = true
+        #endif
+        return AppTab.allCases.filter {
+            ($0 != .diagnostics || showDiagnostics) && ($0 != .setup || !setupHidden) && ($0 != .tools || toolsShown)
+        }
     }
 
     private func openSetup() {
@@ -238,7 +252,7 @@ struct RootView: View {
             }
         }
         #if os(iOS)
-        .modifier(ActivityAccessory(active: activityText != nil || !model.jitSessions.isEmpty) { activity })
+        .modifier(ActivityAccessory(active: activityText != nil || !model.jitSessions.isEmpty || tools.location.running) { activity })
         #endif
     }
     #endif
@@ -256,6 +270,8 @@ struct RootView: View {
                 BrowseView(model: model, account: account, library: library, onSetup: openSetup)
             case .developer:
                 DeveloperView(developer: developer, library: library, path: $developerPath)
+            case .tools:
+                ToolsView(model: model, account: account, tools: tools, onSetup: openSetup)
             case .setup:
                 SetupView(model: model, account: account, companions: companions) {
                     setupFinished = true
@@ -274,7 +290,7 @@ struct RootView: View {
     /// tab, and the apps Apparition is debugging, each with a Stop.
     @ViewBuilder
     private var activity: some View {
-        if activityText != nil || !model.jitSessions.isEmpty {
+        if activityText != nil || !model.jitSessions.isEmpty || tools.location.running {
             #if os(visionOS)
             Divider().frame(height: 28)
             #endif
@@ -290,10 +306,26 @@ struct RootView: View {
                 if !model.jitSessions.isEmpty {
                     jitSessions
                 }
+                if let place = tools.location.place {
+                    simulatedLocation(place)
+                }
             }
             .padding(.horizontal, 8)
             .transition(.opacity)
         }
+    }
+
+    /// The simulated location and a Stop that puts the real one back.
+    @ViewBuilder
+    private func simulatedLocation(_ place: SimulatedPlace) -> some View {
+        Label("At \(place.name)", systemImage: "location.fill")
+            .font(.callout)
+            .lineLimit(1)
+            .frame(maxWidth: 220, alignment: .leading)
+        Button("Stop", role: .destructive) { tools.stopLocation() }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityIdentifier("stopLocation")
     }
 
     /// "Debugging Madeira" and a Stop for it; with several apps, Stop asks which.

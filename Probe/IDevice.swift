@@ -265,6 +265,72 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and lists the device's running processes, apps first (apparition_processes).
+    static func processes(target: Target, hostname: String, file: PairingFile,
+                          pin: PinCallback?, context: UnsafeMutableRawPointer) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_processes(adapter, handshake))
+        }
+    }
+
+    /// Opens a tunnel and sends `signal` to `pid` (apparition_signal_process).
+    static func signalProcess(target: Target, hostname: String, file: PairingFile,
+                              pin: PinCallback?, context: UnsafeMutableRawPointer,
+                              pid: UInt32, signal: UInt32) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_signal_process(adapter, handshake, pid, signal))
+        }
+    }
+
+    /// A box for the callback apparition_simulate_location makes each time the device has taken
+    /// a coordinate.
+    final class LocationBox {
+        let onSet: @Sendable (Double, Double) -> Void
+        init(_ onSet: @escaping @Sendable (Double, Double) -> Void) { self.onSet = onSet }
+    }
+
+    /// Opens a tunnel and simulates a location for the whole device until
+    /// apparition_tool_stop(`key`) or the connection drops (apparition_simulate_location). Blocks
+    /// for the whole session, with the tunnel open.
+    static func simulateLocation(target: Target, hostname: String, file: PairingFile,
+                                 pin: PinCallback?, context: UnsafeMutableRawPointer, key: String,
+                                 latitude: Double, longitude: Double,
+                                 onSet: @escaping @Sendable (Double, Double) -> Void) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let box = Unmanaged.passRetained(LocationBox(onSet))
+            defer { box.release() }
+            return AccountModel.call(apparition_simulate_location(adapter, handshake, key, latitude, longitude, { raw, latitude, longitude in
+                guard let raw else { return }
+                Unmanaged<LocationBox>.fromOpaque(raw).takeUnretainedValue().onSet(latitude, longitude)
+            }, box.toOpaque()))
+        }
+    }
+
+    /// A box for the callback apparition_stream_log makes with each batch of log lines (their JSON).
+    final class LogBox {
+        let onBatch: @Sendable (Data) -> Void
+        init(_ onBatch: @escaping @Sendable (Data) -> Void) { self.onBatch = onBatch }
+    }
+
+    /// Opens a tunnel and streams the device's log (only `pid`'s when it isn't negative) until
+    /// apparition_tool_stop(`key`) or the device ends it (apparition_stream_log). Blocks for the
+    /// whole session, with the tunnel open.
+    static func streamLog(target: Target, hostname: String, file: PairingFile,
+                          pin: PinCallback?, context: UnsafeMutableRawPointer, key: String,
+                          pid: Int64, minimumLevel: UInt32,
+                          onBatch: @escaping @Sendable (Data) -> Void) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let box = Unmanaged.passRetained(LogBox(onBatch))
+            defer { box.release() }
+            return AccountModel.call(apparition_stream_log(adapter, handshake, key, pid, minimumLevel, { raw, json in
+                guard let raw, let json else { return }
+                // Copied out at once: the text is only valid during the call.
+                let data = Data(bytes: json, count: strlen(json))
+                Unmanaged<LogBox>.fromOpaque(raw).takeUnretainedValue().onBatch(data)
+            }, box.toOpaque()))
+        }
+    }
+
     /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
     /// return them (only pair-setup does), and signing needs the UDID.
     static func identify(target: Target, hostname: String, file: PairingFile,

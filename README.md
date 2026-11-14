@@ -59,12 +59,18 @@ comparison of anisette sources is in [docs/ANISETTE.md](docs/ANISETTE.md).
   `.ipa` or `.deb` from Safari or Files to Apparition and it asks before installing.
 - **Sign** with a free Apple ID (apps last 7 days, two certificates) or with a paid account's
   certificate and profile (a year, no sign-in). Apps that ask for the increased memory limit get it.
+- **Add tweaks** to an app as it's signed: a `.deb`, `.dylib`, `.framework` or `.bundle`, with
+  [ElleKit](https://github.com/tealbathingsuit/ellekit) standing in for Substrate. On the device they
+  stay with the app through refreshes and updates ([how](docs/USING.md#tweaks)).
 - **Refresh** apps before they expire, on the device: from the app, a Shortcuts automation or in
   the background, through the companion or LocalDevVPN.
 - **JIT that works on current chips.** iOS 26 on A15 and M2 and later, and visionOS 27 on Vision Pro,
   no longer let an app run generated code just because a debugger attached once. **Launch with JIT**
   keeps the debugger attached and prepares the memory the app asks for, on the device itself. It speaks
   the JIT26 requests StikDebug defined, so apps built for them work as they are. See [docs/JIT.md](docs/JIT.md).
+- **Device tools** beside JIT, in the Tools tab and on the command line: the processes running on
+  the device (and ending one), a simulated location for every app, and the device's log as it's
+  written, one app's or everything.
 - **Pair once, then work over Wi-Fi.** Vision Pro and Apple TV pair with the code they show; an iPhone or
   iPad pairs over USB once.
 - **Share one certificate** between your devices and computers, so a free account's two certificates
