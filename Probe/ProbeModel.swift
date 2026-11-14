@@ -161,6 +161,30 @@ final class ProbeModel {
     /// may have changed while Apparition was in the background).
     func companionMayHaveMoved() { companionChecked = false }
 
+    /// Watches for a network change while Apparition stays in front (Wi-Fi to a phone's hotspot,
+    /// the hotspot dropping): the companion is looked for again before the next action, as after
+    /// Apparition comes back from the background.
+    private let pathMonitor = NWPathMonitor()
+    private var lastPath: String?
+
+    private func watchNetwork() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let status = "\(path.status)"
+            Task { @MainActor in
+                // This device's own addresses: joining another Wi-Fi network (a hotspot is Wi-Fi
+                // on en0 too) changes them, while an update for the same network doesn't.
+                let summary = status + " " + Self.interfaceAddresses().sorted().joined(separator: ",")
+                guard let self, summary != self.lastPath else { return }
+                if self.lastPath != nil {
+                    log.info("network changed; the companion is looked for again before the next action")
+                    self.companionMayHaveMoved()
+                }
+                self.lastPath = summary
+            }
+        }
+        pathMonitor.start(queue: .main)
+    }
+
     /// Before an action through the companion: picks where to reach it now (CompanionRoutes): a
     /// LAN address at home, where a knock wakes a sleeping Mac, its Tailscale address away, and
     /// switches to it. A companion with no record yet that was found by name is looked for
@@ -251,6 +275,7 @@ final class ProbeModel {
         pinBox.onRequest = { [weak self] in
             Task { @MainActor in self?.pinRequested = true }
         }
+        watchNetwork()
     }
 
     // MARK: Discovery
