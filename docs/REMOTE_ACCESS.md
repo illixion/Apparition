@@ -38,7 +38,8 @@ since tvOS has no no-computer route.
   shows, so do it, and add the companion, before you leave. After that the Tailscale address is all JIT needs.
 - **Skip hotel and café Wi-Fi: use your phone.** Those networks often put the Apple TV behind a sign-in page it can't
   complete. Join the Apple TV to your iPhone's Personal Hotspot instead (Settings > Network on the Apple TV, with the
-  hotspot screen open on the phone the first time), and connect the computer that runs the companion to the internet
+  hotspot screen open on the phone the first time; turn on **Maximize Compatibility** in the phone's Personal Hotspot
+  settings, or the Apple TV may not see the network), and connect the computer that runs the companion to the internet
   separately (the same hotspot, or any network it can use). Both only need to reach each other through the tailnet, so
   the phone does nothing but provide internet and does not need Tailscale itself.
 - Not yet tried on an Apple TV: the hotspot join and JIT over Tailscale from it are what the design implies, not
