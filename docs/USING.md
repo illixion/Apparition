@@ -179,3 +179,8 @@ Not possible: an app still encrypted by the App Store (its code can't be changed
 run re-signed anyway); code built for another platform than the app's (an iOS tweak in a native
 visionOS app); and, rarely, an executable with no room left for another load command. Tweaks are
 iOS code, and ElleKit is built for iOS 15 and later.
+
+Tweaks that import function-hook or memory-patching APIs are flagged during install.
+Objective-C method hooks can work without JIT. On TXM devices running iOS 26 or
+later, attaching a debugger does not authorize ElleKit to rewrite executable
+code itself, so enabling JIT alone may not restore those tweak features.

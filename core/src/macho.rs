@@ -47,6 +47,40 @@ pub fn is_macho(data: &[u8]) -> bool {
     matches!(le, MH_MAGIC_64 | MH_MAGIC) || matches!(be, FAT_MAGIC | FAT_MAGIC_64)
 }
 
+/// Undefined external symbols from each 64-bit slice's nlist_64 table. Inspect
+/// the actual imports rather than strings embedded in resources or debug info.
+pub fn imported_symbols(data: &[u8]) -> Result<Vec<String>, Report> {
+    let mut names = std::collections::BTreeSet::new();
+    for (offset, length) in slices(data)? {
+        let bytes = &data[offset..offset + length];
+        let slice = Slice::read(bytes)?;
+        for command in slice.commands.iter().filter(|c| c.cmd == 2) { // LC_SYMTAB
+            let field = |at| u32_at(&command.bytes, at).map(|n| n as usize).ok_or_else(|| report!("a truncated symbol table command"));
+            let start = field(8)?;
+            let count = field(12)?;
+            let strings_start = field(16)?;
+            let strings_length = field(20)?;
+            let table_length = count.checked_mul(16).ok_or_else(|| report!("a damaged symbol table"))?;
+            let table = bytes.get(start..start.checked_add(table_length).ok_or_else(|| report!("a damaged symbol table"))?).ok_or_else(|| report!("symbols run past the end of the slice"))?;
+            let strings = bytes.get(strings_start..strings_start.checked_add(strings_length).ok_or_else(|| report!("a damaged string table"))?).ok_or_else(|| report!("strings run past the end of the slice"))?;
+            for entry in table.chunks_exact(16) {
+                // N_STAB == 0, N_TYPE == N_UNDF, N_EXT set. Common
+                // definitions have nonzero n_value and are not imports.
+                if entry[4] & !0x10 != 1 || u64_at(entry, 8) != Some(0) {
+                    continue;
+                }
+                let index = u32_at(entry, 0).unwrap() as usize;
+                let tail = strings.get(index..).ok_or_else(|| report!("a symbol names a missing string"))?;
+                let end = tail.iter().position(|&b| b == 0).ok_or_else(|| report!("an unterminated symbol name"))?;
+                if let Ok(name) = std::str::from_utf8(&tail[..end]) {
+                    names.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
 /// Where each 64-bit slice of `data` is: (start, length). Fails when there is none.
 pub fn slices(data: &[u8]) -> Result<Vec<(usize, usize)>, Report> {
     let head = data.get(..8).ok_or_else(|| report!("too short to be a Mach-O file"))?;
@@ -299,6 +333,26 @@ pub fn read_all(data: &[u8]) -> Result<Vec<Slice>, Report> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn imports_are_undefined_symbols_in_each_slice() {
+        let strings = b"\0_MSHookFunction\0_LHHookFunctions\0";
+        let command = Command { cmd: 2, bytes: [2u32, 24, 0x2000, 2, 0x2020, strings.len() as u32].into_iter().flat_map(u32::to_le_bytes).collect() };
+        let mut data = build(MH_DYLIB, 0x2000, &[command]);
+        data.resize(0x2020 + strings.len(), 0);
+        data[0x2000..0x2020].fill(0);
+        data[0x2000..0x2004].copy_from_slice(&1u32.to_le_bytes());
+        data[0x2004] = 1; // external undefined
+        data[0x2010..0x2014].copy_from_slice(&17u32.to_le_bytes());
+        data[0x2014] = 0x0f; // external definition, not an import
+        data[0x2020..0x2020 + strings.len()].copy_from_slice(strings);
+        assert_eq!(imported_symbols(&data).unwrap(), ["_MSHookFunction"]);
+        assert_eq!(imported_symbols(&fat(&[data.clone(), data.clone()])).unwrap(), ["_MSHookFunction"]);
+        data[0x2000..0x2004].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(imported_symbols(&data).is_err());
+        data.truncate(0x2010);
+        assert!(imported_symbols(&data).is_err());
+    }
 
     /// A minimal 64-bit Mach-O: a __TEXT segment whose one section starts at `code_at`, then
     /// the given extra commands. Enough for `Slice` to read and edit.

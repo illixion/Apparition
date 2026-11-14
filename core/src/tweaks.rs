@@ -169,6 +169,16 @@ pub fn inject_app(app: &Path, tweaks: &[PathBuf], scratch: &Path) -> Result<Inje
     let mut needs_substrate = false;
     for file in &code {
         let mut data = std::fs::read(file)?;
+        let function_hooks = macho::imported_symbols(&data)?
+            .into_iter()
+            .filter(|name| matches!(name.as_str(), "_MSHookFunction" | "_LHHookFunctions" | "_MSHookMemory" | "_LHPatchMemory"))
+            .collect::<Vec<_>>();
+        if !function_hooks.is_empty() {
+            injection.warnings.push(format!(
+                "{} imports {}: these hooks modify executable code and may not work in a sideloaded app. On devices with TXM on iOS 26 or later, enabling JIT alone does not make ElleKit's code writes work. Objective-C method hooks are unaffected.",
+                relative(app, file), function_hooks.join(", ")
+            ));
+        }
         let mut unresolved = BTreeSet::new();
         let platform_ok = macho::read_all(&data)
             .context(format!("{} isn't code Apparition can read", relative(app, file)))?
@@ -653,6 +663,24 @@ mod tests {
 
     fn loads_of(file: &Path) -> Vec<String> {
         macho::read_all(&std::fs::read(file).unwrap()).unwrap()[0].dylibs().into_iter().map(|(_, p)| p).collect()
+    }
+
+    #[test]
+    fn function_hook_imports_reach_the_install_warnings() {
+        let dir = temp("function-hook-warning");
+        let app = app(&dir, &[]);
+        let strings = b"\0_MSHookFunction\0";
+        let command = macho::Command { cmd: 2, bytes: [2u32, 24, 0x2000, 1, 0x2010, strings.len() as u32].into_iter().flat_map(u32::to_le_bytes).collect() };
+        let mut data = build(macho::MH_DYLIB, 0x2000, &[load(SUBSTRATE), build_version(macho::PLATFORM_IOS), command]);
+        data[0x2000..0x2010].fill(0);
+        data[0x2000..0x2004].copy_from_slice(&1u32.to_le_bytes());
+        data[0x2004] = 1;
+        data[0x2010..0x2010 + strings.len()].copy_from_slice(strings);
+        let tweak = dir.join("FunctionHook.dylib");
+        std::fs::write(&tweak, data).unwrap();
+        let result = inject_app(&app, &[tweak], &dir.join("scratch")).unwrap();
+        assert!(result.warnings.iter().any(|w| w.contains("_MSHookFunction") && w.contains("TXM")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
