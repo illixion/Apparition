@@ -513,7 +513,10 @@ symbolicated text and the trace linked by bundle ID, `pid` and time.
 
 Dev builds of apps that link DebugTrace's `DebugTraceServer` start a debug server on every launch
 and advertise it over Bonjour (`_debugtrace._tcp`). The Store browses for them itself, from the
-process that holds the Mac's Local Network permission. The **Debug** view, and the desktop app's
+process that holds the Mac's Local Network permission. A Mac app opens no port by default: it serves
+a Unix socket in `~/.local/state/debugtrace/sockets/` with a record beside it naming its build, which
+the Store lists and calls with a plain bearer (DebugTrace's `.local` binding; see its
+`Docs/server-and-security.md`). The **Debug** view, and the desktop app's
 **Debug** tab (Running now: **Tune**, **Log**, **Profile** and **Memory** buttons open that view in a window titled
 with the app's name), list the ones running on your network. For each one:
 a live tail of its log (filter by level, pause), the **Tune** tab, **Profile** and

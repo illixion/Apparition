@@ -8,8 +8,11 @@
 //! `<state>/sessions/<bundle id>@<device>.json` (URL, the console streamer's pid, inject paths).
 //! And every dev build signed by `apparition build` advertises `_debugtrace._tcp` with a random
 //! nonce and a tag over it under the build's command token, so only the key ledger that holds the
-//! token can say which app it is. A page or an agent addresses an app by its build's key id; the
-//! URL comes from discovery and the token from the ledger, never from the caller.
+//! token can say which app it is. A Mac app on DebugTrace's `.local` binding (the default on macOS)
+//! opens no port at all: it serves `<state>/sockets/<pid>-<n>.sock`, a Unix socket only this user
+//! can open, with a `<pid>-<n>.json` beside it naming the app and its build's key id. A page or an
+//! agent addresses an app by its build's key id; the URL comes from discovery and the token from
+//! the ledger, never from the caller.
 
 use futures_util::future::BoxFuture;
 use ring::hmac;
@@ -177,6 +180,7 @@ fn port_of(url: &str) -> &str {
 pub struct Debug {
     key_dir: PathBuf,
     sessions_dir: PathBuf,
+    sockets_dir: PathBuf,
     panels_dir: PathBuf,
     browser: Arc<dyn Browse>,
     pub client_name: String,
@@ -204,6 +208,7 @@ impl Debug {
             panels_dir: key_dir.parent().map_or_else(|| PathBuf::from("panels"), |p| p.join("panels")),
             key_dir,
             sessions_dir: state_dir.join("sessions"),
+            sockets_dir: state_dir.join("sockets"),
             browser,
             client_name,
             cache: tokio::sync::Mutex::new(None),
@@ -337,6 +342,45 @@ impl Debug {
         *self.cache.lock().await = None;
     }
 
+    /// Mac apps serving this Mac over a Unix socket, from the records beside the sockets alone: listing
+    /// sends no request to any app. A record is a claim like an advertisement, but only this user can
+    /// write the directory, and that user can read the ledger anyway, so the build's token goes to the
+    /// socket as a plain bearer (nothing crosses a network).
+    pub fn local_sessions(&self) -> Vec<Session> {
+        read_local_sockets(&self.sockets_dir).into_iter().map(|(socket, record)| {
+            let rec = |k: &str| record.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(String::from);
+            let key_id = rec("keyId");
+            let ledger = key_id.as_deref().and_then(|k| self.ledger_record(k)).unwrap_or(Value::Null);
+            let led = |k: &str| ledger.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(String::from);
+            let mut s = Session::new();
+            s.insert("appName".into(), json!(rec("appName").or(rec("bundleId")).unwrap_or_else(|| "An app".into())));
+            s.insert("bundleId".into(), json!(rec("bundleId")));
+            s.insert("build".into(), json!(led("build").or(rec("build"))));
+            s.insert("version".into(), json!(rec("version")));
+            s.insert("keyId".into(), json!(key_id));
+            s.insert("device".into(), json!(crate::state::hostname().split('.').next().unwrap_or("").to_string()));
+            s.insert("startedAt".into(), json!(rec("startedAt")));
+            s.insert("source".into(), json!("local"));
+            s.insert("url".into(), json!(format!("unix:{}", socket.display())));
+            if record.get("tokenRequired").and_then(Value::as_bool) == Some(false) {
+                // A server with no token (an Xcode run): the page addresses apps by key id, so it lists it only.
+                s.insert("attachable".into(), json!(key_id.is_some()));
+                if key_id.is_none() { s.insert("reason".into(), json!("this run has no build key; launch a build signed by apparition build")); }
+            } else if let Some(token) = led("commandToken") {
+                s.insert("token".into(), json!(token));
+                s.insert("attachable".into(), json!(true));
+            } else {
+                s.insert("attachable".into(), json!(false));
+                s.insert("reason".into(), json!(if ledger.is_null() {
+                    "built on another Mac, or before per-build tokens: not in this Mac's key ledger"
+                } else {
+                    "this build has no command token; rebuild it with apparition build"
+                }));
+            }
+            s
+        }).collect()
+    }
+
     pub async fn recorded_sessions(&self) -> Vec<Session> {
         self.session_records().await
     }
@@ -375,6 +419,51 @@ impl Debug {
     }
 }
 
+/// `(socket, record)` for each `<pid>-<n>.json` in `dir` whose process is alive and whose socket
+/// `<pid>-<n>.sock` sits beside it. The socket is that path, never one the record names.
+#[cfg(unix)]
+fn read_local_sockets(dir: &Path) -> Vec<(PathBuf, Map<String, Value>)> {
+    use std::os::unix::fs::FileTypeExt;
+    let Ok(names) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = names
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let stem = name.strip_suffix(".json")?;
+            let (pid, serial) = stem.split_once('-')?;
+            let pid: i32 = pid.parse().ok().filter(|p| *p > 0)?;
+            serial.parse::<u32>().ok()?;
+            // SAFETY: signal 0 only checks that the process exists. EPERM still means it does.
+            if unsafe { libc::kill(pid, 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM)
+            {
+                return None;
+            }
+            let socket = dir.join(format!("{stem}.sock"));
+            if !std::fs::metadata(&socket).ok()?.file_type().is_socket() {
+                return None;
+            }
+            let Value::Object(record) =
+                serde_json::from_str(&std::fs::read_to_string(dir.join(&name)).ok()?).ok()?
+            else {
+                return None;
+            };
+            Some((socket, record))
+        })
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn read_local_sockets(_: &Path) -> Vec<(PathBuf, Map<String, Value>)> {
+    Vec::new()
+}
+
 fn read_session_records(dir: &Path) -> Vec<Session> {
         let Ok(names) = std::fs::read_dir(dir) else { return Vec::new() };
         let mut names: Vec<PathBuf> = names.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
@@ -395,10 +484,14 @@ impl Debug {
     pub async fn all_sessions(&self) -> Vec<Session> {
         let records = self.session_records().await;
         let (inactive, mut sessions): (Vec<Session>, Vec<Session>) = records.into_iter().partition(|s| s.contains_key("_consoleEnded"));
+        let local = self.local_sessions();
+        // A Mac app widened to the network also advertises: its socket is the better way in.
+        let local_keys: Vec<String> = local.iter().filter_map(|s| str_of(s, "keyId").map(String::from)).collect();
+        sessions.extend(local);
         let seen: Vec<(Option<String>, String)> = sessions.iter().map(|s| (str_of(s, "bundleId").map(String::from), port_of(str_of(s, "url").unwrap_or("")).to_string())).collect();
         for found in self.recent_discoveries().await {
             let key = (str_of(&found, "bundleId").map(String::from), port_of(str_of(&found, "url").unwrap_or("")).to_string());
-            if seen.contains(&key) {
+            if seen.contains(&key) || str_of(&found, "keyId").is_some_and(|k| local_keys.iter().any(|l| l == k)) {
                 continue;
             }
             let recovered = inactive.iter().find(|r| {
@@ -489,12 +582,18 @@ impl Debug {
 
     /// One request to the app.
     async fn request(&self, app: &Session, token: &str, post: Option<Value>, path: &str, timeout: Duration) -> Result<Reply, String> {
-        let url = app_url(str_of(app, "url").unwrap_or(""), path)?;
+        let address = str_of(app, "url").unwrap_or("");
+        // A `.local` Mac app: HTTP over its Unix socket, through a client of its own.
+        let (http, base) = match address.strip_prefix("unix:") {
+            Some(socket) => (unix_client(socket)?, "http://localhost"),
+            None => (self.http.clone(), address),
+        };
+        let url = app_url(base, path)?;
         let method = if post.is_some() { reqwest::Method::POST } else { reqwest::Method::GET };
         let body = match &post { Some(b) => serde_json::to_vec(b).map_err(|e| e.to_string())?, None => Vec::new() };
         let authorization = if app.get("proof").and_then(Value::as_bool) == Some(true) {
             // Found by Bonjour: ask the app for a one-use nonce and sign the request with it.
-            let challenge = self.http.get(app_url(str_of(app, "url").unwrap_or(""), "/_nonce")?).timeout(timeout).header("Accept", "application/json").send().await.map_err(describe)?;
+            let challenge = http.get(app_url(base, "/_nonce")?).timeout(timeout).header("Accept", "application/json").send().await.map_err(describe)?;
             let mut challenge = challenge;
             // A claim, not yet an app: read no more than a nonce's worth.
             let mut small = Vec::new();
@@ -508,7 +607,7 @@ impl Debug {
         } else {
             format!("Bearer {token}")
         };
-        let mut req = self.http.request(method, url).timeout(timeout)
+        let mut req = http.request(method, url).timeout(timeout)
             // Named in the app's "Allow debug access?" prompt.
             .header("Authorization", authorization).header("Accept", "application/json").header("X-DebugTrace-Client", &self.client_name);
         if post.is_some() {
@@ -702,6 +801,19 @@ fn pid_is_console_streamer(pid: Option<i64>) -> bool {
 }
 
 const TIMED_OUT: &str = "timed out";
+
+#[cfg(unix)]
+fn unix_client(socket: &str) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .unix_socket(socket)
+        .build()
+        .map_err(|e| format!("can't open the app's socket: {e}"))
+}
+
+#[cfg(not(unix))]
+fn unix_client(_: &str) -> Result<reqwest::Client, String> {
+    Err("Unix sockets are a Mac app's way in; this platform has none".into())
+}
 
 fn describe(e: reqwest::Error) -> String {
     if e.is_timeout() { TIMED_OUT.to_string() } else { e.to_string() }

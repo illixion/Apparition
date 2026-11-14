@@ -286,3 +286,64 @@ async fn a_copied_advertisement_is_never_sent_the_token() {
     }
     assert_eq!(*hits.lock().unwrap(), 0, "the copy was contacted");
 }
+
+/// A Mac app on DebugTrace's `.local` binding: no port, a Unix socket and a record beside it. The
+/// socket wins over the same build's advertisement, and the token goes as a plain bearer.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_local_socket_app_is_found_by_its_record_and_called_over_the_socket() {
+    let r = rig(false).await;
+    let sockets = r.dir.path().join("state/sockets");
+    std::fs::create_dir_all(&sockets).unwrap();
+    let stem = format!("{}-1", std::process::id());
+    let fake = Router::new()
+        .route("/_nonce", get(fake_nonce))
+        .route("/", get(fake_help))
+        .route("/_call", post(fake_call))
+        .with_state(r.seen.clone());
+    let listener = tokio::net::UnixListener::bind(sockets.join(format!("{stem}.sock"))).unwrap();
+    tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
+    std::fs::write(sockets.join(format!("{stem}.json")), json!({ "bundleId": "com.x.app", "appName": "My Mac App", "keyId": "build1", "tokenRequired": true, "socket": "/somewhere/else.sock" }).to_string()).unwrap();
+    // A dead process's leftovers are not listed.
+    std::fs::write(
+        sockets.join("99999999-1.json"),
+        json!({ "bundleId": "com.x.gone", "keyId": "build1" }).to_string(),
+    )
+    .unwrap();
+
+    let (_, _, body) = send(&r.app, "GET", "/api/debug/apps", None).await;
+    assert!(!String::from_utf8_lossy(&body).contains(TOKEN));
+    let v = json_of(&body);
+    let apps = v["apps"].as_array().unwrap();
+    let mine: Vec<&Value> = apps.iter().filter(|a| a["id"] == "build1").collect();
+    assert_eq!(
+        mine.len(),
+        1,
+        "the socket replaces the same build's advertisement: {apps:?}"
+    );
+    assert_eq!(
+        (
+            mine[0]["source"].as_str(),
+            mine[0]["appName"].as_str(),
+            mine[0]["attachable"].as_bool()
+        ),
+        (Some("local"), Some("My Mac App"), Some(true))
+    );
+    assert!(!apps.iter().any(|a| a["bundleId"] == "com.x.gone"));
+
+    let (status, _, body) = send(
+        &r.app,
+        "POST",
+        "/api/debug/build1/call",
+        Some(json!({ "endpoint": "_info" })),
+    )
+    .await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(json_of(&body)["data"]["echo"], "_info");
+    let calls = r.seen.lock().unwrap().calls.clone();
+    assert_eq!(
+        calls.last().unwrap().1,
+        format!("Bearer {TOKEN}"),
+        "over the socket: a plain bearer, no nonce round trip"
+    );
+}
