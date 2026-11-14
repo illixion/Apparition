@@ -1144,6 +1144,13 @@ pub unsafe extern "C" fn apparition_string_free(string: *mut c_char) {
 pub unsafe extern "C" fn apparition_init_logging(log_path: *const c_char) {
     let Ok(path) = (unsafe { text(log_path) }) else { return };
     init_logging(std::path::Path::new(&path), true);
+    // A panic's message goes to stderr, which nothing keeps on a device: write it to the log
+    // too, so a crash report that shows only `panic_cannot_unwind` can be traced to its cause.
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("panic: {info}");
+        default(info);
+    }));
 }
 
 /// Past this size the log is moved to `<name>.1` (replacing the one before) at the next launch.

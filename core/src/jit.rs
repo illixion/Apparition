@@ -95,6 +95,52 @@ async fn unless_stopped<T>(stop: &tokio::sync::Notify, work: impl Future<Output 
     }
 }
 
+/// How long a JIT session may take to attach (connect debugserver, attach, read the loaded
+/// images). Over Tailscale's relay this took about 16 seconds; at home, about 2.
+const SETUP_LIMIT: Option<Duration> = Some(Duration::from_secs(90));
+
+/// Runs `work`, bounded by `limit`, turning a panic into an error: a panic here would unwind
+/// into the C boundary and abort Apparition, leaving the debugged app stopped for good.
+async fn settle<T>(limit: Option<Duration>, step: &str, work: impl Future<Output = Result<T, Report>>) -> Result<T, Report> {
+    use futures_util::FutureExt;
+    let guarded = std::panic::AssertUnwindSafe(work).catch_unwind();
+    let outcome = match limit {
+        Some(limit) => match tokio::time::timeout(limit, guarded).await {
+            Ok(outcome) => outcome,
+            Err(_) => bail!("timed out after {}s {step}; the connection to the device may be too slow or stalled", limit.as_secs()),
+        },
+        None => guarded.await,
+    };
+    match outcome {
+        Ok(result) => result,
+        Err(panic) => {
+            let message = panic.downcast_ref::<&str>().map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "no message".into());
+            tracing::error!("JIT {step} panicked: {message}");
+            bail!("Apparition hit a bug while {step} ({message})")
+        }
+    }
+}
+
+fn launched_pid(slot: &mut Option<u64>, pid: u64) -> u64 {
+    *slot = Some(pid);
+    pid
+}
+
+/// Closes an app launched suspended whose debugger never took it: it would otherwise stay in
+/// front, frozen, until the device restarts. Bounded, best effort; says whether it worked.
+async fn close_launched(adapter: &mut AdapterHandle, handshake: &mut RsdHandshake, pid: u64, events: &mut Events<'_>) -> bool {
+    let closed = tokio::time::timeout(CLOSE_WAIT, crate::tools::signal(adapter, handshake, pid as u32, 9)).await;
+    let ok = matches!(closed, Ok(Ok(())));
+    events.log(if ok {
+        format!("closed pid {pid}, launched suspended, since the debugger never took it")
+    } else {
+        format!("couldn't close pid {pid}, launched suspended: the device may need restarting to clear it")
+    });
+    ok
+}
+
 impl Drop for Registration {
     fn drop(&mut self) {
         if let Some(stops) = STOPS.lock().unwrap().as_mut() {
@@ -177,7 +223,10 @@ pub async fn serve(
     // Registered before anything that can wait (the launch, finding the process, attaching), so
     // Stop works while the session is still starting, too.
     let mut registration = Registration::new(bundle_id.map(str::to_string).into_iter().collect(), &stop_requested);
-    let setup = unless_stopped(&stop_requested, async {
+    // The pid launched suspended here, if any: until the debugger attaches and resumes it, it
+    // sits in front frozen, so every way out of setup below closes it.
+    let mut launched_slot: Option<u64> = None;
+    let setup = unless_stopped(&stop_requested, settle(SETUP_LIMIT, "attaching the debugger", async {
         let pid = match (target_pid, bundle_id) {
             (None, Some(bundle_id)) => {
                 let mut apps = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
@@ -188,7 +237,7 @@ pub async fn serve(
                     .await
                     .context("launch failed")?;
                 events.log(format!("launched suspended, pid {}", launched.pid));
-                launched.pid as u64
+                launched_pid(&mut launched_slot, launched.pid as u64)
             }
             (Some(0), Some(bundle_id)) => running_pid(adapter, handshake, bundle_id)
                 .await?
@@ -227,14 +276,27 @@ pub async fn serve(
             });
         }
         Ok((pid, gdb))
-    })
+    }))
     .await;
     let Some(setup) = setup else {
         // Nothing attached yet, or debugserver drops the process with the connection.
         events.log("asked to stop before the debugger attached".into());
+        if let Some(pid) = launched_slot {
+            close_launched(adapter, handshake, pid, &mut events).await;
+        }
         return Ok(json!({ "pid": 0, "events": events.lines, "preparedBytes": 0, "detached": true, "ended": "stopped" }));
     };
-    let (pid, mut gdb) = setup?;
+    let (pid, mut gdb) = match setup {
+        Ok(setup) => setup,
+        Err(error) => {
+            if let Some(pid) = launched_slot {
+                if close_launched(adapter, handshake, pid, &mut events).await {
+                    return Err(error.context("Apparition closed the app it had launched, so it isn't left frozen on screen. Open it again to retry").into());
+                }
+            }
+            return Err(error);
+        }
+    };
     let mut hook_control = match hooks::arm(&mut gdb).await {
         Ok(control) => control,
         Err(error) => { events.log(format!("hook discovery: {}", crate::errors::describe(&error))); None }
@@ -254,7 +316,7 @@ pub async fn serve(
     let deadline = (wait_seconds > 0).then(|| Duration::from_secs(wait_seconds as u64));
     let mut wait_started = Instant::now();
     let mut unsafe_publication = false;
-    let outcome: Result<&str, Report> = async {
+    let outcome: Result<&str, Report> = settle(None, "serving JIT requests", async {
     let ended = loop {
         gdb.proxy.send_raw(&Gdb::frame(&resume)).await?;
         resume = "c".into();
@@ -317,7 +379,7 @@ pub async fn serve(
             }
         }
         let Some(thread) = field(&stop, "thread") else {
-            events.log(format!("unexpected stop reply: {}", &stop[..stop.len().min(60)]));
+            events.log(format!("unexpected stop reply: {}", stop.chars().take(60).collect::<String>()));
             continue;
         };
         let signal = u8::from_str_radix(stop.get(1..3).unwrap_or("00"), 16).unwrap_or(0);
@@ -507,7 +569,7 @@ pub async fn serve(
         }
     };
     Ok(ended)
-    }.await;
+    }).await;
     let ended = match outcome {
         Ok(ended) => ended,
         Err(error) => {
@@ -756,9 +818,10 @@ impl Gdb {
 
     async fn register(&mut self, number: u32, thread: u64) -> Result<u64, Report> {
         let value = self.request(&format!("p{number:x};thread:{thread:x};")).await?;
-        let bytes: Vec<u8> = (0..value.len().min(16))
-            .step_by(2)
-            .filter_map(|i| u8::from_str_radix(&value[i..i + 2], 16).ok())
+        // A reply that isn't 16 hex digits (an error like `E35`, a stop reply out of turn) is
+        // refused, never sliced: an odd length used to slice past its end and panic.
+        let bytes: Vec<u8> = value.as_bytes().get(..16).unwrap_or_default().chunks_exact(2)
+            .filter_map(|pair| std::str::from_utf8(pair).ok().and_then(|pair| u8::from_str_radix(pair, 16).ok()))
             .collect();
         if bytes.len() != 8 {
             bail!("cannot read register {number}: {value}");
@@ -1139,5 +1202,29 @@ mod packet_tests {
         assert!(tokio::time::timeout(Duration::from_millis(5), gdb.read()).await.is_err());
         server.write_all(&rest).await.unwrap();
         assert_eq!(gdb.read().await.unwrap(), "T05thread:1;");
+    }
+    #[tokio::test]
+    async fn odd_length_register_replies_are_refused_not_sliced() {
+        // Over a slow link (Tailscale's relay) the hook poll's interrupt can leave replies out of
+        // turn, so a register read can get an error or a stop reply: an odd length panicked here.
+        for reply in ["E35", "T11thread:1;", "OK", "0011223344556677"] {
+            let (client, mut server) = tokio::io::duplex(1024);
+            let mut proxy = DebugProxyClient::new(Box::new(client) as Box<dyn idevice::ReadWrite>);
+            proxy.noack_mode = true;
+            let mut gdb = Gdb { proxy, incoming: Vec::new() };
+            server.write_all(&Gdb::frame(reply)).await.unwrap();
+            let read = gdb.register(PC, 1).await;
+            if reply.len() == 16 { assert_eq!(read.unwrap(), 0x7766554433221100); } else { assert!(read.is_err(), "{reply}"); }
+        }
+    }
+    #[tokio::test]
+    async fn a_panic_while_serving_becomes_an_error() {
+        let result: Result<(), Report> = settle(None, "testing", async { panic!("boom") }).await;
+        assert!(crate::errors::describe(&result.unwrap_err()).contains("boom"));
+        let slow: Result<(), Report> = settle(Some(Duration::from_millis(5)), "testing", async {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(())
+        }).await;
+        assert!(crate::errors::describe(&slow.unwrap_err()).contains("timed out"));
     }
 }
