@@ -1,5 +1,6 @@
 import RAVEUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Shared by iOS, iPadOS, visionOS and tvOS; shown after the archive is read and before signing.
 struct InstallReviewView: View {
@@ -10,6 +11,13 @@ struct InstallReviewView: View {
     @State private var selected: Set<String> = []
     @State private var dataChoice = ""
     @State private var profile = ""
+    /// The tweaks to keep for the app, and what trying them against it said.
+    @State private var tweaks: [String] = []
+    @State private var tweakCheck: AppTweaks.Check?
+    /// Why the tweak just picked can't go in (the others still do).
+    @State private var tweakError: String?
+    @State private var checkingTweaks = false
+    @State private var pickingTweaks = false
     private var discard: Bool { dataChoice == "discard" }
     private var option: LibraryModel.ProfileOption? { review.profiles.first { $0.uuid == profile } }
     /// Extensions that can't be signed: ExtensionKit ones with the Apple ID, those the chosen profile doesn't cover with a certificate.
@@ -134,6 +142,11 @@ struct InstallReviewView: View {
             } footer: {
                 Text("Each selected extension can use another App ID. Leave optional widgets, sharing helpers, and Top Shelf extensions off to save slots. Features supplied by excluded extensions will be unavailable. New extensions stay off during automatic refreshes.")
             }
+            #if !os(tvOS)
+            if review.tweaksFolder != nil {
+                tweakSection
+            }
+            #endif
             if destination != nil || review.dataSource != nil {
                 Section {
                     Picker("App data", selection: $dataChoice) {
@@ -154,10 +167,16 @@ struct InstallReviewView: View {
                 if let problem { Note(text: problem, kind: .warning) }
                 Button(discard && destination != nil ? "Delete Existing Data and Install" : "Install \(review.inventory.name)", role: discard && destination != nil ? .destructive : nil) {
                     library.finishInstallReview(.init(target: target, extensions: selected.sorted(), discard: discard,
-                                                      profile: review.appleID ? nil : option?.uuid))
+                                                      profile: review.appleID ? nil : option?.uuid,
+                                                      tweaks: review.tweaksFolder == nil ? nil : tweaks))
                 }
-                .disabled(target.isEmpty || problem != nil || ((destination != nil || review.dataSource != nil) && dataChoice.isEmpty))
-                Button("Cancel", role: .cancel) { library.finishInstallReview(nil) }
+                .disabled(target.isEmpty || problem != nil || checkingTweaks
+                          || ((destination != nil || review.dataSource != nil) && dataChoice.isEmpty))
+                Button("Cancel", role: .cancel) {
+                    // Tweaks picked during this review go again; the app keeps the ones it had.
+                    if let folder = review.tweaksFolder { AppTweaks.prune(folder, keeping: review.tweaks) }
+                    library.finishInstallReview(nil)
+                }
             }
         }
         .onChange(of: target) { _, _ in dataChoice = "" }
@@ -167,6 +186,7 @@ struct InstallReviewView: View {
             selected = selected.filter { option.supportedExtensions.contains($0) }
         }
         .onAppear {
+            tweaks = review.tweaks
             profile = review.profile ?? ""
             target = review.appleID ? review.target : (review.profiles.first { $0.uuid == review.profile }?.target ?? review.target)
             selected = Set(review.selected.filter { id in
@@ -174,4 +194,83 @@ struct InstallReviewView: View {
             })
         }
     }
+
+    #if !os(tvOS)
+    private var tweakSection: some View {
+        Section {
+            ForEach(tweaks, id: \.self) { name in
+                HStack {
+                    Text(name)
+                    Spacer()
+                    Button("Remove", role: .destructive) { remove(name) }
+                        .buttonStyle(.borderless)
+                        .disabled(checkingTweaks)
+                }
+            }
+            if checkingTweaks {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Trying the tweaks in \(review.inventory.name)…").foregroundStyle(.secondary)
+                }
+            } else if let check = tweakCheck {
+                if !check.loads.isEmpty {
+                    Note(text: "\(review.inventory.name) will load \(check.loads.map { $0.replacingOccurrences(of: "@rpath/", with: "") }.joined(separator: ", "))\(check.substrate ? ", with ElleKit for Substrate" : "").", kind: .success)
+                }
+                ForEach(check.warnings, id: \.self) { warning in
+                    Note(text: warning, kind: .warning)
+                }
+            }
+            if let tweakError, !checkingTweaks {
+                Note(text: tweakError, kind: .error)
+            }
+            Button("Add Tweak…", systemImage: "plus") { pickingTweaks = true }
+                .disabled(checkingTweaks)
+        } header: {
+            Text("Tweaks")
+        } footer: {
+            Text("A .deb, a .dylib, or a .framework or .bundle (or a .zip of those), put into the app each time it's signed, so refreshes and updates keep it. Substrate, which most tweaks need, is ElleKit. Tweaks are iOS code: they work in iPhone and iPad apps, not in apps made for \(ThisDevice.os) when that's another platform, and not in apps still encrypted by the App Store.")
+        }
+        .fileImporter(isPresented: $pickingTweaks, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result, let folder = review.tweaksFolder else { return }
+            var added: [String] = []
+            tweakError = nil
+            for url in urls {
+                do { added.append(try AppTweaks.keep(url, in: folder)) } catch {
+                    tweakError = "Couldn't copy \(url.lastPathComponent): \(error.localizedDescription)"
+                }
+            }
+            guard !added.isEmpty else { return }
+            Task { await check(adding: added) }
+        }
+    }
+
+    /// Tries the tweaks with `added` against the app; a set that can't go in leaves `added` out again.
+    private func check(adding added: [String]) async {
+        guard let folder = review.tweaksFolder else { return }
+        let candidate = tweaks + added
+        checkingTweaks = true
+        let ipa = review.ipaPath
+        let result = await Task.detached { AppTweaks.check(ipa: ipa, names: candidate, folder: folder) }.value
+        checkingTweaks = false
+        if let error = result.error {
+            // What was kept still goes in; the new one doesn't.
+            for name in added { try? FileManager.default.removeItem(at: folder.appendingPathComponent(name)) }
+            tweakError = added.isEmpty ? error : "\(added.joined(separator: ", ")) can't go into \(review.inventory.name): \(error)"
+        } else {
+            tweaks = candidate
+            tweakCheck = result
+            tweakError = nil
+        }
+    }
+
+    private func remove(_ name: String) {
+        tweaks.removeAll { $0 == name }
+        tweakError = nil
+        if tweaks.isEmpty {
+            tweakCheck = nil
+        } else {
+            Task { await check(adding: []) }
+        }
+    }
+    #endif
 }

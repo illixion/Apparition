@@ -56,6 +56,8 @@ final class LibraryModel {
         /// automatic). A build's wins over an automatic pick, never over a person's.
         var profileHint: ProfileHint?
         var profileChosenBy: String?
+        /// Tweaks put into it each time it's signed: file names in `AppTweaks.folder(for: id)`.
+        var tweaks: [String]?
     }
 
     /// Which provisioning profile signs an app (`ProfileHint` in core/src/identity.rs): by UUID,
@@ -848,6 +850,9 @@ final class LibraryModel {
         if busy { removedWhileBusy.insert(id) }
         installed = remaining
         StateVault.sync()
+        for app in removed where !remaining.contains(where: { $0.id == app.id }) {
+            try? FileManager.default.removeItem(at: AppTweaks.folder(for: app.id))
+        }
         for file in Set(removed.map(\.ipaFile)) where !remaining.contains(where: { $0.ipaFile == file }) {
             do {
                 try FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(file))
@@ -1157,6 +1162,21 @@ final class LibraryModel {
                 return fail(&record, prepared["error"] as? String ?? "Could not prepare extensions")
             }
             signingPath = selectedPath
+        }
+        // Tweaks go into a copy of the IPA each time, so a new version of the app gets them too.
+        var tweakedPath: String?
+        defer { if let tweakedPath { try? FileManager.default.removeItem(atPath: tweakedPath) } }
+        if let tweaks = record.tweaks, !tweaks.isEmpty {
+            status = "Adding tweaks to \(record.name)…"
+            let source = signingPath
+            let folder = AppTweaks.folder(for: record.id)
+            let out = FileManager.default.temporaryDirectory.appendingPathComponent("tweaked-\(UUID().uuidString).ipa").path
+            let result = await Task.detached { AppTweaks.inject(ipa: source, names: tweaks, folder: folder, out: out) }.value
+            guard let injected = result.path else {
+                return fail(&record, "Adding the tweaks failed: \(result.check.error ?? "unknown"). Review Install Options to change them.")
+            }
+            tweakedPath = injected
+            signingPath = injected
         }
         let signer = signing.signer(for: record)
         if record.selectedExtensions != nil, let chosen = record.signWith, chosen != signer {
@@ -1758,6 +1778,12 @@ extension LibraryModel {
         var profiles: [ProfileOption] = []
         var profile: String?
         var profileSource: String?
+        /// The kept IPA, which a tweak is tried against as it's added.
+        var ipaPath = ""
+        /// Where this app's tweaks are kept, and the ones it has; nil when it takes none
+        /// (Apparition itself, or tvOS, which has no Files to pick them from).
+        var tweaksFolder: URL?
+        var tweaks: [String] = []
     }
     /// One profile an imported certificate can sign the app with, from `apparition_offline_install_plan`.
     struct ProfileOption: Decodable, Identifiable, Hashable {
@@ -1781,6 +1807,8 @@ extension LibraryModel {
         let extensions: [String]
         let discard: Bool
         var profile: String? = nil
+        /// The tweaks to keep for the app (in `InstallReview.tweaksFolder`); nil leaves them as they were.
+        var tweaks: [String]? = nil
     }
 
     /// Every foreground install reviews the downloaded archive, including updates and file imports.
@@ -1862,6 +1890,13 @@ extension LibraryModel {
         review.profiles = profiles
         review.profile = resolved?["uuid"] as? String
         review.profileSource = resolved?["source"] as? String
+        review.ipaPath = path
+        #if !os(tvOS)
+        if inventory.id != Bundle.main.bundleIdentifier {
+            review.tweaksFolder = AppTweaks.folder(for: record.id)
+            review.tweaks = record.tweaks ?? []
+        }
+        #endif
         guard !removedWhileBusy.contains(record.id) else { return false }
         let decision: InstallDecision?
         if unattended, let automatic = Self.unattendedDecision(review) {
@@ -1913,6 +1948,10 @@ extension LibraryModel {
         record.signWith = signer
         record.selectedExtensions = decision.extensions
         record.discardDestinationData = decision.discard
+        if let tweaks = decision.tweaks, let folder = review.tweaksFolder {
+            record.tweaks = tweaks.isEmpty ? nil : tweaks
+            AppTweaks.prune(folder, keeping: tweaks)
+        }
         if let option {
             if option.uuid != review.profile {
                 record.profileHint = option.hint
