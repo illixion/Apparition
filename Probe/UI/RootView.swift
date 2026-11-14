@@ -72,13 +72,25 @@ struct RootView: View {
         _developer = State(initialValue: DeveloperModel(service: BuildService(), library: library, probe: model))
         _tools = State(initialValue: DeviceToolsModel(probe: model))
         _tab = State(initialValue: SetupStatus.opensOnLibrary(model: model, account: account) ? .library : .setup)
+        _setupHidden = State(initialValue: SetupStatus.opensOnLibrary(model: model, account: account))
     }
 
     /// Setup has its tab until it's complete, and again whenever something in it breaks (the
     /// pairing is rejected, say) or it's asked for. It stays while it's the tab on screen, so
     /// the last step finishing doesn't take it away before "All set" is read.
-    private var setupHidden: Bool {
+    private var setupWantsHiding: Bool {
         !setupRequested && tab != .setup && SetupStatus.opensOnLibrary(model: model, account: account)
+    }
+
+    /// Whether the Setup tab is out of the tab bar now. It follows `setupWantsHiding`, but never
+    /// changes while the tab on screen comes after it (Settings, Diagnostics): taking a tab out
+    /// from in front of the selected one made the TabView rebuild that tab, which popped
+    /// Settings' pushed page and once left the tab empty. It catches up when the person leaves.
+    @State private var setupHidden: Bool
+
+    private func syncSetupTab() {
+        guard setupHidden != setupWantsHiding, tab != .settings, tab != .diagnostics else { return }
+        setupHidden = setupWantsHiding
     }
 
     private var visibleTabs: [AppTab] {
@@ -101,6 +113,8 @@ struct RootView: View {
 
     var body: some View {
         tabs
+            .onChange(of: setupWantsHiding) { syncSetupTab() }
+            .onChange(of: tab) { syncSetupTab() }
             .onChange(of: showDiagnostics) { _, shown in
                 if !shown && tab == .diagnostics { tab = .settings }
             }
