@@ -30,6 +30,11 @@ Sharing or a game streaming PC from anywhere, for example with
    Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion
    replaces LocalDevVPN.
 
+**A travel Apple TV.** LocalDevVPN has no Apple TV version, but Apple TV can run Tailscale (tvOS 17 or later),
+so the same steps work for one: pair it at home first, then on the road put it and a computer running the
+companion on the tailnet. JIT still needs that computer; there is no no-computer route on tvOS. This has not
+been tested on an Apple TV yet, and hotel Wi-Fi with a sign-in page may not suit it.
+
 **A sleeping Mac wakes up for the device.** With "Wake for network access" on (System Settings >
 Battery > Options, or Energy on a desktop Mac; `pmset -g` shows `womp 1`), a sleeping Mac keeps
 answering on its network and wakes when a connection arrives for a port it listens on. So when

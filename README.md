@@ -33,13 +33,18 @@ because Apple wants an "anisette" source for that, and a Mac is the most reliabl
 
 | | **Mac** (most complete, most stable) | **Windows** | **Linux** |
 |---|---|---|---|
-| Get the app | Download the zip from [apparition.illixion.com](https://apparition.illixion.com), move **Apparition** to Applications, then run `xattr -dr com.apple.quarantine /Applications/Apparition.app` (it isn't notarized) | Download and run **Apparition Setup** (x64 or ARM64). It asks whether Apparition is for you or for everyone on the PC (which adds a background service, for a PC that serves your devices with nobody signed in) and lets your devices through Windows' firewall. SmartScreen may warn, since it isn't signed by a publisher: choose More info, then Run anyway. There is a zip too, to unpack anywhere without setup. Needs Microsoft Edge WebView2, which Windows 10 and 11 normally have | Download the **.deb** (Debian, Ubuntu) or the **AppImage** (anything else; `chmod +x` it first) for your CPU, x64 or ARM64. Needs glibc 2.35 or newer |
 | Pair a Vision Pro or Apple TV | ✅ Over Wi-Fi with the code it shows | ✅ | ✅ |
 | Pair an iPhone or iPad | ✅ Cable once, then Wi-Fi | 🔧 Cable once, then Wi-Fi. Install **Apple Devices** (or iTunes) first: it provides the USB connection | 🔧 Cable once, then Wi-Fi. Install and start `usbmuxd` first |
 | Install, refresh, JIT, companion | ✅ | ✅ | ✅ |
-| Sign in with a free Apple ID | ✅ The Mac's own anisette, or a macOS 26 VM on macOS 27. Nothing else needed | ✅ Apparition's **own Android anisette** (nothing to set up), or pair with a Mac, or [your own server in Docker](docs/ANISETTE.md#run-your-own-anisette-server-with-docker), or a third-party server's address | ✅ Apparition's **own Android anisette** (nothing to set up), or pair with a Mac, or [your own server in Docker](docs/ANISETTE.md#run-your-own-anisette-server-with-docker), or a third-party server's address |
+| Sign in with a free Apple ID | ✅ The Mac's own anisette, or a macOS 26 VM on macOS 27. Nothing else needed | ✅ Apparition's **own Android anisette** (nothing to set up), or a Mac, [your own Docker server](docs/ANISETTE.md#run-your-own-anisette-server-with-docker) or a third-party server | ✅ Same as Windows |
 | Sign with a paid account's certificate | ✅ no sign-in and no anisette | ✅ | ✅ |
-| Build your own apps | ✅ Xcode, live patching, the whole Develop workflow | 🔧 `apparition deploy` from a PC that pairs with a Mac, or [xtool](https://github.com/xtool-org/xtool) through WSL ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) | 🔧 Same as Windows, with xtool running natively |
+| Build your own apps | ✅ Xcode, live patching, the whole Develop workflow | 🔧 `apparition deploy` from a PC that pairs with a Mac, or [xtool](https://github.com/xtool-org/xtool) through WSL ([how](docs/REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) | 🔧 Same, with xtool running natively |
+
+**Get the app**
+
+- **Mac:** download the zip from [apparition.illixion.com](https://apparition.illixion.com), move **Apparition** to Applications, then run `xattr -dr com.apple.quarantine /Applications/Apparition.app` (it isn't notarized).
+- **Windows:** download and run **Apparition Setup** (x64 or ARM64). It asks whether Apparition is for you or for everyone on the PC (which adds a background service, for a PC that serves your devices with nobody signed in) and lets your devices through Windows' firewall. SmartScreen may warn, since it isn't signed by a publisher: choose More info, then Run anyway. There is a zip too, to unpack anywhere without setup. Needs Microsoft Edge WebView2, which Windows 10 and 11 normally have.
+- **Linux:** download the **.deb** (Debian, Ubuntu) or the **AppImage** (anything else; `chmod +x` it first) for your CPU, x64 or ARM64. Needs glibc 2.35 or newer.
 
 **What "no Mac" means.** On Windows and Linux the app installs and refreshes everything without one.
 Only the Apple ID sign-in needs an anisette source, and you have four: a Mac of your own, Apparition's
