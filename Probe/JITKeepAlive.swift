@@ -16,11 +16,14 @@ private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Appari
 /// - visionOS: silence, played mixed with other apps' audio (the `audio` background mode). An
 ///   app that opens an immersive space hides every other app's windows, which would suspend
 ///   Apparition; an app playing mixable audio keeps running behind it (as Longwave's does).
-/// - tvOS: the background task only.
+/// - tvOS: the same silence. tvOS suspends an app about 30 seconds after it leaves the screen,
+///   and the debugged app (an emulator) is in front for as long as it runs. A mixable session
+///   isn't interrupted when that app starts its own audio, and it doesn't make Apparition the
+///   Now Playing app, so the remote's play and pause still go to the emulator.
 @MainActor
 final class JITKeepAlive: NSObject {
     private var task: UIBackgroundTaskIdentifier = .invalid
-    #if os(visionOS)
+    #if os(visionOS) || os(tvOS)
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private var interruption: NSObjectProtocol?
@@ -73,7 +76,7 @@ final class JITKeepAlive: NSObject {
         default:
             log.error("no location permission: Apparition is suspended about 30 s after it leaves the screen, and the debugged app's JIT requests wait until it's back")
         }
-        #elseif os(visionOS)
+        #elseif os(visionOS) || os(tvOS)
         startSilence()
         #endif
     }
@@ -86,13 +89,13 @@ final class JITKeepAlive: NSObject {
             active = false
             log.info("JIT sessions over; Apparition may be suspended again")
         }
-        #elseif os(visionOS)
+        #elseif os(visionOS) || os(tvOS)
         stopSilence()
         #endif
         endTask()
     }
 
-    #if os(visionOS)
+    #if os(visionOS) || os(tvOS)
     private func startSilence() {
         guard engine == nil else { return }
         do {
