@@ -258,7 +258,9 @@ pub async fn serve(
         // an older one may not know it; the fault handling below works either way. debugserver
         // has no QPassSignals, so signals still stop here and are passed on below.
         let ignored = gdb.request("QSetIgnoredExceptions:EXC_BAD_ACCESS|EXC_BAD_INSTRUCTION").await?;
-        let attach = gdb.request(&format!("vAttach;{pid:x}")).await?;
+        // Its reply is a stop packet, which `request` would take for a stray one.
+        gdb.proxy.send_raw(&Gdb::frame(&format!("vAttach;{pid:x}"))).await?;
+        let attach = gdb.read().await?;
         if !attach.starts_with('T') && !attach.starts_with('S') {
             bail!("debugserver couldn't attach to pid {pid}: {attach} (is the app development-signed, and still running?)");
         }
@@ -734,6 +736,15 @@ fn decode_entries(hex: &str, count: usize) -> Option<Vec<(u64, String, String)>>
     Some(entries)
 }
 
+/// A stop reply (`T05thread:…;`, `S11`): what debugserver sends when the app stops, never the
+/// reply to a request (registers and memory are lowercase hex; otherwise `OK`, `E..` or JSON).
+/// Exits (`W`, `X`) are left as replies, so a request after the app has gone fails instead of
+/// waiting for good.
+fn is_stop_packet(reply: &str) -> bool {
+    let bytes = reply.as_bytes();
+    bytes.len() >= 3 && matches!(bytes[0], b'T' | b'S') && bytes[1].is_ascii_hexdigit() && bytes[2].is_ascii_hexdigit()
+}
+
 /// Minimal gdb-remote client over the tunnel's debugproxy (no-ack mode, pipelined writes).
 struct Gdb {
     proxy: DebugProxyClient<Box<dyn idevice::ReadWrite>>,
@@ -800,7 +811,23 @@ impl Gdb {
 
     async fn request(&mut self, payload: &str) -> Result<String, Report> {
         self.proxy.send_raw(&Self::frame(payload)).await?;
-        self.read().await
+        self.reply().await
+    }
+
+    /// The reply to a request, sent while the app is stopped. A stop packet then can only be
+    /// left over from the hook poll's interrupt: over a slow link (Tailscale's relay) the app's
+    /// real stop can be on its way when the poll interrupts, and debugserver answers the
+    /// interrupt with a second stop once the first is handled. Taken as a reply, it put every
+    /// later reply one request behind (a register read got `qShlibInfoAddr`'s address).
+    async fn reply(&mut self) -> Result<String, Report> {
+        loop {
+            let reply = self.read().await?;
+            if is_stop_packet(&reply) {
+                tracing::debug!("dropped a stray stop packet: {}", reply.chars().take(40).collect::<String>());
+                continue;
+            }
+            return Ok(reply);
+        }
     }
 
     async fn pipeline(&mut self, payloads: &[String]) -> Result<Vec<String>, Report> {
@@ -810,7 +837,7 @@ impl Gdb {
             let bytes: Vec<u8> = batch.iter().flat_map(|p| Self::frame(p)).collect();
             self.proxy.send_raw(&bytes).await?;
             for _ in batch {
-                replies.push(self.read().await?);
+                replies.push(self.reply().await?);
             }
         }
         Ok(replies)
@@ -1207,7 +1234,7 @@ mod packet_tests {
     async fn odd_length_register_replies_are_refused_not_sliced() {
         // Over a slow link (Tailscale's relay) the hook poll's interrupt can leave replies out of
         // turn, so a register read can get an error or a stop reply: an odd length panicked here.
-        for reply in ["E35", "T11thread:1;", "OK", "0011223344556677"] {
+        for reply in ["E35", "123", "OK", "0011223344556677"] {
             let (client, mut server) = tokio::io::duplex(1024);
             let mut proxy = DebugProxyClient::new(Box::new(client) as Box<dyn idevice::ReadWrite>);
             proxy.noack_mode = true;
@@ -1215,6 +1242,24 @@ mod packet_tests {
             server.write_all(&Gdb::frame(reply)).await.unwrap();
             let read = gdb.register(PC, 1).await;
             if reply.len() == 16 { assert_eq!(read.unwrap(), 0x7766554433221100); } else { assert!(read.is_err(), "{reply}"); }
+        }
+    }
+    #[tokio::test]
+    async fn a_stray_stop_after_a_poll_interrupt_does_not_shift_replies() {
+        // The reply stream from the Apple TV over a hotspot: the interrupt's own stop arrives
+        // after the real one was handled, ahead of the replies to the next requests.
+        let (client, mut server) = tokio::io::duplex(4096);
+        let mut proxy = DebugProxyClient::new(Box::new(client) as Box<dyn idevice::ReadWrite>);
+        proxy.noack_mode = true;
+        let mut gdb = Gdb { proxy, incoming: Vec::new() };
+        for packet in ["T11thread:1;", "1f31fe740", "0011223344556677"] {
+            server.write_all(&Gdb::frame(packet)).await.unwrap();
+        }
+        assert_eq!(gdb.request("qShlibInfoAddr").await.unwrap(), "1f31fe740");
+        assert_eq!(gdb.register(PC, 1).await.unwrap(), 0x7766554433221100);
+        assert!(is_stop_packet("T05thread:1;") && is_stop_packet("S11"));
+        for reply in ["OK", "E35", "W00", "X09", "{\"images\":[]}", "0011223344556677", "QC1"] {
+            assert!(!is_stop_packet(reply), "{reply}");
         }
     }
     #[tokio::test]
