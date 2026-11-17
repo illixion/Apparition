@@ -21,6 +21,7 @@ pub mod crashlogs;
 pub mod debug;
 pub mod deploy;
 pub mod devices;
+pub mod drift;
 pub mod git;
 pub mod install_mode;
 pub mod mcp;

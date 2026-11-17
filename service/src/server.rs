@@ -822,6 +822,19 @@ impl App {
         builds.sort_by_key(|b| std::cmp::Reverse(b["queuedAt"].as_u64().unwrap_or(0)));
         builds.truncate(40);
         bundle["builds"] = Value::Array(builds);
+        // Each install's build against the sources now, so a dirty tree that was built reads as
+        // current and one edited since (the app, RAVESDK, a submodule) reads as stale.
+        let store = self.build_store();
+        if let Some(devices) = bundle["installs"].as_object_mut() {
+            for apps in devices.values_mut().filter_map(Value::as_object_mut) {
+                for entry in apps.values_mut() {
+                    let Some(id) = entry["buildId"].as_str().map(str::to_string) else { continue };
+                    if let Ok(kept) = artifacts::read_build(&id, &store) {
+                        entry["drift"] = self.state.drift.compare(&id, &kept.manifest);
+                    }
+                }
+            }
+        }
         // The last discovery; a fresh one runs in the background, so this never waits on Bonjour.
         bundle["debugApps"] = self.debug.cached_apps();
         self.debug.refresh_in_background();

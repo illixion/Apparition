@@ -37,13 +37,25 @@ function platformStatus(p, g, S, now = Date.now()) {
   const match = comparable && (onSha === head || head.startsWith(onSha) || onSha.startsWith(head));
   const otherBranch = led?.branch && g.branch && led.branch !== g.branch;
 
+  // The Store's comparison of the installed build's recorded sources (the app, local packages
+  // such as RAVESDK, submodules) with the checkouts now. It is judged only while the device still
+  // runs what the ledger says it installed.
+  const drift = led?.drift && led.buildId && (!dev || !led.buildNo || dev.buildNo === led.buildNo)
+    && (led.drift.state === 'same' || led.drift.state === 'changed') ? led.drift : null;
+  const name = f => String(f).split('/').filter(Boolean).slice(-2).join('/');
+  const driftList = drift && drift.state === 'changed'
+    ? drift.changed.map(c => `${esc(name(c.path))}: ${esc(c.why)}`).join('; ') : '';
+
   let dot = 'muted', label = 'no build', detail = 'Store has no recorded build or install for this target yet.';
   if (inv?.error) {
     dot = 'bad'; label = 'inventory error';
     detail = `devicectl inventory failed ${agoFrom(now, inv.erroredAt)}: ${inv.error}`;
   } else if (!dev && ledgerOnly && led) {
     const note = `Judged from the store's ledger (${esc(led.branch)}@${esc(led.commit)}): this device is not queried, because reading its apps wakes it. `;
-    if (!comparable) { dot = 'info'; label = 'installed'; detail = note + 'The recorded commit is not a recognizable git SHA.'; }
+    if (drift && !otherBranch) {
+      if (drift.state === 'same') { dot = 'ok'; label = 'up to date'; detail = note + 'The sources are exactly what this build was made from.'; }
+      else { dot = 'bad'; label = 'out of date'; detail = note + `Changed since the build — ${driftList}.`; }
+    } else if (!comparable) { dot = 'info'; label = 'installed'; detail = note + 'The recorded commit is not a recognizable git SHA.'; }
     else if (match && !g.dirty) { dot = 'ok'; label = 'up to date'; detail = note + `Matches ${esc(g.branch)}@${head}.`; }
     else if (match) { dot = 'warn'; label = 'dirty match'; detail = note + 'Commit matches, but the source has uncommitted changes.'; }
     else if (otherBranch) { dot = 'info'; label = `from ${led.branch}`; detail = note + `Not the currently selected ${esc(g.branch)}.`; }
@@ -53,7 +65,15 @@ function platformStatus(p, g, S, now = Date.now()) {
     else { dot = 'muted'; label = 'pending…'; detail = 'Device inventory has not been fetched yet.'; }
   } else {
     const ver = `v${dev.version}`;
-    if (!comparable) {
+    if (drift && !otherBranch) {
+      if (drift.state === 'same') {
+        dot = 'ok'; label = 'up to date';
+        detail = `On device: ${ver} @${devSha}${devDirty ? ' (built from a dirty tree)' : ''}, reported ${agoFrom(now, inv.fetchedAt)}. The sources, packages and uncommitted edits are exactly what this build was made from.`;
+      } else {
+        dot = 'bad'; label = 'out of date';
+        detail = `On device: ${ver} @${devSha}${devDirty ? ' (dirty)' : ''}. Changed since the build — ${driftList}. Deploy to update.`;
+      }
+    } else if (!comparable) {
       dot = 'info'; label = ver;
       detail = `On device: ${ver}${dev.buildNo ? ` (${dev.buildNo})` : ''}. Build number isn't a recognizable git SHA, so freshness can't be checked.`;
     } else if (match && !devDirty && !g.dirty) {

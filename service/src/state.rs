@@ -3,7 +3,7 @@
 //! and the OTA copies (`ota`). A Mac that ran the Node store before keeps its history, since the
 //! file is read as written; unknown keys round-trip.
 
-use crate::{config::Config, git::GitCache, install_mode::Presence};
+use crate::{config::Config, drift::DriftCache, git::GitCache, install_mode::Presence};
 use serde_json::{Map, Value, json};
 use std::{path::{Path, PathBuf}, sync::Mutex};
 
@@ -11,6 +11,7 @@ pub struct State {
     value: Mutex<Value>,
     file: PathBuf,
     pub git: GitCache,
+    pub drift: DriftCache,
     pub presence: Presence,
 }
 
@@ -35,7 +36,7 @@ impl State {
                 }
             }
         }
-        State { value: Mutex::new(Value::Object(state)), file, git: GitCache::default(), presence: Presence::default() }
+        State { value: Mutex::new(Value::Object(state)), file, git: GitCache::default(), drift: DriftCache::default(), presence: Presence::default() }
     }
 
     pub fn field(&self, key: &str) -> Value {

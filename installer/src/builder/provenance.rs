@@ -410,6 +410,20 @@ mod tests {
     }
 
     #[test]
+    fn the_working_tree_digest_matches_the_stores() {
+        // The same fixture and literal sit in service/src/drift.rs's tests: the Store compares its
+        // own digest of the checkout with the one recorded here.
+        let dir = tempfile::tempdir().unwrap();
+        run(dir.path(), &["init", "-q", "-b", "main"]);
+        fs::write(dir.path().join("a.txt"), "tracked\n").unwrap();
+        run(dir.path(), &["add", "."]);
+        run(dir.path(), &["commit", "-q", "-m", "one"]);
+        fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+        fs::write(dir.path().join("u.txt"), "untracked\n").unwrap();
+        assert_eq!(source_state(dir.path()).unwrap()["workingTreeSha256"], "341b584c4c0b33f65b0c48f0d0f67255c66335070e3d9f1172cc5494a72505da");
+    }
+
+    #[test]
     fn a_project_outside_git_has_no_stamp() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "a").unwrap();

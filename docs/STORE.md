@@ -269,6 +269,20 @@ back to the install ledger's `commit`) with the repo's HEAD and shows up to date
 dirty, or on another branch. When touching version logic, reason about the SHA, not the version
 string.
 
+**Drift from the build's own sources.** A SHA cannot say whether a *dirty* build is current, and the
+Store's installs always have a dirty source somewhere (a package, a submodule pointer). So
+`GET /api/state` adds `drift` to each install ledger entry that has a `buildId`
+(`service/src/drift.rs`): the kept manifest's `source.before.sources` (the app, every local package
+such as RAVESDK and RAVEEngine, submodules) against those checkouts now, by commit and by the
+manifest's `workingTreeSha256`. `same` shows as up to date even for a dirty tree (it is the tree that
+was built); `changed` shows as out of date and names each checkout and why; `unknown` (no snapshot,
+a build-clone path, sources moved while building) falls back to the SHA rule above. It is used only
+while the device still reports the ledger's build number. Cost: a clean checkout is one `rev-parse`
+and one `git status`; a dirty one is digested from its changed and untracked files only, memoized on
+HEAD, the status output and each listed file's size and mtime, and answers are cached for 10 seconds.
+The digest must stay byte-identical to the installer's `source_state`: both test suites pin one
+literal.
+
 ## Install modes
 
 A build request has an `install` mode (`POST /api/service/v1/build`, or the deploy menu). Without
