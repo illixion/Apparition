@@ -419,8 +419,17 @@ elif has macos; then
     || { echo "error: the Tauri CLI on PATH isn't $tauri_want (scripts/install-tauri-cli.sh)" >&2; exit 1; }
   # Paths that differ between machines, out of the binaries; everything else is under FIXED. This
   # replaces any RUSTFLAGS or CFLAGS from outside, which would change the bytes too.
-  cargo_home="$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd -P)"
-  rustup_home="$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd -P)"
+  # The vendored OpenSSL records its compile flags in the binary, so the flags' text must not hold the
+  # machine's own home path either (CI's is /Users/runner, a person's is /Users/<name>). Build through
+  # fixed symlinks to the real homes: cargo's registry paths, and so the flags, are then the same
+  # everywhere.
+  fixed=/private/tmp/apparition-build
+  mkdir -p "$fixed"
+  ln -sfn "$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd -P)" "$fixed/cargo"
+  ln -sfn "$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd -P)" "$fixed/rustup"
+  export CARGO_HOME="$fixed/cargo" RUSTUP_HOME="$fixed/rustup"
+  cargo_home="$CARGO_HOME"
+  rustup_home="$RUSTUP_HOME"
   # `--cfg aes_armv8` is what .cargo/config.toml sets (see there): this RUSTFLAGS would replace it.
   export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup --cfg aes_armv8"
   export CFLAGS="-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$rustup_home=/rustup"
