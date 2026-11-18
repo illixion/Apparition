@@ -182,7 +182,9 @@ jobs:
             Apparition/core
           # "-repro": the macOS files' dependencies built with SOURCE_DATE_EPOCH and the path
           # remapping (package-release.sh), never restored from builds made without them.
-          key: ${{ matrix.part }}-repro
+          # macos-repro2: built through the fixed cargo and rustup symlinks; the older cache holds
+          # dependencies compiled with the runner's own home path in OpenSSL's recorded flags.
+          key: ${{ matrix.part }}-repro${{ matrix.part == 'macos' && '2' || '' }}
           cache-on-failure: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHE == 'true' }}
