@@ -371,7 +371,7 @@ macos_from_fixed() {
   if (
     set -e
     mkdir -p "$FIXED"
-    [[ -d "$FIXED/.git" ]] || git -C "$FIXED" init -q
+    [[ -f "$FIXED/.git/HEAD" ]] || git -C "$FIXED" init -q  # /tmp cleanup can leave a hollow .git
     git -C "$FIXED" fetch -q --no-tags "$ROOT" HEAD
     git -C "$FIXED" checkout -q --force --detach FETCH_HEAD
     if [[ "$CLEAN" == 1 ]]; then git -C "$FIXED" clean -q -ffdx; else git -C "$FIXED" clean -q -ffdx -e /target; fi
