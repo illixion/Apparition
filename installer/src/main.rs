@@ -287,6 +287,11 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
   apparition --version | --help
 ";
 
+/// What a pairing that heals itself says while it does ([`DeviceStore::connect_healing`]).
+fn say(what: &str) {
+    eprintln!("{what}");
+}
+
 fn store() -> DeviceStore {
     DeviceStore::default()
 }
@@ -641,7 +646,7 @@ async fn signing(args: &[String]) -> Result<(), Error> {
             let device = find_device(wanted.map(String::as_str))?;
             println!("Connecting to {}…", device.name);
             let pin = || ask("The device wants to pair again. PIN: ");
-            let mut tunnel = store().connect(&device, pin).await?;
+            let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
             let bundle_id = match bundle_id {
                 Some(id) => id,
                 None => match tunnel.installed_like(APPARITION_ID).await?.as_slice() {
@@ -775,6 +780,13 @@ async fn devices() -> Result<(), Error> {
         for device in &paired {
             if device.legacy {
                 println!("  {} ({}) over usbmuxd (iOS 17.3 or earlier, untested)", device.name, device.udid);
+            } else if device.needs_repair {
+                let how = if device.platform() == api::Platform::IOS {
+                    "run `apparition pair --usb` (Wi-Fi is enough once it trusts this computer)"
+                } else {
+                    "run `apparition pair` with its pairing screen open"
+                };
+                println!("  {} ({}) at {}: it no longer trusts this computer's pairing; {how}", device.name, device.udid, device.address);
             } else {
                 println!("  {} ({}) at {}", device.name, device.udid, device.address);
             }
@@ -805,7 +817,7 @@ async fn apps(args: &[String]) -> Result<(), Error> {
         }
     }
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_verified(&device).await?;
+    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
     let apps = tunnel.installed_apps(all).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "device": device.udid, "name": device.name, "apps": apps }))?);
@@ -839,7 +851,7 @@ async fn push(args: &[String]) -> Result<(), Error> {
     }
     let bundle_id = apparition_core::install_plan::inspect(&ipa).map_err(|e| fail(format!("{}: {e}", ipa.display())))?.id;
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_verified(&device).await?;
+    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
     // As in `install`: only an update can be held for an app that won't close, so only an
     // update stops waiting (after 20 s); a new install is waited for.
     let detach_after_ms = if tunnel.installed_app(&bundle_id).await?.is_some() { 20_000 } else { 0 };
@@ -875,7 +887,7 @@ async fn uninstall(args: &[String]) -> Result<(), Error> {
     }
     let bundle_id = bundle_id.ok_or_else(usage)?;
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_verified(&device).await?;
+    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
     if tunnel.installed_app(&bundle_id).await?.is_none() {
         return Err(fail(format!("{bundle_id} isn't installed on {}", device.name)));
     }
@@ -906,7 +918,7 @@ async fn container(args: &[String]) -> Result<(), Error> {
         return Err(usage());
     }
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_verified(&device).await?;
+    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
     let reply = match (action.as_str(), &folder) {
         ("pull", Some(dir)) => tunnel.pull_container(&bundle_id, dir).await?,
         ("push", Some(dir)) => {
@@ -970,7 +982,7 @@ async fn launch(args: &[String]) -> Result<(), Error> {
     }
     let bundle_id = bundle_id.ok_or_else(usage)?;
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_verified(&device).await?;
+    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
     let arguments: Vec<&str> = app_args.iter().map(String::as_str).collect();
     let launched = tunnel.launch(&bundle_id, &arguments, &environment, console, jit).await?;
     let pid = launched.pid;
@@ -1134,7 +1146,7 @@ async fn pairing(args: &[String]) -> Result<(), Error> {
     }
     println!("Connecting to {}…", device.name);
     let pin = || ask("The device wants to pair again. PIN: ");
-    let mut tunnel = store().connect(&device, pin).await?;
+    let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
     let bundle_id = match bundle_id {
         Some(id) => id,
         None => match tunnel.installed_like(APPARITION_ID).await?.as_slice() {
@@ -1478,7 +1490,7 @@ async fn watches(args: &[String]) -> Result<(), Error> {
     };
     let device = find_device(device)?;
     println!("Connecting to {}…", device.name);
-    let mut tunnel = store().connect(&device, || ask("The device wants to pair again. PIN: ")).await?;
+    let mut tunnel = store().connect_healing(&device, || ask("The device wants to pair again. PIN: "), &crate::say).await?;
     let watches = tunnel.paired_watches().await?;
     if watches.is_empty() {
         println!("No Apple Watch is paired with {}.", device.name);
@@ -1525,7 +1537,7 @@ async fn jit(args: &[String]) -> Result<(), Error> {
     let device = find_device(device.as_deref())?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The device wants to pair again. PIN: ");
-    let mut tunnel = store().connect(&device, pin).await?;
+    let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
     // What a session is stopped by: its pid when attached (no bundle ID is passed then).
     let mut key = bundle_id.clone();
     let target = if attach {
@@ -1620,7 +1632,7 @@ async fn download_and_install(options: &mut Options, device: &Device, scratch: &
     unpack_package(options, scratch)?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The headset wants to pair again. PIN: ");
-    let mut tunnel = store().open(device, pin).await?;
+    let mut tunnel = store().open_healing(device, pin, &crate::say).await?;
     let info = tunnel.device_info().await?;
     if tunnel.tunnel().is_none() {
         println!("{} runs iOS {}: installing over usbmuxd. Turn on Developer Mode there (Settings > Privacy & Security) to open the app.", info.name, info.os_version);

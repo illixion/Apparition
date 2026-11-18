@@ -185,6 +185,24 @@ fn is_transport_error(message: &str) -> bool {
     ["socket", "didn't answer", "timed out", "tunnel", "connection", "unreachable", "broken pipe"].iter().any(|word| lower.contains(word))
 }
 
+/// Apparition's tunnel to `device`, pairing an iPhone or iPad again first when it turned this
+/// computer's pairing down ([`api::DeviceStore::connect_healing`]). A headset or Apple TV wants
+/// a PIN a build has nobody to ask: it's told to run `apparition pair`, and Xcode's tunnel
+/// takes over.
+async fn connect_or_repair(device: &api::PairedDevice) -> Result<api::Tunnel, String> {
+    let waiting = |what: &str| {
+        println!("    {what}");
+        let _ = std::io::stdout().flush();
+    };
+    crate::store().connect_healing(device, String::new, &waiting).await.map_err(|error| {
+        let mut text = api::describe(&error);
+        if api::is_pairing_rejected(&error) && device.platform() != Platform::IOS {
+            text.push_str(" Run `apparition pair` with its pairing screen open.");
+        }
+        format!("{} didn't answer: {text}", device.name)
+    })
+}
+
 /// Installs `ipa` on the device with `xcrun devicectl device install app`, Xcode's own route.
 fn install_with_devicectl(udid: &str, ipa: &Path) -> Result<(), String> {
     let output = std::process::Command::new("/usr/bin/xcrun")
@@ -1017,7 +1035,7 @@ impl Build {
             let mut done = false;
             if via != Via::Devicectl {
                 let attempt: Result<serde_json::Value, String> = async {
-                    let mut tunnel = crate::store().connect_verified(device).await.map_err(|e| format!("{} didn't answer: {}", device.name, api::describe(&e)))?;
+                    let mut tunnel = connect_or_repair(device).await?;
                     let existing = tunnel.installed_app(&bundle_id).await.map_err(|e| api::describe(&e))?.is_some();
                     tunnel.install_signed_ipa(&signed_ipa, Some(&bundle_id), if existing { 20_000 } else { 0 }).await
                         .map_err(|e| format!("Install through Apparition failed:\n    {}", api::describe(&e)))
@@ -1130,7 +1148,7 @@ impl Build {
                 launched = Launched::Jit;
             } else {
                 println!("==> Launching {bundle_id} (through Apparition's tunnel)...");
-                let mut tunnel = crate::store().connect_verified(device).await.map_err(|e| format!("{} didn't answer: {}", device.name, api::describe(&e)))?;
+                let mut tunnel = connect_or_repair(device).await?;
                 // A headset that isn't worn holds a launch without answering: give up after 30 s.
                 launched = match tokio::time::timeout(Duration::from_secs(30), tunnel.launch(&bundle_id, &[], &environment, false, false)).await {
                     Ok(Ok(_)) => Launched::Run,

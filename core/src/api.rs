@@ -863,6 +863,12 @@ mod desktop {
         /// device so far.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         pub legacy: bool,
+        /// The device turned this computer's record down at pair-verify (it was erased, its
+        /// trust was reset, or another pairing took this computer's place on it). Kept so
+        /// `devices` and the app say to pair again, and cleared when a connection gets through
+        /// or the device is paired anew.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pub needs_repair: bool,
     }
 
     impl PairedDevice {
@@ -940,10 +946,20 @@ mod desktop {
             let hostname = hostname();
             let mut pairing = RpPairingFile::generate(&hostname);
             super::pair(SocketAddr::new(address, pairing_port), &hostname, &mut pairing, &pin).await?;
+            // The device now trusts this key in place of any earlier one of this computer's, so
+            // the old file is already dead: keep the new one before anything else can fail
+            // (the tunnel, the Apple TV's second PIN, a cancel). The device isn't known by its
+            // UDID yet, so it goes where a device at this address keeps its record, and is
+            // renamed below.
+            std::fs::create_dir_all(self.dir.join("pairings"))?;
+            let known = self.devices().into_iter().find(|d| !d.legacy && d.address == address);
+            if let Some(known) = &known {
+                std::fs::write(self.dir.join("pairings").join(&known.pairing), pairing.to_bytes())?;
+                self.set_needs_repair(&known.udid, false);
+            }
             let mut tunnel = super::connect(SocketAddr::new(address, TUNNEL_PORT), &hostname, &mut pairing, &pin).await?;
             let info = tunnel.device_info().await?;
             let file = format!("{}.plist", info.udid);
-            std::fs::create_dir_all(self.dir.join("pairings"))?;
             std::fs::write(self.dir.join("pairings").join(&file), pairing.to_bytes())?;
             // An Apple TV's pairing screen closes when Apparition comes to the front, so it
             // can't pair itself as on visionOS: pair a record for it now (the TV shows a second
@@ -963,6 +979,7 @@ mod desktop {
                 pairing: file,
                 product_type: Some(info.product_type.clone()),
                 legacy: false,
+                needs_repair: false,
             };
             let mut devices = self.devices();
             devices.retain(|d| d.udid != info.udid);
@@ -982,7 +999,87 @@ mod desktop {
                 return self.connect_verified(device).await;
             }
             let (mut pairing, address) = self.pairing_of(device)?;
-            super::connect(address, &hostname(), &mut pairing, pin).await
+            let before = pairing.to_bytes();
+            let connected = super::connect(address, &hostname(), &mut pairing, pin).await;
+            // A device that turned the record down is paired anew in place, which replaces the
+            // key it trusts: keep the new record whether or not the rest of the connection
+            // worked, or the next connection finds the file dead again.
+            if pairing.to_bytes() != before {
+                let _ = std::fs::write(self.dir.join("pairings").join(&device.pairing), pairing.to_bytes());
+                self.set_needs_repair(&device.udid, false);
+            } else if connected.is_ok() {
+                self.set_needs_repair(&device.udid, false);
+            }
+            connected
+        }
+
+        /// [`DeviceStore::connect`], except that an iPhone or iPad which turned this computer's
+        /// pairing down is paired again over usbmuxd first and then reached with the new one.
+        /// That needs no PIN, only that it trusts this computer (it asks, through `waiting`; Wi-Fi
+        /// is enough once it does), so a pairing that went stale heals itself instead of failing
+        /// every install. A headset or Apple TV can't: re-pairing it takes a PIN typed from its
+        /// pairing screen, which `connect` asks `pin` for.
+        pub async fn connect_healing(
+            &self,
+            device: &PairedDevice,
+            pin: impl Fn() -> String,
+            waiting: &(dyn Fn(&str) + Send + Sync),
+        ) -> Result<Tunnel, Report> {
+            let first = match self.connect(device, &pin).await {
+                Ok(tunnel) => return Ok(tunnel),
+                Err(error) => error,
+            };
+            if device.legacy || device.platform() != super::Platform::IOS || !super::is_pairing_rejected(&first) {
+                return Err(first);
+            }
+            waiting(&format!("{} no longer trusts this computer's pairing. Pairing again over usbmuxd...", device.name));
+            let repaired = tokio::time::timeout(Duration::from_secs(90), self.pair_usb(&device.udid, waiting)).await;
+            match repaired {
+                Ok(Ok((fresh, _))) => {
+                    waiting("Paired again.");
+                    let mut tunnel = self.connect_verified(&fresh).await?;
+                    // Pairing again replaced the key Apparition on the device was handed too, so
+                    // its copy is dead as well: give it the new one now, or the device's own
+                    // Apparition says it no longer trusts its pairing the next time it's used.
+                    match tunnel.installed_like(super::APPARITION_ID).await {
+                        Ok(ids) => {
+                            for id in ids {
+                                match self.hand_over_pairing(&mut tunnel, &id, &fresh.udid).await {
+                                    Ok(true) => waiting(&format!("Gave {id} on {} its new pairing.", fresh.name)),
+                                    Ok(false) => {}
+                                    Err(error) => waiting(&format!(
+                                        "Couldn't give {id} its new pairing ({}): run `apparition pairing hand-off`.",
+                                        super::describe(&error)
+                                    )),
+                                }
+                            }
+                        }
+                        Err(error) => waiting(&format!("Couldn't look for Apparition on {}: {}", fresh.name, super::describe(&error))),
+                    }
+                    Ok(tunnel)
+                }
+                Ok(Err(error)) => Err(report!(
+                    "{} no longer trusts this computer's pairing, and pairing it again didn't work: {}\n\
+                     Plug it in with a cable (or turn on its Wi-Fi sync in Finder or Apple Devices), unlock it, tap Trust if it asks, and run `apparition pair --usb`.",
+                    device.name,
+                    super::describe(&error).lines().next().unwrap_or("")
+                ).into_dynamic()),
+                Err(_) => Err(report!(
+                    "{} no longer trusts this computer's pairing, and pairing it again timed out.\n\
+                     Unlock it, tap Trust if it asks, and run `apparition pair --usb`.",
+                    device.name
+                ).into_dynamic()),
+            }
+        }
+
+        /// Records that `udid`'s device turned this computer's pairing down (or that it didn't
+        /// any more), when that differs from what's kept. Nothing is written otherwise.
+        pub fn set_needs_repair(&self, udid: &str, needs: bool) {
+            let mut devices = self.devices();
+            if let Some(device) = devices.iter_mut().find(|d| d.udid == udid && d.needs_repair != needs) {
+                device.needs_repair = needs;
+                let _ = self.save(&devices);
+            }
         }
 
         /// Opens what reaches `device`: its tunnel, or usbmuxd for a [`PairedDevice::legacy`] one.
@@ -991,6 +1088,19 @@ mod desktop {
                 return Ok(super::Connection::Legacy(crate::legacy::Legacy::connect(&device.udid).await?));
             }
             Ok(super::Connection::Tunnel(self.connect(device, pin).await?))
+        }
+
+        /// [`DeviceStore::open`] with [`DeviceStore::connect_healing`].
+        pub async fn open_healing(
+            &self,
+            device: &PairedDevice,
+            pin: impl Fn() -> String,
+            waiting: &(dyn Fn(&str) + Send + Sync),
+        ) -> Result<super::Connection, Report> {
+            if device.legacy {
+                return Ok(super::Connection::Legacy(crate::legacy::Legacy::connect(&device.udid).await?));
+            }
+            Ok(super::Connection::Tunnel(self.connect_healing(device, pin, waiting).await?))
         }
 
         fn pairing_of(&self, device: &PairedDevice) -> Result<(RpPairingFile, SocketAddr), Report> {
@@ -1024,12 +1134,18 @@ mod desktop {
                             let mut devices = self.devices();
                             if let Some(saved) = devices.iter_mut().find(|d| d.udid == device.udid) {
                                 (saved.address, saved.port) = (candidate.ip(), candidate.port());
+                                saved.needs_repair = false;
                                 let _ = self.save(&devices);
                             }
                             return Ok(tunnel);
                         }
                     }
                 }
+            }
+            match &connected {
+                Ok(_) => self.set_needs_repair(&device.udid, false),
+                Err(error) if super::is_pairing_rejected(error) => self.set_needs_repair(&device.udid, true),
+                Err(_) => {}
             }
             match connected {
                 Err(error) if super::is_pairing_rejected(&error) => {
@@ -1068,6 +1184,7 @@ mod desktop {
                     pairing: String::new(),
                     product_type: Some(identity.product_type.clone()),
                     legacy: true,
+                    needs_repair: false,
                 };
                 let mut devices = self.devices();
                 devices.retain(|d| d.udid != identity.udid);
@@ -1077,12 +1194,18 @@ mod desktop {
             }
             let mut pairing = RpPairingFile::generate(&hostname);
             let info = super::pair_usb(udid, &hostname, &mut pairing, waiting).await?;
+            // The device now trusts this key in place of any earlier one of this computer's, so
+            // the old file is already dead: keep the new one before anything else can fail
+            // (the second pairing, finding the device on the network, a cancel).
+            let pairings = self.dir.join("pairings");
+            std::fs::create_dir_all(&pairings)?;
+            let file = format!("{}.plist", info.udid);
+            std::fs::write(pairings.join(&file), pairing.to_bytes())?;
+            self.set_needs_repair(&info.udid, false);
             // Apparition on the device can't pair with its own device either, so it gets a
             // record of its own (under its name, so the device lists it separately).
             let mut app_pairing = RpPairingFile::generate(APP_PAIRING_HOST);
             super::pair_usb(udid, APP_PAIRING_HOST, &mut app_pairing, waiting).await?;
-            let pairings = self.dir.join("pairings");
-            std::fs::create_dir_all(&pairings)?;
             std::fs::write(pairings.join(format!("{}.app.plist", info.udid)), app_pairing.to_bytes())?;
 
             let no_pin = || String::new();
@@ -1100,8 +1223,6 @@ mod desktop {
                     }
                 }
             }
-            let file = format!("{}.plist", info.udid);
-            std::fs::write(pairings.join(&file), pairing.to_bytes())?;
             let (address, port) = reached.ok_or_else(|| {
                 report!("Paired, but {} didn't answer on the network. Keep it unlocked on the same Wi-Fi as this computer and pair again.", info.name)
             })?;
@@ -1113,6 +1234,7 @@ mod desktop {
                 pairing: file,
                 product_type: Some(info.product_type.clone()),
                 legacy: false,
+                needs_repair: false,
             };
             let mut devices = self.devices();
             devices.retain(|d| d.udid != info.udid);
@@ -1219,6 +1341,35 @@ mod desktop {
 #[cfg(test)]
 mod tests {
     use super::{BuildSigning, Slot};
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_rejected_pairing_is_remembered_until_one_gets_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = super::DeviceStore { dir: dir.path().to_path_buf() };
+        // A devices.json from before the flag existed has no such field.
+        std::fs::write(
+            dir.path().join("devices.json"),
+            br#"[{"udid":"U1","name":"ixPhone","address":"10.0.0.2","port":49152,"pairing":"U1.plist","product_type":"iPhone16,2"}]"#,
+        )
+        .unwrap();
+        assert!(!store.device("U1").unwrap().needs_repair);
+
+        store.set_needs_repair("U1", true);
+        assert!(store.device("U1").unwrap().needs_repair);
+        assert!(std::fs::read_to_string(dir.path().join("devices.json")).unwrap().contains("needs_repair"));
+
+        store.set_needs_repair("U1", false);
+        assert!(!store.device("U1").unwrap().needs_repair);
+        // Back to the old shape, so an older Apparition reads the file the same.
+        assert!(!std::fs::read_to_string(dir.path().join("devices.json")).unwrap().contains("needs_repair"));
+
+        // An unknown device, or no change, writes nothing.
+        let before = std::fs::metadata(dir.path().join("devices.json")).unwrap().modified().unwrap();
+        store.set_needs_repair("nobody", true);
+        store.set_needs_repair("U1", false);
+        assert_eq!(std::fs::metadata(dir.path().join("devices.json")).unwrap().modified().unwrap(), before);
+    }
 
     #[test]
     fn build_signing_collects_p12s_and_profiles_only() {

@@ -20,7 +20,7 @@ pub async fn processes(args: &[String]) -> Result<(), Error> {
         }
     }
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_verified(&device).await?;
+    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
     let mut list = tunnel.processes().await?;
     if apps_only {
         list.retain(|p| matches!(p.kind, ProcessKind::App | ProcessKind::SystemApp));
@@ -70,7 +70,7 @@ pub async fn kill(args: &[String]) -> Result<(), Error> {
     }
     let target = target.ok_or_else(usage)?;
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_verified(&device).await?;
+    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
     let (pid, name) = match target.parse::<u32>() {
         Ok(pid) => (pid, format!("process {pid}")),
         Err(_) => {
@@ -106,7 +106,7 @@ pub async fn location(args: &[String]) -> Result<(), Error> {
     let device = find_device(wanted)?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The device wants to pair again. PIN: ");
-    let mut tunnel = store().connect(&device, pin).await?;
+    let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
     const KEY: &str = "cli-location";
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
@@ -149,7 +149,7 @@ pub async fn logs(args: &[String]) -> Result<(), Error> {
     }
     let device = find_device(wanted)?;
     let pin = || ask("The device wants to pair again. PIN: ");
-    let mut tunnel = store().connect(&device, pin).await?;
+    let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
     if let Some(app) = &app {
         let found = tunnel.running_pid(app).await?;
         pid = Some(found.ok_or_else(|| fail(format!("{app} isn't running on {}; open it first", device.name)))? as u32);

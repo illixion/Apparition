@@ -380,6 +380,12 @@ function headset() {
           meta.textContent = "Paired with this computer, over the cable or Wi-Fi sync";
           badge.textContent = "Before iOS 17.4 · untested";
           badge.classList.remove("online");
+        } else if (row.device.needsRepair) {
+          // The device turned this computer's pairing down: an install pairs an iPhone or iPad
+          // again by itself, and a headset or Apple TV asks for a code. Said here before it fails.
+          meta.textContent = `${row.device.name} no longer trusts this computer's pairing. Choose it to pair again.`;
+          badge.textContent = "Pair again";
+          badge.classList.remove("online");
         } else {
           meta.textContent = `Paired with this computer, at ${row.device.address}`;
           const seen = online(row.device);

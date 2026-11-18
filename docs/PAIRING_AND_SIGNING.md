@@ -26,6 +26,22 @@ JIT request from an app such as Madeira) stops at once and says which of two thi
 
 Settings > Forget Pairing deletes both the file and the Keychain copy.
 
+### When a computer's pairing goes stale
+
+The computer's own pairing with a device can also go stale: the device was erased, its trust
+was reset, or another pairing took this computer's place on it. A device keeps one key per
+computer name, so pairing again replaces the old key and the old file is dead from then on.
+Apparition keeps the new record the moment the device accepts it, before anything else in the
+pairing can fail, so a half-finished pairing can't leave the computer holding a dead one.
+
+When a device turns the record down, Apparition notes it (`apparition devices` and the desktop
+app's device list say "pair again") and, for an iPhone or iPad, pairs it again over usbmuxd by
+itself on the next install, refresh or command, then hands the new record to Apparition on the
+device. That needs no PIN, only that the device trusts the computer (Wi-Fi is enough once it
+does). If usbmuxd can't see it, plug it in with a cable, unlock it and run `apparition pair
+--usb`. A headset or Apple TV needs a code from its pairing screen, so it asks for one in the
+desktop app and says to run `apparition pair` on the command line.
+
 ## Sharing one certificate
 
 Between devices, and from a device back to a computer, the key goes one of two ways.

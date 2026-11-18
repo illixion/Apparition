@@ -263,6 +263,8 @@ pub struct DeviceView {
     /// Below 26, where Apparition runs but is best effort ([`api::is_untested_os`]). Known only
     /// once the device has been reached: the install's `untested-os` event says it then.
     untested: bool,
+    /// The device turned this computer's pairing down: pair it again.
+    needs_repair: bool,
 }
 
 impl DeviceView {
@@ -276,6 +278,7 @@ impl DeviceView {
             os_version: info.map(|i| i.os_version.clone()),
             legacy: device.legacy,
             untested: info.is_some_and(|i| api::is_untested_os(&i.product_type, &i.os_version)),
+            needs_repair: device.needs_repair,
         }
     }
 }
@@ -1039,7 +1042,7 @@ pub async fn hand_off_build_signing(app: AppHandle, state: Shared<'_>, udid: Str
             }
         };
         let bundle_id = block_on(async {
-            let mut tunnel = state.store.connect(&device, pin).await?;
+            let mut tunnel = state.store.connect_healing(&device, pin, &|what: &str| { let _ = app.emit("pair-status", what); }).await?;
             let bundle_id = match tunnel.installed_like(APPARITION_ID).await?.as_slice() {
                 [one] => one.clone(),
                 [] => return Err(rootcause::report!("Apparition isn't installed on {}", device.name)),
@@ -1077,7 +1080,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
         };
         stage(&app, "connecting", json!(device.name));
         let result = block_on(async {
-            let mut tunnel = state.store.open(&device, pin).await?;
+            let mut tunnel = state.store.open_healing(&device, pin, &|what: &str| { let _ = app.emit("pair-status", what); }).await?;
             let info = tunnel.device_info().await?;
             let inventory = apparition_core::install_plan::inspect(&prepared.path)?;
             let is_apparition = inventory.id == APPARITION_ID;
