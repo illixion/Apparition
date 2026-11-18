@@ -75,7 +75,9 @@ async fn state_matches_what_the_node_store_answered() {
             "deviceBranches": { "iPhone": "dev" },
             "deployDefaults": { "launch": true, "mcp": false, "jit": false, "buildDebug": false, "inject": false },
             "macApps": [],
-            "git": { "branch": "main", "commit": "f2ce1c2", "subject": "First", "commitTime": null, "dirty": true },
+            // `changes` and `changesTotal` came after Node (2026-11-18): which tracked files are dirty.
+            "git": { "branch": "main", "commit": "f2ce1c2", "subject": "First", "commitTime": null, "dirty": true,
+                     "changes": [" M a.txt"], "changesTotal": 1 },
         }],
         "deviceApps": {}, "ledgerOnly": ["Apple TV"],
         "installs": { "iPhone": { "com.x.app": { "repo": "App", "commit": "abc", "at": 1 } } },

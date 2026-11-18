@@ -261,7 +261,14 @@ a device is stale. The **build number** (`CFBundleVersion`) does:
   vergence...), named by folder so a build clone and the checkout stamp alike. A rebuild for a
   package change therefore has a number of its own and counts as an update to Apparition, AltStore
   and the page alike. An app with no local packages has no tag.
-- `-dirty` means the project or a package had uncommitted changes.
+- `-dirty` means the project or a package had uncommitted changes, untracked files included (build
+  output in a package without `build/` in its `.gitignore` is enough). So a build can be `-dirty`
+  while the app's own `git status` is clean. Whatever made it dirty is named: the install report's
+  `Uncommitted:` lines (`DebugTrace: untracked build/sym-motion/`), and on the page the installed
+  build's detail ("Built with uncommitted changes in DebugTrace (...)"), from the `changes` the
+  build's manifest records for each dirty source (`git status --short` lines, untracked folders as
+  one line, at most 20, with `changesTotal`). The `●dirty` badge on a project is about its checkout
+  now (tracked files only), and its tooltip lists them.
 - A project outside Git has no stamp.
 
 The Apps view compares the SHA the device reports (the leading part of its build number, falling

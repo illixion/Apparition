@@ -1,5 +1,5 @@
 //! What the state shows about each checkout: branch, last commit, whether tracked files are
-//! dirty. Cached for ten seconds, as the Node store does.
+//! dirty and which. Cached for ten seconds, as the Node store does.
 
 use serde_json::{Value, json};
 use std::{collections::HashMap, process::Command, sync::Mutex, time::{Duration, Instant}};
@@ -27,7 +27,12 @@ impl GitCache {
         }
         let branch = git(path, &["rev-parse", "--abbrev-ref", "HEAD"]);
         let log = git(path, &["log", "-1", "--format=%h%x09%s%x09%ct"]);
-        let dirty = !git(path, &["status", "--porcelain", "--untracked-files=no"]).is_empty();
+        // Tracked files only: what the checkout's "dirty" means here. The lines say which.
+        // Untrimmed: each line's two status columns start with a space for an unstaged edit.
+        let status = Command::new("git").arg("-C").arg(path).args(["status", "--porcelain", "--untracked-files=no"]).output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches('\n').to_string()).unwrap_or_default();
+        let dirty = !status.is_empty();
+        let changes: Vec<&str> = status.lines().take(10).collect();
         let mut parts = log.splitn(3, '\t');
         let (commit, subject, ctime) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
         let info = json!({
@@ -36,6 +41,9 @@ impl GitCache {
             "subject": subject,
             "commitTime": ctime.parse::<u64>().ok().map(|s| s * 1000),
             "dirty": dirty,
+            // Up to ten `git status --short` lines, for the badge's tooltip; `changesTotal` counts all.
+            "changes": changes,
+            "changesTotal": status.lines().count(),
         });
         self.0.lock().unwrap().insert(path.to_string(), (Instant::now(), info.clone()));
         info

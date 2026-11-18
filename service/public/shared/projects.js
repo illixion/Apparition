@@ -152,7 +152,7 @@ class ProjectList {
     return `<article class="card" data-project="${esc(r.name)}" aria-busy="${busy}">
       <div class="cardhead">
         <span class="reponame">${esc(r.name)}</span>
-        <span class="refline">${esc(g.branch)}@<code>${esc(g.commit)}</code>${g.dirty?' <span class="dirty">●dirty</span>':''}</span>
+        <span class="refline">${esc(g.branch)}@<code>${esc(g.commit)}</code>${g.dirty?` <span class="dirty" title="${esc('Uncommitted changes in this checkout:\n'+(g.changes||[]).join('\n')+((g.changesTotal||0)>(g.changes||[]).length?`\n…and ${g.changesTotal-(g.changes||[]).length} more`:''))}">●dirty</span>`:''}</span>
         <span class="subject">${esc(g.subject||'')}</span>
       </div>
       ${hasDevices ? `<div class="chips">${chips}</div>` : ''}

@@ -903,8 +903,11 @@ impl Build {
 
         // Step 4.6: the source commit as the build number, for any inventory to show.
         let mut git_stamp = String::new();
+        // What made the stamp -dirty, for the report (the snapshot moves into the manifest).
+        let mut uncommitted = Vec::new();
         if let Some(before) = &before {
             git_stamp = provenance::stamp(before, &root)?;
+            if git_stamp.ends_with("-dirty") { uncommitted = provenance::dirty_sources(before) }
             if !git_stamp.is_empty() {
                 bundle::set_string(&info_path, "CFBundleVersion", &git_stamp)?;
                 for other in [&appex, &watch].into_iter().flatten() {
@@ -1145,6 +1148,14 @@ impl Build {
         if let Some(id) = &extension_id { line("Extension:", id) }
         if let Some(id) = &watch_id { line("Watch:", id) }
         if !git_stamp.is_empty() { line("Build:", &git_stamp) }
+        // -dirty says only that something wasn't committed: name it, packages included (a clean
+        // app checkout still builds -dirty against a package with stray files).
+        if !uncommitted.is_empty() {
+            for (index, (name, what)) in uncommitted.iter().enumerate() {
+                line(if index == 0 { "Uncommitted:" } else { "" }, &format!("{name}: {what}"));
+            }
+            line("", "(commit these, or add build output to that repo's .gitignore, for a clean build number)");
+        }
         line("Build ID:", &build_id);
         line("Manifest:", &manifest.display().to_string());
         line("Config:", o.config);

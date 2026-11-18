@@ -58,7 +58,11 @@ final class BuildService {
     }
     struct Project: Decodable, Identifiable, Hashable {
         /// The checkout's branch and commit; `nil` fields when git couldn't be read.
-        struct Git: Decodable, Hashable { let branch: String?; let commit: String?; let dirty: Bool? }
+        struct Git: Decodable, Hashable {
+            let branch: String?; let commit: String?; let dirty: Bool?
+            /// `git status --short` lines of the uncommitted tracked files (up to ten), and how many there are.
+            let changes: [String]?; let changesTotal: Int?
+        }
         var id: String { name }
         let name: String
         let branches: [String]?

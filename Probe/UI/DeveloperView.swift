@@ -416,10 +416,19 @@ private struct StoreAbout: View {
 }
 
 extension BuildService.Project {
-    /// "main@abc1234", with a note when the checkout has uncommitted changes.
+    /// "main@abc1234", with a note naming what is uncommitted in the checkout
+    /// ("· uncommitted: Sources/App.swift and 2 more").
     var gitLabel: String? {
         guard let commit = git?.commit, !commit.isEmpty else { return nil }
-        return "\(git?.branch ?? "")@\(commit)" + (git?.dirty == true ? " · uncommitted changes" : "")
+        return "\(git?.branch ?? "")@\(commit)" + (git?.dirty == true ? " · \(uncommittedNote)" : "")
+    }
+
+    private var uncommittedNote: String {
+        let lines = git?.changes ?? []
+        guard let first = lines.first else { return "uncommitted changes" }
+        let file = first.count > 3 ? String(first.dropFirst(3)) : first
+        let others = max(git?.changesTotal ?? lines.count, lines.count) - 1
+        return "uncommitted: \(file)" + (others > 0 ? " and \(others) more" : "")
     }
 }
 

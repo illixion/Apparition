@@ -119,8 +119,10 @@ impl DriftCache {
         Some((head.unwrap_or_default(), true, digest))
     }
 
-    /// `{ state: "same" | "changed" | "unknown", changed: [{ path, why }] }` for a kept build's
-    /// manifest against the sources now. Unknown when the manifest has no usable snapshot, the
+    /// `{ state: "same" | "changed" | "unknown", changed: [{ path, why }], dirty: [...] }` for a
+    /// kept build's manifest against the sources now. `dirty` is the build's own record of the
+    /// sources that had uncommitted changes when it was made (what stamped it -dirty: `path`,
+    /// `kind`, and for a checkout its `changes`, `git status --short` lines, and `changesTotal`). Unknown when the manifest has no usable snapshot, the
     /// sources moved while it built, or a checkout it names is gone (a build clone).
     pub fn compare(&self, build_id: &str, manifest: &Value) -> Value {
         if let Some((at, answer)) = self.answers.lock().unwrap().get(build_id) {
@@ -134,8 +136,12 @@ impl DriftCache {
     }
 
     fn compare_uncached(&self, manifest: &Value) -> Value {
-        let unknown = |why: &str| json!({ "state": "unknown", "why": why, "changed": [] });
-        let Some(sources) = manifest.pointer("/source/before/sources").and_then(Value::as_array) else { return unknown("no source snapshot") };
+        let sources = manifest.pointer("/source/before/sources").and_then(Value::as_array);
+        let dirty: Vec<Value> = sources.into_iter().flatten().filter(|s| s["dirty"].as_bool() == Some(true)).map(|s| json!({
+            "path": s["path"], "kind": s["kind"], "changes": s["changes"], "changesTotal": s["changesTotal"],
+        })).collect();
+        let unknown = |why: &str| json!({ "state": "unknown", "why": why, "changed": [], "dirty": dirty });
+        let Some(sources) = sources else { return unknown("no source snapshot") };
         if manifest.pointer("/source/stable").and_then(Value::as_bool) == Some(false) {
             return unknown("the sources changed while it built");
         }
@@ -154,7 +160,7 @@ impl DriftCache {
                 changed.push(json!({ "path": path, "why": if dirty { "uncommitted changes differ from the build" } else { "the build's uncommitted changes were committed or discarded" } }));
             }
         }
-        json!({ "state": if changed.is_empty() { "same" } else { "changed" }, "changed": changed })
+        json!({ "state": if changed.is_empty() { "same" } else { "changed" }, "changed": changed, "dirty": dirty })
     }
 }
 
@@ -199,6 +205,19 @@ mod tests {
         let answer = cache.compare_uncached(&manifest);
         assert_eq!(answer["state"], "changed");
         assert!(answer["changed"][0]["why"].as_str().unwrap().contains("uncommitted"));
+    }
+
+    #[test]
+    fn the_builds_dirty_sources_are_passed_on() {
+        let cache = DriftCache::default();
+        let manifest = json!({ "source": { "before": { "sources": [
+            { "kind": "git", "path": "/nonexistent/DebugTrace", "commit": "a", "dirty": true,
+              "changes": ["?? build/sym-motion/"], "changesTotal": 1 },
+            { "kind": "git", "path": "/nonexistent/App", "commit": "b", "dirty": false },
+        ] } } });
+        let answer = cache.compare_uncached(&manifest);
+        assert_eq!(answer["dirty"], json!([{ "path": "/nonexistent/DebugTrace", "kind": "git",
+            "changes": ["?? build/sym-motion/"], "changesTotal": 1 }]), "even when the comparison itself is unknown");
     }
 
     #[test]

@@ -111,11 +111,81 @@ pub fn source_state(directory: &Path) -> Result<Value, String> {
         .filter(|row| row.starts_with("160000 "))
         .filter_map(|row| row.split_once('\t').map(|(_, path)| root.join(path).to_string_lossy().into_owned()))
         .collect();
-    Ok(json!({
+    let mut state = json!({
         "kind": "git", "path": fs::canonicalize(&root).map_err(|e| e.to_string())?,
         "commit": revision, "branch": branch, "dirty": !status.is_empty() || revision.is_none(),
         "workingTreeSha256": hex(hash.finish().as_ref()), "submodules": submodules,
-    }))
+    });
+    if !status.is_empty() {
+        // What a person reads to see why a build is -dirty: `git status --short`'s lines, an
+        // untracked folder as one line (`?? build/x/`), not the digest's file-by-file list.
+        let changes = changed_paths(&root);
+        state["changesTotal"] = json!(changes.len());
+        state["changes"] = json!(changes.into_iter().take(MAX_LISTED_CHANGES).collect::<Vec<_>>());
+    }
+    Ok(state)
+}
+
+/// How many of a dirty source's changed paths a snapshot keeps (`changesTotal` counts them all).
+const MAX_LISTED_CHANGES: usize = 20;
+
+/// `git status --porcelain` lines (`XY path`), untracked folders collapsed, a rename as its new path.
+fn changed_paths(root: &Path) -> Vec<String> {
+    let Some(out) = git(root, &["status", "--porcelain=v1", "-z", "--untracked-files=normal"]) else { return Vec::new() };
+    let mut entries = out.split(|b| *b == 0).filter(|e| !e.is_empty());
+    let mut lines = Vec::new();
+    while let Some(entry) = entries.next() {
+        let line = String::from_utf8_lossy(entry).into_owned();
+        // With -z a rename or copy is followed by its old path as an entry of its own.
+        if matches!(line.as_bytes().first(), Some(b'R' | b'C')) {
+            entries.next();
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// Why a snapshot is dirty, for a person: one `(name, what)` per dirty source, such as
+/// `("DebugTrace", "untracked build/sym-motion/")`. A build stamps -dirty when any source the app
+/// built against had uncommitted changes, packages included, so this names the one that did.
+pub fn dirty_sources(snapshot: &Value) -> Vec<(String, String)> {
+    snapshot["sources"].as_array().into_iter().flatten()
+        .filter(|s| s["dirty"].as_bool() == Some(true))
+        .map(|s| {
+            let path = s["path"].as_str().unwrap_or_default();
+            let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
+            (name, describe_changes(s))
+        })
+        .collect()
+}
+
+/// A dirty source's changes in a few words: the first three paths and how many more.
+pub fn describe_changes(source: &Value) -> String {
+    if source["kind"] == "directory" {
+        return "not a git checkout".to_string();
+    }
+    if source["commit"].is_null() {
+        return "no commit yet".to_string();
+    }
+    let Some(changes) = source["changes"].as_array() else { return "uncommitted changes".to_string() };
+    let total = source["changesTotal"].as_u64().unwrap_or(changes.len() as u64) as usize;
+    let mut words: Vec<String> = changes.iter().filter_map(Value::as_str).take(3).map(|line| {
+        let (code, path) = if line.len() > 3 { (&line[..2], &line[3..]) } else { (line, "") };
+        let kind = match code {
+            "??" => "untracked",
+            c if c.contains('U') => "conflicted",
+            c if c.contains('D') => "deleted",
+            c if c.contains('A') => "added",
+            c if c.contains('R') => "renamed",
+            c if c.contains('M') || c.contains('T') => "modified",
+            _ => "changed",
+        };
+        format!("{kind} {path}")
+    }).collect();
+    if total > words.len() {
+        words.push(format!("and {} more", total - words.len()));
+    }
+    if words.is_empty() { "uncommitted changes".to_string() } else { words.join(", ") }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -398,6 +468,37 @@ mod tests {
         let edited = snapshot(&app, Some(b"args"), None).unwrap();
         assert_ne!(edited["fingerprint"], clean["fingerprint"]);
         assert_eq!(stamp(&edited, &app).unwrap(), format!("{moved}-dirty"));
+        assert_eq!(dirty_sources(&edited), [("App".to_string(), "modified Sources/main.swift".to_string())]);
+
+        // A clean app with build output left untracked in a package: the package is named, and
+        // the folder is one line, not its files.
+        run(&app, &["checkout", "-q", "--", "Sources/main.swift"]);
+        fs::create_dir_all(package.join("build/out")).unwrap();
+        for n in 0 .. 30 {
+            fs::write(package.join(format!("build/out/{n}.o")), "x").unwrap();
+        }
+        let left = snapshot(&app, Some(b"args"), None).unwrap();
+        assert!(stamp(&left, &app).unwrap().ends_with("-dirty"));
+        assert_eq!(dirty_sources(&left), [("Kit".to_string(), "untracked build/".to_string())]);
+        fs::write(package.join("Package.resolved"), "{\"v\":3}").unwrap();
+        for n in 0 .. 4 {
+            fs::write(package.join(format!("new{n}.swift")), "x").unwrap();
+        }
+        let many = snapshot(&app, Some(b"args"), None).unwrap();
+        assert_eq!(dirty_sources(&many)[0].1, "modified Package.resolved, untracked build/, untracked new0.swift, and 3 more");
+    }
+
+    #[test]
+    fn older_snapshots_without_changes_still_read() {
+        let snapshot = json!({ "sources": [
+            { "kind": "git", "path": "/x/DebugTrace", "commit": "abc", "dirty": true },
+            { "kind": "git", "path": "/x/App", "commit": "def", "dirty": false },
+            { "kind": "directory", "path": "/x/Loose", "commit": null, "dirty": true },
+        ] });
+        assert_eq!(dirty_sources(&snapshot), [
+            ("DebugTrace".to_string(), "uncommitted changes".to_string()),
+            ("Loose".to_string(), "not a git checkout".to_string()),
+        ]);
     }
 
     #[test]

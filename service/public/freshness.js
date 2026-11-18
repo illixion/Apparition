@@ -12,6 +12,31 @@ function agoFrom(now, t){ if(!t) return '—'; const s=(now-t)/1000;
   if(s<60) return Math.round(s)+'s ago'; if(s<3600) return Math.round(s/60)+'m ago';
   if(s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago'; }
 
+// What a build's `-dirty` was about: the sources it recorded as having uncommitted changes when it
+// was made (`drift.dirty`, from the build's manifest), each with its first changes from
+// `git status --short`. A clean app checkout still builds -dirty against a package with stray
+// files, so naming the package is the point.
+function describeChanges(src){
+  if (src.kind === 'directory') return 'not a git checkout';
+  const lines = Array.isArray(src.changes) ? src.changes : [];
+  if (!lines.length) return 'uncommitted changes';
+  const words = lines.slice(0, 3).map(l => {
+    const code = String(l).slice(0, 2), path = String(l).slice(3);
+    const kind = code === '??' ? 'untracked' : /U/.test(code) ? 'conflicted' : /D/.test(code) ? 'deleted'
+      : /A/.test(code) ? 'added' : /R/.test(code) ? 'renamed' : /[MT]/.test(code) ? 'modified' : 'changed';
+    return `${kind} ${path}`;
+  });
+  const total = src.changesTotal ?? lines.length;
+  if (total > words.length) words.push(`and ${total - words.length} more`);
+  return words.join(', ');
+}
+function dirtyNote(drift){
+  const dirty = drift?.dirty;
+  if (!Array.isArray(dirty) || !dirty.length) return '';
+  const folder = p => String(p).split('/').filter(Boolean).pop() || String(p);
+  return ` Built with uncommitted changes in ${dirty.map(s => `${esc(folder(s.path))} (${esc(describeChanges(s))})`).join('; ')}.`;
+}
+
 // Dev builds keep a static version string ("1.0"), so freshness has to be
 // judged from the git short SHA stamped into CFBundleVersion (optionally
 // "-dirty"), not the version. Returns a compact {dot,label,detail} plus
@@ -90,6 +115,8 @@ function platformStatus(p, g, S, now = Date.now()) {
       detail = `On device: ${ver} @${devSha}${devDirty ? ' (dirty)' : ''}. Repo HEAD is now ${head} — deploy to update.`;
     }
   }
+  // Why the installed build is -dirty, when its manifest says.
+  if (/-dirty$/i.test(dev?.buildNo || led?.buildNo || '')) detail += dirtyNote(led?.drift);
   if (led) {
     detail += led.confirmed === false
       ? ` Store's last action: OTA build ${led.branch}@${led.commit} offered ${agoFrom(now, led.at)} — not confirmed installed.`
@@ -98,5 +125,5 @@ function platformStatus(p, g, S, now = Date.now()) {
   return { dot, label, detail, ota };
 }
 
-return { platformStatus, agoFrom, esc };
+return { platformStatus, agoFrom, esc, describeChanges, dirtyNote };
 });
