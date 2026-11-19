@@ -11,3 +11,5 @@ RUSTSEC-2026-0367 zip             zip 2.4 only through apple-codesign 0.29, whic
 RUSTSEC-2026-0368 zip             As above: ZipArchive::extract, not called.
 RUSTSEC-2026-0369 zip             As above: ZipArchive::extract and ZipStreamReader::extract, not called.
 RUSTSEC-2026-0429 zip             As above: ZipArchive::extract, not called.
+RUSTSEC-2026-0548 zip             As above: zip 2.4 comes only through apple-codesign, which only writes zips (ZipWriter); ZipStreamReader is never called.
+RUSTSEC-2026-0545 zip             As above: AES entries are read only by the reader API, which apple-codesign doesn't use.
