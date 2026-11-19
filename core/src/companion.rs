@@ -290,7 +290,9 @@ impl Companion {
         let unchanged = self.anisette() == Some(source) && served.as_ref().is_some_and(|(_, serving)| *serving == address);
         if !unchanged {
             // One port: a server for another source, or another address, makes way first.
-            served.take();
+            if let Some((old, _)) = served.take() {
+                old.stop().await;
+            }
             let port = self.anisette_port;
             let bind = std::net::SocketAddr::from(([127, 0, 0, 1], port));
             let devices = self.devices.clone();
@@ -315,7 +317,9 @@ impl Companion {
 
     /// Stops serving anisette, whichever it was.
     pub async fn stop_builtin_anisette(&self) {
-        self.served.lock().await.take();
+        if let Some((old, _)) = self.served.lock().await.take() {
+            old.stop().await;
+        }
         if self.anisette().is_some() {
             *self.source.lock().unwrap() = None;
             self.relay.set_anisette(None);

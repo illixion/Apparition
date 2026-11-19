@@ -70,6 +70,14 @@ impl Server {
     pub fn url(&self) -> String {
         format!("http://{}", self.address)
     }
+
+    /// Stops serving and waits until the port is free again. Dropping a `Server` only *asks* its task to stop, and
+    /// the listener stays bound until the runtime gets to it, so a successor binding the same port right away can
+    /// fail with "Address already in use".
+    pub async fn stop(mut self) {
+        self.task.abort();
+        let _ = (&mut self.task).await;
+    }
 }
 
 impl Drop for Server {
