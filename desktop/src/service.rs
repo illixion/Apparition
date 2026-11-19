@@ -67,37 +67,55 @@ fn client_for(base: Option<&Url>) -> Result<Client, String> {
         .map_err(|_| "Couldn't create the service connection.".into())
 }
 
-/// An error and what it wraps, as one line.
-fn chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut text = error.to_string();
-    let mut source = error.source();
-    while let Some(inner) = source {
-        text.push_str(": ");
-        text.push_str(&inner.to_string());
-        source = inner.source();
-    }
-    text
-}
-
 async fn response(request: reqwest::RequestBuilder) -> Result<Value, String> {
     response_unsent(request).await.map_err(|(message, _)| message)
 }
 
 /// [`response`], also saying whether a failure came before the request left this app (the
 /// connection couldn't be made), so that sending it again can't do its work twice.
+///
+/// Every outcome worth knowing later goes in the log (see applog.rs for what it may carry): the
+/// operation by name, how it ended and how long it took, so a call that fails, is refused or just
+/// runs long can be told apart afterwards. Never the URL, a body or the token.
 async fn response_unsent(request: reqwest::RequestBuilder) -> Result<Value, (String, bool)> {
-    let response = request.send().await.map_err(|error| {
-        // The message below is all the person sees. The reason goes in the log, which is shared in
-        // traces: the kind and reqwest's own text without the URL (a remote service's address is
-        // the person's), never the token. The app has no stderr, so `tracing`, not `eprintln!`.
+    let operation = operation_of(&request);
+    let started = std::time::Instant::now();
+    let sent = request.send().await;
+    let response = sent.map_err(|error| {
         let (connect, timeout, request) = (error.is_connect(), error.is_timeout(), error.is_request());
         tracing::warn!(
-            "build service request failed (connect: {connect}, timeout: {timeout}, request: {request}): {}",
-            chain(&error.without_url())
+            "build service {operation}: no answer after {} ms (connect: {connect}, timeout: {timeout}, request: {request}): {}",
+            started.elapsed().as_millis(),
+            crate::applog::chain(&error.without_url())
         );
         ("Couldn't reach the build service. Check its address and connection.".to_string(), connect)
     })?;
-    response_body(response).await.map_err(|message| (message, false))
+    let status = response.status().as_u16();
+    let result = response_body(response).await;
+    let took = started.elapsed();
+    match &result {
+        Err(message) => tracing::warn!("build service {operation}: status {status} after {} ms: {}", took.as_millis(), crate::applog::scrub(message)),
+        Ok(_) if took >= SLOW => tracing::info!("build service {operation}: slow, {} ms (status {status})", took.as_millis()),
+        Ok(_) => {}
+    }
+    result.map_err(|message| (message, false))
+}
+
+/// A call this long is logged even when it works: the Developer tab polls every few seconds, and
+/// a slow answer is where a stuck one starts.
+const SLOW: Duration = Duration::from_secs(10);
+
+/// The service operation a request is for (`state`, `builds/7/cancel`), from its path, which the
+/// app builds from its own fixed routes.
+fn operation_of(request: &reqwest::RequestBuilder) -> String {
+    request
+        .try_clone()
+        .and_then(|r| r.build().ok())
+        .map(|r| {
+            let path = r.url().path().trim_start_matches("/api/service/").trim_start_matches("v1/").to_string();
+            crate::applog::scrub(&path)
+        })
+        .unwrap_or_else(|| "request".to_string())
 }
 
 async fn response_body(response: reqwest::Response) -> Result<Value, String> {
@@ -143,6 +161,7 @@ impl BuildService {
         let base = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
         let client = client_for(Some(&base))?;
         let reply = response(client.get(base.join("api/service").unwrap())).await?;
+        tracing::info!("build service: talking to the Store on this Mac, port {port}");
         let old = self.session.lock().unwrap().replace(Session { base: base.clone(), token, client, local: true });
         if let Some(old) = old.filter(|s| !s.local) {
             let _ = old.client.post(old.base.join("api/service/v1/disconnect").unwrap()).bearer_auth(&old.token).send().await;
@@ -158,6 +177,7 @@ impl BuildService {
     pub fn forget_local(&self) {
         let mut session = self.session.lock().unwrap();
         if session.as_ref().is_some_and(|s| s.local) {
+            tracing::info!("build service: no longer talking to the Store on this Mac");
             *session = None;
         }
     }

@@ -61,11 +61,15 @@ impl ServiceHost {
         match crate::developer::start_store().await {
             Ok((route, moved, stop)) => {
                 // Running, but not where apps and links expect it: worth saying.
+                if let Some(note) = &moved {
+                    tracing::warn!("Store: not on its usual port: {}", crate::applog::scrub(note));
+                }
                 *self.last_error.lock().unwrap() = moved;
                 *self.running.lock().unwrap() = Some(Running { stop, route: route.clone(), started: Instant::now() });
                 Ok(route)
             }
             Err(error) => {
+                tracing::warn!("Store: didn't start: {}", crate::applog::scrub(&error));
                 *self.last_error.lock().unwrap() = Some(error.clone());
                 Err(error)
             }
@@ -74,6 +78,7 @@ impl ServiceHost {
 
     fn stop(&self) {
         if let Some(running) = self.running.lock().unwrap().take() {
+            tracing::info!("Store: stopping after {} s", running.started.elapsed().as_secs());
             (running.stop)();
             crate::developer::store_stopped();
         }

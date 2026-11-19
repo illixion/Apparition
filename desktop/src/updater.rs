@@ -194,7 +194,7 @@ fn update_config() -> signed_update::Config {
         Ok(verifier) => config.verifier(verifier),
         // The system's certificates couldn't be read: signed-update's own system check fails the same way.
         Err(error) => {
-            eprintln!("update TLS settings: {error}");
+            tracing::warn!("update TLS settings: {}", crate::applog::chain(&error));
             config
         }
     }

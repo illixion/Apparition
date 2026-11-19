@@ -201,7 +201,7 @@ impl CompanionState {
                 }
             }
             self.copy_for_service(&settings);
-            let log: relay::Log = Arc::new(|line: &str| eprintln!("{line}"));
+            let log: relay::Log = Arc::new(|line: &str| tracing::info!("companion: {}", crate::applog::scrub(line)));
             let (relay_port, anisette_port) = ports();
             let mut started = Companion::start(relay_port, anisette_port, settings.advertise, &self.data_dir, log.clone()).await;
             // Give the service its second or two before saying the port is taken.

@@ -9,7 +9,10 @@
 //! never sent to the page.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// The app has no stdout or stderr (see applog.rs): a line printed there is lost. `cargo clippy` refuses it.
+#![cfg_attr(not(test), deny(clippy::print_stderr, clippy::print_stdout))]
 
+mod applog;
 mod companion;
 mod developer;
 mod flow;

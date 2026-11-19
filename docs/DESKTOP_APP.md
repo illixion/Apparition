@@ -135,6 +135,25 @@ nothing else that Windows doesn't have: the release builds link the compiler's r
 packaging refuses a program that would need `VCRUNTIME140.dll` or a mingw DLL. The command line and
 the Windows service don't use WebView2.
 
+## Logging
+
+The desktop app is a GUI process, so its stdout and stderr go to `/dev/null`. The one record is
+`apparition-core.log` in the data folder (`~/Library/Application Support/Apparition Installer/` on a Mac),
+written through `tracing`; a launch adds a `---- Apparition started ----` line, and it rolls over to
+`.log.1` at 4 MB, checked at launch. Log with `tracing::info!` / `warn!`, never `eprintln!` (clippy refuses it).
+
+The log is shared in debug traces and read by people and models, so a line carries only values the code
+defines: an operation's name, a status, an error kind, a count, a port, a duration. Text you didn't write
+(an error from the network, the OS or the Store) goes through `applog::scrub`, or `applog::chain` for an
+error and its causes, which take out URLs, email and IP addresses, home-folder user names and anything shaped
+like a token. Never log a URL, a request or response body, a password or a token, and strip a `reqwest`
+error with `without_url()` first.
+
+What is logged for the build service (`service.rs`): each failed call (the operation, milliseconds, whether it
+was a connect failure or a timeout, the scrubbed cause), each refusal (the status), each call that takes 10 s
+or more even when it works, and the session's start, stop and retry. To find a "Couldn't reach the build
+service": `grep "build service" apparition-core.log`.
+
 ## Building it
 
     scripts/install-tauri-cli.sh      # once (or cargo install tauri-cli --version '^2' --locked)

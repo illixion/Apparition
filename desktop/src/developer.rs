@@ -32,7 +32,7 @@ pub fn setup(app: &tauri::AppHandle) {
                 let companion = app.state::<std::sync::Arc<crate::companion::CompanionState>>().inner().clone();
                 companion.offer_developer(Some(route)).await;
             }
-            Err(error) => eprintln!("the Apparition Store didn't start: {error}"),
+            Err(error) => tracing::warn!("the Apparition Store didn't start: {}", crate::applog::scrub(&error)),
         }
     });
 }
@@ -45,7 +45,7 @@ pub async fn start_store() -> Result<(DeveloperRoute, Option<String>, Box<dyn Fn
     let route = hosted.route.clone();
     let moved = hosted.moved().map(String::from);
     *ROUTE.lock().unwrap() = Some(route.clone());
-    eprintln!("Apparition Store at http://{} (MCP at /mcp)", route.address);
+    tracing::info!("Apparition Store listening on port {}", route.address.port());
     Ok((route, moved, Box::new(move || hosted.stop())))
 }
 
