@@ -201,7 +201,12 @@ impl CompanionState {
                 }
             }
             self.copy_for_service(&settings);
-            let log: relay::Log = Arc::new(|line: &str| tracing::info!("companion: {}", crate::applog::scrub(line)));
+            // The relay's lines name this computer; the person chose that name, so it stays out of the log.
+            let computer = relay::machine_name();
+            let log: relay::Log = Arc::new(move |line: &str| {
+                let line = if computer.is_empty() { line.to_string() } else { line.replace(&computer, "<this computer>") };
+                tracing::info!("companion: {}", crate::applog::scrub(&line));
+            });
             let (relay_port, anisette_port) = ports();
             let mut started = Companion::start(relay_port, anisette_port, settings.advertise, &self.data_dir, log.clone()).await;
             // Give the service its second or two before saying the port is taken.
