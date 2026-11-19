@@ -48,8 +48,6 @@ pub enum Target<'a> {
     /// `bring_back`, that app is brought to the front again afterwards: it asked from its own
     /// screen, and opening Apparition left it.
     Attach { pid: u64, bring_back: Option<&'a str> },
-    /// Apply pending tweak hooks, then detach unless the app requested JIT too.
-    Hooks { pid: u64, bring_back: Option<&'a str> },
 }
 
 /// Running sessions' stop signals, by bundle ID (or pid, when only that is known).
@@ -180,8 +178,10 @@ pub async fn app_process(adapter: &mut AdapterHandle, handshake: &mut RsdHandsha
         return Ok(AppProcess::NotInstalled);
     };
     let bundle = bundle_dir(&path);
-    drop(installer);
-    let processes = crate::tools::process_tokens(adapter, handshake).await?;
+    let mut processes = idevice::core_device::AppServiceClient::connect_rsd(adapter, handshake)
+        .await
+        .context("appservice connect failed")?;
+    let processes = processes.list_processes().await.context("Can't list the device's processes")?;
     Ok(processes
         .iter()
         .find_map(|p| {
@@ -214,10 +214,9 @@ pub async fn serve(
     let started = Instant::now();
     let mut events = Events { lines: Vec::new(), dropped: 0, started, on_event };
 
-    let (target_pid, bring_back, bundle_id, hook_only) = match target {
-        Target::Launch(bundle_id) => (None, None, Some(bundle_id), false),
-        Target::Attach { pid, bring_back } => (Some(pid), bring_back, bring_back, false),
-        Target::Hooks { pid, bring_back } => (Some(pid), bring_back, bring_back, true),
+    let (target_pid, bring_back, bundle_id) = match target {
+        Target::Launch(bundle_id) => (None, None, Some(bundle_id)),
+        Target::Attach { pid, bring_back } => (Some(pid), bring_back, bring_back),
     };
     let stop_requested = Arc::new(tokio::sync::Notify::new());
     // Registered before anything that can wait (the launch, finding the process, attaching), so
@@ -246,8 +245,8 @@ pub async fn serve(
             _ => bail!("no process to attach to"),
         };
 
-        let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("Could not start the device debugger. If the device restarted, its developer disk image may need preparing again: connect it to Xcode, open Devices and Simulators, and wait for preparation to finish, then retry JIT.")?;
-        let mut gdb = Gdb { proxy, incoming: Vec::new() };
+        let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("debugproxy connect failed")?;
+        let mut gdb = Gdb { proxy };
         gdb.proxy.send_raw(b"+").await?;
         gdb.proxy.send_raw(&Gdb::frame("QStartNoAckMode")).await?;
         let ack = gdb.proxy.read_response().await?;
@@ -288,24 +287,7 @@ pub async fn serve(
         }
         return Ok(json!({ "pid": 0, "events": events.lines, "preparedBytes": 0, "detached": true, "ended": "stopped" }));
     };
-    let (pid, mut gdb) = match setup {
-        Ok(setup) => setup,
-        Err(error) => {
-            if let Some(pid) = launched_slot {
-                if close_launched(adapter, handshake, pid, &mut events).await {
-                    return Err(error.context("Apparition closed the app it had launched, so it isn't left frozen on screen. Open it again to retry").into());
-                }
-            }
-            return Err(error);
-        }
-    };
-    let mut hook_control = match hooks::arm(&mut gdb).await {
-        Ok(control) => control,
-        Err(error) => { events.log(format!("hook discovery: {}", crate::errors::describe(&error))); None }
-    };
-    if hook_control.is_some() { events.log("ApparitionHooks debugger capability granted".into()); }
-    let mut hook_polls = 0u32;
-    let mut app_requested_jit = false;
+    let (pid, mut gdb) = setup?;
     registration.add(pid.to_string(), &stop_requested);
 
     let mut prepared_bytes = 0u64;
@@ -316,21 +298,13 @@ pub async fn serve(
     let mut fault_repeats = 0u32;
     let mut counts = Counts::default();
     let deadline = (wait_seconds > 0).then(|| Duration::from_secs(wait_seconds as u64));
-    let mut wait_started = Instant::now();
-    let mut unsafe_publication = false;
-    let outcome: Result<&str, Report> = settle(None, "serving JIT requests", async {
     let ended = loop {
         gdb.proxy.send_raw(&Gdb::frame(&resume)).await?;
         resume = "c".into();
         // An app that never asks (UTM until a VM starts) never stops, so the wait has to end
         // while it runs: interrupt it, then detach.
-        let left = deadline.filter(|_| !served).map(|deadline| deadline.saturating_sub(wait_started.elapsed()));
-        let poll_hooks = hook_control.is_none() && hook_polls < 16;
+        let left = deadline.filter(|_| !served).map(|deadline| deadline.saturating_sub(started.elapsed()));
         let waited = tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(250)), if poll_hooks => {
-                hook_polls += 1;
-                Some(Some(Ok("AP_HOOK_POLL".into())))
-            },
             stop = async {
                 match left {
                     Some(left) => tokio::time::timeout(left, gdb.read()).await.ok(),
@@ -339,7 +313,7 @@ pub async fn serve(
             } => stop.map(Some),
             _ = stop_requested.notified() => Some(None),
         };
-        let mut stop = match waited {
+        let stop = match waited {
             Some(Some(stop)) => stop?,
             // Timed out, or asked to stop: interrupt the app, then leave it running.
             reason => {
@@ -352,33 +326,18 @@ pub async fn serve(
                 gdb.proxy.send_raw(&[0x03]).await?;
                 // Bounded: a process that died meanwhile may never answer.
                 let _ = tokio::time::timeout(CLOSE_WAIT, gdb.read()).await;
-                if let Err(error) = hooks::revoke(&mut gdb, hook_control).await {
-                    events.log(format!("hook capability could not be cleared; detaching revokes live tracing: {}", crate::errors::describe(&error)));
-                }
-                let reply = gdb.detach().await?;
-                events.log(format!("detached: {reply}"));
+                events.log(match tokio::time::timeout(CLOSE_WAIT, gdb.request("D")).await {
+                    Ok(Ok(reply)) => format!("detached: {reply}"),
+                    Ok(Err(error)) => format!("detach failed: {error}"),
+                    Err(_) => "detach timed out".into(),
+                });
                 detached = true;
                 break ended;
             }
         };
-        let hook_poll = stop == "AP_HOOK_POLL";
-        if hook_poll {
-            gdb.proxy.send_raw(&[0x03]).await?;
-            stop = gdb.read().await?;
-        }
         if stop.starts_with('W') || stop.starts_with('X') {
             events.log(format!("process exited: {stop}"));
             break "exited";
-        }
-        if hook_control.is_none() {
-            hook_control = match hooks::arm(&mut gdb).await {
-                Ok(control) => control,
-                Err(error) => { events.log(format!("hook discovery: {}", crate::errors::describe(&error))); None }
-            };
-            if hook_control.is_some() {
-                wait_started = Instant::now();
-                events.log("ApparitionHooks debugger capability granted".into());
-            }
         }
         let Some(thread) = field(&stop, "thread") else {
             events.log(format!("unexpected stop reply: {}", stop.chars().take(60).collect::<String>()));
@@ -387,9 +346,6 @@ pub async fn serve(
         let signal = u8::from_str_radix(stop.get(1..3).unwrap_or("00"), 16).unwrap_or(0);
         let metype = field(&stop, "metype").unwrap_or(0);
         let medata: Vec<u64> = fields(&stop, "medata");
-        // A real stop can win the race with our polling interrupt. Never
-        // discard its JIT request or fault; swallow only the interrupt itself.
-        if hook_poll && matches!(signal, 2 | 17) { continue; }
 
         // EXC_SOFTWARE / EXC_SOFT_SIGNAL: a unix signal on its way to the app (pthread_kill,
         // Wine's thread suspends). Only an old debugserver that ignored QPassSignals stops
@@ -422,9 +378,6 @@ pub async fn serve(
         let immediate = instruction.filter(|i| i & 0xffe0_001f == 0xd420_0000).map(|i| (i >> 5) & 0xffff);
         match immediate {
             Some(0x69) => {
-                if let Err(error) = hooks::revoke(&mut gdb, hook_control).await {
-                    events.log(format!("hook capability could not be cleared; detaching revokes live tracing: {}", crate::errors::describe(&error)));
-                }
                 let (address, length) = (gdb.register(0, thread).await?, gdb.register(1, thread).await?);
                 let t = Instant::now();
                 let pages = gdb.prepare(address, length).await?;
@@ -433,7 +386,7 @@ pub async fn serve(
                                    length >> 20, t.elapsed().as_secs_f64()));
                 gdb.set_register(PC, thread, pc + 4).await?;
                 // QEMU makes one such request per VM; it needs no debugger afterwards.
-                let reply = gdb.detach().await?;
+                let reply = gdb.request("D").await?;
                 events.log(format!("detached: {reply}"));
                 detached = true;
                 break "detached";
@@ -448,8 +401,6 @@ pub async fn serve(
                         events.log("brk #0xf00d prepare: nothing asked".into());
                     }
                     1 => {
-                        // Hook allocations are not the app's own JIT engine.
-                        if gdb.register(2, thread).await? != hooks::CAPABILITY { app_requested_jit = true; }
                         let (mut address, length) = (gdb.register(0, thread).await?, gdb.register(1, thread).await?);
                         if address == 0 {
                             let reply = gdb.request(&format!("_M{length:x},rx")).await?;
@@ -489,37 +440,14 @@ pub async fn serve(
                     0x4151 => {
                         let address = gdb.register(0, thread).await?;
                         let count = gdb.register(1, thread).await?;
-                        unsafe_publication = true;
                         let status = gdb.entry_transaction(address, count).await?;
-                        unsafe_publication = false;
                         gdb.set_register(0, thread, status).await?;
                         gdb.set_register(PC, thread, pc + 4).await?;
                         events.log(format!("entry transaction: {count} entries, status {status}"));
                     }
-                    0x4152 => {
-                        let answer = if hook_control.is_some() { hooks::CAPABILITY } else { 0 };
-                        gdb.set_register(0, thread, answer).await?;
-                        gdb.set_register(PC, thread, pc + 4).await?;
-                    }
-                    0x4154 => {
-                        gdb.set_register(0, thread, 0).await?;
-                        gdb.set_register(PC, thread, pc + 4).await?;
-                        if hook_only && hook_control.is_some() && !app_requested_jit {
-                            if let Err(error) = hooks::revoke(&mut gdb, hook_control).await {
-                    events.log(format!("hook capability could not be cleared; detaching revokes live tracing: {}", crate::errors::describe(&error)));
-                }
-                            let reply = gdb.detach().await?;
-                            events.log(format!("hooks applied; detached: {reply}"));
-                            detached = true;
-                            break "detached";
-                        }
-                    }
                     0 => {
-                        if let Err(error) = hooks::revoke(&mut gdb, hook_control).await {
-                    events.log(format!("hook capability could not be cleared; detaching revokes live tracing: {}", crate::errors::describe(&error)));
-                }
                         gdb.set_register(PC, thread, pc + 4).await?;
-                        let reply = gdb.detach().await?;
+                        let reply = gdb.request("D").await?;
                         events.log(format!("brk #0xf00d detach: {reply}"));
                         detached = true;
                         break "detached";
@@ -568,31 +496,6 @@ pub async fn serve(
                     resume = continue_with(deliver, thread);
                 }
             }
-        }
-    };
-    Ok(ended)
-    }).await;
-    let ended = match outcome {
-        Ok(ended) => ended,
-        Err(error) => {
-            // Never abandon an attached process on a `?` error path. A
-            // partially published redirect must not resume; close only this
-            // session's exact pid. Other failures first try a normal detach.
-            if !unsafe_publication {
-                let _ = hooks::revoke(&mut gdb, hook_control).await;
-                if gdb.detach().await.is_ok() {
-                    return Err(error.context("The debugger detached after an error; the app is still running").into());
-                }
-            }
-            let closed = tokio::time::timeout(CLOSE_WAIT,
-                crate::tools::signal(adapter, handshake, pid as u32, 9)).await;
-            if matches!(closed, Ok(Ok(()))) {
-                return Err(error.context("The debugger session failed; Apparition closed this app so it cannot remain paused or run partially patched code. Open it again to retry").into());
-            }
-            // AppService may be the failed transport. The existing debug
-            // connection has a process-scoped kill packet as a second route.
-            let _ = tokio::time::timeout(CLOSE_WAIT, gdb.proxy.send_raw(&Gdb::frame("k"))).await;
-            return Err(error.context("The debugger session failed and could not confirm cleanup; Apparition requested that this app close. Reconnect the device before retrying").into());
         }
     };
     if events.dropped > 0 {
@@ -664,9 +567,6 @@ fn fields(reply: &str, key: &str) -> Vec<u64> {
         .collect()
 }
 
-#[path = "jit_hooks.rs"]
-mod hooks;
-
 trait EntryRemote {
     async fn command(&mut self, command: &str) -> Result<String, Report>;
     async fn pc(&mut self, thread: u64) -> Result<u64, Report>;
@@ -710,7 +610,7 @@ async fn entry_transaction(remote: &mut impl EntryRemote, address: u64, count: u
                 for (restore, expected, _) in entries[..=index].iter().rev() {
                     let reply = remote.command(&format!("M{restore:x},10:{expected}")).await?;
                     if reply != "OK" || remote.command(&format!("m{restore:x},10")).await? != *expected {
-                        bail!("entry rollback failed; original code could not be restored");
+                        bail!("entry rollback failed; debugger cannot safely resume the app; relaunch it");
                     }
                 }
                 return Ok(4);
@@ -748,65 +648,23 @@ fn is_stop_packet(reply: &str) -> bool {
 /// Minimal gdb-remote client over the tunnel's debugproxy (no-ack mode, pipelined writes).
 struct Gdb {
     proxy: DebugProxyClient<Box<dyn idevice::ReadWrite>>,
-    // Persist partial packets across timeout/stop polling cancellation.
-    incoming: Vec<u8>,
 }
 
 impl Gdb {
     fn frame(payload: &str) -> Vec<u8> {
-        let mut body = Vec::new();
-        for byte in payload.bytes() {
-            if matches!(byte, b'$' | b'#' | b'}' | b'*') { body.extend([b'}', byte ^ 0x20]); }
-            else { body.push(byte); }
-        }
-        let sum = body.iter().fold(0u8, |acc, b| acc.wrapping_add(*b));
-        let mut frame = vec![b'$'];
-        frame.extend(body);
-        frame.extend(format!("#{sum:02x}").bytes());
-        frame
+        let sum = payload.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+        format!("${payload}#{sum:02x}").into_bytes()
     }
 
     async fn read(&mut self) -> Result<String, Report> {
-        use tokio::io::AsyncReadExt;
         loop {
-            if let Some(start) = self.incoming.iter().position(|&b| b == b'$') {
-                if start != 0 { self.incoming.drain(..start); }
-                if let Some(end) = self.incoming.iter().position(|&b| b == b'#') {
-                    if self.incoming.len() >= end + 3 {
-                        let checksum = std::str::from_utf8(&self.incoming[end + 1..end + 3])
-                            .ok().and_then(|s| u8::from_str_radix(s, 16).ok());
-                        let sum = self.incoming[1..end].iter().fold(0u8, |a, b| a.wrapping_add(*b));
-                        // Apple's debugproxy uses placeholder checksums in no-ack mode.
-                        if !self.proxy.noack_mode && checksum != Some(sum) { bail!("debugserver packet checksum failed"); }
-                        let packet = self.incoming[1..end].to_vec();
-                        self.incoming.drain(..end + 3);
-                        let mut decoded = Vec::new();
-                        let mut escaped = false;
-                        for byte in packet {
-                            if escaped { decoded.push(byte ^ 0x20); escaped = false; }
-                            else if byte == b'}' { escaped = true; }
-                            else { decoded.push(byte); }
-                        }
-                        if escaped { bail!("truncated debugserver escape"); }
-                        let reply = String::from_utf8(decoded).context("debugserver returned invalid text")?;
-                        if reply.starts_with('O') && reply != "OK" { continue; }
-                        return Ok(reply);
-                    }
-                }
-            } else { self.incoming.clear(); }
-            if self.incoming.len() > 8 * 1024 * 1024 { bail!("debugserver packet is too large"); }
-            let mut bytes = [0u8; 8192];
-            let count = self.proxy.socket.read(&mut bytes).await?;
-            if count == 0 { bail!("debugserver connection closed"); }
-            self.incoming.extend_from_slice(&bytes[..count]);
+            let reply = self.proxy.read_response().await?.ok_or_else(|| report!("debugserver sent no packet"))?;
+            // Inferior output forwarded by debugserver; not a reply.
+            if reply.starts_with('O') && reply != "OK" {
+                continue;
+            }
+            return Ok(reply);
         }
-    }
-
-    async fn detach(&mut self) -> Result<String, Report> {
-        let reply = tokio::time::timeout(CLOSE_WAIT, self.request("D"))
-            .await.context("debugger detach timed out")??;
-        if reply != "OK" { bail!("debugserver did not confirm detach: {reply}"); }
-        Ok(reply)
     }
 
     async fn request(&mut self, payload: &str) -> Result<String, Report> {
@@ -954,8 +812,8 @@ impl Script {
                 (false, pid, _) => pid,
             };
 
-            let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("Could not start the device debugger. If the device restarted, its developer disk image may need preparing again: connect it to Xcode, open Devices and Simulators, and wait for preparation to finish, then retry JIT.")?;
-            let mut gdb = Gdb { proxy, incoming: Vec::new() };
+            let proxy = DebugProxyClient::connect_rsd(adapter, handshake).await.context("debugproxy connect failed")?;
+            let mut gdb = Gdb { proxy };
             gdb.proxy.send_raw(b"+").await?;
             gdb.proxy.send_raw(&Gdb::frame("QStartNoAckMode")).await?;
             let ack = gdb.proxy.read_response().await?;
@@ -1196,80 +1054,5 @@ mod entry_tests {
         assert!(decode_entries(&"0".repeat(80), 1).is_none());
         assert!(decode_entries(&format!("0010000000000000{OLD}{NEW}"), 1).is_some());
         assert!(decode_entries(&format!("0010000000000000{OLD}{OLD}"), 1).is_none());
-    }
-}
-
-#[cfg(test)]
-mod packet_tests {
-    use super::*;
-    use tokio::io::AsyncWriteExt;
-    #[tokio::test]
-    async fn detach_requires_an_explicit_success_reply() {
-        use tokio::io::AsyncReadExt;
-        let (client, mut server) = tokio::io::duplex(1024);
-        let mut proxy = DebugProxyClient::new(Box::new(client) as Box<dyn idevice::ReadWrite>);
-        proxy.noack_mode = true;
-        let mut gdb = Gdb { proxy, incoming: Vec::new() };
-        tokio::spawn(async move {
-            let mut command = [0; 5];
-            server.read_exact(&mut command).await.unwrap();
-            assert_eq!(&command, b"$D#44");
-            server.write_all(&Gdb::frame("E03")).await.unwrap();
-        });
-        assert!(gdb.detach().await.is_err());
-    }
-    #[tokio::test]
-    async fn partial_packets_survive_hook_poll_cancellation() {
-        let (client, mut server) = tokio::io::duplex(1024);
-        let proxy = DebugProxyClient::new(Box::new(client) as Box<dyn idevice::ReadWrite>);
-        let mut gdb = Gdb { proxy, incoming: Vec::new() };
-        let packet = Gdb::frame("T05thread:1;");
-        let rest = packet[6..].to_vec();
-        server.write_all(&packet[..6]).await.unwrap();
-        assert!(tokio::time::timeout(Duration::from_millis(5), gdb.read()).await.is_err());
-        server.write_all(&rest).await.unwrap();
-        assert_eq!(gdb.read().await.unwrap(), "T05thread:1;");
-    }
-    #[tokio::test]
-    async fn odd_length_register_replies_are_refused_not_sliced() {
-        // Over a slow link (Tailscale's relay) the hook poll's interrupt can leave replies out of
-        // turn, so a register read can get an error or a stop reply: an odd length panicked here.
-        for reply in ["E35", "123", "OK", "0011223344556677"] {
-            let (client, mut server) = tokio::io::duplex(1024);
-            let mut proxy = DebugProxyClient::new(Box::new(client) as Box<dyn idevice::ReadWrite>);
-            proxy.noack_mode = true;
-            let mut gdb = Gdb { proxy, incoming: Vec::new() };
-            server.write_all(&Gdb::frame(reply)).await.unwrap();
-            let read = gdb.register(PC, 1).await;
-            if reply.len() == 16 { assert_eq!(read.unwrap(), 0x7766554433221100); } else { assert!(read.is_err(), "{reply}"); }
-        }
-    }
-    #[tokio::test]
-    async fn a_stray_stop_after_a_poll_interrupt_does_not_shift_replies() {
-        // The reply stream from the Apple TV over a hotspot: the interrupt's own stop arrives
-        // after the real one was handled, ahead of the replies to the next requests.
-        let (client, mut server) = tokio::io::duplex(4096);
-        let mut proxy = DebugProxyClient::new(Box::new(client) as Box<dyn idevice::ReadWrite>);
-        proxy.noack_mode = true;
-        let mut gdb = Gdb { proxy, incoming: Vec::new() };
-        for packet in ["T11thread:1;", "1f31fe740", "0011223344556677"] {
-            server.write_all(&Gdb::frame(packet)).await.unwrap();
-        }
-        assert_eq!(gdb.request("qShlibInfoAddr").await.unwrap(), "1f31fe740");
-        assert_eq!(gdb.register(PC, 1).await.unwrap(), 0x7766554433221100);
-        assert!(is_stop_packet("T05thread:1;") && is_stop_packet("S11"));
-        for reply in ["OK", "E35", "W00", "X09", "{\"images\":[]}", "0011223344556677", "QC1"] {
-            assert!(!is_stop_packet(reply), "{reply}");
-        }
-    }
-    #[tokio::test]
-    async fn a_panic_while_serving_becomes_an_error() {
-        let result: Result<(), Report> = settle(None, "testing", async { panic!("boom") }).await;
-        assert!(crate::errors::describe(&result.unwrap_err()).contains("boom"));
-        let slow: Result<(), Report> = settle(Some(Duration::from_millis(5)), "testing", async {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            Ok(())
-        }).await;
-        assert!(crate::errors::describe(&slow.unwrap_err()).contains("timed out"));
     }
 }

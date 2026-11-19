@@ -16,9 +16,9 @@
 //! ignored (the tweak is loaded into this one app regardless), and so are Settings panes
 //! (PreferenceLoader isn't there), with a warning.
 //!
-//! Substrate itself, which most tweaks link, is our MIT ApparitionHooks library: any
+//! Substrate itself, which most tweaks link, is ElleKit (BSD-3-Clause, `assets/ellekit/`): any
 //! copied code that links Substrate, libhooker or blackjack is pointed at
-//! `@rpath/CydiaSubstrate.framework/CydiaSubstrate`, and that framework is added from `assets/hooks/`.
+//! `@rpath/CydiaSubstrate.framework/CydiaSubstrate`, and that framework is added from ElleKit.
 //!
 //! Refused: an app still encrypted by the App Store (its code can't be read, so nothing would
 //! run), code built for another platform than the app's (an iOS tweak in a visionOS app), a
@@ -35,12 +35,12 @@ use serde::Serialize;
 
 use crate::macho;
 
-/// Our MIT hook engine, rebuilt byte-for-byte with scripts/build-hooks.sh.
-const HOOKS_IOS: &[u8] = include_bytes!("../assets/hooks/ios.dylib");
-const HOOKS_VISIONOS: &[u8] = include_bytes!("../assets/hooks/visionos.dylib");
-const HOOKS_LICENSE: &str = include_str!("../../LICENSE");
-pub const HOOKS_SHA256: &str = include_str!("../assets/hooks/SHA256SUMS");
-const HOOKS_VERSION: &str = "1.0.0";
+/// ElleKit 1.1.3's libellekit.dylib, as `scripts/build-ellekit.sh` builds it, and its licence.
+const ELLEKIT: &[u8] = include_bytes!("../assets/ellekit/libellekit.dylib");
+const ELLEKIT_LICENSE: &str = include_str!("../assets/ellekit/LICENSE");
+/// The build `scripts/build-ellekit.sh` makes (and checks) from ElleKit's v1.1.3 tag.
+pub const ELLEKIT_SHA256: &str = "aae8eaf6eac08cfea6acece35426da6221198749cd4b625a4e38163aa6212dc8";
+const ELLEKIT_VERSION: &str = "1.1.3";
 
 const SUBSTRATE: &str = "@rpath/CydiaSubstrate.framework/CydiaSubstrate";
 const RPATH: &str = "@executable_path/Frameworks";
@@ -53,7 +53,7 @@ pub struct Injection {
     pub loads: Vec<String>,
     /// What was added to the app, relative to it (`Frameworks/Foo.dylib`, `Foo.bundle`).
     pub added: Vec<String>,
-    /// Whether ApparitionHooks was added as Substrate.
+    /// Whether ElleKit was added as Substrate.
     pub substrate: bool,
     /// Library paths pointed inside the app.
     pub rewritten: usize,
@@ -175,7 +175,7 @@ pub fn inject_app(app: &Path, tweaks: &[PathBuf], scratch: &Path) -> Result<Inje
             .collect::<Vec<_>>();
         if !function_hooks.is_empty() {
             injection.warnings.push(format!(
-                "{} imports {}: full function and memory hooks need Apparition's debugger. Without JIT, function hooks cover import calls only. On TXM devices the debugger must write executable code. The app can request JIT later without relaunching; Objective-C method hooks work without it.",
+                "{} imports {}: these hooks modify executable code and may not work in a sideloaded app. On devices with TXM on iOS 26 or later, enabling JIT alone does not make ElleKit's code writes work. Objective-C method hooks are unaffected.",
                 relative(app, file), function_hooks.join(", ")
             ));
         }
@@ -214,8 +214,11 @@ pub fn inject_app(app: &Path, tweaks: &[PathBuf], scratch: &Path) -> Result<Inje
     }
     dedup(&mut injection.warnings);
 
-    if needs_substrate {
-        add_hooks(app, platform)?;
+    if needs_substrate && !app.join("Frameworks/CydiaSubstrate.framework").exists() {
+        if !compatible(macho::PLATFORM_IOS, platform) {
+            bail!("The tweak needs Substrate, and the ElleKit Apparition has is built for iOS, not {}", platform_name(platform));
+        }
+        add_ellekit(app)?;
         injection.substrate = true;
         injection.added.push("Frameworks/CydiaSubstrate.framework".into());
     }
@@ -309,7 +312,7 @@ fn framework_executable(framework: &Path) -> Option<String> {
     info.get("CFBundleExecutable").and_then(plist::Value::as_string).map(str::to_string)
 }
 
-/// Whether `path` names Substrate or one of the hooking libraries ApparitionHooks stands in for.
+/// Whether `path` names Substrate or one of the hooking libraries ElleKit stands in for.
 fn is_substrate(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.contains("substrate.") || lower.ends_with("/libhooker.dylib") || lower.ends_with("/libblackjack.dylib") || lower.ends_with("/libellekit.dylib")
@@ -333,7 +336,7 @@ fn rewrite(path: &str, dylibs: &BTreeSet<String>, frameworks: &BTreeSet<String>)
 /// What a library path the device won't have means, when it's one only a jailbreak provides.
 fn missing(path: &str) -> Option<String> {
     if path.to_ascii_lowercase().contains("libsubstitute") {
-        return Some(format!("links {path}: ApparitionHooks stands in for Substrate, libhooker and blackjack, but not Substitute"));
+        return Some(format!("links {path}: ElleKit stands in for Substrate, libhooker and blackjack, but not Substitute"));
     }
     let jailbreak_only = path.starts_with("/var/jb/") || path.starts_with("/Library/") || path.starts_with("/usr/local/") || path.starts_with("@loader_path/.jbroot");
     jailbreak_only.then(|| {
@@ -349,9 +352,6 @@ fn gather(tweak: &Path, scratch: &Path, items: &mut Vec<Item>, warnings: &mut Ve
     if tweak.is_dir() {
         let kind = tweak.extension().and_then(|e| e.to_str()).unwrap_or("");
         match kind {
-            "framework" if is_substrate(&format!("/{name}")) => {
-                warnings.push(format!("{name} is a compatibility library: Apparition supplies its own hook library"));
-            }
             "framework" => items.push(Item::Framework { name, source: tweak.to_path_buf(), given: true }),
             "bundle" => items.push(Item::Bundle { name, source: tweak.to_path_buf() }),
             _ => bail!("{name} is a folder that isn't a .framework or a .bundle"),
@@ -367,7 +367,7 @@ fn gather(tweak: &Path, scratch: &Path, items: &mut Vec<Item>, warnings: &mut Ve
             bail!("{name} is code, but not a dynamic library (.dylib)");
         }
         if is_substrate(&format!("/{name}")) {
-            warnings.push(format!("{name} is Substrate itself: Apparition adds its hook library in its place"));
+            warnings.push(format!("{name} is Substrate itself: Apparition adds ElleKit in its place"));
             return Ok(());
         }
         let name = if name.ends_with(".dylib") { name } else { format!("{name}.dylib") };
@@ -399,7 +399,7 @@ fn gather_zip(zip: &Path, scratch: &Path, items: &mut Vec<Item>) -> Result<(), R
                     continue;
                 }
                 let kind = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
-                if path.is_dir() && kind == "framework" && !is_substrate(&format!("/{name}")) {
+                if path.is_dir() && kind == "framework" {
                     items.push(Item::Framework { name, source: path, given: true });
                     found = true;
                 } else if path.is_dir() && kind == "bundle" {
@@ -586,41 +586,24 @@ fn machos_in(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Our compatibility library uses the install name existing tweaks expect.
-fn add_hooks(app: &Path, platform: u32) -> Result<(), Report> {
-    let (binary, supported, minimum) = match platform {
-        macho::PLATFORM_IOS => (HOOKS_IOS, "iPhoneOS", "17.0"),
-        macho::PLATFORM_VISIONOS => (HOOKS_VISIONOS, "XROS", "1.0"),
-        _ => bail!("ApparitionHooks isn't built for {}", platform_name(platform)),
-    };
+/// ElleKit as `Frameworks/CydiaSubstrate.framework`, with its licence beside it.
+fn add_ellekit(app: &Path) -> Result<(), Report> {
     let framework = app.join("Frameworks/CydiaSubstrate.framework");
     std::fs::create_dir_all(&framework)?;
-    std::fs::write(framework.join("CydiaSubstrate"), binary)?;
-    std::fs::write(framework.join("LICENSE"), HOOKS_LICENSE)?;
+    std::fs::write(framework.join("CydiaSubstrate"), ELLEKIT)?;
+    std::fs::write(framework.join("LICENSE"), ELLEKIT_LICENSE)?;
     let info = plist::Dictionary::from_iter([
         ("CFBundleExecutable".to_string(), plist::Value::String("CydiaSubstrate".into())),
-        ("CFBundleIdentifier".to_string(), plist::Value::String("com.illixion.apparition.hooks".into())),
+        ("CFBundleIdentifier".to_string(), plist::Value::String("com.illixion.apparition.ellekit".into())),
         ("CFBundleName".to_string(), plist::Value::String("CydiaSubstrate".into())),
         ("CFBundlePackageType".to_string(), plist::Value::String("FMWK".into())),
-        ("CFBundleShortVersionString".to_string(), plist::Value::String(HOOKS_VERSION.into())),
-        ("CFBundleVersion".to_string(), plist::Value::String(HOOKS_VERSION.into())),
+        ("CFBundleShortVersionString".to_string(), plist::Value::String(ELLEKIT_VERSION.into())),
+        ("CFBundleVersion".to_string(), plist::Value::String(ELLEKIT_VERSION.into())),
         ("CFBundleInfoDictionaryVersion".to_string(), plist::Value::String("6.0".into())),
-        ("CFBundleSupportedPlatforms".to_string(), plist::Value::Array(vec![plist::Value::String(supported.into())])),
-        ("MinimumOSVersion".to_string(), plist::Value::String(minimum.into())),
+        ("CFBundleSupportedPlatforms".to_string(), plist::Value::Array(vec![plist::Value::String("iPhoneOS".into())])),
+        ("MinimumOSVersion".to_string(), plist::Value::String("15.0".into())),
     ]);
     plist::Value::Dictionary(info).to_file_xml(framework.join("Info.plist"))?;
-    let path = app.join("Info.plist");
-    let mut info: plist::Dictionary = plist::from_file(&path)?;
-    if !info.contains_key("LSApplicationQueriesSchemes") {
-        info.insert("LSApplicationQueriesSchemes".into(), plist::Value::Array(Vec::new()));
-    }
-    let schemes = info.get_mut("LSApplicationQueriesSchemes").unwrap();
-    if let Some(schemes) = schemes.as_array_mut() {
-        if !schemes.iter().any(|s| s.as_string() == Some("apparition")) {
-            schemes.push(plist::Value::String("apparition".into()));
-        }
-    }
-    plist::Value::Dictionary(info).to_file_xml(path)?;
     Ok(())
 }
 
@@ -701,30 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_compatibility_binary_is_replaced_and_query_schemes_survive() {
-        let dir = temp("replace-old-hooks");
-        let app = app(&dir, &[]);
-        let framework = app.join("Frameworks/CydiaSubstrate.framework");
-        std::fs::create_dir_all(&framework).unwrap();
-        std::fs::write(framework.join("CydiaSubstrate"), b"old runtime").unwrap();
-        let mut info: plist::Dictionary = plist::from_file(app.join("Info.plist")).unwrap();
-        info.insert("LSApplicationQueriesSchemes".into(), plist::Value::Array(vec![plist::Value::String("existing".into())]));
-        plist::Value::Dictionary(info).to_file_xml(app.join("Info.plist")).unwrap();
-        let tweak = tweak(&dir, "New.dylib", &[SUBSTRATE]);
-        inject_app(&app, &[tweak], &dir.join("scratch")).unwrap();
-        assert_eq!(std::fs::read(framework.join("CydiaSubstrate")).unwrap(), HOOKS_IOS);
-        let info: plist::Dictionary = plist::from_file(app.join("Info.plist")).unwrap();
-        let schemes = info["LSApplicationQueriesSchemes"].as_array().unwrap();
-        assert_eq!(schemes.iter().filter_map(plist::Value::as_string).collect::<Vec<_>>(), ["existing", "apparition"]);
-        add_hooks(&app, macho::PLATFORM_VISIONOS).unwrap();
-        assert_eq!(std::fs::read(framework.join("CydiaSubstrate")).unwrap(), HOOKS_VISIONOS);
-        let info: plist::Dictionary = plist::from_file(app.join("Info.plist")).unwrap();
-        assert_eq!(info["LSApplicationQueriesSchemes"].as_array().unwrap().len(), 2);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_dylib_is_loaded_with_our_hooks_for_substrate() {
+    fn a_dylib_is_loaded_with_ellekit_for_substrate() {
         let dir = temp("dylib");
         let app = app(&dir, &[]);
         let tweak = tweak(&dir, "NoAds.dylib", &["/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate", "/usr/lib/libobjc.A.dylib"]);
@@ -736,8 +696,8 @@ mod tests {
         assert!(main[0].rpaths().contains(&RPATH.to_string()));
         assert!(main[0].dylibs().iter().any(|(_, p)| p == "@rpath/NoAds.dylib"));
         assert_eq!(loads_of(&app.join("Frameworks/NoAds.dylib")), [SUBSTRATE, "/usr/lib/libobjc.A.dylib"]);
-        let hooks = std::fs::read(app.join("Frameworks/CydiaSubstrate.framework/CydiaSubstrate")).unwrap();
-        assert_eq!(hooks, HOOKS_IOS);
+        let ellekit = std::fs::read(app.join("Frameworks/CydiaSubstrate.framework/CydiaSubstrate")).unwrap();
+        assert_eq!(ellekit, ELLEKIT);
         assert!(app.join("Frameworks/CydiaSubstrate.framework/LICENSE").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -826,16 +786,11 @@ mod tests {
     }
 
     #[test]
-    fn the_bundled_hooks_match_their_hashes_and_platforms() {
+    fn the_bundled_ellekit_is_the_reproducible_build() {
         use sha2::Digest;
-        for (name, binary, platform) in [("ios.dylib", HOOKS_IOS, macho::PLATFORM_IOS), ("visionos.dylib", HOOKS_VISIONOS, macho::PLATFORM_VISIONOS)] {
-            let digest = sha2::Sha256::digest(binary);
-            let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-            assert!(HOOKS_SHA256.lines().any(|line| line == format!("{hex}  {name}")), "rebuild hooks with scripts/build-hooks.sh");
-            let slices = macho::read_all(binary).unwrap();
-            assert_eq!(slices[0].platform(), Some(platform));
-            assert!(slices[0].commands.iter().any(|c| c.cmd == 0x1b), "visionOS requires LC_UUID");
-        }
-        assert!(HOOKS_LICENSE.contains("MIT License"));
+        let digest = sha2::Sha256::digest(ELLEKIT);
+        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, ELLEKIT_SHA256, "assets/ellekit/libellekit.dylib changed: rebuild it with scripts/build-ellekit.sh");
+        assert!(ELLEKIT_LICENSE.contains("Redistribution and use in source and binary forms"));
     }
 }

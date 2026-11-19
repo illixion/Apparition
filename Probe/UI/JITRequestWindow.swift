@@ -13,7 +13,7 @@ extension ProbeModel {
                             waitSeconds: 0, reportsFailure: true)
         } else {
             await attachJIT(host: defaultTunnelHost, port: defaultTunnelPort,
-                            bundleId: request.bundleId, pid: request.pid, hooksOnly: request.hooksOnly)
+                            bundleId: request.bundleId, pid: request.pid)
         }
     }
 }

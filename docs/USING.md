@@ -185,7 +185,7 @@ What happens to it:
   command for each tweak (what nothing else in the tweak links), so the app starts even if one
   fails to load. Libraries a package brings for its tweak are copied, not loaded on their own.
 - Paths only a jailbreak has are pointed inside the app: Substrate, libhooker and blackjack become
-  `CydiaSubstrate.framework`, our MIT [ApparitionHooks](../hooks/README.md), added
+  `CydiaSubstrate.framework`, which is [ElleKit](https://github.com/tealbathingsuit/ellekit), added
   with its licence when a tweak needs it; a package's own libraries and frameworks are found where
   they were copied. A library nothing provides is named in a warning (add the package that has it,
   Orion or Cephei say, as a second tweak).
@@ -196,20 +196,9 @@ What happens to it:
 Not possible: an app still encrypted by the App Store (its code can't be changed, and it wouldn't
 run re-signed anyway); code built for another platform than the app's (an iOS tweak in a native
 visionOS app); and, rarely, an executable with no room left for another load command. Tweaks are
-built for the app's platform. ApparitionHooks is built for iOS 17 and visionOS 1 and later.
+iOS code, and ElleKit is built for iOS 15 and later.
 
 Tweaks that import function-hook or memory-patching APIs are flagged during install.
-Objective-C method hooks work without JIT. Without a debugger, C function hooks
-rebind the app's imports; direct calls within a library keep their original behavior.
-When full hooks need JIT, the app offers **Turn On**, **Not Now** and **Don't Ask Again**.
-Turn On asks Apparition to attach to the running app, so supported pending hooks can
-upgrade without a relaunch. Without Apparition installed on the device, the notice
-explains how to launch with JIT from a computer instead.
-
-On TXM devices on iOS 26 and later, the debugger writes both the original-call
-trampoline and the entry redirect; the app does not rewrite its executable pages.
-Original pointers already given to tweaks stay callable after the upgrade and after
-detach. Unsupported function entries and authenticated import slots are left alone.
-If JIT cannot start after a reboot, connect the device to Xcode and let it prepare
-its developer disk image again, then retry. Pairing failures have their own Setup
-instructions.
+Objective-C method hooks can work without JIT. On TXM devices running iOS 26 or
+later, attaching a debugger does not authorize ElleKit to rewrite executable
+code itself, so enabling JIT alone may not restore those tweak features.

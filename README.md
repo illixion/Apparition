@@ -65,7 +65,7 @@ comparison of anisette sources is in [docs/ANISETTE.md](docs/ANISETTE.md).
 - **Sign** with a free Apple ID (apps last 7 days, two certificates) or with a paid account's
   certificate and profile (a year, no sign-in). Apps that ask for the increased memory limit get it.
 - **Add tweaks** to an app as it's signed: a `.deb`, `.dylib`, `.framework` or `.bundle`, with
-  our MIT [ApparitionHooks](hooks/README.md) standing in for Substrate. On the device they
+  [ElleKit](https://github.com/tealbathingsuit/ellekit) standing in for Substrate. On the device they
   stay with the app through refreshes and updates ([how](docs/USING.md#tweaks)).
 - **Refresh** apps before they expire, on the device: from the app, a Shortcuts automation or in
   the background, through the companion or LocalDevVPN.
@@ -172,9 +172,9 @@ The desktop app and its packaging are in [docs/DESKTOP_APP.md](docs/DESKTOP_APP.
 Contributions are welcome ([CONTRIBUTING.md](CONTRIBUTING.md)); security problems go through [SECURITY.md](SECURITY.md).
 
 Licensed MIT. Signing (`core/signer`) builds on [apple-codesign](https://github.com/indygreg/apple-platform-rs)
-(MPL-2.0), used unmodified from crates.io. Tweak injection adds our MIT
-[ApparitionHooks](hooks/README.md) to apps whose tweaks need Substrate, libhooker or blackjack.
-The committed iOS and visionOS binaries are rebuilt and checked by `scripts/build-hooks.sh`.
+(MPL-2.0), used unmodified from crates.io. Tweak injection adds [ElleKit](https://github.com/tealbathingsuit/ellekit)
+(BSD-3-Clause, `core/assets/ellekit`, built from its v1.1.3 tag by `scripts/build-ellekit.sh`) to an app
+whose tweak needs Substrate, with its licence beside it.
 
 ## Support
 

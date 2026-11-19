@@ -102,9 +102,9 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       Put tweaks into an app, unsigned, for `install`/`sign` (which also take --tweak) or for
       installing it some other way. A tweak is a .deb package, a .dylib, a .framework or .bundle,
       or a .zip of those. Its code goes into the app's Frameworks folder and the app loads it;
-      Substrate, which most tweaks need, is ApparitionHooks (MIT), added as CydiaSubstrate.framework.
+      Substrate, which most tweaks need, is ElleKit (BSD-3-Clause), added as CydiaSubstrate.framework.
       Refused for an app still encrypted by the App Store, and for code built for another platform.
-  apparition jit <bundle ID> [--attach [<pid>]] [--hooks-only] [--device <name or UDID>] [--wait <seconds>]
+  apparition jit <bundle ID> [--attach [<pid>]] [--device <name or UDID>] [--wait <seconds>]
       Be the app's debugger from here, so it can use JIT: launch it (or with --attach, take
       its running process) and serve its JIT requests until it closes or says it's done. The
       app has to be development-signed (installed by Apparition is). --wait is how long to
@@ -1262,7 +1262,7 @@ fn unpack_package(options: &mut Options, scratch: &Path) -> Result<(), Error> {
 fn print_injection(injection: &apparition_core::tweaks::Injection) {
     println!("Injected: the app now loads {}.", injection.loads.join(", "));
     if injection.substrate {
-        println!("  Added ApparitionHooks (MIT) as CydiaSubstrate.framework, which the tweak links.");
+        println!("  Added ElleKit (BSD-3-Clause) as CydiaSubstrate.framework, which the tweak links.");
     }
     if injection.rewritten > 0 {
         println!("  Pointed {} library path{} inside the app.", injection.rewritten, if injection.rewritten == 1 { "" } else { "s" });
@@ -1512,13 +1512,11 @@ async fn watches(args: &[String]) -> Result<(), Error> {
 }
 
 async fn jit(args: &[String]) -> Result<(), Error> {
-    let usage = || fail("usage: apparition jit <bundle ID> [--attach [<pid>]] [--hooks-only] [--device <name or UDID>] [--wait <seconds>]");
+    let usage = || fail("usage: apparition jit <bundle ID> [--attach [<pid>]] [--device <name or UDID>] [--wait <seconds>]");
     let (mut bundle_id, mut attach, mut pid, mut device, mut wait) = (None, false, None, None, 0u32);
-    let mut hooks_only = false;
     let mut args = args.iter().peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--hooks-only" => hooks_only = true,
             "--attach" => {
                 attach = true;
                 if let Some(number) = args.peek().and_then(|a| a.parse::<u64>().ok()) {
@@ -1532,7 +1530,6 @@ async fn jit(args: &[String]) -> Result<(), Error> {
             _ => return Err(usage()),
         }
     }
-    if hooks_only && !attach { return Err(usage()); }
     let bundle_id = bundle_id.ok_or_else(usage)?;
     let device = find_device(device.as_deref())?;
     println!("Connecting to {}…", device.name);
@@ -1547,8 +1544,7 @@ async fn jit(args: &[String]) -> Result<(), Error> {
         };
         key = pid.to_string();
         println!("Attaching to {bundle_id} (pid {pid}). Leave this running while you use the app; Ctrl-C detaches.");
-        if hooks_only { api::JitTarget::Hooks { pid, bring_back: Some(&bundle_id) } }
-        else { api::JitTarget::Attach { pid, bring_back: Some(&bundle_id) } }
+        api::JitTarget::Attach { pid, bring_back: None }
     } else {
         println!("Launching {bundle_id}. Leave this running while you use the app; Ctrl-C detaches.");
         api::JitTarget::Launch(&bundle_id)

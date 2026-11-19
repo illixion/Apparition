@@ -214,7 +214,7 @@ struct InstallReviewView: View {
                 }
             } else if let check = tweakCheck {
                 if !check.loads.isEmpty {
-                    Note(text: "\(review.inventory.name) will load \(check.loads.map { $0.replacingOccurrences(of: "@rpath/", with: "") }.joined(separator: ", "))\(check.substrate ? ", with Substrate support" : "").", kind: .success)
+                    Note(text: "\(review.inventory.name) will load \(check.loads.map { $0.replacingOccurrences(of: "@rpath/", with: "") }.joined(separator: ", "))\(check.substrate ? ", with ElleKit for Substrate" : "").", kind: .success)
                 }
                 ForEach(check.warnings, id: \.self) { warning in
                     Note(text: warning, kind: .warning)
@@ -228,7 +228,7 @@ struct InstallReviewView: View {
         } header: {
             Text("Tweaks")
         } footer: {
-            Text("A .deb, a .dylib, or a .framework or .bundle (or a .zip of those), put into the app each time it's signed, so refreshes and updates keep it. Substrate support is included. A tweak must be built for the app's platform. Apps still encrypted by the App Store cannot be tweaked.")
+            Text("A .deb, a .dylib, or a .framework or .bundle (or a .zip of those), put into the app each time it's signed, so refreshes and updates keep it. Substrate, which most tweaks need, is ElleKit. Tweaks are iOS code: they work in iPhone and iPad apps, not in apps made for \(ThisDevice.os) when that's another platform, and not in apps still encrypted by the App Store.")
         }
         .fileImporter(isPresented: $pickingTweaks, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result, let folder = review.tweaksFolder else { return }

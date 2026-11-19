@@ -66,7 +66,7 @@ enum AppTweaks {
         }
         let check = Check(loads: reply["loads"] as? [String] ?? [], substrate: reply["substrate"] as? Bool == true,
                           warnings: reply["warnings"] as? [String] ?? [])
-        log.info("injected \(check.loads.count, privacy: .public) tweaks, hook library \(check.substrate, privacy: .public), \(check.warnings.count, privacy: .public) warnings")
+        log.info("injected \(check.loads.count, privacy: .public) tweaks, ElleKit \(check.substrate, privacy: .public), \(check.warnings.count, privacy: .public) warnings")
         return (check, out)
     }
 
