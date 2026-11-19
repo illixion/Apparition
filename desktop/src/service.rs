@@ -67,6 +67,18 @@ fn client_for(base: Option<&Url>) -> Result<Client, String> {
         .map_err(|_| "Couldn't create the service connection.".into())
 }
 
+/// An error and what it wraps, as one line.
+fn chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(inner) = source {
+        text.push_str(": ");
+        text.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    text
+}
+
 async fn response(request: reqwest::RequestBuilder) -> Result<Value, String> {
     response_unsent(request).await.map_err(|(message, _)| message)
 }
@@ -75,13 +87,15 @@ async fn response(request: reqwest::RequestBuilder) -> Result<Value, String> {
 /// connection couldn't be made), so that sending it again can't do its work twice.
 async fn response_unsent(request: reqwest::RequestBuilder) -> Result<Value, (String, bool)> {
     let response = request.send().await.map_err(|error| {
-        // The message below is all the person sees; say why in the log (reqwest's errors carry
-        // the URL, never the bearer token).
-        eprintln!(
-            "build service request failed (connect: {}, timeout: {}, request: {}): {:?}",
-            error.is_connect(), error.is_timeout(), error.is_request(), error
+        // The message below is all the person sees. The reason goes in the log, which is shared in
+        // traces: the kind and reqwest's own text without the URL (a remote service's address is
+        // the person's), never the token. The app has no stderr, so `tracing`, not `eprintln!`.
+        let (connect, timeout, request) = (error.is_connect(), error.is_timeout(), error.is_request());
+        tracing::warn!(
+            "build service request failed (connect: {connect}, timeout: {timeout}, request: {request}): {}",
+            chain(&error.without_url())
         );
-        ("Couldn't reach the build service. Check its address and connection.".to_string(), error.is_connect())
+        ("Couldn't reach the build service. Check its address and connection.".to_string(), connect)
     })?;
     response_body(response).await.map_err(|message| (message, false))
 }
@@ -187,7 +201,7 @@ impl BuildService {
         let Ok(fresh) = client_for(Some(&session.base)) else {
             return Err(message);
         };
-        eprintln!("build service: retrying on a new connection");
+        tracing::info!("build service: retrying on a new connection");
         let result = response(make(&fresh).bearer_auth(&session.token)).await;
         if result.is_ok() {
             // Keep the new connection, unless the session changed while this ran.

@@ -28,6 +28,7 @@ rootcause = "0.12.0"
 signed-update = { path = "../core/vendor/signed-update", features = ["ech"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json", "http2", "system-proxy"] }
 sha2 = "0.10"
 tempfile = "3"
