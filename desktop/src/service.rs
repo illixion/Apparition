@@ -40,8 +40,25 @@ fn address(raw: &str) -> Result<Url, String> {
     Ok(url)
 }
 
+/// Whether `url` names this Mac itself.
+fn is_loopback(url: &Url) -> bool {
+    matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+}
+
+#[cfg(test)]
 fn client() -> Result<Client, String> {
-    apparition_core::tls::client_builder()
+    client_for(None)
+}
+
+/// The client for a service at `base`. A service on this Mac is never reached through a proxy:
+/// reqwest reads the system proxy settings when it builds a client, and a proxy or VPN that is
+/// on at that moment would otherwise take the app's own requests to 127.0.0.1 and fail them.
+fn client_for(base: Option<&Url>) -> Result<Client, String> {
+    let mut builder = apparition_core::tls::client_builder();
+    if base.is_some_and(is_loopback) {
+        builder = builder.no_proxy();
+    }
+    builder
         .timeout(Duration::from_secs(95))
         .connect_timeout(Duration::from_secs(10))
         // Never forward a service password or bearer token through a redirect.
@@ -51,9 +68,25 @@ fn client() -> Result<Client, String> {
 }
 
 async fn response(request: reqwest::RequestBuilder) -> Result<Value, String> {
-    let response = request.send().await.map_err(|_| {
-        "Couldn't reach the build service. Check its address and connection.".to_string()
+    response_unsent(request).await.map_err(|(message, _)| message)
+}
+
+/// [`response`], also saying whether a failure came before the request left this app (the
+/// connection couldn't be made), so that sending it again can't do its work twice.
+async fn response_unsent(request: reqwest::RequestBuilder) -> Result<Value, (String, bool)> {
+    let response = request.send().await.map_err(|error| {
+        // The message below is all the person sees; say why in the log (reqwest's errors carry
+        // the URL, never the bearer token).
+        eprintln!(
+            "build service request failed (connect: {}, timeout: {}, request: {}): {:?}",
+            error.is_connect(), error.is_timeout(), error.is_request(), error
+        );
+        ("Couldn't reach the build service. Check its address and connection.".to_string(), error.is_connect())
     })?;
+    response_body(response).await.map_err(|message| (message, false))
+}
+
+async fn response_body(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
     // Limit diagnostic payloads and fail explicitly rather than truncating JSON.
     if response
@@ -94,7 +127,7 @@ impl BuildService {
     /// Talks to the service this app runs on this Mac (host.rs), with the host's token.
     pub async fn adopt_local(&self, port: u16, token: String) -> Result<Value, String> {
         let base = Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap();
-        let client = client()?;
+        let client = client_for(Some(&base))?;
         let reply = response(client.get(base.join("api/service").unwrap())).await?;
         let old = self.session.lock().unwrap().replace(Session { base: base.clone(), token, client, local: true });
         if let Some(old) = old.filter(|s| !s.local) {
@@ -119,11 +152,51 @@ impl BuildService {
     pub async fn host_call(&self, path: &str, body: Option<Value>) -> Result<Value, String> {
         let session = self.session.lock().unwrap().clone().filter(|s| s.local).ok_or("Start the build service on this Mac first.")?;
         let url = session.base.join(&format!("api/service/v1/{path}")).unwrap();
-        let request = match body {
-            Some(body) => session.client.post(url).json(&body),
-            None => session.client.get(url),
+        self.send(session, |client| {
+            let request = match &body {
+                Some(body) => client.post(url.clone()).json(body),
+                None => client.get(url.clone()),
+            };
+            request
+        })
+        .await
+    }
+
+    /// Sends a request on `session`. When the service is this app's own and the request can't
+    /// get through, the connection is rebuilt from scratch and the request tried once more: the
+    /// service is in this process, so a failure is the app's old connection going bad (a pooled
+    /// socket, proxy settings read at the time), not the service being away, and a person
+    /// shouldn't have to Stop and Start it to get a fresh one.
+    async fn send(
+        &self,
+        session: Session,
+        make: impl Fn(&Client) -> reqwest::RequestBuilder,
+    ) -> Result<Value, String> {
+        let request = make(&session.client).bearer_auth(&session.token);
+        // Only a request that can't do its work twice is sent again: a read, or one that never
+        // left this app.
+        let read = request.try_clone().and_then(|r| r.build().ok()).is_some_and(|r| r.method() == Method::GET);
+        let first = response_unsent(request).await;
+        let (message, unsent) = match first {
+            Ok(value) => return Ok(value),
+            Err(failure) => failure,
         };
-        response(request.bearer_auth(&session.token)).await
+        if !session.local || !(read || unsent) {
+            return Err(message);
+        }
+        let Ok(fresh) = client_for(Some(&session.base)) else {
+            return Err(message);
+        };
+        eprintln!("build service: retrying on a new connection");
+        let result = response(make(&fresh).bearer_auth(&session.token)).await;
+        if result.is_ok() {
+            // Keep the new connection, unless the session changed while this ran.
+            let mut current = self.session.lock().unwrap();
+            if let Some(now) = current.as_mut().filter(|s| s.local && s.base == session.base && s.token == session.token) {
+                now.client = fresh;
+            }
+        }
+        result
     }
 }
 
@@ -146,7 +219,7 @@ pub async fn service_connect(
     password: String,
 ) -> Result<Value, String> {
     let base = address(&url)?;
-    let client = client()?;
+    let client = client_for(Some(&base))?;
     let reply = response(
         client
             .post(base.join("api/service/connect").unwrap())
@@ -465,25 +538,59 @@ pub async fn service_request(
         .clone()
         .ok_or("Connect to a build service first.")?;
     let (method, path, body) = self::operation(&operation, &arguments)?;
-    let mut request = session
-        .client
-        .request(
-            method,
-            session
-                .base
-                .join(&format!("api/service/v1/{path}"))
-                .unwrap(),
-        )
-        .bearer_auth(&session.token);
-    if let Some(body) = body {
-        request = request.json(&body);
-    }
-    response(request).await
+    let url = session.base.join(&format!("api/service/v1/{path}")).unwrap();
+    state
+        .send(session, |client| {
+            let request = client.request(method.clone(), url.clone());
+            match &body {
+                Some(body) => request.json(body),
+                None => request,
+            }
+        })
+        .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A local session whose client can't reach the service (here: forced through a dead proxy, as
+    /// a system proxy read at build time would) recovers on a new connection by itself; a POST
+    /// that did go out is not sent twice, and a remote session is left alone.
+    #[test]
+    fn local_session_rebuilds_a_broken_connection() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        apparition_core::api::init();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut request = [0; 4096];
+            let count = socket.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..count]).starts_with("GET /api/service/v1/state"));
+            let body = b"{\"ok\":true}";
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+            socket.write_all(body).unwrap();
+        });
+        let dead_proxy = reqwest::Proxy::all("http://127.0.0.1:9").unwrap();
+        let broken = apparition_core::tls::client_builder().proxy(dead_proxy).build().unwrap();
+        let service = BuildService::default();
+        let session = Session { base: base.clone(), token: "t".into(), client: broken, local: true };
+        *service.session.lock().unwrap() = Some(session.clone());
+        let url = base.join("api/service/v1/state").unwrap();
+        let reply = runtime.block_on(service.send(session.clone(), |c| c.get(url.clone()))).unwrap();
+        assert_eq!(reply["ok"], true);
+        server.join().unwrap();
+        // The working connection replaced the broken one in the session.
+        assert!(service.session.lock().unwrap().is_some());
+        // A remote session gets no second try.
+        let remote = Session { local: false, ..session };
+        let error = runtime.block_on(service.send(remote, |c| c.get(url.clone()))).unwrap_err();
+        assert!(error.contains("Couldn't reach"));
+    }
+
     #[test]
     fn verified_download_preserves_destination_on_corruption() {
         use std::io::Read;
