@@ -794,12 +794,6 @@ pub async fn pick_file(app: AppHandle, kind: String) -> Result<Vec<String>, Fail
         let dialog = app.dialog().file();
         let paths = match kind.as_str() {
             "ipa" => dialog.set_title("Choose an app").add_filter("iOS and visionOS apps", &["ipa", "deb"]).blocking_pick_file().into_iter().collect(),
-            // A .framework or .bundle is a folder: zipped, it's a file the dialog can pick.
-            "tweak" => dialog
-                .set_title("Choose tweaks to put in the app")
-                .add_filter("Tweaks", &["deb", "dylib", "zip"])
-                .blocking_pick_files()
-                .unwrap_or_default(),
             "p12" => dialog
                 .set_title("Choose your certificate")
                 .add_filter("Certificate with its key", &["p12", "pfx"])
@@ -904,14 +898,11 @@ pub async fn prepare_latest(app: AppHandle, state: Shared<'_>, udid: String) -> 
 }
 
 /// Uses a local IPA instead of the official release. A `.deb` package (how Kodi and many other
-/// apps are published) is repacked as an IPA first, and `tweaks` (.deb, .dylib, .framework,
-/// .bundle or .zip files) are injected into it (`apparition_core::tweaks`). Returns `{name,
-/// size, converted, tweaks}`: the chosen file, the IPA's size, the app's name when the file was
-/// a package, and what injecting did (`{loads, added, substrate, rewritten, warnings}`, or null).
+/// apps are published) is repacked as an IPA first. Returns `{name, size, converted}`: the
+/// chosen file, the IPA's size, and the app's name when the file was a package.
 #[tauri::command]
-pub async fn prepare_local(state: Shared<'_>, path: String, tweaks: Option<Vec<String>>) -> Result<Value, Failure> {
+pub async fn prepare_local(state: Shared<'_>, path: String) -> Result<Value, Failure> {
     let state = state.inner().clone();
-    let tweaks: Vec<PathBuf> = tweaks.unwrap_or_default().into_iter().map(PathBuf::from).collect();
     blocking(move || {
         let path = PathBuf::from(path);
         if !path.is_file() {
@@ -931,22 +922,9 @@ pub async fn prepare_local(state: Shared<'_>, path: String, tweaks: Option<Vec<S
             }
             package::Format::Unknown => return Err(Failure::new(format!("{name} isn't an .ipa or a .deb package."))),
         };
-        let (ipa, injection) = if tweaks.is_empty() {
-            (ipa, None)
-        } else {
-            if apparition_core::install_plan::inspect(&ipa).is_ok_and(|app| app.id == APPARITION_ID) {
-                return Err("Apparition itself takes no tweaks: choose the app they're for.".into());
-            }
-            let scratch = std::env::temp_dir().join("apparition-tweaked");
-            let _ = std::fs::remove_dir_all(&scratch);
-            std::fs::create_dir_all(&scratch)?;
-            let out = scratch.join(ipa.file_name().unwrap_or_default());
-            let injection = apparition_core::tweaks::inject_ipa(&ipa, &tweaks, &out, &scratch.join("work"))?;
-            (out, Some(injection))
-        };
         let size = std::fs::metadata(&ipa)?.len();
         *state.app.lock().unwrap() = Some(Prepared { path: ipa });
-        Ok(json!({ "name": name, "size": size, "converted": converted, "tweaks": injection }))
+        Ok(json!({ "name": name, "size": size, "converted": converted }))
     })
     .await
 }

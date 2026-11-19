@@ -24,7 +24,7 @@ fn owner(name: &str) -> Option<u32> {
         None => (rest, None),
     };
     let shaped = match kind {
-        "sign" | "installer" | "tweak" => tag.is_none(),
+        "sign" | "installer" => tag.is_none(),
         "build" => tag.is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_hexdigit())),
         _ => false,
     };

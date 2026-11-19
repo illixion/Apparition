@@ -21,7 +21,6 @@ companion (`apparition relay`) and pairs with a Mac for anisette (`apparition an
     apparition install Other.ipa --apple-id you@example.com --anisette https://anisette.example
     apparition install kodi.deb --apple-id you@example.com   # a .deb package: the app inside is installed
     apparition sign UTM.ipa --apple-id you@example.com   # sign only, for a paired device; nothing installed
-    apparition install YouTube.ipa --tweak YTLite.deb --apple-id you@example.com   # inject a tweak, then sign and install
     apparition relay      # the companion, with this Mac's anisette on a Mac that gives it; until Ctrl-C
 
 ## Getting `apparition` on your PATH
@@ -55,7 +54,6 @@ desktop's `Apparition.exe` on a case-insensitive filesystem.
 | `pairing hand-off` | Gives Apparition, already installed on an iPhone, iPad or Apple TV, its pairing with that device, without reinstalling it. |
 | `install [<app.ipa or .deb>]` | Signs and installs. With no file, installs the latest Apparition, checked against the release signature. Signs with `--apple-id <email>` (anisette from this Mac or the paired Mac, or `--anisette <url>` for a server you run) or `--p12 <file> --profile <file>`. `--no-watch` leaves the app's watch app out. |
 | `sign <app.ipa or .deb>` | Signs for a paired device and installs nothing; says which capabilities the app got. |
-| `tweak <app.ipa or .deb> <tweak>... [--out <file>]` | Puts tweaks (a `.deb`, `.dylib`, `.framework`, `.bundle`, or a `.zip` of those) into an app, unsigned; `install` and `sign` take `--tweak <file>` to do the same before signing. See [Tweaks](USING.md#tweaks). |
 | `watches [--device <name>] [--install <signed watch .app>]` | Lists the Apple Watches paired with an iPhone, and can put an already signed watch app on them through the phone. |
 | `jit <bundle ID>` | Is the app's debugger from this computer so it can use JIT: launches it, or with `--attach` takes the running process, and serves its JIT requests. |
 | `certificates`, `app-ids` | Show what uses up a free account's two certificates and ten App IDs, and free one you choose after you confirm. |

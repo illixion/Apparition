@@ -29,11 +29,9 @@ const state = {
   /** @type {string[]} */ profiles: [],
   what: "latest",
   /** @type {string|null} */ localPath: null,
-  /** Tweaks put into the app file before it's signed (paths). @type {string[]} */ tweaks: [],
   /** What the backend has prepared to install: "latest" or a local path. @type {string|null} */ prepared: null,
   /** @type {any} */ release: null,
   /** @type {any} */ result: null,
-  /** What injecting the tweaks did (`prepare_local`'s `tweaks`), for the done screen. @type {any} */ tweakResult: null,
   handOff: true,
   /** @type {any} */ settings: {},
   /** This Mac gives its own anisette (never off a Mac). */ builtinAnisette: false,
@@ -1146,38 +1144,11 @@ function install() {
       ? `Signs this app for ${state.device?.name ?? "the device"} and installs it.`
       : `The latest official release, checked against Apparition's release signature before it's used, signed for ${state.device?.name ?? "the device"}.`;
     $(panel, "local-name").textContent = state.localPath ? basename(state.localPath) : "An .ipa, or a .deb such as Kodi's, on this computer.";
-    drawTweaks();
     if (state.what === "local" || legacy) advanced.open = true;
     // Before iOS 17.4 only an app file can be installed (Apparition needs 17.4).
     start.disabled = legacy && state.what !== "local";
     showUntested();
   };
-  // Tweaks go into an app file, never into Apparition itself.
-  const tweakList = $(panel, "tweak-list");
-  const drawTweaks = () => {
-    $(panel, "tweaks").hidden = !(state.what === "local" && state.localPath);
-    tweakList.replaceChildren();
-    for (const path of state.tweaks) {
-      const li = document.createElement("li");
-      const name = document.createElement("span");
-      name.textContent = basename(path);
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "link";
-      remove.textContent = "Remove";
-      remove.addEventListener("click", () => {
-        state.tweaks = state.tweaks.filter((t) => t !== path);
-        drawTweaks();
-      });
-      li.append(name, remove);
-      tweakList.append(li);
-    }
-  };
-  $(panel, "add-tweaks").addEventListener("click", async () => {
-    const paths = await invoke("pick_file", { kind: "tweak" });
-    state.tweaks = [...state.tweaks, ...paths.filter((/** @type {string} */ p) => !state.tweaks.includes(p))];
-    drawTweaks();
-  });
   what.forEach((w) =>
     w.addEventListener("change", async () => {
       if (w.value === "local") {
@@ -1219,8 +1190,7 @@ function install() {
     slots.hidden = true;
     stages.hidden = false;
     setStatus(status, "");
-    // What's prepared: the release, or an app file with the tweaks put into it.
-    const key = state.what === "local" ? JSON.stringify([state.localPath, ...state.tweaks]) : "latest";
+    const key = state.what === "local" ? state.localPath : "latest";
     STAGES.forEach((s) => mark(s, ""));
     const meter = stages.querySelector(".meter");
     const fill = stages.querySelector(".meter-fill");
@@ -1261,12 +1231,9 @@ function install() {
           meter.hidden = true;
           mark("download", "done", `${megabytes(state.release?.size ?? 0)}, hash checked`);
         } else {
-          const local = await invoke("prepare_local", { path: state.localPath, tweaks: state.tweaks });
+          const local = await invoke("prepare_local", { path: key });
           mark("release", "skipped", "Your own file");
-          const file = local.converted ? `${local.converted} from ${local.name}, ${megabytes(local.size)}` : `${local.name}, ${megabytes(local.size)}`;
-          state.tweakResult = local.tweaks ?? null;
-          const injected = local.tweaks ? `, with ${local.tweaks.loads.length === 1 ? "a tweak" : `${local.tweaks.loads.length} tweaks`}` : "";
-          mark("download", "skipped", file + injected);
+          mark("download", "skipped", local.converted ? `${local.converted} from ${local.name}, ${megabytes(local.size)}` : `${local.name}, ${megabytes(local.size)}`);
         }
         state.prepared = key;
       } else if (key === "latest") {
@@ -1274,7 +1241,7 @@ function install() {
         mark("download", "done", "Already downloaded");
       } else {
         mark("release", "skipped", "Your own file");
-        mark("download", "skipped", basename(state.localPath ?? ""));
+        mark("download", "skipped", basename(key ?? ""));
       }
 
       const result = await invoke("install", {
@@ -1285,7 +1252,7 @@ function install() {
       mark("watch", !watches.length ? "skipped" : watches.every((w) => !w.error) ? "done" : "failed",
         watches.map((w) => (w.error ? `${w.name}: ${w.error}` : w.name)).join(", "));
       mark("handoff", result.handoff ? "done" : result.handoffError ? "failed" : "skipped");
-      state.result = { ...result, label: key === "latest" ? "Apparition" : basename(state.localPath ?? ""), tweaks: key === "latest" ? null : state.tweakResult };
+      state.result = { ...result, label: key === "latest" ? "Apparition" : basename(key ?? "") };
       cleanup();
       go("done");
       return;
@@ -1511,11 +1478,6 @@ function done() {
   if (result.migrationPending) notes.push("The new app is installed, but its data transfer is incomplete. The old copy was kept. Install again with Keep existing app data to retry.");
   if (result.handoffError) notes.push(`Couldn't share the signing with Apparition (${result.handoffError}). Sign in there yourself instead.`);
   if (result.strippedExtensions?.length) notes.push(`Left out extensions: ${result.strippedExtensions.join(", ")}.`);
-  if (result.tweaks) {
-    const loads = result.tweaks.loads.map((/** @type {string} */ l) => l.replace(/^@rpath\//, "")).join(", ");
-    notes.push(`Tweaks in it: ${loads}${result.tweaks.substrate ? ", with ElleKit for Substrate" : ""}.`);
-    for (const warning of result.tweaks.warnings ?? []) notes.push(warning.endsWith(".") ? warning : `${warning}.`);
-  }
   for (const w of result.watches ?? []) notes.push(w.error ? `The watch app didn't install on ${w.name}: ${w.error}` : `The watch app is on ${w.name}.`);
   extra.hidden = !notes.length;
   extra.textContent = notes.join(" ");
@@ -2385,18 +2347,16 @@ function preview(/** @type {string} */ step) {
   state.device = step === "pair" || step === "pin" || step === "usbpair" ? null : { udid: "PREVIEW", name: "Vision Pro", address: "192.0.2.10", osVersion: "27.2", platform: "visionOS" };
   // `install-untested`: the install step for a headset below 26, where Apparition is best effort.
   if (step === "install-untested") Object.assign(state.device, { osVersion: "2.4", untested: true });
-  // `install-tweaks`: an app file with two tweaks to put into it.
-  if (step === "install-tweaks") Object.assign(state, { what: "local", localPath: "/Users/you/Downloads/YouTube.ipa", tweaks: ["/Users/you/Downloads/YTLite.deb", "/Users/you/Downloads/FLEX.zip"] });
   state.pairSkipped = step !== "pair";
   if (step === "usbpair") state.selected = { kind: "usb", name: "iPhone or iPad", udid: "00008120-000A1B2C3D4E5F60", usb: true, key: "u" };
   if (step === "pair" || step === "pin") state.selected = { kind: "pair", name: "Vision Pro", address: "192.0.2.10", port: 51967, key: "x" };
-  if (["signed", "install", "install-untested", "install-tweaks", "progress", "slots", "done"].includes(step)) {
+  if (["signed", "install", "install-untested", "progress", "slots", "done"].includes(step)) {
     state.signing = { mode: "appleId", email: "you@example.com", teamId: "ABCDE12345", team: { name: "Your Name" } };
   }
   if (step === "done") {
     state.result = { bundleId: "com.illixion.apparition", deviceName: "Vision Pro", seconds: 18.4, queued: false, handoff: "appleId", appleId: "you@example.com", label: "Apparition" };
   }
-  state.step = { signed: "signing", pin: "pair", usbpair: "pair", twofactor: "signing", progress: "install", slots: "install", "install-untested": "install", "install-tweaks": "install" }[step] ?? step;
+  state.step = { signed: "signing", pin: "pair", usbpair: "pair", twofactor: "signing", progress: "install", slots: "install", "install-untested": "install" }[step] ?? step;
   render();
   if (step === "progress" || step === "slots") {
     $(panel, "stages").hidden = false;
