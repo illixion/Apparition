@@ -413,6 +413,10 @@ elif has macos; then
     echo "       Install that Xcode beside this one as /Applications/Xcode-<version>.app, or select it with DEVELOPER_DIR." >&2
     exit 1
   }
+  # With DEVELOPER_DIR alone, clang can still use the separate Command Line Tools SDK.
+  SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+  export SDKROOT
+  echo "==> macOS SDK $(xcrun --sdk macosx --show-sdk-version) ($SDKROOT), host $(sw_vers -productVersion) ($(sw_vers -buildVersion))"
   tauri_cli="$(command -v cargo-tauri || true)"
   tauri_want="tauri-cli $(sed -n 's/^version=//p' "$ROOT/scripts/install-tauri-cli.sh")"
   [[ -n "$tauri_cli" && "$("$tauri_cli" tauri --version)" == "$tauri_want" ]] \
@@ -431,7 +435,9 @@ elif has macos; then
   cargo_home="$CARGO_HOME"
   rustup_home="$RUSTUP_HOME"
   # `--cfg aes_armv8` is what .cargo/config.toml sets (see there): this RUSTFLAGS would replace it.
-  export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup --cfg aes_armv8"
+  # Assign UUIDs to the final Rust executables before signing them. Apple's linker can
+  # emit different UUIDs on two Macs even when the executable bytes otherwise match.
+  export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup --cfg aes_armv8 -C link-arg=-Wl,-no_adhoc_codesign"
   export CFLAGS="-ffile-prefix-map=$cargo_home=/cargo -ffile-prefix-map=$rustup_home=/rustup"
   export MACOSX_DEPLOYMENT_TARGET=11.0
   # Tools that stamp a build date take this one instead (the vendored OpenSSL put "built on: <now>"
@@ -440,15 +446,20 @@ elif has macos; then
   export SOURCE_DATE_EPOCH=1767225600 # 2026-01-01
 
   echo "==> installer and desktop app for macOS (arm64 + x86_64; Rust $RUST_TOOLCHAIN, Xcode $XCODE_BUILD)"
+  helper=apparition-anisette-helper
   for target in aarch64-apple-darwin x86_64-apple-darwin; do
     cargo build -q --release --locked --target "$target" "${both[@]}"
+    mkdir -p "$WORK/$target"
+    cp "target/$target/release/$bin" "target/$target/release/$helper" \
+      "target/$target/release/apparition-app" "$WORK/$target/"
+    python3 "$ROOT/scripts/release_macho.py" "$WORK/$target/$bin" "$WORK/$target/$helper" "$WORK/$target/apparition-app"
   done
   mkdir -p "$WORK/macos"
   xcrun lipo -create -output "$WORK/macos/$bin" \
-    target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
-  helper=apparition-anisette-helper
+    "$WORK/aarch64-apple-darwin/$bin" "$WORK/x86_64-apple-darwin/$bin"
+  codesign -s - --identifier com.illixion.apparition.cli "$WORK/macos/$bin"
   xcrun lipo -create -output "$WORK/macos/$helper" \
-    target/aarch64-apple-darwin/release/$helper target/x86_64-apple-darwin/release/$helper
+    "$WORK/aarch64-apple-darwin/$helper" "$WORK/x86_64-apple-darwin/$helper"
   codesign -f -s - --entitlements "$ROOT/installer/anisette-helper.entitlements" "$WORK/macos/$helper"
   echo "==> desktop app for macOS (universal)"
   app_name="Apparition"
@@ -457,7 +468,7 @@ elif has macos; then
   mkdir -p target/universal-apple-darwin/release
   # tauri bundle looks for the binary under tauri.conf's mainBinaryName, not the cargo name
   xcrun lipo -create -output "target/universal-apple-darwin/release/$app_name" \
-    target/aarch64-apple-darwin/release/apparition-app target/x86_64-apple-darwin/release/apparition-app
+    "$WORK/aarch64-apple-darwin/apparition-app" "$WORK/x86_64-apple-darwin/apparition-app"
   rm -rf target/universal-apple-darwin/release/bundle
   # The CLI checked above, called the way cargo calls it.
   (cd desktop && "$tauri_cli" tauri bundle --target universal-apple-darwin --bundles app)
@@ -469,7 +480,6 @@ elif has macos; then
   # (`apparition link` makes a symlink to it on PATH). Not named `apparition`: the app's own
   # executable is `Apparition`, which a case-insensitive volume would merge with it.
   cp "$WORK/macos/$bin" "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
-  codesign -f -s - "$WORK/macos/$app_name.app/Contents/MacOS/$bin-cli"
   # The anisette VM (core/src/vm.rs): its runner and the two programs it puts in the guest, arm64 only, since
   # macOS runs in a VM only on Apple silicon. The runner keeps its virtualization entitlement.
   bash "$ROOT/selfhost/macos-vm/build.sh"
@@ -482,8 +492,9 @@ elif has macos; then
   # checks this release's signature itself before it installs them. arm64 only, like the VM; the helper gets its
   # entitlements in its own signature, as in the app.
   mkdir -p "$WORK/vm-guest"
-  cp "target/aarch64-apple-darwin/release/$bin" "$WORK/vm-guest/apparition"
-  cp "target/aarch64-apple-darwin/release/$helper" "$WORK/vm-guest/$helper"
+  cp "$WORK/aarch64-apple-darwin/$bin" "$WORK/vm-guest/apparition"
+  codesign -s - --identifier com.illixion.apparition.cli "$WORK/vm-guest/apparition"
+  cp "$WORK/aarch64-apple-darwin/$helper" "$WORK/vm-guest/$helper"
   codesign -f -s - --entitlements "$ROOT/installer/anisette-helper.entitlements" "$WORK/vm-guest/$helper"
   cp "$ROOT/build/macos-vm/guest-status" "$ROOT/build/macos-vm/guest-bridge" "$ROOT/selfhost/macos-vm/report-status.sh" "$WORK/vm-guest/"
   zip_tree "$WORK/vm-guest" "$OUT/Apparition-VMGuest-$VERSION-macos-arm64.zip" apparition "$helper" guest-status guest-bridge report-status.sh

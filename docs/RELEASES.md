@@ -12,6 +12,11 @@ commit, none yanked, no RustSec advisory beyond `scripts/audit-allow`), and rebu
 files from nothing with the toolchain in `scripts/release-toolchain`, which must give CI's
 bytes. The Linux and Windows files are attested and listed in the signed SHA256SUMS but not rebuilt by that audit,
 and the Windows setup and app carry no Authenticode signature, so SmartScreen warns on first run.
+For macOS, packaging selects the pinned Xcode's SDK and derives each Rust executable slice's build
+UUID from its unsigned bytes before signing. The audit still compares the signed contents, including
+the UUIDs, signatures and entitlements. A failed audit prints its evidence folder under
+`build/release-audits`, with attestation results, the CI archives used in the comparison, any rebuilt
+archives, and the toolchain, build and comparison logs. Use `--keep` to retain a successful run too.
 A part whose runner fails or never comes holds up only itself: the others finish, and
 "Re-run failed jobs" builds just that one, while every build job also caches its finished files
 for that commit and version, so a new run on the same ref takes them instead of building again.

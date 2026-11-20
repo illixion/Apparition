@@ -85,6 +85,7 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/test-release-plan.py
+          python3 scripts/test-release-macho.py
           python3 scripts/release-plan.py "$VERSION" "$PARTS" | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
 
   apple:
@@ -182,9 +183,9 @@ jobs:
             Apparition/core
           # "-repro": the macOS files' dependencies built with SOURCE_DATE_EPOCH and the path
           # remapping (package-release.sh), never restored from builds made without them.
-          # macos-repro2: built through the fixed cargo and rustup symlinks; the older cache holds
-          # dependencies compiled with the runner's own home path in OpenSSL's recorded flags.
-          key: ${{ matrix.part }}-repro${{ matrix.part == 'macos' && '2' || '' }}
+          # macos-repro3: pin the Xcode SDK for native dependencies too, and link Rust without
+          # an initial ad hoc signature so the packaging step can assign reproducible UUIDs.
+          key: ${{ matrix.part }}-repro${{ matrix.part == 'macos' && '3' || '' }}
           cache-on-failure: true
           cache-bin: false
           save-if: ${{ env.SAVE_CACHE == 'true' }}

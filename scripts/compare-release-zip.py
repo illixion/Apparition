@@ -6,9 +6,8 @@
 They match when their bytes do, or else when they hold the same entries: the same names, the same
 kinds (file, folder, symbolic link), the same Unix modes and the same contents. Only the zip's own
 framing (dates, compression, entry order) may differ. Exits 0 when they match, 1 when they don't,
-listing every entry that differs; for a Mach-O file it also says whether the difference is only in
-its code signature, which points at another codesign (another macOS) rather than other code, and
-still fails: a signature carries the entitlements.
+listing every entry that differs. For a Mach-O file it also checks whether the differences are
+confined to the signature and build UUID. These diagnostics do not change the comparison result.
 """
 
 import hashlib
@@ -18,6 +17,8 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+
+from release_macho import uuid_offsets
 
 MACHO = {b"\xca\xfe\xba\xbe", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf"}
 
@@ -49,12 +50,21 @@ def entries(path):
     return out
 
 
-def unsigned_digest(data, work):
-    """The SHA-256 of a Mach-O file with its code signature removed, or None."""
+def macho_digests(data, work):
+    """Hash a Mach-O without its signature, then without its UUIDs as well."""
     path = Path(work) / "macho"
     path.write_bytes(data)
     result = subprocess.run(["codesign", "--remove-signature", str(path)], capture_output=True)
-    return sha256(path) if result.returncode == 0 else None
+    if result.returncode != 0:
+        return None, None
+    unsigned = bytearray(path.read_bytes())
+    digest = hashlib.sha256(unsigned).digest()
+    try:
+        for offset in uuid_offsets(unsigned):
+            unsigned[offset:offset + 16] = bytes(16)
+    except ValueError:
+        return digest, None
+    return digest, hashlib.sha256(unsigned).digest()
 
 
 def main():
@@ -81,11 +91,14 @@ def main():
                 da = za.read(next(i for i in za.infolist() if i.filename.rstrip("/") == name))
                 db = zb.read(next(i for i in zb.infolist() if i.filename.rstrip("/") == name))
                 if da[:4] in MACHO and db[:4] in MACHO:
-                    ua, ub = unsigned_digest(da, work), unsigned_digest(db, work)
+                    ua, uuid_free_a = macho_digests(da, work)
+                    ub, uuid_free_b = macho_digests(db, work)
                     if ua and ua == ub:
-                        note = " (only its code signature differs: was it signed on another macOS?)"
+                        note = " (only the code signature differs)"
+                    elif uuid_free_a and uuid_free_a == uuid_free_b:
+                        note = " (difference confined to the Mach-O UUID and signature)"
                     else:
-                        note = " (its code differs)"
+                        note = " (Mach-O contents differ)"
             problems.append(f"{name}: different contents{note}")
     if problems:
         print(f"    {ci.name}: DIFFERS from the rebuild")
