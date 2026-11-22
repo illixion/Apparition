@@ -36,7 +36,7 @@ apparition build: build, sign, keep and install the app of the repo you're in (b
 
   apparition build [--debug] [--no-deploy] [--unsigned] [--sign-only] [--ipa FILE] [--profile FILE]
                    [--platform P] [--device NAME] [--via auto|apparition|devicectl] [--set KEY=VALUE]...
-                   [--run] [--log] [--log-all]
+                   [--run] [--rebuild] [--log] [--log-all]
                    [--mcp | --no-mcp] [--jit] [--inject] [--inject-backend dynamic|apparition]
   apparition build --sign-dylib FILE...     sign Mach-O files with the conf's certificate (a live patch)
   apparition build --plan [--platform P]    print what the conf resolves to, as JSON (for a Store)
@@ -47,6 +47,9 @@ Apparition's own pairing with the device (--via: auto falls back to Xcode's tunn
 reach it; devicectl forces the tunnel) and, with --run, launches it the same way: --log streams
 its console to build/device-console.log, --mcp makes the launch a debug session for the `apps`
 tools (MCP_DEFAULT=on makes every --run one), --jit serves the app's JIT requests.
+
+A --run of the same sources, flags and device as the last install (build/last-deploy.json) that is still
+on the device skips the build, signing and install and only launches it; --rebuild does them anyway.
 ";
 
 pub(crate) fn home() -> PathBuf {
@@ -225,6 +228,8 @@ struct Options {
     no_deploy: bool,
     unsigned: bool,
     run: bool,
+    /// `--rebuild`: build, sign and install even when the build kept for this checkout is already on the device.
+    rebuild: bool,
     log: bool,
     log_all: bool,
     jit: bool,
@@ -256,6 +261,7 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--no-deploy" => o.no_deploy = true,
             "--unsigned" => { o.unsigned = true; o.no_deploy = true; }
             "--run" => o.run = true,
+            "--rebuild" => o.rebuild = true,
             "--log" => { o.run = true; o.log = true; }
             "--log-all" => { o.run = true; o.log = true; o.log_all = true; }
             "--jit" => { o.run = true; o.jit = true; }
@@ -554,6 +560,243 @@ fn sign_dylibs(conf: &Conf, profile: Option<&Path>, files: &[PathBuf]) -> Result
     Ok(())
 }
 
+/// The `xcodebuild` arguments of a build: what is compiled and how, also what a cached build is keyed on.
+fn xcodebuild_args(conf: &Conf, o: &Options, platform: &str, derived_data: &Path, backend: &str) -> Result<Vec<String>, String> {
+    let project = conf.get("PROJECT_PATH").unwrap_or_default().to_string();
+    let flag = if project.ends_with(".xcworkspace") { "-workspace" } else if project.ends_with(".xcodeproj") { "-project" } else {
+        return Err("PROJECT_PATH must end in .xcodeproj or .xcworkspace".into());
+    };
+    let mut xcb: Vec<String> = vec![
+        flag.into(), project, "-scheme".into(), conf.get("SCHEME_NAME").unwrap_or_default().into(),
+        "-configuration".into(), o.config.into(), "-destination".into(), format!("generic/platform={platform}"),
+        "-derivedDataPath".into(), derived_data.display().to_string(),
+        "CODE_SIGN_IDENTITY=-".into(), "CODE_SIGNING_REQUIRED=NO".into(), "CODE_SIGNING_ALLOWED=NO".into(),
+        "DEVELOPMENT_TEAM=".into(), "PROVISIONING_PROFILE_SPECIFIER=".into(),
+        // Compiles in DebugTrace's development-only code (the in-process system-log hook,
+        // which names a private symbol) for Release builds too: everything built here is a
+        // development build. App Store archives aren't built here and leave it out.
+        "GCC_PREPROCESSOR_DEFINITIONS=$(inherited) DEBUGTRACE_DEVELOPMENT_BUILD=1".into(),
+    ];
+    xcb.extend(conf.extra_build_settings.iter().cloned());
+    xcb.extend(o.settings.iter().cloned());
+    if o.inject {
+        if conf.get("DEBUGTRACE_INJECT") == Some("off") {
+            return Err("this repo's build-signing.conf sets DEBUGTRACE_INJECT=off, so --inject is refused".into());
+        }
+        let flags: &[&str] = if backend == "apparition" {
+            &["ENABLE_TESTABILITY=YES", "DEAD_CODE_STRIPPING=NO", "OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-private-imports -save-optimization-record"]
+        } else if conf.get("INJECT_SCOPE") == Some("app") {
+            &["DEAD_CODE_STRIPPING=NO", "DTINJECT_TESTABILITY_app=YES", "ENABLE_TESTABILITY=$(DTINJECT_TESTABILITY_$(WRAPPER_EXTENSION))",
+              "DTINJECT_FLAGS_app=-Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports",
+              "OTHER_SWIFT_FLAGS=$(inherited) $(DTINJECT_FLAGS_$(WRAPPER_EXTENSION))"]
+        } else {
+            &["ENABLE_TESTABILITY=YES", "DEAD_CODE_STRIPPING=NO", "OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports"]
+        };
+        xcb.extend(flags.iter().map(|f| f.to_string()));
+    }
+    Ok(xcb)
+}
+
+/// What launching an installed app needs, from a build just made or from the one kept for the checkout.
+struct Launch<'a> {
+    o: &'a Options,
+    device: &'a api::PairedDevice,
+    bundle_id: &'a str,
+    app_name: Option<String>,
+    log_app: bool,
+    mcp_session: bool,
+    has_debugtrace: bool,
+    has_server: bool,
+    command_token: Option<String>,
+    key_id: Option<&'a str>,
+    inject_dir: Option<&'a Path>,
+    platform: &'a str,
+    root: &'a Path,
+    build_dir: &'a Path,
+    state: &'a Path,
+}
+
+/// Step 10: launch the installed app (a plain run, with its console, as a debug session or with JIT).
+async fn launch_app(l: &Launch<'_>) -> Result<Launched, String> {
+    let Launch { o, device, bundle_id, log_app, has_debugtrace, has_server, build_dir, root, platform, state, inject_dir, .. } = *l;
+    let mut mcp_session = l.mcp_session;
+    let app_log = build_dir.join("device-console.log");
+    let pidfile = build_dir.join("device-console.pid");
+    let mut launched = Launched::None;
+    launch::stop_previous(&pidfile);
+    // DEVICECTL_CHILD_<KEY> from the caller reaches the app too, as with build-and-sign.
+    let mut environment: Vec<(String, String)> = std::env::vars()
+        .filter_map(|(k, v)| k.strip_prefix("DEVICECTL_CHILD_").filter(|k| !k.is_empty()).map(|k| (k.to_string(), v)))
+        .filter(|(k, _)| !["DEBUGTRACE_TOKEN", "DEBUGTRACE_STDERR", "OS_ACTIVITY_DT_MODE", "DEBUGTRACE_SERVER"].contains(&k.as_str()))
+        .collect();
+    if log_app {
+        println!("==> Launching {bundle_id} (console → {})...", app_log.display());
+        fs::write(&app_log, "").map_err(|e| e.to_string())?;
+        let _ = fs::remove_file(build_dir.join("debug-server.txt"));
+        let mut token = None;
+        if mcp_session {
+            if !has_server {
+                if o.mcp == Some(true) { eprintln!("WARNING: --mcp: {bundle_id} doesn't link DebugTraceServer; launching with --log only") }
+                mcp_session = false;
+            } else {
+                token = Some(l.command_token.clone()
+                    .ok_or_else(|| format!("--mcp: {bundle_id} has no signed DebugTrace CommandToken"))?);
+            }
+        }
+        // A DebugTrace app mirrors only its own lines to stderr, compact and redacted;
+        // anything else gets the unified log mirrored (OS_ACTIVITY_DT_MODE).
+        if has_debugtrace && !o.log_all { environment.push(("DEBUGTRACE_STDERR".into(), "1".into())) }
+        else { environment.push(("OS_ACTIVITY_DT_MODE".into(), "YES".into())) }
+        if mcp_session { environment.push(("DEBUGTRACE_SERVER".into(), "1".into())) }
+        let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let launch = launch::Detached {
+            bundle_id, device: &device.name,
+            console: true, jit: o.jit, environment: &pairs,
+            log: &app_log, pidfile: &pidfile, wait: Duration::from_secs(20),
+        };
+        let pid = match launch::detached(launch) {
+            Ok(pid) => pid,
+            Err(first) => {
+                println!("    Apparition's launch route couldn't reach {}: {}", device.name, first.lines().next().unwrap_or("").trim());
+                println!("    Opening Apparition through Xcode's tunnel (devicectl), then retrying...");
+                launch::open_apparition_with_devicectl(&device.udid)
+                    .and_then(|()| launch::detached(launch))
+                    .map_err(|second| format!("{first}\n{second}"))?
+            }
+        };
+        let (mut debug_api, mut note) = (None, None);
+        if let (true, Some(token)) = (mcp_session, token) {
+            let address = device.name.to_lowercase();
+            match launch::debug_server_port(&app_log, Duration::from_secs(20)) {
+                None => note = Some(format!("not up yet (no 'listening on port' line in 20 s); device address: {address}")),
+                Some(port) if !launch::answers(&address, port) => note = Some(format!("listening on port {port}, but not reachable at: {address}")),
+                Some(port) => {
+                    let url = launch::url(&address, port);
+                    let app_name = l.app_name.clone()
+                        .unwrap_or_else(|| bundle_id.rsplit('.').next().unwrap_or(bundle_id).to_string());
+                    launch::write_session(launch::Session {
+                        dir: &state.join("debugtrace/sessions"), bundle_id, app_name: &app_name, device: &device.name,
+                        device_id: &device.udid, url: &url, pid, console_log: &app_log, project_root: root, token: &token,
+                        key_id: l.key_id, inject_dir,
+                        platform, jit: o.jit,
+                    })?;
+                    fs::write(build_dir.join("debug-server.txt"), format!(
+                        "# Debug server for {bundle_id} (this launch only)\nurl: {url}\nagents: use the `apps` MCP tools (apps, help, call, trace); the session is registered\nhelp: curl -s {url}/   (the rest needs the session's bearer token)\n"
+                    )).map_err(|e| e.to_string())?;
+                    debug_api = Some(url);
+                }
+            }
+        }
+        launched = Launched::Log { debug_api, note };
+    } else if o.jit {
+        println!("==> Launching {bundle_id} with JIT (session → {})...", app_log.display());
+        fs::write(&app_log, "").map_err(|e| e.to_string())?;
+        let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        launch::detached(launch::Detached {
+            bundle_id, device: &device.name, console: false, jit: true, environment: &pairs,
+            log: &app_log, pidfile: &pidfile, wait: Duration::from_secs(20),
+        })?;
+        launched = Launched::Jit;
+    } else {
+        println!("==> Launching {bundle_id} (through Apparition's tunnel)...");
+        let mut tunnel = connect_or_repair(device).await?;
+        // A headset that isn't worn holds a launch without answering: give up after 30 s.
+        launched = match tokio::time::timeout(Duration::from_secs(30), tunnel.launch(bundle_id, &[], &environment, false, false)).await {
+            Ok(Ok(_)) => Launched::Run,
+            Ok(Err(e)) => Launched::Failed(format!("Failed to launch {bundle_id} on {}: {}", device.name, api::describe(&e))),
+            Err(_) => Launched::Failed(format!("{} didn't launch {bundle_id} within 30 s. Put it on or unlock it, then launch the app (it is installed).", device.name)),
+        };
+    }
+    Ok(launched)
+}
+
+/// What `reuse_deploy` needs of a run.
+struct Reuse<'a> {
+    o: &'a Options,
+    conf: &'a Conf,
+    device: &'a api::PairedDevice,
+    platform: &'a str,
+    root: &'a Path,
+    build_dir: &'a Path,
+    derived_data: &'a Path,
+    backend: &'a str,
+    signed_ipa: PathBuf,
+    log_app: bool,
+    mcp_session: bool,
+}
+
+/// Launches the build already on the device when it is this run's: the sources (every git checkout and
+/// package the app builds from, with uncommitted changes), the `xcodebuild` arguments, the toolchain and
+/// the builder match what `build/last-deploy.json` recorded, the signed IPA is the one recorded, and the
+/// device has that build number installed. None when any of it differs or can't be checked: the caller
+/// then builds. The app is closed and launched fresh, as an install would leave it.
+async fn reuse_deploy(r: &Reuse<'_>) -> Result<Option<Launched>, String> {
+    let Reuse { o, conf, device, platform, root, build_dir, .. } = *r;
+    let Some(kept) = fs::read(build_dir.join("last-deploy.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) else { return Ok(None) };
+    if kept["format"] != "apparition-deploy/1" || kept["udid"] != device.udid.as_str() || kept["platform"] != platform
+        || kept["configuration"] != o.config || kept["inject"] != o.inject || kept["backend"] != r.backend {
+        return Ok(None);
+    }
+    let (Some(bundle_id), Some(build), Some(fingerprint)) = (kept["bundleId"].as_str(), kept["build"].as_str(), kept["fingerprint"].as_str()) else { return Ok(None) };
+    if conf.get("BUILD_BUNDLE_ID").is_some_and(|wanted| wanted != bundle_id) { return Ok(None) }
+    if file_digest(&r.signed_ipa).ok().map(|d| d.0).as_deref() != kept["signedIpaSha256"].as_str() { return Ok(None) }
+    let arguments: Vec<u8> = xcodebuild_args(conf, o, platform, r.derived_data, r.backend)?.iter().flat_map(|a| a.bytes().chain([0])).collect();
+    let now = provenance::snapshot(root, Some(&arguments), Some(&conf.environment))?;
+    if now["fingerprint"].as_str() != Some(fingerprint) { return Ok(None) }
+
+    // The device must still hold that build: another install over it (Xcode, another checkout) means build.
+    let Ok(mut tunnel) = connect_or_repair(device).await else { return Ok(None) };
+    let Ok(apps) = tunnel.installed_apps(false).await else { return Ok(None) };
+    if !apps.iter().any(|a| a.bundle_id == bundle_id && a.build.as_deref() == Some(build)) { return Ok(None) }
+
+    let state = conf.get("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state"));
+    let ledger = conf.get("DEBUGTRACE_KEY_DIR").map(PathBuf::from).unwrap_or_else(|| state.join("debugtrace/keys"));
+    let key_id = kept["keyId"].as_str();
+    let has_server = kept["hasServer"].as_bool() == Some(true) && conf.get("DEBUGTRACE_SERVER") != Some("off");
+    let command_token = key_id.and_then(|id| fs::read(ledger.join(format!("{id}.json"))).ok())
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v["commandToken"].as_str().map(String::from));
+    // A debug session needs the token this build was signed with; without it only a new build has one.
+    if r.mcp_session && has_server && command_token.is_none() { return Ok(None) }
+
+    println!("==> {bundle_id} {build} is already on {} and the sources haven't changed: launching it without rebuilding (--rebuild to force)", device.name);
+    let _ = std::io::stdout().flush();
+    tunnel.close_running(bundle_id).await;
+    drop(tunnel);
+    let launched = launch_app(&Launch {
+        o, device, bundle_id, app_name: kept["appName"].as_str().map(String::from), log_app: r.log_app, mcp_session: r.mcp_session,
+        has_debugtrace: kept["hasDebugtrace"].as_bool() == Some(true), has_server, command_token, key_id,
+        inject_dir: Some(build_dir.join("inject")).filter(|d| o.inject && d.is_dir()).as_deref(), platform, root, build_dir, state: &state,
+    }).await?;
+    println!();
+    println!("  {:<12} {bundle_id}", "App:");
+    println!("  {:<12} {build} (build {})", "Build:", kept["buildId"].as_str().unwrap_or("?"));
+    println!("  {:<12} reused: already installed on {}, not rebuilt", "Status:", device.name);
+    Ok(Some(launched))
+}
+
+/// The report line for a launch that reused the installed build, and the failure a launch that didn't happen is.
+fn finish_reused(launched: Launched, device: &api::PairedDevice) -> Result<(), String> {
+    let line = |label: &str, value: &str| println!("  {label:<12} {value}");
+    match launched {
+        Launched::None => {}
+        Launched::Run => line("Launched:", &format!("✓ running on {}", device.name)),
+        Launched::Failed(why) => {
+            line("Launched:", &format!("✗ {why}"));
+            EXIT_CODE.store(LAUNCH_FAILED, std::sync::atomic::Ordering::SeqCst);
+            return Err(why);
+        }
+        Launched::Jit => line("Launched:", &format!("✓ running on {}, JIT served by Apparition", device.name)),
+        Launched::Log { debug_api, note } => {
+            line("Launched:", &format!("✓ running on {} with console attached", device.name));
+            line("App log:", &"build/device-console.log".to_string());
+            if let Some(url) = debug_api { line("Debug API:", &format!("{url}  (agents: the `apps` MCP tools)")) }
+            else if let Some(note) = note { line("Debug API:", &note) }
+        }
+    }
+    Ok(())
+}
+
 pub async fn run(args: &[String]) -> Result<(), crate::Error> {
     let options = match parse(args) {
         Ok(Some(options)) => options,
@@ -726,6 +969,18 @@ impl Build {
         let _lock = BuildLock::acquire(&build_dir, &root)?;
         let log = fs::File::create(&self.log_file).map_err(|e| e.to_string())?;
         self.log_started = true;
+        // The same build again: nothing to build, sign or install, only to launch.
+        if o.run && !o.rebuild && !sign_only && !mac && !o.unsigned && !no_deploy {
+            if let Some(device) = &device {
+                let reuse = Reuse {
+                    o: &o, conf: &conf, device, platform: &platform, root: &root, build_dir: &build_dir, derived_data: &derived_data,
+                    backend: &backend, signed_ipa: build_dir.join(format!("{target}-signed.ipa")), log_app, mcp_session,
+                };
+                if let Some(launched) = reuse_deploy(&reuse).await? {
+                    return finish_reused(launched, device);
+                }
+            }
+        }
         let work = WorkDir::new()?;
         let build_id = new_build_id();
         let env = conf.environment.clone();
@@ -740,10 +995,7 @@ impl Build {
         // Step 1: build.
         if !sign_only {
             prune_legacy_derived_data(&build_dir);
-            let project = conf.get("PROJECT_PATH").unwrap_or_default().to_string();
-            let flag = if project.ends_with(".xcworkspace") { "-workspace" } else if project.ends_with(".xcodeproj") { "-project" } else {
-                return Err("PROJECT_PATH must end in .xcodeproj or .xcworkspace".into());
-            };
+            let xcb = xcodebuild_args(&conf, &o, &platform, &derived_data, &backend)?;
             let resolved = [
                 ("PROJECT_ROOT", root.display().to_string()), ("BUILD_DIR", build_dir.display().to_string()),
                 ("PLATFORM", platform.clone()), ("DEVICE_NAME", device_name.clone().unwrap_or_default()),
@@ -754,34 +1006,6 @@ impl Build {
                 self.show_log = true;
                 conf.run_hook(&resolved, &log)?;
                 self.show_log = false;
-            }
-            let mut xcb: Vec<String> = vec![
-                flag.into(), project, "-scheme".into(), conf.get("SCHEME_NAME").unwrap_or_default().into(),
-                "-configuration".into(), o.config.into(), "-destination".into(), format!("generic/platform={platform}"),
-                "-derivedDataPath".into(), derived_data.display().to_string(),
-                "CODE_SIGN_IDENTITY=-".into(), "CODE_SIGNING_REQUIRED=NO".into(), "CODE_SIGNING_ALLOWED=NO".into(),
-                "DEVELOPMENT_TEAM=".into(), "PROVISIONING_PROFILE_SPECIFIER=".into(),
-                // Compiles in DebugTrace's development-only code (the in-process system-log hook,
-                // which names a private symbol) for Release builds too: everything built here is a
-                // development build. App Store archives aren't built here and leave it out.
-                "GCC_PREPROCESSOR_DEFINITIONS=$(inherited) DEBUGTRACE_DEVELOPMENT_BUILD=1".into(),
-            ];
-            xcb.extend(conf.extra_build_settings.iter().cloned());
-            xcb.extend(o.settings.iter().cloned());
-            if o.inject {
-                if conf.get("DEBUGTRACE_INJECT") == Some("off") {
-                    return Err("this repo's build-signing.conf sets DEBUGTRACE_INJECT=off, so --inject is refused".into());
-                }
-                let flags: &[&str] = if backend == "apparition" {
-                    &["ENABLE_TESTABILITY=YES", "DEAD_CODE_STRIPPING=NO", "OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-private-imports -save-optimization-record"]
-                } else if conf.get("INJECT_SCOPE") == Some("app") {
-                    &["DEAD_CODE_STRIPPING=NO", "DTINJECT_TESTABILITY_app=YES", "ENABLE_TESTABILITY=$(DTINJECT_TESTABILITY_$(WRAPPER_EXTENSION))",
-                      "DTINJECT_FLAGS_app=-Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports",
-                      "OTHER_SWIFT_FLAGS=$(inherited) $(DTINJECT_FLAGS_$(WRAPPER_EXTENSION))"]
-                } else {
-                    &["ENABLE_TESTABILITY=YES", "DEAD_CODE_STRIPPING=NO", "OTHER_SWIFT_FLAGS=$(inherited) -Xfrontend -enable-implicit-dynamic -Xfrontend -enable-private-imports"]
-                };
-                xcb.extend(flags.iter().map(|f| f.to_string()));
             }
             let arguments: Vec<u8> = xcb.iter().flat_map(|a| a.bytes().chain([0])).collect();
             before = Some(provenance::snapshot(&root, Some(&arguments), Some(&env))?);
@@ -1014,6 +1238,7 @@ impl Build {
                 }
             }
         }
+        let fingerprint = before.as_ref().and_then(|b| b["fingerprint"].as_str().map(String::from));
         let store = conf.get("APPARITION_BUILD_DIR").map(PathBuf::from).unwrap_or_else(|| state.join("apparition/builds"));
         let manifest = keep::publish(keep::Publish {
             store: &store, app: &app, artifact: &artifact, project: &root, before, after, build_id: &build_id,
@@ -1063,6 +1288,19 @@ impl Build {
                 println!("    installed through Xcode's tunnel (devicectl)");
             }
             installed = true;
+            if !sign_only && !mac && !o.unsigned && !git_stamp.is_empty() {
+                let record = serde_json::json!({
+                    "format": "apparition-deploy/1", "fingerprint": fingerprint,
+                    "buildId": build_id, "build": git_stamp, "bundleId": bundle_id, "udid": device.udid, "platform": platform,
+                    "configuration": o.config, "inject": o.inject, "backend": backend, "keyId": credential.as_ref().map(|c| c.key_id.clone()),
+                    "hasDebugtrace": has_debugtrace, "hasServer": has_server, "signedIpaSha256": file_digest(&signed_ipa).ok().map(|d| d.0),
+                    "appName": bundle::read_info(&info_path).ok().and_then(|i| bundle::string(&i, "CFBundleDisplayName").or_else(|| bundle::string(&i, "CFBundleName"))),
+                });
+                let _ = fs::remove_file(build_dir.join("last-deploy.json"));
+                if record["fingerprint"].is_string() {
+                    fs::write(build_dir.join("last-deploy.json"), record.to_string()).map_err(|e| format!("couldn't record the install: {e}"))?;
+                }
+            }
         }
 
         // Step 10: launch.
@@ -1071,91 +1309,12 @@ impl Build {
         let mut launched = Launched::None;
         if o.run {
             let device = device.as_ref().ok_or("no device to launch on")?;
-            launch::stop_previous(&pidfile);
-            // DEVICECTL_CHILD_<KEY> from the caller reaches the app too, as with build-and-sign.
-            let mut environment: Vec<(String, String)> = std::env::vars()
-                .filter_map(|(k, v)| k.strip_prefix("DEVICECTL_CHILD_").filter(|k| !k.is_empty()).map(|k| (k.to_string(), v)))
-                .filter(|(k, _)| !["DEBUGTRACE_TOKEN", "DEBUGTRACE_STDERR", "OS_ACTIVITY_DT_MODE", "DEBUGTRACE_SERVER"].contains(&k.as_str()))
-                .collect();
-            if log_app {
-                println!("==> Launching {bundle_id} (console → {})...", app_log.display());
-                fs::write(&app_log, "").map_err(|e| e.to_string())?;
-                let _ = fs::remove_file(build_dir.join("debug-server.txt"));
-                let mut token = None;
-                if mcp_session {
-                    if !has_server {
-                        if o.mcp == Some(true) { eprintln!("WARNING: --mcp: {bundle_id} doesn't link DebugTraceServer; launching with --log only") }
-                        mcp_session = false;
-                    } else {
-                        token = Some(credential.as_ref().and_then(|c| c.command_token.clone())
-                            .ok_or_else(|| format!("--mcp: {bundle_id} has no signed DebugTrace CommandToken"))?);
-                    }
-                }
-                // A DebugTrace app mirrors only its own lines to stderr, compact and redacted;
-                // anything else gets the unified log mirrored (OS_ACTIVITY_DT_MODE).
-                if has_debugtrace && !o.log_all { environment.push(("DEBUGTRACE_STDERR".into(), "1".into())) }
-                else { environment.push(("OS_ACTIVITY_DT_MODE".into(), "YES".into())) }
-                if mcp_session { environment.push(("DEBUGTRACE_SERVER".into(), "1".into())) }
-                let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-                let launch = launch::Detached {
-                    bundle_id: &bundle_id, device: &device.name,
-                    console: true, jit: o.jit, environment: &pairs,
-                    log: &app_log, pidfile: &pidfile, wait: Duration::from_secs(20),
-                };
-                let pid = match launch::detached(launch) {
-                    Ok(pid) => pid,
-                    Err(first) => {
-                        println!("    Apparition's launch route couldn't reach {}: {}", device.name, first.lines().next().unwrap_or("").trim());
-                        println!("    Opening Apparition through Xcode's tunnel (devicectl), then retrying...");
-                        launch::open_apparition_with_devicectl(&device.udid)
-                            .and_then(|()| launch::detached(launch))
-                            .map_err(|second| format!("{first}\n{second}"))?
-                    }
-                };
-                let (mut debug_api, mut note) = (None, None);
-                if let (true, Some(token)) = (mcp_session, token) {
-                    let address = device.name.to_lowercase();
-                    match launch::debug_server_port(&app_log, Duration::from_secs(20)) {
-                        None => note = Some(format!("not up yet (no 'listening on port' line in 20 s); device address: {address}")),
-                        Some(port) if !launch::answers(&address, port) => note = Some(format!("listening on port {port}, but not reachable at: {address}")),
-                        Some(port) => {
-                            let url = launch::url(&address, port);
-                            let app_name = bundle::string(&bundle::read_info(&info_path)?, "CFBundleDisplayName")
-                                .or_else(|| bundle::read_info(&info_path).ok().and_then(|i| bundle::string(&i, "CFBundleName")))
-                                .unwrap_or_else(|| bundle_id.rsplit('.').next().unwrap_or(&bundle_id).to_string());
-                            launch::write_session(launch::Session {
-                                dir: &state.join("debugtrace/sessions"), bundle_id: &bundle_id, app_name: &app_name, device: &device.name,
-                                device_id: &device.udid, url: &url, pid, console_log: &app_log, project_root: &root, token: &token,
-                                key_id: credential.as_ref().map(|c| c.key_id.as_str()), inject_dir: inject_dir.as_deref(),
-                                platform: &platform, jit: o.jit,
-                            })?;
-                            fs::write(build_dir.join("debug-server.txt"), format!(
-                                "# Debug server for {bundle_id} (this launch only)\nurl: {url}\nagents: use the `apps` MCP tools (apps, help, call, trace); the session is registered\nhelp: curl -s {url}/   (the rest needs the session's bearer token)\n"
-                            )).map_err(|e| e.to_string())?;
-                            debug_api = Some(url);
-                        }
-                    }
-                }
-                launched = Launched::Log { debug_api, note };
-            } else if o.jit {
-                println!("==> Launching {bundle_id} with JIT (session → {})...", app_log.display());
-                fs::write(&app_log, "").map_err(|e| e.to_string())?;
-                let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-                launch::detached(launch::Detached {
-                    bundle_id: &bundle_id, device: &device.name, console: false, jit: true, environment: &pairs,
-                    log: &app_log, pidfile: &pidfile, wait: Duration::from_secs(20),
-                })?;
-                launched = Launched::Jit;
-            } else {
-                println!("==> Launching {bundle_id} (through Apparition's tunnel)...");
-                let mut tunnel = connect_or_repair(device).await?;
-                // A headset that isn't worn holds a launch without answering: give up after 30 s.
-                launched = match tokio::time::timeout(Duration::from_secs(30), tunnel.launch(&bundle_id, &[], &environment, false, false)).await {
-                    Ok(Ok(_)) => Launched::Run,
-                    Ok(Err(e)) => Launched::Failed(format!("Failed to launch {bundle_id} on {}: {}", device.name, api::describe(&e))),
-                    Err(_) => Launched::Failed(format!("{} didn't launch {bundle_id} within 30 s. Put it on or unlock it, then launch the app (it is installed).", device.name)),
-                };
-            }
+            let app_name = bundle::read_info(&info_path).ok().and_then(|i| bundle::string(&i, "CFBundleDisplayName").or_else(|| bundle::string(&i, "CFBundleName")));
+            launched = launch_app(&Launch {
+                o: &o, device, bundle_id: &bundle_id, app_name, log_app, mcp_session, has_debugtrace, has_server,
+                command_token: credential.as_ref().and_then(|c| c.command_token.clone()), key_id: credential.as_ref().map(|c| c.key_id.as_str()),
+                inject_dir: inject_dir.as_deref(), platform: &platform, root: &root, build_dir: &build_dir, state: &state,
+            }).await?;
         }
 
         // The report, as build-and-sign prints it.
@@ -1254,6 +1413,8 @@ mod tests {
         let o = parse(&args(&["--ipa", "x.ipa", "--no-mcp", "--unsigned"])).unwrap().unwrap();
         assert!(o.sign_only && o.no_deploy && o.unsigned && o.mcp == Some(false));
         assert!(parse(&args(&["--help"])).unwrap().is_none());
+        let o = parse(&args(&["--run", "--rebuild"])).unwrap().unwrap();
+        assert!(o.run && o.rebuild);
         assert!(parse(&args(&["--plan"])).unwrap().unwrap().plan);
         assert!(parse(&args(&["--distribution"])).unwrap_err().contains("--distribution isn't supported"));
         let o = parse(&args(&["--profile", "p.mobileprovision", "--sign-dylib", "a.dylib", "b.dylib"])).unwrap().unwrap();
