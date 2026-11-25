@@ -137,13 +137,31 @@ enum IDevice {
         guard reply["ok"] as? Bool == true else { throw ProbeError(reply["error"] as? String ?? "pairing failed") }
     }
 
+    /// A tunnel for a JIT session, with the developer disk image mounted first when nothing has
+    /// mounted it. The device lists its services once, when the tunnel opens, and lists the
+    /// debugger only while the image is mounted: after mounting it here, the session needs a
+    /// new tunnel, whose list has the debugger in it. `body` gets the mount's event line.
+    private static func withJITTunnel<T>(_ target: Target, hostname: String, file: PairingFile, pin: PinCallback?,
+                                         context: UnsafeMutableRawPointer,
+                                         _ body: (OpaquePointer?, OpaquePointer?, String?) throws -> T) throws -> T {
+        var disk: DeveloperDiskImage.Outcome?
+        let first: T? = try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
+            if disk?.mountedNow == true { return nil }
+            return try body(adapter, handshake, disk?.line)
+        }
+        if let first { return first }
+        return try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            try body(adapter, handshake, disk?.line)
+        }
+    }
+
     /// Opens a tunnel, launches the app under the debugger and serves its JIT requests.
     static func launchJIT(target: Target, hostname: String, file: PairingFile,
                           pin: PinCallback?, context: UnsafeMutableRawPointer,
                           bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
-        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
-            let disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
-            return DeveloperDiskImage.annotate(AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds)), with: disk)
+        try withJITTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
+            DeveloperDiskImage.annotate(AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds)), with: disk)
         }
     }
 
@@ -152,9 +170,8 @@ enum IDevice {
     static func attachJIT(target: Target, hostname: String, file: PairingFile,
                           pin: PinCallback?, context: UnsafeMutableRawPointer,
                           pid: UInt64, bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
-        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
-            let disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
-            return DeveloperDiskImage.annotate(AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds)), with: disk)
+        try withJITTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
+            DeveloperDiskImage.annotate(AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds)), with: disk)
         }
     }
 
@@ -165,8 +182,7 @@ enum IDevice {
     static func runJITScript(target: Target, hostname: String, file: PairingFile,
                              pin: PinCallback?, context: UnsafeMutableRawPointer,
                              pid: UInt64, bundleId: String, launch: Bool, script: String) throws -> [String: Any] {
-        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
-            let disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
+        try withJITTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
             var session: OpaquePointer?
             let opened = AccountModel.call(apparition_jit_script_open(adapter, handshake, pid, bundleId, launch, &session))
             guard opened["ok"] as? Bool == true, let session else { return DeveloperDiskImage.annotate(opened, with: disk) }

@@ -51,10 +51,17 @@ enum DeveloperDiskImage {
         }
     }
 
+    /// What `ensure` did: a line for the JIT session's events, and whether it mounted the image
+    /// just now, which the tunnel it used can't show yet (see `IDevice.withJITTunnel`).
+    struct Outcome {
+        let line: String
+        var mountedNow = false
+    }
+
     /// Mounts the image over an open tunnel unless one is mounted, downloading its files the first
-    /// time. Returns a line for the JIT session's events, or nil where there's nothing to do. Never
-    /// throws: JIT can still work when something else mounted the image.
-    static func ensure(adapter: OpaquePointer?, handshake: OpaquePointer?) -> String? {
+    /// time. Nil where there's nothing to do. Never throws: JIT can still work when something else
+    /// mounted the image.
+    static func ensure(adapter: OpaquePointer?, handshake: OpaquePointer?) -> Outcome? {
         #if os(iOS)
         var reply = AccountModel.call(apparition_ensure_ddi(adapter, handshake, hasFiles ? directory.path : nil))
         if reply["ok"] as? Bool == true, reply["needsFiles"] as? Bool == true {
@@ -62,21 +69,21 @@ enum DeveloperDiskImage {
                 try download()
             } catch {
                 log.error("disk image download failed: \(LogScrub.text(String(describing: error)), privacy: .public)")
-                return "disk image: couldn't download it: \(error)"
+                return Outcome(line: "disk image: couldn't download it: \(error)")
             }
             reply = AccountModel.call(apparition_ensure_ddi(adapter, handshake, directory.path))
         }
         guard reply["ok"] as? Bool == true else {
             let error = reply["error"] as? String ?? "mounting failed"
             log.error("disk image mount failed: \(LogScrub.text(error), privacy: .public)")
-            return "disk image: \(error)"
+            return Outcome(line: "disk image: \(error)")
         }
         switch reply["mounted"] as? String {
-        case "already": return "disk image: already mounted"
+        case "already": return Outcome(line: "disk image: already mounted")
         case "now":
             log.info("disk image mounted")
-            return "disk image: mounted"
-        default: return "disk image: not mounted"
+            return Outcome(line: "disk image: mounted", mountedNow: true)
+        default: return Outcome(line: "disk image: not mounted")
         }
         #else
         // Apple TV and Vision Pro use their own platform's image, which this doesn't fetch.
