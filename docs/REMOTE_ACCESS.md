@@ -41,6 +41,8 @@ listener answered over IPv4 and IPv6. Its loopback-only listener was unreachable
 RemotePairing, whose Bonjour record advertised only loopback addresses on LTE.
 If the error says the companion's callback was refused, connect the phone to Wi-Fi and
 retry with Tailscale connected. Pairing verification starts after the callback connects.
+When Wi-Fi is unavailable, [launch JIT briefly offline with LocalDevVPN](JIT.md#launch-with-jit-away-from-wi-fi)
+and restore cellular service for the running app.
 
 **An Apple TV on the road** (an emulation box, say). LocalDevVPN has no Apple TV version, but Apple TV can run
 Tailscale (tvOS 17 or later), so the same steps work for one, and JIT still needs a computer running the companion,

@@ -72,15 +72,28 @@ prepare the device with Xcode.
 
 ## Launch with JIT away from Wi-Fi
 
-If LocalDevVPN is connected but JIT fails at the RemotePairing connection on cellular, try
-starting the JIT session briefly offline. This worked on an iPhone 15 Pro Max with iOS 27.2.1.
+On an iPhone or cellular iPad, you can start JIT briefly offline and then bring cellular
+data back for the app you're using. Use this when LocalDevVPN is connected but JIT fails
+with `Connection refused` while you're away from Wi-Fi.
 
-1. In Apparition, select LocalDevVPN as the connection method. With cellular data still on,
-   connect LocalDevVPN. This uses the VPN slot instead of Tailscale.
-2. Turn on Airplane Mode and leave LocalDevVPN running. Open Apparition and tap **Launch with JIT**.
-3. Wait for the target app to open and confirm JIT is working before restoring cellular service.
-   Some apps need a live debugger to prepare more memory during the session. If the app loses JIT
-   after you restore cellular service, use Wi-Fi, such as another phone's hotspot, for the session.
+1. In Apparition, select **LocalDevVPN** as the connection method. Connect LocalDevVPN while
+   cellular data is still on. This uses the VPN slot instead of Tailscale.
+2. Turn on **Airplane Mode** and leave LocalDevVPN running. Return to Apparition and tap
+   **Launch with JIT**. If Apparition asks for location permission, choose **Allow While
+   Using App** so it can keep serving debugger requests in the background.
+3. Once the target app is running with JIT, turn **Airplane Mode off**. Leave LocalDevVPN
+   connected and Apparition running in the background. If you quit the target app, repeat
+   the launch steps when you next need JIT.
+
+On an iPhone 15 Pro Max with iOS 27.2.1, JIT Probe could still request and execute code from
+new arenas in the same process after LTE returned and after the phone slept. The last
+request passed 18 minutes and 14 seconds after launch. This verifies one running session.
+If your app loses its debugger after cellular returns, launch and use it on Wi-Fi instead.
+
+For quicker access, make a Home Screen shortcut that turns Airplane Mode on and opens
+Apparition after you connect LocalDevVPN. Turn Airplane Mode off yourself once the app is
+running with JIT. Apparition's existing **Launch with JIT** shortcut action can return while
+the debugger is still starting, so its return is too early to use as a restore signal.
 
 If JIT works on Wi-Fi and the error on cellular says `Connection refused` at
 `10.7.0.1`, this is a connection failure before Apparition can verify your pairing.

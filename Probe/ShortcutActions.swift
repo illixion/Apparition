@@ -198,7 +198,7 @@ enum ShortcutActions {
             guard let attempt = probe.attempts.first(where: { $0.action == "jit" && $0.startedAt >= startedAt }),
                   let outcome = attempt.outcome else { continue }
             if outcome.hasPrefix("error") {
-                let message = outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome
+                let message = ProbeModel.jitLaunchFailureMessage(outcome)
                 throw Failure(message: "Couldn't launch \(app.name) with JIT through \(route): \(message)")
             }
             return "Launched \(app.name) with JIT"

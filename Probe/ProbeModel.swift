@@ -111,6 +111,13 @@ final class ProbeModel {
             .contains { outcome.localizedCaseInsensitiveContains($0) }
     }
 
+    nonisolated static func jitLaunchFailureMessage(_ outcome: String) -> String {
+        let message = outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome
+        return [message, PairingRecord.connectionHint(in: outcome)]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
+    }
+
     /// Switches to `mode` and forgets that the other one was out of reach.
     func switchMode(to mode: ConnectionMode) {
         connectionMode = mode
@@ -839,12 +846,10 @@ final class ProbeModel {
             guard reportsFailure || outcome.contains(DeveloperDiskImage.marker) || PairingRecord.connectionHint(in: outcome) != nil,
                   outcome.hasPrefix("error"), let self else { return }
             self.jitFailure = JITFailure(bundleId: bundleId,
-                                         message: [outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome,
-                                                   PairingRecord.connectionHint(in: outcome)]
-                                             .compactMap { $0 }.joined(separator: "\n\n"),
+                                         message: Self.jitLaunchFailureMessage(outcome),
                                          problem: PairingRecord.problem(in: outcome),
                                          retry: { [weak self] in
-                                             Task { await self?.serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: reportsFailure, body) }
+                                             Task { await self?.serveJIT(host: host, port: requestedPort, bundleId: bundleId, reportsFailure: reportsFailure, body) }
                                          })
         }
         // No pairing: say so now, without showing a session that can't start.

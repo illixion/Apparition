@@ -753,7 +753,7 @@ struct LibraryView: View {
         switch attempt.outcome {
         case nil: return Note(text: "Serving JIT until the app closes. Stop it here or from Apparition's notification.", kind: .info)
         case "ok": return Note(text: "JIT session finished: \(attempt.detail ?? "ok")", kind: .success)
-        case let outcome?: return Note(text: "JIT launch failed: \(outcome)", kind: .error)
+        case let outcome?: return Note(text: "JIT launch failed: \(ProbeModel.jitLaunchFailureMessage(outcome))", kind: .error)
         }
     }
 
