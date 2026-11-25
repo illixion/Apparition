@@ -200,7 +200,7 @@ final class DeveloperModel {
             await service.reportInstall(target: target, buildId: artifact.buildId)
             await library.refreshDeviceApps()
             if launch, let bundleId = library.installed.first(where: { $0.id == target.bundleId })?.installedBundleId {
-                Task { await probe.launchJIT(host: probe.defaultTunnelHost, port: probe.defaultTunnelPort, bundleId: bundleId, waitSeconds: 600) }
+                Task { await probe.launchJIT(host: probe.defaultTunnelHost, bundleId: bundleId, waitSeconds: 600) }
             }
         case .cancelled:
             phases[key] = .failed("Installing was cancelled.", keptBuild: artifact.buildId)

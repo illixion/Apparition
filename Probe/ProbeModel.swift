@@ -150,6 +150,24 @@ final class ProbeModel {
 
     nonisolated static let selfTunnelPortKey = "selfTunnelPort"
 
+    private var discoveredTunnelPort: Int? {
+        advertised.values.first { $0.type == Self.pairedType && $0.isSelf }?.port
+    }
+
+    private func automaticJITPort() async -> Int {
+        #if !os(visionOS)
+        if browsers.isEmpty { startBrowsing() }
+        // Give a new browse a chance to replace the persisted last-known port. Bonjour may
+        // have no results on cellular, so keep the wait bounded and retain the offline fallback.
+        for _ in 0..<15 {
+            if let port = discoveredTunnelPort { return port }
+            do { try await Task.sleep(for: .milliseconds(100)) }
+            catch { break }
+        }
+        #endif
+        return defaultTunnelPort
+    }
+
     /// Finds a companion again by its Bonjour name; set by the app to `CompanionFinder.locate`.
     var locateCompanion: (@MainActor (String) async -> CompanionFinder.Companion?)?
     /// Called when the companion is reached at a new address: (old host, new host).
@@ -178,6 +196,7 @@ final class ProbeModel {
                 if self.lastPath != nil {
                     log.info("network changed; the companion is looked for again before the next action")
                     self.companionMayHaveMoved()
+                    self.startBrowsing()
                 }
                 self.lastPath = summary
             }
@@ -270,6 +289,10 @@ final class ProbeModel {
 
     private var browsers: [NWBrowser] = []
     private var resolvers: [String: ServiceResolver] = [:]
+    private var discoveryGeneration = UUID()
+    private var resolutionIDs: [String: UUID] = [:]
+    private var discoveryRetry: Task<Void, Never>?
+    private var discoveryRetryCount = 0
     private let pinBox = PinBox()
 
     private var pairingFileURL: URL { PairingRecord.url }
@@ -291,23 +314,54 @@ final class ProbeModel {
     // MARK: Discovery
 
     func startBrowsing() {
+        discoveryRetry?.cancel()
+        discoveryRetry = nil
+        discoveryRetryCount = 0
+        rebuildBrowsers()
+    }
+
+    private func rebuildBrowsers() {
+        let generation = UUID()
+        discoveryGeneration = generation
         browsers.forEach { $0.cancel() }
         browsers = []
+        resolvers.values.forEach { $0.stop() }
+        resolvers = [:]
+        resolutionIDs = [:]
         advertised = [:]
+        browserStates = [:]
         interfaces = Self.interfaceAddresses()
         for type in [Self.manualPairingType, Self.pairedType] {
             let browser = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: "local."), using: .tcp)
             browser.stateUpdateHandler = { [weak self] state in
                 Task { @MainActor in
-                    self?.browserStates[type] = "\(state)"
+                    guard let self, self.discoveryGeneration == generation else { return }
+                    self.browserStates[type] = "\(state)"
                     log.info("browser \(type, privacy: .public): \(String(describing: state), privacy: .public)")
+                    if case .failed = state { self.retryDiscovery() }
                 }
             }
             browser.browseResultsChangedHandler = { [weak self] results, _ in
-                Task { @MainActor in self?.update(type: type, results: results) }
+                Task { @MainActor in
+                    guard let self, self.discoveryGeneration == generation else { return }
+                    self.update(type: type, results: results)
+                }
             }
             browser.start(queue: .main)
             browsers.append(browser)
+        }
+    }
+
+    private func retryDiscovery() {
+        let delays = [1, 2, 4, 8, 16]
+        guard discoveryRetry == nil, discoveryRetryCount < delays.count else { return }
+        let delay = delays[discoveryRetryCount]
+        discoveryRetryCount += 1
+        discoveryRetry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            self.discoveryRetry = nil
+            self.rebuildBrowsers()
         }
     }
 
@@ -326,18 +380,32 @@ final class ProbeModel {
                 resolve(key: key, name: name, type: type, domain: domain)
             } else {
                 advertised[key]?.txt = txt
+                if advertised[key]?.port == nil, resolvers[key] == nil {
+                    resolve(key: key, name: name, type: type, domain: domain)
+                }
             }
         }
         for key in advertised.keys where key.hasPrefix(type + "|") && !seen.contains(key) {
+            resolutionIDs[key] = nil
+            resolvers.removeValue(forKey: key)?.stop()
             advertised[key] = nil
             log.info("service gone: \(key, privacy: .private)")
         }
     }
 
     private func resolve(key: String, name: String, type: String, domain: String) {
+        let id = UUID()
+        resolutionIDs[key] = id
         let resolver = ServiceResolver(name: name, type: type + ".", domain: domain) { [weak self] port, addresses in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.resolutionIDs[key] == id else { return }
+                self.resolutionIDs[key] = nil
+                self.resolvers.removeValue(forKey: key)?.stop()
+                guard port > 0 else {
+                    log.info("could not resolve \(type, privacy: .public)")
+                    self.retryDiscovery()
+                    return
+                }
                 let own = Set(Self.interfaceAddresses().map { $0.components(separatedBy: " ").last ?? $0 })
                 self.advertised[key]?.port = port
                 self.advertised[key]?.addresses = addresses
@@ -345,7 +413,6 @@ final class ProbeModel {
                 if type == Self.pairedType, self.advertised[key]?.isSelf == true, port > 0 {
                     UserDefaults.standard.set(port, forKey: Self.selfTunnelPortKey)
                 }
-                self.resolvers[key] = nil
                 log.info("resolved \(type, privacy: .public) port \(port, privacy: .public), \(addresses.count, privacy: .public) addresses")
             }
         }
@@ -680,7 +747,7 @@ final class ProbeModel {
         log.info("jit stop asked: \(reply["stopped"] as? Bool == true ? "stopping" : "no session", privacy: .public)")
     }
 
-    func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int, reportsFailure: Bool = false) async {
+    func launchJIT(host: String, port: Int? = nil, bundleId: String, waitSeconds: Int, reportsFailure: Bool = false) async {
         await serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: reportsFailure) { target, file, box in
             try IDevice.launchJIT(target: target, hostname: Self.hostname, file: file,
                                   pin: nil, context: box,
@@ -741,7 +808,7 @@ final class ProbeModel {
     /// Takes the running process `pid` of `bundleId` (an app that asked for JIT itself, through
     /// an `enable-jit` link) and serves its JIT requests until it exits or detaches. The app is
     /// brought back to the front once attached.
-    func attachJIT(host: String, port: Int, bundleId: String, pid: Int) async {
+    func attachJIT(host: String, port: Int? = nil, bundleId: String, pid: Int) async {
         await serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: true) { target, file, box in
             try IDevice.attachJIT(target: target, hostname: Self.hostname, file: file,
                                   pin: nil, context: box,
@@ -751,7 +818,7 @@ final class ProbeModel {
 
     /// Lets a StikDebug JIT script `script` be `bundleId`'s debugger until it returns: for a
     /// new launch with `launch`, else for the running process `pid`, brought back to the front.
-    func runJITScript(host: String, port: Int, bundleId: String, pid: Int, launch: Bool, script: String) async {
+    func runJITScript(host: String, port: Int? = nil, bundleId: String, pid: Int, launch: Bool, script: String) async {
         await serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: true) { target, file, box in
             try IDevice.runJITScript(target: target, hostname: Self.hostname, file: file,
                                      pin: nil, context: box,
@@ -759,7 +826,7 @@ final class ProbeModel {
         }
     }
 
-    private func serveJIT(host: String, port: Int, bundleId: String, reportsFailure: Bool = false,
+    private func serveJIT(host: String, port requestedPort: Int?, bundleId: String, reportsFailure: Bool = false,
                           _ body: @escaping @Sendable (IDevice.Target, IDevice.PairingFile, UnsafeMutableRawPointer) throws -> [String: Any]) async {
         guard !jitSessions.contains(bundleId) else {
             log.info("jit already serving this app")
@@ -783,15 +850,19 @@ final class ProbeModel {
         // No pairing: say so now, without showing a session that can't start.
         refreshPairing()
         if pairingProblem == .missing {
-            report(await run(action: "jit", host: host, port: port, exclusive: false) { _, _ in { _ in } })
+            report(await run(action: "jit", host: host, port: requestedPort ?? defaultTunnelPort, exclusive: false) { _, _ in { _ in } })
             return
         }
         // Nowhere to reach the companion: say so now, instead of launching nothing and timing out.
         guard await prepareRoute(host: host) else {
             let message = companionUnreachableMessage
-            report(await run(action: "jit", host: host, port: port, exclusive: false) { _, _ in throw IDevice.ProbeError(message) })
+            report(await run(action: "jit", host: host, port: requestedPort ?? defaultTunnelPort, exclusive: false) { _, _ in throw IDevice.ProbeError(message) })
             return
         }
+        let port: Int
+        if let requestedPort { port = requestedPort }
+        else { port = await automaticJITPort() }
+        guard !Task.isCancelled, !jitSessions.contains(bundleId) else { return }
         let target = tunnelTarget(host: host, port: port)
         jitSessions.insert(bundleId)
         await keepAlive.prepare()
@@ -1032,6 +1103,11 @@ final class ServiceResolver: NSObject, NetServiceDelegate, @unchecked Sendable {
     func start() {
         service.schedule(in: .main, forMode: .common)
         service.resolve(withTimeout: 10)
+    }
+
+    func stop() {
+        service.stop()
+        service.remove(from: .main, forMode: .common)
     }
 
     func netServiceDidResolveAddress(_ sender: NetService) {

@@ -30,6 +30,15 @@ Sharing or a game streaming PC from anywhere, for example with
    Tailscale takes the VPN slot LocalDevVPN would, and doesn't need to share it: the companion
    replaces LocalDevVPN.
 
+On iPhone and iPad, the companion must be able to connect back to Apple's RemotePairing
+listener. A Tailscale ping or a successful connection to the companion only checks part of
+that path. On an iPhone 15 Pro Max running iOS 27.2.1, the callback was refused with Wi-Fi
+off on LTE, even after Apparition rediscovered the correct RemotePairing port. With Wi-Fi
+back on, the same Mac could reach that port at both of the phone's Tailscale addresses.
+Leaving the Wi-Fi radio on while disconnected from the Wi-Fi network still failed over LTE.
+If the error says the companion's callback was refused, connect the phone to Wi-Fi and
+retry with Tailscale connected. Pairing verification starts after the callback connects.
+
 **An Apple TV on the road** (an emulation box, say). LocalDevVPN has no Apple TV version, but Apple TV can run
 Tailscale (tvOS 17 or later), so the same steps work for one, and JIT still needs a computer running the companion,
 since tvOS has no no-computer route.

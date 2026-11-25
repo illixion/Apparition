@@ -6,13 +6,13 @@ extension ProbeModel {
     /// anew under the debugger. With a script, the script is the debugger.
     func answerJIT(_ request: LibraryModel.JITRequest) async {
         if let script = request.script {
-            await runJITScript(host: defaultTunnelHost, port: defaultTunnelPort, bundleId: request.bundleId,
+            await runJITScript(host: defaultTunnelHost, bundleId: request.bundleId,
                                pid: request.pid, launch: request.pid == 0, script: script)
         } else if request.pid == 0 {
-            await launchJIT(host: defaultTunnelHost, port: defaultTunnelPort, bundleId: request.bundleId,
+            await launchJIT(host: defaultTunnelHost, bundleId: request.bundleId,
                             waitSeconds: 0, reportsFailure: true)
         } else {
-            await attachJIT(host: defaultTunnelHost, port: defaultTunnelPort,
+            await attachJIT(host: defaultTunnelHost,
                             bundleId: request.bundleId, pid: request.pid)
         }
     }

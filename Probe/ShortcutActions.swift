@@ -189,7 +189,7 @@ enum ShortcutActions {
         let host = probe.defaultTunnelHost
         let route = host == ProbeModel.relayHost ? "the companion" : "LocalDevVPN"
         let startedAt = DebugTime.iso(Date())
-        Task { await probe.launchJIT(host: host, port: probe.defaultTunnelPort, bundleId: bundleId, waitSeconds: jitWaitSeconds) }
+        Task { await probe.launchJIT(host: host, bundleId: bundleId, waitSeconds: jitWaitSeconds) }
         log.info("JIT launch started through \(route, privacy: .public)")
 
         let deadline = ContinuousClock.now + .seconds(8)

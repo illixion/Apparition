@@ -304,7 +304,7 @@ struct LibraryView: View {
                 Button {
                     jitAppId = jitId
                     log.info("JIT launch of another app from the library")
-                    Task { await model.launchJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort, bundleId: app.bundleId, waitSeconds: 600) }
+                    Task { await model.launchJIT(host: model.defaultTunnelHost, bundleId: app.bundleId, waitSeconds: 600) }
                 } label: {
                     Label("Launch with JIT", systemImage: "bolt.fill")
                 }
@@ -368,7 +368,7 @@ struct LibraryView: View {
                 HStack(spacing: 12) {
                     Button {
                         jitAppId = jitId
-                        Task { await model.launchJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort, bundleId: app.bundleId, waitSeconds: 600) }
+                        Task { await model.launchJIT(host: model.defaultTunnelHost, bundleId: app.bundleId, waitSeconds: 600) }
                     } label: { Label("Launch with JIT", systemImage: "bolt.fill") }
                         .disabled(model.busy || library.busy)
                     Button { onOpenProject(project.name, .overview) } label: {
@@ -777,7 +777,7 @@ struct LibraryView: View {
                 Button {
                     jitAppId = app.id
                     log.info("JIT launch from the library")
-                    Task { await model.launchJIT(host: model.defaultTunnelHost, port: model.defaultTunnelPort, bundleId: bundleId, waitSeconds: 600) }
+                    Task { await model.launchJIT(host: model.defaultTunnelHost, bundleId: bundleId, waitSeconds: 600) }
                 } label: {
                     Label("Launch with JIT", systemImage: "bolt.fill")
                 }
