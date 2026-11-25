@@ -69,3 +69,20 @@ Repeat the pairing handoff after updating Xcode or the device's iOS, so the devi
 The on-device mount uses the personalized image format, which needs a matching hardware
 identity in Xcode's manifest. If Xcode only has a compatible cryptex image for your device,
 prepare the device with Xcode.
+
+## Launch with JIT away from Wi-Fi
+
+If LocalDevVPN is connected but JIT fails at the RemotePairing connection on cellular, try
+starting the JIT session briefly offline. This worked on an iPhone 15 Pro Max with iOS 27.2.1.
+
+1. In Apparition, select LocalDevVPN as the connection method. With cellular data still on,
+   connect LocalDevVPN. This uses the VPN slot instead of Tailscale.
+2. Turn on Airplane Mode and leave LocalDevVPN running. Open Apparition and tap **Launch with JIT**.
+3. Wait for the target app to open and confirm JIT is working before restoring cellular service.
+   Some apps need a live debugger to prepare more memory during the session. If the app loses JIT
+   after you restore cellular service, use Wi-Fi, such as another phone's hotspot, for the session.
+
+If JIT works on Wi-Fi and the error on cellular says `Connection refused` at
+`10.7.0.1`, this is a connection failure before Apparition can verify your pairing.
+The LocalDevVPN project records the same cellular limitation in
+[issue #31](https://github.com/jkcoxson/LocalDevVPN/issues/31).
