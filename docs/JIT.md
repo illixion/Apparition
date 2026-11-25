@@ -84,5 +84,7 @@ starting the JIT session briefly offline. This worked on an iPhone 15 Pro Max wi
 
 If JIT works on Wi-Fi and the error on cellular says `Connection refused` at
 `10.7.0.1`, this is a connection failure before Apparition can verify your pairing.
+On the same iPhone and LTE connection, LocalDevVPN successfully reflected traffic to
+an ordinary HTTP listener. The refusal we observed was specific to the path to RemotePairing.
 The LocalDevVPN project records the same cellular limitation in
 [issue #31](https://github.com/jkcoxson/LocalDevVPN/issues/31).
