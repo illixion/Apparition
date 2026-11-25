@@ -32,3 +32,8 @@ companion on any computer (macOS, Windows or Linux) bounces that connection back
 on iPhone, iPad and Vision Pro does it with no computer (it takes the device's only VPN slot, so
 not alongside Tailscale). Apple TV can run VPN apps, but LocalDevVPN has no Apple TV version, so it uses a companion. A computer is needed
 once, to install Apparition.
+
+The debugger itself comes from the **developer disk image**, which a restart unmounts. On iPhone and
+iPad, Apparition mounts it before each JIT launch when nothing has: the first time it downloads
+Xcode's image (about 18 MB) and keeps it, and Apple's signing server personalizes it for the device,
+as Xcode does. Before, JIT failed after a restart until Xcode or another app mounted it again.

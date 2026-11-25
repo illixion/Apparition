@@ -38,6 +38,7 @@ mod container;
 pub mod package;
 pub mod install_plan;
 mod jit;
+mod ddi;
 mod launch;
 pub mod tools;
 mod tunnel;
@@ -1565,6 +1566,28 @@ pub unsafe extern "C" fn apparition_uninstall(
             installer.uninstall(bundle_id, None).await.context("Uninstall failed")?;
             Ok(json!({}))
         }))
+    })())
+}
+
+// MARK: Developer Disk Image
+
+/// Makes sure the personalized Developer Disk Image is mounted (debugserver needs it), mounting
+/// the one whose files are in `dir` when none is. `dir` may be null to only check. Returns
+/// `{ok, mounted: "already" | "now" | false, needsFiles?}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_ensure_ddi(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+    dir: *const c_char,
+) -> *mut c_char {
+    reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let dir = if dir.is_null() { None } else { Some(PathBuf::from(unsafe { text(dir) }?)) };
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        runtime().block_on(ddi::ensure(adapter, handshake, dir.as_deref()))
     })())
 }
 

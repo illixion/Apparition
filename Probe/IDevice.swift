@@ -142,7 +142,8 @@ enum IDevice {
                           pin: PinCallback?, context: UnsafeMutableRawPointer,
                           bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
-            return AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds))
+            let disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
+            return DeveloperDiskImage.annotate(AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds)), with: disk)
         }
     }
 
@@ -152,7 +153,8 @@ enum IDevice {
                           pin: PinCallback?, context: UnsafeMutableRawPointer,
                           pid: UInt64, bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
-            return AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds))
+            let disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
+            return DeveloperDiskImage.annotate(AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds)), with: disk)
         }
     }
 
@@ -164,15 +166,17 @@ enum IDevice {
                              pin: PinCallback?, context: UnsafeMutableRawPointer,
                              pid: UInt64, bundleId: String, launch: Bool, script: String) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            let disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
             var session: OpaquePointer?
             let opened = AccountModel.call(apparition_jit_script_open(adapter, handshake, pid, bundleId, launch, &session))
-            guard opened["ok"] as? Bool == true, let session else { return opened }
+            guard opened["ok"] as? Bool == true, let session else { return DeveloperDiskImage.annotate(opened, with: disk) }
             let outcome = JITScript.run(script, session: session, pid: opened["pid"] as? Int ?? 0)
             var reply = AccountModel.call(apparition_jit_script_close(session))
             var events = reply["events"] as? [String] ?? []
             events += outcome.lines.map { "script: \($0)" }
             if outcome.droppedLines > 0 { events.append("script: (\(outcome.droppedLines) more lines not kept)") }
             if let exception = outcome.exception { events.append("script threw: \(exception)") }
+            if let disk { events.insert(disk, at: 0) }
             reply["events"] = events
             return reply
         }
