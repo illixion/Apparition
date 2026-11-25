@@ -1,13 +1,13 @@
 # Builds a release's files with scripts/package-release.sh, the same script as a local build,
 # and attests where each came from (`gh attestation verify <file> -R illixion/Apparition`).
 #
-# Nothing here signs a release. The files land as a workflow artifact; publishing them is the
-# usual step on the release site (scripts/publish.py add), which hashes the files downloaded from
-# here and signs that list with a release key that never leaves its owner. So an attestation says
-# "GitHub built this from that commit", and the release signature says "and its owner vouches
-# for it". The owner checks before signing: publish.py runs scripts/audit-release.sh, which audits
-# the attested commit's dependencies and rebuilds the macOS files from it on another Mac, and signs
-# nothing unless they come out the same as these.
+# Nothing here signs a release. The Plan job audits dependencies before any build starts. The files
+# land as workflow artifacts; publishing them is the usual step on the release site
+# (scripts/publish.py add), which hashes the downloaded files and signs that list with a release key
+# that never leaves its owner. So an attestation says "GitHub built this from that commit", and the
+# release signature says "and its owner vouches for it". Before signing, publish.py also runs
+# scripts/audit-release.sh, which audits the attested commit and rebuilds the macOS files from it on
+# another Mac, and signs nothing unless they match.
 #
 # The desktop app's updater (signed-update, vendored in core/vendor/signed-update) reads the signed
 # manifest from the GitHub release, through apps.illixion.com's redirects: so the owner attaches
@@ -79,6 +79,11 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Audit dependencies before release builds
+        if: env.VERSION != ''
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          scripts/audit-dependencies.sh .
       - id: plan
         env:
           PARTS: ${{ inputs.parts }}

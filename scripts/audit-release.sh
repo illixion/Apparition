@@ -34,7 +34,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REPO=illixion/Apparition
 WORKFLOW="$REPO/.github/workflows/release.yml"
-CARGO_AUDIT_VERSION=0.22.2
 
 VERSION="${1:?usage: audit-release.sh <version> <folder> [--commit SHA] [--deps-only] [--keep]}"
 FOLDER="${2:?usage: audit-release.sh <version> <folder> [--commit SHA] [--deps-only] [--keep]}"
@@ -133,42 +132,11 @@ export RUSTUP_TOOLCHAIN="$RUST_TOOLCHAIN"
 
 # ------------------------------------------------------------------ 2. the dependencies
 echo "==> 2. dependencies at ${COMMIT:0:8}"
-for manifest in Cargo.toml core/Cargo.toml; do
-  cargo metadata -q --locked --format-version 1 --manifest-path "$SRC/$manifest" >/dev/null 2>>"$WORK/cargo-metadata.log" \
-    || fail "cargo metadata failed for $manifest with --locked (see cargo-metadata.log)"
-done
-python3 - "$SRC/Cargo.lock" "$SRC/core/Cargo.lock" <<'EOF' || fail "a dependency comes from somewhere unpinned"
-import re, sys
-bad = []
-for path in sys.argv[1:]:
-    for source in re.findall(r'^source = "([^"]+)"$', open(path).read(), re.M):
-        if source == "registry+https://github.com/rust-lang/crates.io-index":
-            continue
-        # A git dependency must name a full commit, and be locked to that same commit.
-        m = re.fullmatch(r"git\+https://[^?#]+\?rev=([0-9a-f]{40})#([0-9a-f]{40})", source)
-        if not (m and m.group(1) == m.group(2)):
-            bad.append(f"{path.rsplit('/src/', 1)[-1]}: {source}")
-for line in bad:
-    print(f"    not pinned: {line}")
-sys.exit(1 if bad else 0)
-EOF
-echo "    both lock files current; every crate from crates.io or a git commit"
-audit_version="$(cargo audit --version 2>/dev/null || true)"
-[[ "$audit_version" == *" $CARGO_AUDIT_VERSION" ]] \
-  || fail "cargo-audit is '${audit_version:-missing}', not $CARGO_AUDIT_VERSION (cargo install cargo-audit --version $CARGO_AUDIT_VERSION --locked)"
-ignores=()
-while read -r id _; do
-  [[ -z "$id" || "$id" == \#* ]] && continue
-  ignores+=(--ignore "$id")
-done < "$SRC/scripts/audit-allow"
-for lock in Cargo.lock core/Cargo.lock; do
-  log="$WORK/audit-${lock//\//-}.log"
-  if ! cargo audit -q --deny yanked ${ignores[@]+"${ignores[@]}"} --file "$SRC/$lock" >"$log" 2>&1; then
-    sed 's/^/    /' "$log"
-    fail "cargo audit failed for $lock"
-  fi
-done
-echo "    no yanked crates, no advisories beyond the $(( ${#ignores[@]} / 2 )) in scripts/audit-allow"
+if ! "$SRC/scripts/audit-dependencies.sh" "$SRC" >"$WORK/audit-dependencies.log" 2>&1; then
+  sed 's/^/    /' "$WORK/audit-dependencies.log"
+  fail "the Rust dependency audit failed"
+fi
+sed 's/^/    /' "$WORK/audit-dependencies.log"
 
 # ------------------------------------------------------------------ 3. the macOS files
 macos=()
