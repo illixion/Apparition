@@ -137,6 +137,7 @@ if ! "$SRC/scripts/audit-dependencies.sh" "$SRC" >"$WORK/audit-dependencies.log"
   fail "the Rust dependency audit failed"
 fi
 sed 's/^/    /' "$WORK/audit-dependencies.log"
+CARGO_AUDIT_VERSION="$(cargo audit --version | awk '{print $2}')"
 
 # ------------------------------------------------------------------ 3. the macOS files
 macos=()
