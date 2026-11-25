@@ -1,18 +1,16 @@
 # Anisette and signing in
 
 Signing in with a free Apple ID needs "anisette" data from a computer Apple recognises, and where it
-comes from decides how your sign-in behaves. This page says what each source needs and costs, how to
-run your own, how Apparition's built-in one works and what to do when it can't fetch Apple's libraries.
+comes from decides how your sign-in behaves. This page explains the supported Mac sources and paired sign-in setup.
 A paid account's certificate and profile need none of this.
 
 ## Choosing a source
 
-**Apparition works best with a Mac you own**, at home or reached over Tailscale. The Mac does
-two jobs that nothing else can, and everything else works without one:
+**A Mac is required for free Apple ID sign-in.** It provides anisette, and can be reached over Tailscale:
 
 | What | Needs | Without a Mac |
 |---|---|---|
-| Signing with a free Apple ID | A Mac's anisette: a Mac on macOS 26 or earlier (best, SIP stays on), a Mac on macOS 27 with SIP and AMFI off (works, not recommended), a macOS 26 VM on an Apple-silicon Mac (SMS codes only); or, with no Mac, Apparition's own Android anisette (macOS, Windows and Linux) or a third-party server | A paid account's certificate and profile, which need no sign-in |
+| Signing with a free Apple ID | A Mac's anisette: a Mac on macOS 26 or earlier (best, SIP stays on), a Mac on macOS 27 with SIP and AMFI off (works, not recommended), a macOS 26 VM on an Apple-silicon Mac (SMS codes only) | A paid account's certificate and profile, which need no sign-in |
 | Building your own apps with Xcode, and live patching (`inject`) | A Mac with Xcode | [xtool](https://github.com/xtool-org/xtool) builds on Linux, and on Windows through WSL; `apparition deploy` installs it and `apparition mcp` debugs it from the PC ([how](REMOTE_DEVELOPER.md#without-a-mac-xtool-on-windows-or-linux)) |
 | Installing, refreshing, JIT, the companion | Nothing in particular | Any computer (macOS, Windows, Linux), or the device itself with LocalDevVPN |
 
@@ -41,31 +39,18 @@ from macOS on your own Mac, as Xcode does. In order of preference:
      security. The reasoning is untested on real hardware, though the same entitled helper runs in the
      macOS 26 VM. Apparition doesn't do this for you and recommends against it on a Mac
      you use for anything else.
-3. **Apparition's own Android anisette**, on macOS, Windows and Linux, with no Mac at all.
-   Apparition fetches Apple Music's Android libraries from Apple on first use and runs them in its
-   own process, nothing to install or run. The sign-in claims Android, then asks for the Xcode token
-   as a Mac, which Apple accepted in a full sign-in on 12 Nov 2026 (2FA, token, teams, app IDs,
-   certificates). Apple has changed what it accepts several times since October, once turning this
-   (`anisette::ANDROID_LIBRARIES`) and a future build may turn it off. It signs in on this
-   computer, and the companion can offer it to your devices too (Settings > Anisette for
-   your devices), which is how a Mac with 8 GB, too little for the anisette VM, or a Mac on macOS 27
-   serves them without a VM. On Windows the libraries run through the same loader as elsewhere:
-   it maps them with the Win32 memory calls and answers their file calls itself, so there is no
-   WSL, emulator or Android image behind it.
-4. **A third-party anisette server**, given by address, on any computer, with no Mac at all.
-   Apparition supports using one, but doesn't provide or recommend one: you trust whoever runs it,
-   and whether it works is Apple's to say. A public Android-based server passed a full sign-in on
-   12 Nov 2026.
+3. **Apparition's former built-in Android anisette is disabled.** Free Apple ID sign-in now requires
+   a Mac running Apparition as a companion. Windows and Linux computers can still do installs,
+   refreshes and JIT, and use their paired Mac for Apple sign-in.
 
-Other computers, and devices away from home, pair with a Mac for anisette over an encrypted
-channel. **Without a Mac you can still start** with Apparition's own Android anisette on any
-computer, or with a third-party server given by address (Settings > Anisette for your devices, or the
-sign-in's Anisette data), on any computer. Apple changes what it accepts without notice, so a Mac
-you own stays the supported setup. Without any of them, only a paid developer account's own
-certificate and profile sign apps (they need no sign-in). The Apple ID is yours too: use a spare
-one for sideloading if you can.
+Other computers and devices pair with a Mac for anisette over an encrypted channel. Without a Mac,
+only a paid developer account's own certificate and profile can sign apps (they need no sign-in).
+The Apple ID is yours too: use a spare one for sideloading if you can.
 
-## Run your own anisette server with Docker
+## Legacy: run your own anisette server with Docker
+
+This optional third-party-server path is retained for existing setups; it is not the supported
+free Apple ID sign-in workflow. Use a paired Mac running Apparition.
 
 For a sign-in with no Mac and no server from anyone else, with Apple's libraries kept out of
 Apparition's own process or shared by several computers, run the

@@ -16,11 +16,9 @@
 //! third-party anisette server the person gives the address of. Such a computer's companion can
 //! offer that server to its paired devices too (`remote`), on every platform.
 
-/// Whether Apparition runs Apple Music's Android libraries for its own anisette where a Mac's isn't available:
-/// macOS 27 outside a prepared VM, Linux and Windows. Switch it off when Apple turns that anisette away for good;
-/// everything it needs stays compiled in, and sign-in then asks for a paired Mac or a server's address, as it
-/// did from 3 to 12 Nov 2026 (`13e1452`, brought back in this form on 12 Nov).
-pub const ANDROID_LIBRARIES: bool = true;
+/// Whether Apparition runs Apple Music's Android libraries for its own anisette.
+/// Disabled for the 1.1.1 transition to requiring a Mac for free Apple ID sign-in.
+pub const ANDROID_LIBRARIES: bool = false;
 
 #[cfg(feature = "anisette")]
 mod adi;
