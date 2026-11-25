@@ -36,6 +36,9 @@ that path. On an iPhone 15 Pro Max running iOS 27.2.1, the callback was refused 
 off on LTE, even after Apparition rediscovered the correct RemotePairing port. With Wi-Fi
 back on, the same Mac could reach that port at both of the phone's Tailscale addresses.
 Leaving the Wi-Fi radio on while disconnected from the Wi-Fi network still failed over LTE.
+On the same LTE and Tailscale connection, a separate iPhone test app with an unrestricted TCP
+listener answered over IPv4 and IPv6. Its loopback-only listener was unreachable, as was
+RemotePairing, whose Bonjour record advertised only loopback addresses on LTE.
 If the error says the companion's callback was refused, connect the phone to Wi-Fi and
 retry with Tailscale connected. Pairing verification starts after the callback connects.
 
