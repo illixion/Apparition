@@ -88,3 +88,23 @@ On the same iPhone and LTE connection, LocalDevVPN successfully reflected traffi
 an ordinary HTTP listener. The refusal we observed was specific to the path to RemotePairing.
 The LocalDevVPN project records the same cellular limitation in
 [issue #31](https://github.com/jkcoxson/LocalDevVPN/issues/31).
+
+### Check whether the debugger survives restoring cellular
+
+Use JIT Probe with USB unplugged and Wi-Fi off. Keep LocalDevVPN running throughout.
+
+1. Connect LocalDevVPN on cellular, turn on Airplane Mode, and launch JIT Probe from Apparition.
+   Record the PID and confirm **Request Fresh Arena** returns 42 and 43.
+2. Restore cellular service while JIT Probe is still running. Once LTE or 5G returns, try
+   **Run Existing Arena** and then **Request Fresh Arena**, in the same PID. The first rewrites
+   previously prepared memory. The second sends a new allocation and preparation request to
+   the debugger and actually executes the resulting code.
+3. Repeat **Request Fresh Arena** at one, five, and fifteen minutes. On a separate run, lock the
+   phone for five minutes after restoring cellular, then unlock and request another fresh arena.
+   Leave Apparition in the background throughout. A frozen probe or missing debugger is a failure.
+4. On a separate run, use Apparition's JIT notification to stop the debugger while the probe is
+   running. **Run Existing Arena** checks whether the prepared memory still works after a clean
+   detach. **Request Fresh Arena** should report that the debugger is absent.
+
+Repeat with Wi-Fi connected as a control if the cellular run fails. These checks establish
+what survives in one process. Launching a different app from an existing tunnel is a separate test.

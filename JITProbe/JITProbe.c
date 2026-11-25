@@ -7,7 +7,7 @@
 // 3. Write `mov w0, #42; ret`, call it, then rewrite it to return 43 and call it again: a JIT
 //    that can't replace code it already ran isn't one.
 //
-// Without a debugger the brk would kill the app, so it checks P_TRACED first.
+// Without a debugger the brk would kill the app, so each allocation checks P_TRACED first.
 
 #include "JITProbe.h"
 
@@ -43,42 +43,66 @@ static int run_returning(void *writable, void *executable, uint16_t value) {
     return ((int (*)(void))executable)();
 }
 
-static void *executable;
-static void *writable;
+typedef struct {
+    void *executable;
+    void *writable;
+} Arena;
 
-int jit_probe_run(char *report, size_t capacity) {
+static int prepare(Arena *arena, char *report, size_t capacity) {
     if (!traced()) {
         snprintf(report, capacity, "No debugger attached: launch this app with JIT.");
         return 1;
     }
+    void *executable = jit26_prepare_region(NULL, region_length);
     if (!executable) {
-        executable = jit26_prepare_region(NULL, region_length);
-        if (!executable) {
-            snprintf(report, capacity, "The debugger didn't give this app executable memory (x0 = 0).");
-            return 2;
-        }
-        vm_address_t alias = 0;
-        vm_prot_t current, maximum;
-        kern_return_t remapped = vm_remap(mach_task_self(), &alias, region_length, 0, VM_FLAGS_ANYWHERE,
-                                          mach_task_self(), (vm_address_t)executable, FALSE,
-                                          &current, &maximum, VM_INHERIT_NONE);
-        if (remapped != KERN_SUCCESS) {
-            snprintf(report, capacity, "Got %p, but couldn't map it again (vm_remap: %d).", executable, remapped);
-            executable = NULL;
-            return 3;
-        }
-        kern_return_t protect = vm_protect(mach_task_self(), alias, region_length, FALSE, VM_PROT_READ | VM_PROT_WRITE);
-        if (protect != KERN_SUCCESS) {
-            snprintf(report, capacity, "Got %p, but couldn't make its alias writable (vm_protect: %d).", executable, protect);
-            executable = NULL;
-            return 4;
-        }
-        writable = (void *)alias;
+        snprintf(report, capacity, "The debugger didn't give this app executable memory (x0 = 0).");
+        return 2;
     }
-    int first = run_returning(writable, executable, 42);
-    int second = run_returning(writable, executable, 43);
+    vm_address_t alias = 0;
+    vm_prot_t current, maximum;
+    kern_return_t remapped = vm_remap(mach_task_self(), &alias, region_length, 0, VM_FLAGS_ANYWHERE,
+                                      mach_task_self(), (vm_address_t)executable, FALSE,
+                                      &current, &maximum, VM_INHERIT_NONE);
+    if (remapped != KERN_SUCCESS) {
+        snprintf(report, capacity, "Got %p, but couldn't map it again (vm_remap: %d).", executable, remapped);
+        vm_deallocate(mach_task_self(), (vm_address_t)executable, region_length);
+        return 3;
+    }
+    kern_return_t protect = vm_protect(mach_task_self(), alias, region_length, FALSE, VM_PROT_READ | VM_PROT_WRITE);
+    if (protect != KERN_SUCCESS) {
+        snprintf(report, capacity, "Got %p, but couldn't make its alias writable (vm_protect: %d).", executable, protect);
+        vm_deallocate(mach_task_self(), alias, region_length);
+        vm_deallocate(mach_task_self(), (vm_address_t)executable, region_length);
+        return 4;
+    }
+    *arena = (Arena){ executable, (void *)alias };
+    return 0;
+}
+
+static int run(Arena arena, char *report, size_t capacity) {
+    int first = run_returning(arena.writable, arena.executable, 42);
+    int second = run_returning(arena.writable, arena.executable, 43);
     int ok = first == 42 && second == 43;
     snprintf(report, capacity, "%s: code at %p (written through %p) returned %d, then %d after rewriting.",
-             ok ? "JIT works" : "JIT ran but returned the wrong values", executable, writable, first, second);
+             ok ? "JIT works" : "JIT ran but returned the wrong values", arena.executable, arena.writable, first, second);
     return ok ? 0 : 5;
+}
+
+int jit_probe_run(char *report, size_t capacity) {
+    static Arena retained;
+    if (!retained.executable) {
+        int result = prepare(&retained, report, capacity);
+        if (result) return result;
+    }
+    return run(retained, report, capacity);
+}
+
+int jit_probe_fresh(char *report, size_t capacity) {
+    Arena arena;
+    int result = prepare(&arena, report, capacity);
+    if (result) return result;
+    result = run(arena, report, capacity);
+    vm_deallocate(mach_task_self(), (vm_address_t)arena.writable, region_length);
+    vm_deallocate(mach_task_self(), (vm_address_t)arena.executable, region_length);
+    return result;
 }

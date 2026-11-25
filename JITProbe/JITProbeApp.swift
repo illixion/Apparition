@@ -5,25 +5,35 @@ import SwiftUI
 @main
 struct JITProbeApp: App {
     @State private var lines: [String] = []
+    @State private var started = ProcessInfo.processInfo.systemUptime
 
     var body: some Scene {
         WindowGroup {
             VStack(alignment: .leading, spacing: 12) {
                 Text("JIT Probe").font(.title2)
-                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(line).font(.system(.body, design: .monospaced))
+                Text("PID \(getpid())").font(.caption.monospaced())
+                ScrollView {
+                    ForEach(Array(lines.reversed().enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(.footnote, design: .monospaced))
+                    }
                 }
-                Button("Run Again") { run() }
+                Button("Run Existing Arena") { run(fresh: false) }
+                Button("Request Fresh Arena") { run(fresh: true) }
             }
             .padding(32)
-            .onAppear { if lines.isEmpty { run() } }
+            .onAppear { if lines.isEmpty { run(fresh: false) } }
         }
     }
 
-    private func run() {
+    private func run(fresh: Bool) {
+        let label = fresh ? "Fresh arena" : "Retained arena"
+        let elapsed = Int(ProcessInfo.processInfo.systemUptime - started)
         var buffer = [CChar](repeating: 0, count: 512)
-        let result = buffer.withUnsafeMutableBufferPointer { jit_probe_run($0.baseAddress!, $0.count) }
-        let line = String(cString: buffer)
+        let result = buffer.withUnsafeMutableBufferPointer {
+            if fresh { return jit_probe_fresh($0.baseAddress!, $0.count) }
+            return jit_probe_run($0.baseAddress!, $0.count)
+        }
+        let line = "[+\(elapsed)s] \(label) · \(String(cString: buffer))"
         NSLog("JITProbe: %@ (%d)", line, result)
         lines.append(line)
     }
