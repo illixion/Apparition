@@ -729,8 +729,8 @@ async fn sign_in_with_proxy(
             Err(error) if served == claimed_platform::Served::Windows && auth_code(&error) == Some(-80046) => {
                 tracing::info!("Windows login succeeded; retrying the refused Xcode token with Mac client metadata");
                 account.grandslam_client = Arc::new(signing_in.claiming(isideload::anisette::AnisetteClientInfo {
-                    client_info: claimed_platform::MAC_CLIENT_INFO.to_string(),
-                    user_agent: claimed_platform::USER_AGENT.to_string(),
+                    client_info: claimed_platform::XCODE_MAC_CLIENT_INFO.to_string(),
+                    user_agent: claimed_platform::XCODE_MAC_USER_AGENT.to_string(),
                 }));
                 developer_session_with_retry(&mut account).await
                     .context("Failed to open the Xcode session using Mac client metadata after Windows-claim rejection")?
@@ -1314,8 +1314,8 @@ pub unsafe extern "C" fn apparition_retry_developer_session(claim: *const c_char
             match claim.as_str() {
                 "original" => pending.account.grandslam_client = pending.original.clone(),
                 "mac" => pending.account.grandslam_client = Arc::new(pending.original.claiming(isideload::anisette::AnisetteClientInfo {
-                    client_info: claimed_platform::MAC_CLIENT_INFO.to_string(),
-                    user_agent: claimed_platform::USER_AGENT.to_string(),
+                    client_info: claimed_platform::XCODE_MAC_CLIENT_INFO.to_string(),
+                    user_agent: claimed_platform::XCODE_MAC_USER_AGENT.to_string(),
                 })),
                 _ => {}
             }

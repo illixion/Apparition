@@ -29,6 +29,13 @@ pub const ANDROID_CLIENT_INFO: &str = "<Pixel 8><Android; 14; UQ1A.240205.004><c
 pub const MAC_CLIENT_INFO: &str = "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
 pub const USER_AGENT: &str = "akd/1.0 CFNetwork/808.1.4";
 
+/// Current Mac metadata for the Xcode-token request after an Android-claimed login.
+///
+/// This current-format pair has a live-account sign-in precedent in SideStore#1745 (2026-11-22).
+/// Keep the OS spelling and CFNetwork/Darwin versions together as reported there.
+pub const XCODE_MAC_CLIENT_INFO: &str = "<Mac14,15> <Mac OS X;27.0.1;26A434> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+pub const XCODE_MAC_USER_AGENT: &str = "akd/1.0 CFNetwork/3896.100.1.1.1 Darwin/27.0.0";
+
 /// What Apparition's own anisette server says it serves, in `/v3/client_info`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Served {
@@ -79,7 +86,7 @@ impl Claim {
     /// claiming Android.
     pub fn after_sign_in(&self) -> Option<AnisetteClientInfo> {
         (self.served == Served::Android)
-            .then(|| AnisetteClientInfo { client_info: MAC_CLIENT_INFO.to_string(), user_agent: USER_AGENT.to_string() })
+            .then(|| AnisetteClientInfo { client_info: XCODE_MAC_CLIENT_INFO.to_string(), user_agent: XCODE_MAC_USER_AGENT.to_string() })
     }
 
     /// The claim for a server's `/v3/client_info` reply and its `Implementation-Version` header.
@@ -239,7 +246,9 @@ mod tests {
     #[test]
     fn an_android_sign_in_asks_for_the_xcode_token_as_a_mac() {
         let after = Claim::of(Served::Android).after_sign_in().unwrap();
-        assert_eq!((after.client_info.as_str(), after.user_agent.as_str()), (MAC_CLIENT_INFO, USER_AGENT));
+        assert_eq!((after.client_info.as_str(), after.user_agent.as_str()), (XCODE_MAC_CLIENT_INFO, XCODE_MAC_USER_AGENT));
+        assert!(after.client_info.contains("<Mac OS X;27.0.1;"));
+        assert!(after.user_agent.contains("CFNetwork/3896.100.1.1.1 Darwin/27.0.0"));
         assert!(Claim::of(Served::Mac).after_sign_in().is_none());
         let native_c = Claim::from_reply(&json!({ "client_info": NATIVE_C, "user_agent": "akd/1.0" }), None);
         assert!(native_c.after_sign_in().is_none());
