@@ -139,20 +139,20 @@ enum PairingRecord {
     /// How to get a pairing on this platform, as a sentence or two.
     static var howToPair: String {
         #if os(visionOS)
-        "Pair in Setup > Pair This Headset, with Settings > General > Remote Devices open beside Apparition."
+        String(localized: "Pair in Setup > Pair This Headset, with Settings > General > Remote Devices open beside Apparition.")
         #elseif os(tvOS)
-        "Open Settings > Remotes and Devices > Remote App and Devices on this Apple TV, run apparition pair on a computer on the same network (the Apple TV shows a code twice), then apparition pairing hand-off."
+        String(localized: "Open Settings > Remotes and Devices > Remote App and Devices on this Apple TV, run apparition pair on a computer on the same network (the Apple TV shows a code twice), then apparition pairing hand-off.")
         #else
-        "On a computer that this \(ThisDevice.noun) trusts, run apparition pair --usb, then apparition pairing hand-off (or install Apparition again from the Apparition desktop app). Wi-Fi is enough: a cable is only needed while the \(ThisDevice.noun) doesn't trust the computer yet."
+        String(localized: "On a computer that this \(ThisDevice.noun) trusts, run apparition pair --usb, then apparition pairing hand-off (or install Apparition again from the Apparition desktop app). Wi-Fi is enough: a cable is only needed while the \(ThisDevice.noun) doesn't trust the computer yet.")
         #endif
     }
 
     static func message(_ problem: Problem) -> String {
         switch problem {
         case .missing:
-            "Apparition isn't paired with this \(ThisDevice.noun), so it can't reach it to install apps or enable JIT. \(howToPair)"
+            String(localized: "Apparition isn't paired with this \(ThisDevice.noun), so it can't reach it to install apps or enable JIT. \(howToPair)")
         case .rejected:
-            "This \(ThisDevice.noun) no longer trusts Apparition's pairing, so Apparition can't reach it. Pair again: \(howToPair)"
+            String(localized: "This \(ThisDevice.noun) no longer trusts Apparition's pairing, so Apparition can't reach it. Pair again: \(howToPair)")
         }
     }
 
@@ -162,7 +162,7 @@ enum PairingRecord {
     static func connectionHint(in outcome: String) -> String? {
         #if os(iOS)
         guard outcome.contains("RemotePairing"), problem(in: outcome) == nil else { return nil }
-        return "If this \(ThisDevice.noun) is on cellular data, turn on Airplane Mode and try again: it can't reach its own pairing service otherwise."
+        return String(localized: "If this \(ThisDevice.noun) is on cellular data, turn on Airplane Mode and try again: it can't reach its own pairing service otherwise.")
         #else
         return nil
         #endif
