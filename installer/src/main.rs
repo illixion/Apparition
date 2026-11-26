@@ -975,7 +975,12 @@ async fn launch(args: &[String]) -> Result<(), Error> {
     }
     let bundle_id = bundle_id.ok_or_else(usage)?;
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
+    let store = store();
+    let mut tunnel = if jit {
+        store.connect_for_developer(&device, String::new, &crate::say).await?
+    } else {
+        store.connect_healing(&device, String::new, &crate::say).await?
+    };
     let arguments: Vec<&str> = app_args.iter().map(String::as_str).collect();
     let launched = tunnel.launch(&bundle_id, &arguments, &environment, console, jit).await?;
     let pid = launched.pid;
@@ -1150,6 +1155,11 @@ async fn pairing(args: &[String]) -> Result<(), Error> {
     };
     store().hand_over_pairing(&mut tunnel, &bundle_id, &device.udid).await?;
     println!("Gave {bundle_id} on {} its pairing. Open Apparition there (close it first if it's open) and it can reach the device again.", device.name);
+    if device.platform() == api::Platform::IOS {
+        store().hand_over_ddi(&mut tunnel, &bundle_id).await
+            .context("Pairing sent, but the iOS Developer Disk Image wasn't sent")?;
+        println!("Gave {bundle_id} the Mac's iOS Developer Disk Image.");
+    }
     Ok(())
 }
 
@@ -1460,7 +1470,7 @@ async fn jit(args: &[String]) -> Result<(), Error> {
     let device = find_device(device.as_deref())?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The device wants to pair again. PIN: ");
-    let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
+    let mut tunnel = store().connect_for_developer(&device, pin, &crate::say).await?;
     // What a session is stopped by: its pid when attached (no bundle ID is passed then).
     let mut key = bundle_id.clone();
     let target = if attach {
@@ -1647,6 +1657,12 @@ async fn sign_and_install(
             println!("Gave Apparition its pairing with this device.");
         }
         handoff(options, tunnel, &installed_id, apple_id.as_ref()).await?;
+        if api::Platform::of_product(&info.product_type) == api::Platform::IOS {
+            match store().hand_over_ddi(tunnel, &installed_id).await {
+                Ok(()) => println!("Gave Apparition the Mac's iOS Developer Disk Image."),
+                Err(error) => eprintln!("App installed, but the iOS Developer Disk Image wasn't sent: {error}"),
+            }
+        }
     }
     Ok(())
 }

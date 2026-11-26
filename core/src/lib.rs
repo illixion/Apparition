@@ -1578,16 +1578,16 @@ pub unsafe extern "C" fn apparition_uninstall(
 pub unsafe extern "C" fn apparition_ensure_ddi(
     adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
     handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
-    dir: *const c_char,
+    bundle: *const c_char,
 ) -> *mut c_char {
     reply((|| {
         if adapter.is_null() || handshake.is_null() {
             bail!("missing tunnel");
         }
-        let dir = if dir.is_null() { None } else { Some(PathBuf::from(unsafe { text(dir) }?)) };
+        let bundle = if bundle.is_null() { None } else { Some(PathBuf::from(unsafe { text(bundle) }?)) };
         let adapter = unsafe { &mut (*adapter).0 };
         let handshake = unsafe { &mut (*handshake).0 };
-        runtime().block_on(ddi::ensure(adapter, handshake, dir.as_deref()))
+        runtime().block_on(ddi::ensure(adapter, handshake, bundle.as_deref()))
     })())
 }
 

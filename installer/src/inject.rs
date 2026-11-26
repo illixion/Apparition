@@ -193,7 +193,7 @@ pub async fn run(args: &[String]) -> Result<(), Error> {
         // The Apparition backend: this Mac is the app's debugger while the patch loads.
         if pid == 0 { return Err(fail("The live app did not report a valid process ID")); }
         eprintln!("Connecting to {} to patch {bundle} (pid {pid})…", device.name);
-        let mut tunnel = tokio::time::timeout(Duration::from_secs(25), store().connect(&device, || crate::ask("Pairing PIN: ")))
+        let mut tunnel = tokio::time::timeout(Duration::from_secs(25), store().connect_for_developer(&device, || crate::ask("Pairing PIN: "), &crate::say))
             .await.map_err(|_| fail("Timed out connecting to the device; check pairing and Local Network access"))??;
         let key = pid.to_string();
         let worker = async {

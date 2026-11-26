@@ -1273,12 +1273,18 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let mut handoff = Value::Null;
             let mut handoff_error = Value::Null;
             let mut pairing_handed_over = false;
+            let mut ddi_handoff_error = Value::Null;
             if options.hand_off && is_apparition && let Some(tunnel) = tunnel.tunnel() {
                 stage(&app, "handoff", Value::Null);
                 // An iPhone or iPad paired over USB: Apparition gets its own pairing record.
                 match state.store.hand_over_pairing(tunnel, &bundle_id, &info.udid).await {
                     Ok(handed) => pairing_handed_over = handed,
                     Err(error) => handoff_error = json!(error.to_string()),
+                }
+                if api::Platform::of_product(&info.product_type) == api::Platform::IOS {
+                    if let Err(error) = state.store.hand_over_ddi(tunnel, &bundle_id).await {
+                        ddi_handoff_error = json!(error.to_string());
+                    }
                 }
                 let apple_id_dir = state.store.apple_id_dir();
                 let (kind, what) = match (&certificate, &apple_id) {
@@ -1307,6 +1313,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 "migrationPending": migration_pending,
                 "handoff": handoff,
                 "handoffError": handoff_error,
+                "ddiHandoffError": ddi_handoff_error,
                 "pairingHandedOver": pairing_handed_over,
                 "platform": api::Platform::of_product(&info.product_type).os_name(),
                 "appleId": apple_id.map(|(email, _)| email),

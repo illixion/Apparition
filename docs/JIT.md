@@ -33,7 +33,27 @@ on iPhone, iPad and Vision Pro does it with no computer (it takes the device's o
 not alongside Tailscale). Apple TV can run VPN apps, but LocalDevVPN has no Apple TV version, so it uses a companion. A computer is needed
 once, to install Apparition.
 
-The debugger itself comes from the **developer disk image**, which a restart unmounts. On iPhone and
-iPad, Apparition mounts it before each JIT launch when nothing has: the first time it downloads
-Xcode's image (about 18 MB) and keeps it, and Apple's signing server personalizes it for the device,
-as Xcode does. Before, JIT failed after a restart until Xcode or another app mounted it again.
+### Prepare the iPhone or iPad developer image
+
+The debugger and location simulation use Apple's **Developer Disk Image**. During an
+Apparition install or `apparition pairing hand-off --device <name>`, the installer copies
+the personalized iOS image from Xcode into Apparition on the device. After that, on-device
+JIT can mount it when needed without reaching the computer. Apple may still need to
+personalize the image over the internet. Desktop JIT and location simulation can use the
+same Xcode source to mount the image before they start.
+
+- **On a Mac:** Install or update [Xcode from the Mac App Store](https://apps.apple.com/app/xcode/id497799835)
+  and open it once to install its components. If you need an older Xcode that runs on your Mac,
+  use [Apple Developer Downloads](https://developer.apple.com/download/all/?q=Xcode).
+  If the image is missing or outdated, run
+  `xcodebuild -runFirstLaunch -checkForNewerComponents`, then repeat the pairing handoff.
+- **On Windows or Linux:** Run `apparition mac pair <address>` and approve developer access
+  in Apparition on the Mac with Xcode installed. Keep Apparition running on that Mac while
+  you do the install or pairing handoff. The PC fetches the image over the encrypted
+  companion connection.
+- **Already installed:** Repeat the pairing handoff to stage the Mac's copy. Images cached
+  by older builds from the public mirror are ignored.
+
+The on-device mount uses the personalized image format, which needs a matching hardware
+identity in Xcode's manifest. If Xcode only has a compatible cryptex image for your device,
+prepare the device with Xcode.

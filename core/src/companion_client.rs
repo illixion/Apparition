@@ -531,8 +531,14 @@ pub async fn developer(dir: &Path, method: &str, path: &str, content_type: Optio
         Refusal::Unreachable(why) => report!("Can't reach {} ({why}). Check that it's on, awake and running Apparition, on this network or your tailnet.", paired.mac_name),
         Refusal::NotPaired => report!("{} no longer accepts this computer. Pair with it again.", paired.mac_name),
     }).map_err(|e| e.context(NoDeveloperAccess).into_dynamic())?;
+    if method == "GET" && path == "/ios-ddi" {
+        let path = format!("{}{path}", crate::companion_channel::DEVELOPER_PREFIX);
+        return tokio::time::timeout(Duration::from_secs(90), exchange(&mut tls, method, &path,
+            "apparition-companion", None, content_type, body, Some(crate::ddi::MAX_BUNDLE + 8192))).await?
+            .map_err(|e| e.context(format!("{} didn't send the Developer Disk Image", paired.mac_name)).into_dynamic());
+    }
     let path = format!("{}{path}", crate::companion_channel::DEVELOPER_PREFIX);
-    exchange(&mut tls, method, &path, "apparition-companion", None, content_type, body).await
+    exchange(&mut tls, method, &path, "apparition-companion", None, content_type, body, None).await
         .map_err(|e| e.context(format!("{} didn't answer", paired.mac_name)).into_dynamic())
 }
 
@@ -544,12 +550,12 @@ pub async fn local_developer(address: SocketAddr, token: &str, method: &str, pat
     }
     let mut stream = connect(&address.ip().to_string(), address.port()).await
         .map_err(|e| e.context("Apparition isn't running on this Mac (open it, and its Store starts)").into_dynamic())?;
-    exchange(&mut stream, method, path, &address.to_string(), Some(token), content_type, body).await
+    exchange(&mut stream, method, path, &address.to_string(), Some(token), content_type, body, None).await
 }
 
 /// Writes one HTTP/1.1 request (`Connection: close`) and reads the whole reply.
 async fn exchange<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
-    stream: &mut S, method: &str, path: &str, host: &str, token: Option<&str>, content_type: Option<&str>, body: Upload<'_>,
+    stream: &mut S, method: &str, path: &str, host: &str, token: Option<&str>, content_type: Option<&str>, body: Upload<'_>, reply_limit: Option<usize>,
 ) -> Result<Reply, Report> {
     if !path.starts_with('/') || path.contains(['\r', '\n', ' ']) || method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
         bail!("invalid request {method} {path}");
@@ -578,7 +584,14 @@ async fn exchange<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     }
     stream.flush().await?;
     let mut raw = Vec::new();
-    if let Err(error) = stream.read_to_end(&mut raw).await {
+    let read = if let Some(limit) = reply_limit {
+        let result = stream.take(limit as u64 + 1).read_to_end(&mut raw).await;
+        if raw.len() > limit { bail!("The Mac's response exceeds the Developer Disk Image size limit"); }
+        result
+    } else {
+        stream.read_to_end(&mut raw).await
+    };
+    if let Err(error) = read {
         // A peer that closes without a TLS close-notify after a full reply: that's the end.
         if raw.is_empty() {
             return Err(error.into());
@@ -822,6 +835,25 @@ mod developer_tests {
         assert!(request.starts_with("POST /api/service/v1/deploy?file=App.ipa HTTP/1.1\r\n"), "{request}");
         assert!(request.contains("Authorization: Bearer app-token\r\n") && request.contains("Content-Length: 11\r\n"), "{request}");
         assert!(request.contains(&format!("X-Apparition-Computer: {}\r\n", crate::relay::machine_name())), "{request}");
+
+        // Opt in to test an actual Xcode payload, or the missing-Xcode response
+        // using an invalid DEVELOPER_DIR for this test process.
+        #[cfg(target_os = "macos")]
+        match std::env::var("APPARITION_TEST_XCODE_DDI").as_deref() {
+            Ok("1") => {
+                let expected = crate::ddi::from_xcode().unwrap();
+                let sent = developer(here.path(), "GET", "/ios-ddi", None, Upload::None).await.unwrap();
+                assert_eq!(sent.status, 200);
+                assert_eq!(sent.content_type, "application/octet-stream");
+                assert!(sent.body == expected, "the companion must send the exact local Xcode bundle");
+            }
+            Ok("missing") => {
+                let reply = developer(here.path(), "GET", "/ios-ddi", None, Upload::None).await.unwrap();
+                assert_eq!(reply.status, 503);
+                assert!(String::from_utf8_lossy(&reply.body).contains("Mac App Store"));
+            }
+            _ => {}
+        }
 
         // An anisette-only pairing is told to pair again, without a connection.
         let mut saved = load(here.path()).unwrap();

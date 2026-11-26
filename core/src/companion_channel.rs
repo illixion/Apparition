@@ -213,6 +213,22 @@ async fn handle(
             tls.write_all(&plain_reply(403, &format!("Pair this computer with {HOST} again and allow developer access there."))).await?;
             bail!("device has no developer grant");
         }
+        // A fixed Apple asset, not a file service. The developer grant covers the request
+        // and the same channel can serve it without the Store being available.
+        if rest == "/ios-ddi" && header.starts_with(b"GET ") {
+            #[cfg(target_os = "macos")]
+            match tokio::task::spawn_blocking(crate::ddi::from_xcode).await? {
+                Ok(bundle) => {
+                    tls.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bundle.len()).as_bytes()).await?;
+                    tokio::time::timeout(Duration::from_secs(90), tls.write_all(&bundle)).await??;
+                }
+                Err(error) => tls.write_all(&plain_reply(503, &error.to_string())).await?,
+            }
+            #[cfg(not(target_os = "macos"))]
+            tls.write_all(&plain_reply(503, "This companion is not a Mac. Pair with a Mac running Apparition and install Xcode there.")).await?;
+            tls.shutdown().await?;
+            return Ok(());
+        }
         let route = developer.lock().unwrap().clone();
         let Some(route) = route else {
             tls.write_all(&plain_reply(503, &format!("The Apparition Store on {HOST} isn't running. Open Apparition there."))).await?;
@@ -518,6 +534,9 @@ mod tests {
         let mut tls = identified(port, "phone", "phone-token").await;
         tls.write_all(b"GET /developer/mcp HTTP/1.1\r\n\r\n").await.unwrap();
         assert!(reply(&mut tls).await.starts_with("HTTP/1.1 403"), "no developer grant");
+        let mut tls = identified(port, "phone", "phone-token").await;
+        tls.write_all(b"GET /developer/ios-ddi HTTP/1.1\r\n\r\n").await.unwrap();
+        assert!(reply(&mut tls).await.starts_with("HTTP/1.1 403"), "DDI also requires developer access");
         // Anisette isn't offered: the computer's anisette request is closed on, as before.
         let mut tls = identified(port, "pc", "pc-token").await;
         tls.write_all(b"GET /v3/client_info HTTP/1.1\r\n\r\n").await.unwrap();

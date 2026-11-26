@@ -7,71 +7,30 @@ private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Appari
 /// A restart unmounts it, and until now only Xcode or another app (StikDebug) put it back, so
 /// JIT failed after every restart of a device that no computer had prepared since. Before a JIT
 /// session Apparition checks over the same tunnel and mounts it when nothing is: at most once per
-/// restart, with the files downloaded once and kept.
+/// restart, using the bundle handed over by the Mac.
 enum DeveloperDiskImage {
-    /// Xcode's personalized iOS image, the copy StikDebug and pymobiledevice3 fetch. The device
-    /// mounts it only after Apple's TSS server has signed it for this device, so a changed file
-    /// is refused rather than mounted.
-    static let source = URL(string: "https://raw.githubusercontent.com/doronz88/DeveloperDiskImage/main/PersonalizedImages/Xcode_iOS_DDI_Personalized/")!
-    static let files = ["Image.dmg", "Image.dmg.trustcache", "BuildManifest.plist"]
-
-    static var directory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DeveloperDiskImage", isDirectory: true)
+    /// Installed by the Mac or its paired computer. Older downloads into Application
+    /// Support are intentionally ignored.
+    static var bundle: URL {
+        AppFolders.documents.appendingPathComponent("Apparition-iOS-DDI-v1.apddi")
     }
 
-    static var hasFiles: Bool {
-        files.allSatisfy { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) }
-    }
-
-    /// Downloads whichever files are missing. Blocks, as the tunnel's callers already do off the
-    /// main thread.
-    static func download() throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        for name in files {
-            let destination = directory.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: destination.path) { continue }
-            let url = source.appendingPathComponent(name)
-            let done = DispatchSemaphore(value: 0)
-            var failure: Error?
-            // SafeSession: the image is code the device runs, so it gets the same refusal of
-            // interception CAs as the app's other downloads.
-            let task = SafeSession.shared.downloadTask(with: url) { location, response, error in
-                defer { done.signal() }
-                if let error { failure = NationalCAs.explain(error, url: url); return }
-                guard let location, (response as? HTTPURLResponse)?.statusCode == 200 else {
-                    failure = IDevice.ProbeError("downloading \(name) failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))")
-                    return
-                }
-                do { try FileManager.default.moveItem(at: location, to: destination) } catch { failure = error }
-            }
-            task.resume()
-            done.wait()
-            if let failure { throw failure }
-        }
-    }
+    static let needsImage = "This device needs the Developer Disk Image. On your paired computer, run “apparition pairing hand-off” again. Install Xcode from the Mac App Store and open it to install device support if the Mac has no image. On Windows or Linux, pair with a Mac running Apparition and allow developer access."
 
     /// What `ensure` did: a line for the JIT session's events, and whether it mounted the image
-    /// just now, which the tunnel it used can't show yet (see `IDevice.withJITTunnel`).
+    /// just now, which the tunnel it used can't show yet (see `IDevice.withDeveloperTunnel`).
     struct Outcome {
         let line: String
         var mountedNow = false
+        var needsFiles = false
     }
 
-    /// Mounts the image over an open tunnel unless one is mounted, downloading its files the first
-    /// time. Nil where there's nothing to do. Never throws: JIT can still work when something else
-    /// mounted the image.
+    /// Mounts the Mac's image if needed. Other platforms use their own developer image.
     static func ensure(adapter: OpaquePointer?, handshake: OpaquePointer?) -> Outcome? {
         #if os(iOS)
-        var reply = AccountModel.call(apparition_ensure_ddi(adapter, handshake, hasFiles ? directory.path : nil))
-        if reply["ok"] as? Bool == true, reply["needsFiles"] as? Bool == true {
-            do {
-                try download()
-            } catch {
-                log.error("disk image download failed: \(LogScrub.text(String(describing: error)), privacy: .public)")
-                return Outcome(line: "disk image: couldn't download it: \(error)")
-            }
-            reply = AccountModel.call(apparition_ensure_ddi(adapter, handshake, directory.path))
+        let reply = AccountModel.call(apparition_ensure_ddi(adapter, handshake, bundle.path))
+        if reply["needsFiles"] as? Bool == true {
+            return Outcome(line: "disk image: " + needsImage, needsFiles: true)
         }
         guard reply["ok"] as? Bool == true else {
             let error = reply["error"] as? String ?? "mounting failed"
@@ -98,7 +57,7 @@ enum DeveloperDiskImage {
         var reply = reply
         reply["events"] = [line] + (reply["events"] as? [String] ?? [])
         if reply["ok"] as? Bool != true, line != "disk image: already mounted", line != "disk image: mounted" {
-            reply["error"] = "\(reply["error"] as? String ?? "JIT failed") (\(line))"
+            reply["error"] = "\(reply["error"] as? String ?? "Developer service unavailable") (\(line))"
         }
         return reply
     }

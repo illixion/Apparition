@@ -141,12 +141,13 @@ enum IDevice {
     /// mounted it. The device lists its services once, when the tunnel opens, and lists the
     /// debugger only while the image is mounted: after mounting it here, the session needs a
     /// new tunnel, whose list has the debugger in it. `body` gets the mount's event line.
-    private static func withJITTunnel<T>(_ target: Target, hostname: String, file: PairingFile, pin: PinCallback?,
+    private static func withDeveloperTunnel<T>(_ target: Target, hostname: String, file: PairingFile, pin: PinCallback?,
                                          context: UnsafeMutableRawPointer,
                                          _ body: (OpaquePointer?, OpaquePointer?, String?) throws -> T) throws -> T {
         var disk: DeveloperDiskImage.Outcome?
         let first: T? = try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             disk = DeveloperDiskImage.ensure(adapter: adapter, handshake: handshake)
+            if disk?.needsFiles == true { throw ProbeError(DeveloperDiskImage.needsImage) }
             if disk?.mountedNow == true { return nil }
             return try body(adapter, handshake, disk?.line)
         }
@@ -160,7 +161,7 @@ enum IDevice {
     static func launchJIT(target: Target, hostname: String, file: PairingFile,
                           pin: PinCallback?, context: UnsafeMutableRawPointer,
                           bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
-        try withJITTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
+        try withDeveloperTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
             DeveloperDiskImage.annotate(AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds)), with: disk)
         }
     }
@@ -170,7 +171,7 @@ enum IDevice {
     static func attachJIT(target: Target, hostname: String, file: PairingFile,
                           pin: PinCallback?, context: UnsafeMutableRawPointer,
                           pid: UInt64, bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
-        try withJITTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
+        try withDeveloperTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
             DeveloperDiskImage.annotate(AccountModel.call(apparition_attach_jit(adapter, handshake, pid, bundleId, waitSeconds)), with: disk)
         }
     }
@@ -182,7 +183,7 @@ enum IDevice {
     static func runJITScript(target: Target, hostname: String, file: PairingFile,
                              pin: PinCallback?, context: UnsafeMutableRawPointer,
                              pid: UInt64, bundleId: String, launch: Bool, script: String) throws -> [String: Any] {
-        try withJITTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
+        try withDeveloperTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
             var session: OpaquePointer?
             let opened = AccountModel.call(apparition_jit_script_open(adapter, handshake, pid, bundleId, launch, &session))
             guard opened["ok"] as? Bool == true, let session else { return DeveloperDiskImage.annotate(opened, with: disk) }
@@ -316,13 +317,14 @@ enum IDevice {
                                  pin: PinCallback?, context: UnsafeMutableRawPointer, key: String,
                                  latitude: Double, longitude: Double,
                                  onSet: @escaping @Sendable (Double, Double) -> Void) throws -> [String: Any] {
-        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+        try withDeveloperTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake, disk in
             let box = Unmanaged.passRetained(LocationBox(onSet))
             defer { box.release() }
-            return AccountModel.call(apparition_simulate_location(adapter, handshake, key, latitude, longitude, { raw, latitude, longitude in
+            let reply = AccountModel.call(apparition_simulate_location(adapter, handshake, key, latitude, longitude, { raw, latitude, longitude in
                 guard let raw else { return }
                 Unmanaged<LocationBox>.fromOpaque(raw).takeUnretainedValue().onSet(latitude, longitude)
             }, box.toOpaque()))
+            return DeveloperDiskImage.annotate(reply, with: disk)
         }
     }
 

@@ -1477,6 +1477,9 @@ function done() {
   const notes = [];
   if (result.migrationPending) notes.push("The new app is installed, but its data transfer is incomplete. The old copy was kept. Install again with Keep existing app data to retry.");
   if (result.handoffError) notes.push(`Couldn't share the signing with Apparition (${result.handoffError}). Sign in there yourself instead.`);
+  if (result.ddiHandoffError) {
+    notes.push(`Apparition is installed, but the iOS Developer Disk Image could not be sent. ${result.ddiHandoffError} Once ready, reinstall Apparition or run apparition pairing hand-off.`);
+  }
   if (result.strippedExtensions?.length) notes.push(`Left out extensions: ${result.strippedExtensions.join(", ")}.`);
   for (const w of result.watches ?? []) notes.push(w.error ? `The watch app didn't install on ${w.name}: ${w.error}` : `The watch app is on ${w.name}.`);
   extra.hidden = !notes.length;
