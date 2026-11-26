@@ -217,12 +217,15 @@ async fn handle(
         // and the same channel can serve it without the Store being available.
         if rest == "/ios-ddi" && header.starts_with(b"GET ") {
             #[cfg(target_os = "macos")]
-            match tokio::task::spawn_blocking(crate::ddi::from_xcode).await? {
+            match tokio::task::spawn_blocking(crate::ddi::local).await? {
                 Ok(bundle) => {
                     tls.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bundle.len()).as_bytes()).await?;
                     tokio::time::timeout(Duration::from_secs(90), tls.write_all(&bundle)).await??;
                 }
-                Err(error) => tls.write_all(&plain_reply(503, &error.to_string())).await?,
+                Err(error) => {
+                    let message = error.format_current_context().to_string();
+                    tls.write_all(&plain_reply(503, &message)).await?
+                }
             }
             #[cfg(not(target_os = "macos"))]
             tls.write_all(&plain_reply(503, "This companion is not a Mac. Pair with a Mac running Apparition and install Xcode there.")).await?;

@@ -1034,6 +1034,37 @@ pub async fn hand_off_build_signing(app: AppHandle, state: Shared<'_>, udid: Str
     .await
 }
 
+/// Puts the iOS Developer Disk Image in Apparition on a paired iPhone or iPad, without reinstalling:
+/// Xcode's if this Mac has it, else the copy downloaded earlier, else (only with `allow_download`,
+/// which the page sets after asking) a download from github.com.
+#[tauri::command]
+pub async fn send_developer_image(app: AppHandle, state: Shared<'_>, udid: String, allow_download: bool) -> Result<Value, Failure> {
+    let state = state.inner().clone();
+    blocking(move || {
+        let device = state.store.device(&udid).ok_or("That device isn't paired any more. Pair it again.")?;
+        let cancelled = AtomicBool::new(false);
+        let pin = || match state.ask(&app, json!({ "kind": "pin", "again": true })) {
+            Answer::Pin { pin } => digits(&pin),
+            _ => {
+                cancelled.store(true, Ordering::Relaxed);
+                String::new()
+            }
+        };
+        let bundle_id = block_on(async {
+            let mut tunnel = state.store.connect_healing(&device, pin, &|what: &str| { let _ = app.emit("pair-status", what); }).await?;
+            let bundle_id = match tunnel.installed_like(APPARITION_ID).await?.as_slice() {
+                [one] => one.clone(),
+                [] => return Err(rootcause::report!("Apparition isn't installed on {}", device.name)),
+                several => return Err(rootcause::report!("Several Apparitions are installed on {}: {}", device.name, several.join(", "))),
+            };
+            state.store.hand_over_ddi(&mut tunnel, &bundle_id, &|_| allow_download).await?;
+            Ok::<_, Report>(bundle_id)
+        })?;
+        Ok(json!({ "device": device.name, "bundleId": bundle_id }))
+    })
+    .await
+}
+
 /// Connects, signs the prepared app for the device and installs it, then (for Apparition)
 /// hands it what signed it. Stages arrive as `stage` events. A full certificate or App ID
 /// slot fails with `slot` set. Data removal follows the explicit install-review choice.
@@ -1274,6 +1305,7 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
             let mut handoff_error = Value::Null;
             let mut pairing_handed_over = false;
             let mut ddi_handoff_error = Value::Null;
+            let mut ddi_needs_download = false;
             if options.hand_off && is_apparition && let Some(tunnel) = tunnel.tunnel() {
                 stage(&app, "handoff", Value::Null);
                 // An iPhone or iPad paired over USB: Apparition gets its own pairing record.
@@ -1282,7 +1314,9 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                     Err(error) => handoff_error = json!(error.to_string()),
                 }
                 if api::Platform::of_product(&info.product_type) == api::Platform::IOS {
-                    if let Err(error) = state.store.hand_over_ddi(tunnel, &bundle_id).await {
+                    // Nothing is downloaded here: with no Xcode image the page asks first (send_developer_image).
+                    if let Err(error) = state.store.hand_over_ddi(tunnel, &bundle_id, &|_| false).await {
+                        ddi_needs_download = apparition_core::ddi::needs_download(&error).is_some();
                         ddi_handoff_error = json!(error.to_string());
                     }
                 }
@@ -1314,6 +1348,8 @@ pub async fn install(app: AppHandle, state: Shared<'_>, options: InstallOptions)
                 "handoff": handoff,
                 "handoffError": handoff_error,
                 "ddiHandoffError": ddi_handoff_error,
+                "ddiNeedsDownload": ddi_needs_download,
+                "udid": info.udid,
                 "pairingHandedOver": pairing_handed_over,
                 "platform": api::Platform::of_product(&info.product_type).os_name(),
                 "appleId": apple_id.map(|(email, _)| email),

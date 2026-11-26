@@ -836,21 +836,26 @@ mod developer_tests {
         assert!(request.contains("Authorization: Bearer app-token\r\n") && request.contains("Content-Length: 11\r\n"), "{request}");
         assert!(request.contains(&format!("X-Apparition-Computer: {}\r\n", crate::relay::machine_name())), "{request}");
 
-        // Opt in to test an actual Xcode payload, or the missing-Xcode response
-        // using an invalid DEVELOPER_DIR for this test process.
+        // Opt in to test an actual Xcode payload, or (on a Mac without Xcode or any downloaded
+        // image, e.g. a clean VM) the missing-Xcode response.
         #[cfg(target_os = "macos")]
         match std::env::var("APPARITION_TEST_XCODE_DDI").as_deref() {
             Ok("1") => {
-                let expected = crate::ddi::from_xcode().unwrap();
+                let expected = crate::ddi::local().unwrap();
                 let sent = developer(here.path(), "GET", "/ios-ddi", None, Upload::None).await.unwrap();
                 assert_eq!(sent.status, 200);
                 assert_eq!(sent.content_type, "application/octet-stream");
                 assert!(sent.body == expected, "the companion must send the exact local Xcode bundle");
+                // What a Windows or Linux computer runs, against this real channel.
+                let fetched = crate::ddi::from_paired_mac(here.path()).await.unwrap();
+                assert!(fetched == expected, "the PC's fetch must get the exact bundle, checked");
             }
             Ok("missing") => {
                 let reply = developer(here.path(), "GET", "/ios-ddi", None, Upload::None).await.unwrap();
                 assert_eq!(reply.status, 503);
                 assert!(String::from_utf8_lossy(&reply.body).contains("Mac App Store"));
+                let error = crate::ddi::from_paired_mac(here.path()).await.unwrap_err();
+                assert!(error.contains("no image to send") && error.contains("Mac App Store"), "{error}");
             }
             _ => {}
         }

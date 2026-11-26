@@ -433,12 +433,28 @@ private struct JITAlerts: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .overlay(alignment: .top) {
+                if model.diskImageDownload == .downloading {
+                    Label("Downloading the Developer Disk Image…", systemImage: "arrow.down.circle")
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.top, 8)
+                        .transition(.opacity)
+                }
+            }
             .alert(model.jitFailure.map { "Can't Enable JIT for \(library.displayName(of: $0.bundleId))" } ?? "",
                    isPresented: Binding(get: { RootView.jitInAlerts && model.jitFailure != nil }, set: { if !$0 { model.jitFailure = nil } }),
                    presenting: model.jitFailure) { failure in
                 if failure.problem != nil {
                     Button("Open Setup") { openSetup() }
                 }
+                #if os(iOS)
+                if failure.message.contains(DeveloperDiskImage.marker) {
+                    Button("Download and Enable JIT") {
+                        Task { await model.downloadDiskImage(for: failure) }
+                    }
+                }
+                #endif
                 Button("OK", role: .cancel) {}
             } message: { failure in
                 Text(failure.message)

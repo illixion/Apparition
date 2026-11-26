@@ -38,7 +38,7 @@ mod container;
 pub mod package;
 pub mod install_plan;
 mod jit;
-mod ddi;
+pub mod ddi;
 mod launch;
 pub mod tools;
 mod tunnel;
@@ -1570,6 +1570,21 @@ pub unsafe extern "C" fn apparition_uninstall(
 }
 
 // MARK: Developer Disk Image
+
+/// Checks the three Developer Disk Image files downloaded into `dir` (Image.dmg, its trust cache and
+/// BuildManifest.plist) against each other, so a damaged download is refused before it replaces a good
+/// copy. Returns `{ok}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_ddi_check(dir: *const c_char) -> *mut c_char {
+    reply((|| {
+        if dir.is_null() {
+            bail!("missing folder");
+        }
+        let dir = PathBuf::from(unsafe { text(dir) }?);
+        ddi::from_files(&dir)?;
+        Ok(json!({}))
+    })())
+}
 
 /// Makes sure the personalized Developer Disk Image is mounted (debugserver needs it), mounting
 /// the one whose files are in `dir` when none is. `dir` may be null to only check. Returns

@@ -35,24 +35,32 @@ once, to install Apparition.
 
 ### Prepare the iPhone or iPad developer image
 
-The debugger and location simulation use Apple's **Developer Disk Image**. During an
-Apparition install or `apparition pairing hand-off --device <name>`, the installer copies
-the personalized iOS image from Xcode into Apparition on the device. After that, on-device
-JIT can mount it when needed without reaching the computer. Apple may still need to
-personalize the image over the internet. Desktop JIT and location simulation can use the
-same Xcode source to mount the image before they start.
+The debugger and location simulation use Apple's **Developer Disk Image**, which a restart
+unmounts. Apparition gets it from, in order:
 
-- **On a Mac:** Install or update [Xcode from the Mac App Store](https://apps.apple.com/app/xcode/id497799835)
-  and open it once to install its components. If you need an older Xcode that runs on your Mac,
-  use [Apple Developer Downloads](https://developer.apple.com/download/all/?q=Xcode).
-  If the image is missing or outdated, run
-  `xcodebuild -runFirstLaunch -checkForNewerComponents`, then repeat the pairing handoff.
-- **On Windows or Linux:** Run `apparition mac pair <address>` and approve developer access
-  in Apparition on the Mac with Xcode installed. Keep Apparition running on that Mac while
-  you do the install or pairing handoff. The PC fetches the image over the encrypted
-  companion connection.
-- **Already installed:** Repeat the pairing handoff to stage the Mac's copy. Images cached
-  by older builds from the public mirror are ignored.
+1. **Xcode on a Mac.** Xcode installs Apple's image in `/Library/Developer/DeveloperDiskImages`
+   when it finishes its first launch (it ships inside Xcode, in `XcodeSystemResources.pkg`).
+   During an Apparition install or `apparition pairing hand-off --device <name>`, the installer
+   copies the personalized iOS image into Apparition on the device. After that, on-device JIT mounts
+   it when needed without reaching the computer. Apple may still need to personalize it over the
+   internet. Desktop JIT and location simulation use the same source to mount the image first.
+2. **The paired Mac, from Windows or Linux.** Run `apparition mac pair <address>` and approve
+   developer access in Apparition on the Mac, and keep Apparition running there during the install
+   or hand-off. The PC fetches the image over the encrypted companion connection.
+3. **A download from github.com, only if you allow it.** With no Xcode image, Apparition says why
+   and offers to download Xcode's image (about 18 MB) from the public
+   [doronz88/DeveloperDiskImage](https://github.com/doronz88/DeveloperDiskImage) mirror. Nothing is
+   downloaded without your yes: the command line asks (or takes `--allow-ddi-download` where there
+   is nobody to ask), the desktop app shows a button after the install, and on the device it is
+   Settings › Developer Disk Image, or the **Download and Enable JIT** button on the failed-JIT alert, which
+   starts the launch again once the image is in. Swipe the Settings row to delete a downloaded copy. The download is kept and checked
+   against its own manifest each time. Apple's servers sign the image for your device before it mounts,
+   so a changed file is refused.
+
+`apparition ddi` says which of these a hand-off or JIT from this computer would use. On a Mac with no Xcode, install [Xcode from the Mac App Store](https://apps.apple.com/app/xcode/id497799835)
+and open it once (or run `sudo xcodebuild -runFirstLaunch`), or use the download. If you need an older Xcode
+that runs on your Mac, use [Apple Developer Downloads](https://developer.apple.com/download/all/?q=Xcode).
+Repeat the pairing handoff after updating Xcode or the device's iOS, so the device's copy stays current.
 
 The on-device mount uses the personalized image format, which needs a matching hardware
 identity in Xcode's manifest. If Xcode only has a compatible cryptex image for your device,
