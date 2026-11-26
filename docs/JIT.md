@@ -33,6 +33,10 @@ on iPhone, iPad and Vision Pro does it with no computer (it takes the device's o
 not alongside Tailscale). Apple TV can run VPN apps, but LocalDevVPN has no Apple TV version, so it uses a companion. A computer is needed
 once, to install Apparition.
 
+**On an iPhone using cellular data, turn on Airplane Mode before enabling JIT.** Otherwise the launch fails with a
+"RemotePairing connection" error, because the phone can't reach its own pairing service. The failed-JIT alert says so.
+This comes before the disk image check, so the image's download offer only appears once the connection works.
+
 ### Prepare the iPhone or iPad developer image
 
 The debugger and location simulation use Apple's **Developer Disk Image**, which a restart

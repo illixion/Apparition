@@ -767,10 +767,14 @@ final class ProbeModel {
         }
         let report = { [weak self] (outcome: String) in
             // A missing disk image is always shown: the alert is where the download is offered, and
-            // a library launch would otherwise fail without a word.
-            guard reportsFailure || outcome.contains(DeveloperDiskImage.marker), outcome.hasPrefix("error"), let self else { return }
+            // a library launch would otherwise fail without a word. So is a failure to reach this
+            // device's own pairing service, whose alert carries the Airplane Mode hint.
+            guard reportsFailure || outcome.contains(DeveloperDiskImage.marker) || PairingRecord.connectionHint(in: outcome) != nil,
+                  outcome.hasPrefix("error"), let self else { return }
             self.jitFailure = JITFailure(bundleId: bundleId,
-                                         message: outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome,
+                                         message: [outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome,
+                                                   PairingRecord.connectionHint(in: outcome)]
+                                             .compactMap { $0 }.joined(separator: "\n\n"),
                                          problem: PairingRecord.problem(in: outcome),
                                          retry: { [weak self] in
                                              Task { await self?.serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: reportsFailure, body) }
