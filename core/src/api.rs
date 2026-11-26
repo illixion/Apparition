@@ -1013,6 +1013,55 @@ mod desktop {
             connected
         }
 
+        /// Opens the developer services used by JIT and location simulation. After installing
+        /// a DDI, reopen the tunnel so its service list includes the new services.
+        pub async fn connect_for_developer(
+            &self,
+            device: &PairedDevice,
+            pin: impl Fn() -> String,
+            waiting: &(dyn Fn(&str) + Send + Sync),
+            consent: crate::ddi::Consent<'_>,
+        ) -> Result<Tunnel, Report> {
+            let tunnel = self.connect_healing(device, &pin, waiting).await?;
+            self.prepare_developer(device, tunnel, pin, waiting, consent).await
+        }
+
+        /// The second half of [`Self::connect_for_developer`], for callers that put their own time limit on
+        /// connecting: mounts the Developer Disk Image on `tunnel` when none is, which can take a download
+        /// and Apple's signing, and returns a tunnel that lists the developer services.
+        pub async fn prepare_developer(
+            &self,
+            device: &PairedDevice,
+            mut tunnel: Tunnel,
+            pin: impl Fn() -> String,
+            waiting: &(dyn Fn(&str) + Send + Sync),
+            consent: crate::ddi::Consent<'_>,
+        ) -> Result<Tunnel, Report> {
+            if device.platform() != super::Platform::IOS
+                || crate::ddi::mounted(&mut tunnel.adapter, &mut tunnel.handshake).await? {
+                return Ok(tunnel);
+            }
+            waiting("Preparing the iOS Developer Disk Image");
+            let bundle = crate::ddi::source(&self.dir.join("anisette"), consent).await?;
+            crate::ddi::mount(&mut tunnel.adapter, &mut tunnel.handshake, &bundle).await?;
+            drop(tunnel);
+            self.connect_healing(device, pin, waiting).await
+        }
+
+        /// Where the iOS Developer Disk Image would come from for a hand-off or JIT here, and its size and
+        /// Xcode build: `apparition ddi`.
+        pub async fn developer_image(&self, consent: crate::ddi::Consent<'_>) -> Result<(String, usize, String), Report> {
+            let (origin, bundle) = crate::ddi::resolve(&self.dir.join("anisette"), consent).await?;
+            Ok((origin.describe().to_owned(), bundle.len(), crate::ddi::bundle_build(&bundle)))
+        }
+
+        /// Gives the on-device iOS app a checked copy of the Developer Disk Image (Xcode's, or a
+        /// download `consent` allowed) so it can mount it later with no computer around.
+        pub async fn hand_over_ddi(&self, tunnel: &mut Tunnel, bundle_id: &str, consent: crate::ddi::Consent<'_>) -> Result<(), Report> {
+            let data = crate::ddi::source(&self.dir.join("anisette"), consent).await?;
+            tunnel.put_documents(bundle_id, "", &[(crate::ddi::BUNDLE_NAME.to_owned(), data)]).await
+        }
+
         /// [`DeviceStore::connect`], except that an iPhone or iPad which turned this computer's
         /// pairing down is paired again over usbmuxd first and then reached with the new one.
         /// That needs no PIN, only that it trusts this computer (it asks, through `waiting`; Wi-Fi

@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var confirmSignOut = false
     @State private var sharingSigning = false
     @State private var receivingSigning = false
+    @State private var confirmDiskImageDownload = false
 
     var body: some View {
         NavigationStack {
@@ -36,6 +37,9 @@ struct SettingsView: View {
                 shortcutsSection
                 #if !os(tvOS)
                 notificationsSection
+                #endif
+                #if os(iOS)
+                diskImageSection
                 #endif
                 advancedSection
                 troubleshootingSection
@@ -102,6 +106,67 @@ struct SettingsView: View {
             Text("Import a certificate (.p12) and provisioning profiles to sign offline, with no Apple ID and no requests to Apple. This also sets what signs apps by default.")
         }
     }
+
+    #if os(iOS)
+    /// The Developer Disk Image JIT needs after a restart: where this device's copy came from, and
+    /// the one control that downloads it, behind a question, for a Mac with no Xcode to hand it over.
+    private var diskImageSection: some View {
+        let _ = model.diskImageRevision
+        return Section {
+            LabeledContent("Developer Disk Image") {
+                switch DeveloperDiskImage.availability {
+                case .handedOver: Text("From Xcode on your Mac")
+                case .downloaded: Text("Downloaded")
+                case .none: Text("Not available")
+                }
+            }
+            // Like Mail's flag: the row stays and only its state changes, so these are plain colored
+            // actions, not destructive ones (those slide the row away, and this row is always there).
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                if DeveloperDiskImage.availability == .downloaded {
+                    Button { model.removeDownloadedDiskImage() } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                    .tint(.red)
+                }
+            }
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                // Asks first, like the button below: a swipe is not the consent.
+                if DeveloperDiskImage.availability != .handedOver, model.diskImageDownload != .downloading {
+                    Button { confirmDiskImageDownload = true } label: {
+                        Label("Download", systemImage: "arrow.down.circle")
+                    }
+                    .tint(.blue)
+                }
+            }
+            if DeveloperDiskImage.availability != .handedOver {
+                Button {
+                    confirmDiskImageDownload = true
+                } label: {
+                    if model.diskImageDownload == .downloading {
+                        Label("Downloading…", systemImage: "arrow.down.circle")
+                    } else {
+                        Label(DeveloperDiskImage.availability == .downloaded ? "Download Again…" : "Download from GitHub…", systemImage: "arrow.down.circle")
+                    }
+                }
+                .disabled(model.diskImageDownload == .downloading)
+            }
+            if case .failed(let message) = model.diskImageDownload {
+                Text(message).font(.footnote).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Developer Disk Image")
+        } footer: {
+            Text("JIT needs Apple's Developer Disk Image mounted, and a restart unmounts it. Installing Apparition from a Mac with Xcode hands this device Xcode's copy, so Apparition can mount it with no computer around. Without Xcode you can download the same image instead. Swipe the row right to download, or left to delete a downloaded copy.")
+        }
+        .confirmationDialog("Download from GitHub?", isPresented: $confirmDiskImageDownload, titleVisibility: .visible) {
+            Button("Download (\(DeveloperDiskImage.downloadSize))") { Task { await model.downloadDiskImage() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This fetches Xcode's disk image from a public GitHub mirror (doronz88/DeveloperDiskImage). Apple's servers still personalize it for this device before it mounts, so a changed file is refused. Nothing else is sent.")
+        }
+    }
+    #endif
 
     private var accountSection: some View {
         Section {

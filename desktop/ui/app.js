@@ -1477,12 +1477,53 @@ function done() {
   const notes = [];
   if (result.migrationPending) notes.push("The new app is installed, but its data transfer is incomplete. The old copy was kept. Install again with Keep existing app data to retry.");
   if (result.handoffError) notes.push(`Couldn't share the signing with Apparition (${result.handoffError}). Sign in there yourself instead.`);
+  if (result.ddiHandoffError && !result.ddiNeedsDownload) {
+    notes.push(`The iOS Developer Disk Image, which JIT needs after a restart, could not be sent. ${result.ddiHandoffError} Run apparition pairing hand-off once that is sorted out.`);
+  }
   if (result.strippedExtensions?.length) notes.push(`Left out extensions: ${result.strippedExtensions.join(", ")}.`);
   for (const w of result.watches ?? []) notes.push(w.error ? `The watch app didn't install on ${w.name}: ${w.error}` : `The watch app is on ${w.name}.`);
   extra.hidden = !notes.length;
   extra.textContent = notes.join(" ");
+  if (result.ddiNeedsDownload && result.udid) offerDeveloperImage(extra, result);
 
   $(panel, "again").addEventListener("click", () => go("install"));
+}
+
+/** JIT after a restart needs Apple's Developer Disk Image on the device. It normally comes from this
+ * Mac's Xcode; when there is none, the download from GitHub is only offered, never started. */
+function offerDeveloperImage(/** @type {HTMLElement} */ after, /** @type {any} */ result) {
+  const box = document.createElement("div");
+  box.className = "hint";
+  const text = document.createElement("p");
+  text.textContent = `Apparition is installed. For JIT after a restart it also needs the iOS Developer Disk Image, which comes from Xcode. ${result.ddiHandoffError} ` +
+    "Apparition can download Xcode's copy (about 18 MB) from GitHub (raw.githubusercontent.com) instead. Apple's servers still personalize it for your device. Nothing is downloaded unless you choose to.";
+  const status = document.createElement("p");
+  status.setAttribute("role", "status");
+  const get = document.createElement("button");
+  get.type = "button";
+  get.textContent = "Download from GitHub and send";
+  const skip = document.createElement("button");
+  skip.type = "button";
+  skip.textContent = "Not now";
+  get.addEventListener("click", async () => {
+    setBusy(get, true);
+    skip.disabled = true;
+    try {
+      await invoke("send_developer_image", { udid: result.udid, allowDownload: true });
+      status.textContent = `The image is on ${result.deviceName ?? "the device"}. JIT can mount it after a restart.`;
+      get.hidden = skip.hidden = true;
+    } catch (error) {
+      status.textContent = `Couldn't send it: ${messageOf(error)}`;
+      skip.disabled = false;
+    }
+    setBusy(get, false);
+  });
+  skip.addEventListener("click", () => {
+    status.textContent = "Not downloaded. Install Xcode and run apparition pairing hand-off, or come back to this later from a new install.";
+    get.hidden = skip.hidden = true;
+  });
+  box.append(text, get, " ", skip, status);
+  after.insertAdjacentElement("afterend", box);
 }
 
 // ------------------------------------------------------------ prompts (PIN, 2FA)

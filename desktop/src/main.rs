@@ -135,6 +135,7 @@ fn main() {
             flow::install,
             flow::build_signing_summary,
             flow::hand_off_build_signing,
+            flow::send_developer_image,
             flow::list_certificates,
             flow::revoke_certificate,
             flow::list_app_ids,

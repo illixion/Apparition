@@ -7,6 +7,7 @@ companion (`apparition relay`) and pairs with a Mac for anisette (`apparition an
     apparition pair       # with Settings > General > Remote Devices open; type the PIN
     apparition pair --usb # an iPhone or iPad: a cable until it trusts this computer, then Wi-Fi works too
     apparition pairing hand-off   # give an Apparition already installed there its pairing
+    apparition ddi        # which iOS Developer Disk Image a hand-off or JIT would use, and from where (Xcode, the paired Mac, a download)
     apparition apps --device ATV --json   # what it has installed, with versions; never wakes a sleeping Apple TV
     apparition push App-signed.ipa --device ATV   # install an IPA already signed for the device, as it is
     apparition container pull com.example.app --device ATV backup/   # its Documents and Library; `push` puts them back, `count` counts

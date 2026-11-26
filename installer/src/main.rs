@@ -75,6 +75,9 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       trust this computer yet, it asks: unlock it, tap Trust and enter its passcode.
       Afterwards it's reached over the network like a headset. It also makes the pairing
       Apparition on the device uses, which `install` or `pairing hand-off` gives it.
+  apparition ddi
+      Which iOS Developer Disk Image a hand-off or JIT would use and where it comes from: Xcode on this Mac,
+      the paired Mac (Windows, Linux), or a download from GitHub once you agree (--allow-ddi-download).
   apparition pairing hand-off [--device <name or UDID>] [--bundle-id <id>]
       Give Apparition, already installed on an iPhone, iPad or Apple TV, its pairing with
       that device, as installing Apparition does. For when Apparition says it isn't paired
@@ -278,6 +281,9 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       passwords, tokens or anisette values), to apparition-verbose.log beside the log, and says
       where. For finding out what Apple changed; read it before posting it, since Apple's error
       text can name a team or an app ID.
+  apparition --allow-ddi-download <command>
+      Allow fetching the iOS Developer Disk Image from GitHub (raw.githubusercontent.com) when Xcode
+      has none; otherwise it asks, or says what to do. `apparition ddi` shows what would be used.
   apparition --version | --help
 ";
 
@@ -300,6 +306,30 @@ fn ask(prompt: &str) -> String {
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
     line.trim().to_string()
+}
+
+/// `--allow-ddi-download` (anywhere before the command's own arguments): the person already said
+/// yes to downloading the Developer Disk Image from github.com, for runs with nobody to ask.
+static ALLOW_DDI_DOWNLOAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What the Developer Disk Image code asks before it downloads anything: `reason` is why Xcode's
+/// copy couldn't be used. Yes with the flag, or when the person types y; no with no terminal.
+fn ddi_consent(reason: &str) -> bool {
+    use std::io::IsTerminal;
+    let offer = format!(
+        "Apparition can download Xcode's Developer Disk Image ({}) from {} instead; Apple's servers still personalize it for the device.",
+        apparition_core::ddi::DOWNLOAD_SIZE, apparition_core::ddi::DOWNLOAD_HOST
+    );
+    if ALLOW_DDI_DOWNLOAD.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{reason}\n{offer} Downloading (--allow-ddi-download).");
+        return true;
+    }
+    if !std::io::stdin().is_terminal() {
+        eprintln!("{reason}\n{offer} Run again with --allow-ddi-download to allow it.");
+        return false;
+    }
+    eprintln!("{reason}");
+    ask(&format!("{offer} Download it now? [y/N] ")).to_ascii_lowercase().starts_with('y')
 }
 
 fn ask_secret(prompt: &str) -> String {
@@ -345,9 +375,9 @@ async fn run() -> ExitCode {
     // What a cancelled or killed run left in the temp folder (a .p12's key among it).
     scratch::sweep();
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("--verbose") {
+    while let Some(flag) = args.first().map(String::as_str).filter(|f| matches!(*f, "--verbose" | "--allow-ddi-download")) {
+        if flag == "--verbose" { apparition_core::verbose::set(true); } else { ALLOW_DDI_DOWNLOAD.store(true, std::sync::atomic::Ordering::Relaxed); }
         args.remove(0);
-        apparition_core::verbose::set(true);
     }
     if apparition_core::verbose::is_on()
         && let Some(path) = apparition_core::verbose::path()
@@ -359,6 +389,7 @@ async fn run() -> ExitCode {
         Some("apps") => apps(&args[1..]).await,
         Some("push") => push(&args[1..]).await,
         Some("launch") => launch(&args[1..]).await,
+        Some("ddi") => ddi().await,
         Some("uninstall") => uninstall(&args[1..]).await,
         Some("container") => container(&args[1..]).await,
         Some("pair") if args.get(1).map(String::as_str) == Some("--usb") => pair_usb(args.get(2).map(String::as_str)).await,
@@ -975,7 +1006,12 @@ async fn launch(args: &[String]) -> Result<(), Error> {
     }
     let bundle_id = bundle_id.ok_or_else(usage)?;
     let device = find_device(wanted)?;
-    let mut tunnel = store().connect_healing(&device, String::new, &crate::say).await?;
+    let store = store();
+    let mut tunnel = if jit {
+        store.connect_for_developer(&device, String::new, &crate::say, &ddi_consent).await?
+    } else {
+        store.connect_healing(&device, String::new, &crate::say).await?
+    };
     let arguments: Vec<&str> = app_args.iter().map(String::as_str).collect();
     let launched = tunnel.launch(&bundle_id, &arguments, &environment, console, jit).await?;
     let pid = launched.pid;
@@ -1103,6 +1139,14 @@ async fn pair_usb(wanted: Option<&str>) -> Result<(), Error> {
     Ok(())
 }
 
+/// `ddi`: which iOS Developer Disk Image a hand-off or JIT here would use, and where it comes from: Xcode on
+/// this Mac, the paired Mac (from Windows or Linux), a download kept earlier, or, if you agree, a download.
+async fn ddi() -> Result<(), Error> {
+    let (origin, size, build) = store().developer_image(&ddi_consent).await?;
+    println!("iOS Developer Disk Image: from {origin}, {:.1} MB, Xcode build {build}.", size as f64 / 1_048_576.0);
+    Ok(())
+}
+
 /// `pairing hand-off`: puts the record `pair --usb` (or an Apple TV's `pair`) made for Apparition
 /// in its Documents on the device, as `install` does, without reinstalling it.
 async fn pairing(args: &[String]) -> Result<(), Error> {
@@ -1150,6 +1194,11 @@ async fn pairing(args: &[String]) -> Result<(), Error> {
     };
     store().hand_over_pairing(&mut tunnel, &bundle_id, &device.udid).await?;
     println!("Gave {bundle_id} on {} its pairing. Open Apparition there (close it first if it's open) and it can reach the device again.", device.name);
+    if device.platform() == api::Platform::IOS {
+        store().hand_over_ddi(&mut tunnel, &bundle_id, &ddi_consent).await
+            .context("Pairing sent, but the iOS Developer Disk Image wasn't sent")?;
+        println!("Gave {bundle_id} the iOS Developer Disk Image.");
+    }
     Ok(())
 }
 
@@ -1460,7 +1509,7 @@ async fn jit(args: &[String]) -> Result<(), Error> {
     let device = find_device(device.as_deref())?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The device wants to pair again. PIN: ");
-    let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
+    let mut tunnel = store().connect_for_developer(&device, pin, &crate::say, &ddi_consent).await?;
     // What a session is stopped by: its pid when attached (no bundle ID is passed then).
     let mut key = bundle_id.clone();
     let target = if attach {
@@ -1647,6 +1696,12 @@ async fn sign_and_install(
             println!("Gave Apparition its pairing with this device.");
         }
         handoff(options, tunnel, &installed_id, apple_id.as_ref()).await?;
+        if api::Platform::of_product(&info.product_type) == api::Platform::IOS {
+            match store().hand_over_ddi(tunnel, &installed_id, &ddi_consent).await {
+                Ok(()) => println!("Gave Apparition the iOS Developer Disk Image."),
+                Err(error) => eprintln!("App installed, but the iOS Developer Disk Image wasn't sent: {error}"),
+            }
+        }
     }
     Ok(())
 }

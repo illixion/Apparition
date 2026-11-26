@@ -156,6 +156,18 @@ enum PairingRecord {
         }
     }
 
+    /// What to try when this device couldn't open its own pairing connection, which on an iPhone
+    /// or iPad is what a launch on cellular data ends in. Airplane Mode is what makes it work; the
+    /// raw error ("RemotePairing connection …") says nothing a person can act on.
+    static func connectionHint(in outcome: String) -> String? {
+        #if os(iOS)
+        guard outcome.contains("RemotePairing"), problem(in: outcome) == nil else { return nil }
+        return "If this \(ThisDevice.noun) is on cellular data, turn on Airplane Mode and try again: it can't reach its own pairing service otherwise."
+        #else
+        return nil
+        #endif
+    }
+
     /// The problem an action's outcome ("error: …") reports, if it was one of these.
     static func problem(in outcome: String) -> Problem? {
         [Problem.missing, .rejected].first { outcome == "error: \(message($0))" }

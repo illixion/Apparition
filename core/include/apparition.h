@@ -143,6 +143,12 @@ char *apparition_container_export_backup(struct AdapterHandle *adapter, struct R
 // Restores a matching Apparition backup, merging files and replacing duplicate names.
 char *apparition_container_restore_backup(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                                           const char *bundle_id, const char *archive_path);
+// Checks the downloaded Developer Disk Image files in dir against each other. Returns {ok}.
+char *apparition_ddi_check(const char *dir);
+// Mount the Mac's Developer Disk Image bundle if needed. A null path only checks.
+// Returns {ok, mounted: "already" | "now" | false, needsFiles}.
+char *apparition_ensure_ddi(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                            const char *bundle_path);
 // Launches bundle_id suspended, attaches debugserver over the tunnel and serves the
 // brk #0x69 (UTM) and brk #0xf00d (JIT26) protocols. Waits up to wait_seconds (0: no limit)
 // for the first request; once the app has asked, serves it until it exits or detaches.

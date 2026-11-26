@@ -696,9 +696,47 @@ final class ProbeModel {
         let message: String
         /// Set when the pairing is what's wrong: Setup is where to go.
         let problem: PairingRecord.Problem?
+        /// Starts the same JIT request again, for a failure the person has just fixed.
+        var retry: (@MainActor @Sendable () -> Void)?
     }
 
     var jitFailure: JITFailure?
+
+    /// The Developer Disk Image download the person asked for (Settings, or the JIT failure's button).
+    enum DiskImageDownload: Equatable {
+        case idle, downloading, done, failed(String)
+    }
+    private(set) var diskImageDownload: DiskImageDownload = .idle
+    /// Changes when a download finishes, so views showing `DeveloperDiskImage.availability` redraw.
+    private(set) var diskImageRevision = 0
+
+    func removeDownloadedDiskImage() {
+        DeveloperDiskImage.removeDownload()
+        diskImageDownload = .idle
+        diskImageRevision += 1
+    }
+
+    /// Downloads the image from github.com. Only called from a control that told the person so.
+    /// With `failure`, the JIT request that needed the image: it starts again once the image is in,
+    /// or the failure is shown again with what went wrong.
+    func downloadDiskImage(for failure: JITFailure? = nil) async {
+        guard diskImageDownload != .downloading else { return }
+        diskImageDownload = .downloading
+        do {
+            try await DeveloperDiskImage.download()
+            diskImageDownload = .done
+            diskImageRevision += 1
+            failure?.retry?()
+        } catch {
+            log.error("disk image download failed: \(LogScrub.text(String(describing: error)), privacy: .public)")
+            diskImageDownload = .failed(String(describing: error))
+            diskImageRevision += 1
+            if let failure {
+                jitFailure = JITFailure(bundleId: failure.bundleId,
+                                        message: "Couldn't download the Developer Disk Image: \(error)", problem: nil)
+            }
+        }
+    }
 
     /// Takes the running process `pid` of `bundleId` (an app that asked for JIT itself, through
     /// an `enable-jit` link) and serves its JIT requests until it exits or detaches. The app is
@@ -728,10 +766,19 @@ final class ProbeModel {
             return
         }
         let report = { [weak self] (outcome: String) in
-            guard reportsFailure, outcome.hasPrefix("error"), let self else { return }
+            // A missing disk image is always shown: the alert is where the download is offered, and
+            // a library launch would otherwise fail without a word. So is a failure to reach this
+            // device's own pairing service, whose alert carries the Airplane Mode hint.
+            guard reportsFailure || outcome.contains(DeveloperDiskImage.marker) || PairingRecord.connectionHint(in: outcome) != nil,
+                  outcome.hasPrefix("error"), let self else { return }
             self.jitFailure = JITFailure(bundleId: bundleId,
-                                         message: outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome,
-                                         problem: PairingRecord.problem(in: outcome))
+                                         message: [outcome.hasPrefix("error: ") ? String(outcome.dropFirst(7)) : outcome,
+                                                   PairingRecord.connectionHint(in: outcome)]
+                                             .compactMap { $0 }.joined(separator: "\n\n"),
+                                         problem: PairingRecord.problem(in: outcome),
+                                         retry: { [weak self] in
+                                             Task { await self?.serveJIT(host: host, port: port, bundleId: bundleId, reportsFailure: reportsFailure, body) }
+                                         })
         }
         // No pairing: say so now, without showing a session that can't start.
         refreshPairing()

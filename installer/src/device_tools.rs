@@ -106,7 +106,7 @@ pub async fn location(args: &[String]) -> Result<(), Error> {
     let device = find_device(wanted)?;
     println!("Connecting to {}…", device.name);
     let pin = || ask("The device wants to pair again. PIN: ");
-    let mut tunnel = store().connect_healing(&device, pin, &crate::say).await?;
+    let mut tunnel = store().connect_for_developer(&device, pin, &crate::say, &crate::ddi_consent).await?;
     const KEY: &str = "cli-location";
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
