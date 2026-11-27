@@ -995,9 +995,13 @@ mod desktop {
             if device.legacy {
                 bail!("{} runs iOS 17.3 or earlier, which has no RemotePairing tunnel Apparition can use: Apparition can only install and remove apps on it, over usbmuxd.", device.name);
             }
-            if device.platform() == super::Platform::IOS {
-                return self.connect_verified(device).await;
+            let verified = self.connect_verified(device).await;
+            match &verified {
+                Err(error) if device.platform() != super::Platform::IOS && super::is_pairing_rejected(error) => {}
+                _ => return verified,
             }
+            // Only an explicitly rejected pairing can need a new PIN. Discovery tries each
+            // alternate endpoint with the existing key, without pairing to a different device.
             let (mut pairing, address) = self.pairing_of(device)?;
             let before = pairing.to_bytes();
             let connected = super::connect(address, &hostname(), &mut pairing, pin).await;
@@ -1160,35 +1164,41 @@ mod desktop {
 
         /// Opens a tunnel to a paired device without ever asking for a PIN: a pairing the device
         /// turns down is an error (see [`is_pairing_rejected`](super::is_pairing_rejected)), so a
-        /// program with nobody at a terminal fails at once instead of waiting on a pair-setup. If
-        /// the saved address doesn't answer, the device is looked up again under its name.
+        /// program with nobody at a terminal never waits on a pair-setup. If the saved endpoint
+        /// fails, the device is looked up again under its name.
         pub async fn connect_verified(&self, device: &PairedDevice) -> Result<Tunnel, Report> {
             if device.legacy {
                 bail!("{} runs iOS 17.3 or earlier, which has no RemotePairing tunnel Apparition can use: Apparition can only install and remove apps on it, over usbmuxd.", device.name);
             }
             let (mut pairing, address) = self.pairing_of(device)?;
             let connected = super::connect_verified(address, &hostname(), &mut pairing).await;
-            // An iPhone's RemotePairing port isn't fixed and changes as it restarts, so a refused
-            // or silent address is looked up again under the device's name and remembered.
-            if let Err(error) = &connected
-                && !super::is_pairing_rejected(error)
-            {
-                for found in browse(3).await.unwrap_or_default().into_iter().filter(|f| !f.ready_to_pair && f.name == device.name) {
-                    for candidate in found.addresses.iter().filter(|a| a.is_ipv4()).chain(found.addresses.iter().filter(|a| !a.is_ipv4())) {
-                        let candidate = SocketAddr::new(*candidate, found.port);
-                        if candidate == address {
-                            continue;
-                        }
-                        if let Ok(tunnel) = super::connect_verified(candidate, &hostname(), &mut pairing).await {
-                            let mut devices = self.devices();
-                            if let Some(saved) = devices.iter_mut().find(|d| d.udid == device.udid) {
-                                (saved.address, saved.port) = (candidate.ip(), candidate.port());
-                                saved.needs_repair = false;
-                                let _ = self.save(&devices);
-                            }
-                            return Ok(tunnel);
+            // A device may move to another address, or an iPhone may change ports. The old
+            // endpoint might even belong to another device now. Before saving an advertised
+            // endpoint, check the existing pairing works and lockdown reports the expected UDID.
+            if connected.is_err() {
+                let found = browse_services(3, &[PAIRED_SERVICE]).await.unwrap_or_default();
+                let recovered = tokio::time::timeout(Duration::from_secs(12), async {
+                    for candidate in alternate_endpoints(&found, &device.name, address) {
+                        let verified = tokio::time::timeout(Duration::from_secs(4), async {
+                            let mut tunnel = super::connect_verified(candidate, &hostname(), &mut pairing).await.ok()?;
+                            let info = tunnel.device_info().await.ok()?;
+                            (info.udid.eq_ignore_ascii_case(&device.udid)).then_some(tunnel)
+                        }).await;
+                        if let Ok(Some(tunnel)) = verified {
+                            return Some((candidate, tunnel));
                         }
                     }
+                    None
+                }).await;
+                if let Ok(Some((candidate, tunnel))) = recovered {
+                    let mut devices = self.devices();
+                    if let Some(saved) = devices.iter_mut().find(|d| d.udid == device.udid
+                        && d.pairing == device.pairing && SocketAddr::new(d.address, d.port) == address) {
+                        (saved.address, saved.port) = (candidate.ip(), candidate.port());
+                        saved.needs_repair = false;
+                        let _ = self.save(&devices);
+                    }
+                    return Ok(tunnel);
                 }
             }
             match &connected {
@@ -1354,12 +1364,55 @@ mod desktop {
         }
     }
 
+    fn alternate_endpoints(found: &[Found], name: &str, saved: SocketAddr) -> Vec<SocketAddr> {
+        let mut candidates = Vec::new();
+        for service in found.iter().filter(|f| !f.ready_to_pair && f.name == name) {
+            for ip in &service.addresses {
+                // A link-local IPv6 address needs an interface scope, which Found doesn't track.
+                if matches!(ip, IpAddr::V6(ip) if ip.is_unicast_link_local()) {
+                    continue;
+                }
+                let candidate = SocketAddr::new(*ip, service.port);
+                if candidate != saved && !candidates.contains(&candidate) {
+                    candidates.push(candidate);
+                }
+            }
+        }
+        candidates.sort_by_key(|address| match address.ip() {
+            IpAddr::V4(ip) if !ip.is_link_local() => 0,
+            IpAddr::V6(_) => 1,
+            IpAddr::V4(_) => 2,
+        });
+        candidates
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn rediscovery_prefers_lan_ipv4_and_keeps_a_changed_port() {
+        let advertised = |name: &str, port, ready_to_pair| Found {
+            name: name.to_owned(),
+            ready_to_pair,
+            addresses: ["fd00::1", "fe80::1", "169.254.0.2", "192.168.1.2", "192.168.1.2"]
+                .map(|ip| ip.parse().unwrap()).to_vec(),
+            port,
+        };
+        let found = [advertised("AVP", 2, false), advertised("Other", 3, false), advertised("AVP", 4, true)];
+        let saved = "[fd00::1]:1".parse().unwrap();
+        let expected = ["192.168.1.2:2", "[fd00::1]:2", "169.254.0.2:2"].map(|address| address.parse::<SocketAddr>().unwrap());
+        assert_eq!(alternate_endpoints(&found, "AVP", saved), expected);
+        assert_eq!(alternate_endpoints(&found, "AVP", expected[0]), expected[1..]);
+    }
+
     /// Browses both RemotePairing services for `seconds`. On macOS a program outside an app
     /// bundle can't use multicast (Local Network privacy), so it finds nothing there.
     pub async fn browse(seconds: u64) -> Result<Vec<Found>, Report> {
+        browse_services(seconds, &[MANUAL_PAIRING_SERVICE, PAIRED_SERVICE]).await
+    }
+
+    async fn browse_services(seconds: u64, services: &[&str]) -> Result<Vec<Found>, Report> {
         let daemon = mdns_sd::ServiceDaemon::new()?;
         let mut found: Vec<Found> = Vec::new();
-        for service in [MANUAL_PAIRING_SERVICE, PAIRED_SERVICE] {
+        for &service in services {
             let ready_to_pair = service == MANUAL_PAIRING_SERVICE;
             let events = daemon.browse(service)?;
             let deadline = tokio::time::Instant::now() + Duration::from_secs(seconds);

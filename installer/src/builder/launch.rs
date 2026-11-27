@@ -1,6 +1,5 @@
-//! Launching the build on the device after install (`--run`, `--log`, `--mcp`, `--jit`), through
-//! Apparition's own pairing (`apparition launch`), never `devicectl`. A console or a JIT session
-//! has to outlive the build, so it is a detached `apparition launch` whose output goes to
+//! Launching the build after install through Apparition's pairing or Xcode's tunnel. A console
+//! or JIT session has to outlive the build, so the launcher is detached and its output goes to
 //! `build/device-console.log` and whose pid is in `build/device-console.pid`, as with
 //! `build-and-sign`. With `--mcp`, the app's debug server is found and a session record written
 //! for the Store's `apps` tools.
@@ -18,14 +17,77 @@ use serde_json::json;
 #[derive(Clone, Copy)]
 pub struct Detached<'a> {
     pub bundle_id: &'a str,
-    pub device: &'a str,
+    pub device: &'a super::TargetDevice,
     pub console: bool,
     pub jit: bool,
-    /// Passed to the app's environment, as `APPARITION_CHILD_<KEY>` (never in argv).
+    /// Passed to the app's environment through the launcher's child environment prefix.
     pub environment: &'a [(&'a str, &'a str)],
     pub log: &'a Path,
     pub pidfile: &'a Path,
-    pub wait: Duration,
+}
+
+#[derive(Clone, Copy)]
+pub enum Route {
+    Apparition,
+    Devicectl,
+}
+
+impl Route {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Apparition => "Apparition",
+            Self::Devicectl => "Xcode's tunnel (devicectl)",
+        }
+    }
+}
+
+fn child_environment(command: &mut Command, prefix: &str, pairs: &[(&str, &str)]) {
+    for (key, _) in std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with(prefix)) {
+        command.env_remove(key);
+    }
+    for (key, value) in pairs {
+        command.env(format!("{prefix}{key}"), value);
+    }
+}
+
+fn devicectl(device: &super::TargetDevice, bundle_id: &str, console: bool, environment: &[(&str, &str)]) -> Command {
+    let mut command = Command::new("/usr/bin/xcrun");
+    command.args(["devicectl", "device", "process", "launch", "--device", &device.udid]);
+    if console || device.paired.is_some() {
+        command.arg("--terminate-existing");
+    }
+    if console { command.arg("--console"); }
+    else { command.args(["--timeout", "30"]); }
+    command.arg(bundle_id);
+    child_environment(&mut command, "DEVICECTL_CHILD_", environment);
+    command
+}
+
+pub fn plain_devicectl(device: &super::TargetDevice, bundle_id: &str, environment: &[(&str, &str)]) -> Result<(), String> {
+    let output = devicectl(device, bundle_id, false, environment).output()
+        .map_err(|e| format!("couldn't start xcrun devicectl: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&output.stderr);
+    let text = if text.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { text };
+    Err(format!("Xcode's tunnel couldn't launch {bundle_id} on {}:\n{}", device.name, text.trim()))
+}
+
+pub fn devicectl_has_build(udid: &str, bundle_id: &str, build: &str) -> bool {
+    let output = Command::new("/usr/bin/xcrun")
+        .args(["devicectl", "device", "info", "apps", "--device", udid, "--bundle-id", bundle_id,
+            "--timeout", "8", "--json-output", "-"])
+        .output();
+    let Ok(output) = output else { return false };
+    output.status.success() && devicectl_build_matches(&output.stdout, bundle_id, build)
+}
+
+fn devicectl_build_matches(json: &[u8], bundle_id: &str, build: &str) -> bool {
+    let Ok(response) = serde_json::from_slice::<serde_json::Value>(json) else { return false };
+    response["result"]["apps"].as_array().is_some_and(|apps| apps.iter().any(|app|
+        app["bundleIdentifier"].as_str() == Some(bundle_id) && app["bundleVersion"].as_str() == Some(build)
+    ))
 }
 
 fn read(path: &Path) -> String {
@@ -55,22 +117,24 @@ pub fn stop_previous(pidfile: &Path) {
     let _ = fs::remove_file(pidfile);
 }
 
-/// Starts `apparition launch` detached and waits for its "Launched application" line. Alive but
-/// quiet is not a launch: the client sits connecting while the device's tunnel is unreachable.
+/// Starts the launcher detached and waits for its "Launched application" line. The console may
+/// stay open indefinitely, so devicectl's overall command timeout is only used for plain launches.
 /// Returns the streamer's pid.
-pub fn detached(d: Detached) -> Result<u32, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let log = fs::OpenOptions::new().create(true).append(true).open(d.log).map_err(|e| e.to_string())?;
-    let mut command = Command::new(exe);
-    command.arg("launch").arg(d.bundle_id).arg("--device").arg(d.device);
-    if d.console { command.arg("--console"); }
-    if d.jit { command.arg("--jit"); }
-    for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("APPARITION_CHILD_")) {
-        command.env_remove(key);
-    }
-    for (key, value) in d.environment {
-        command.env(format!("APPARITION_CHILD_{key}"), value);
-    }
+pub fn detached(d: Detached, route: Route) -> Result<u32, String> {
+    let (mut command, wait) = match route {
+        Route::Apparition => {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let mut command = Command::new(exe);
+            command.args(["launch", d.bundle_id, "--device", &d.device.udid]);
+            if d.console { command.arg("--console"); }
+            if d.jit { command.arg("--jit"); }
+            child_environment(&mut command, "APPARITION_CHILD_", d.environment);
+            (command, Duration::from_secs(45))
+        }
+        Route::Devicectl => (devicectl(d.device, d.bundle_id, true, d.environment), Duration::from_secs(30)),
+    };
+    // Each route has its own output, so a failed attempt can't affect the next one's result.
+    let log = fs::File::create(d.log).map_err(|e| e.to_string())?;
     command.stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
     #[cfg(unix)]
     {
@@ -79,43 +143,35 @@ pub fn detached(d: Detached) -> Result<u32, String> {
         // SAFETY: setsid is async-signal-safe and touches nothing of this process.
         unsafe { command.pre_exec(|| { libc::setsid(); Ok(()) }); }
     }
-    let mut child = command.spawn().map_err(|e| format!("couldn't start apparition launch: {e}"))?;
+    let mut child = command.spawn().map_err(|e| format!("couldn't start {}: {e}", route.name()))?;
     let pid = child.id();
-    fs::write(d.pidfile, format!("{pid}\n")).map_err(|e| e.to_string())?;
+    if let Err(error) = fs::write(d.pidfile, format!("{pid}\n")) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("couldn't record the console process: {error}"));
+    }
     let started = Instant::now();
-    while started.elapsed() < d.wait {
-        if read(d.log).to_lowercase().contains("launched application") {
+    let failure = loop {
+        let status = child.try_wait().map_err(|e| format!("couldn't check the launcher's status: {e}"));
+        if read(d.log).lines().any(|line| line.starts_with("Launched application with ")) {
             return Ok(pid);
         }
-        if child.try_wait().ok().flatten().is_some() {
-            break;
+        match status {
+            Ok(Some(status)) => break format!("the launcher exited ({status})"),
+            Err(error) => break error,
+            Ok(None) if started.elapsed() >= wait => break format!("no launch confirmation in {} s", wait.as_secs()),
+            Ok(None) => std::thread::sleep(Duration::from_millis(250)),
         }
-        std::thread::sleep(Duration::from_millis(250));
-    }
+    };
     let _ = child.kill();
     let _ = child.wait();
     let _ = fs::remove_file(d.pidfile);
     let output = tail(d.log, 15);
     Err(format!(
-        "Failed to launch {} on {} through Apparition: {}.\n  The app is installed. A headset may need to be worn (or the device unlocked); check the device connection and retry.{}",
-        d.bundle_id, d.device,
-        if output.trim().is_empty() { format!("no answer in {} s", d.wait.as_secs()) } else { "it stopped".to_string() },
-        if output.trim().is_empty() { String::new() } else { format!("\n---- launch output ----\n{output}") }
+        "Failed to launch {} on {} through {}: {failure}{}",
+        d.bundle_id, d.device.name, route.name(),
+        if output.trim().is_empty() { String::new() } else { format!("\n---- launch output ----\n{output}") },
     ))
-}
-
-/// Opens the device's Apparition app through Xcode's tunnel, so the full Apparition route can be
-/// retried for the requested app (including console and JIT launches).
-pub fn open_apparition_with_devicectl(device_id: &str) -> Result<(), String> {
-    let output = Command::new("/usr/bin/xcrun")
-        .args(["devicectl", "device", "process", "launch", "--device", device_id,
-            "--timeout", "30", "com.illixion.apparition"])
-        .output()
-        .map_err(|e| format!("couldn't start xcrun devicectl: {e}"))?;
-    if output.status.success() { return Ok(()); }
-    let text = String::from_utf8_lossy(&output.stderr);
-    let text = if text.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { text };
-    Err(format!("Xcode's tunnel couldn't open Apparition:\n{}", text.trim()))
 }
 
 /// The port of "listening on port N" in the console log, waiting up to `wait` for it.
@@ -140,15 +196,44 @@ pub fn debug_server_port(log: &Path, wait: Duration) -> Option<u16> {
 pub fn answers(address: &str, port: u16) -> bool {
     use std::net::ToSocketAddrs;
     let Ok(mut targets) = (address, port).to_socket_addrs() else { return false };
-    let Some(target) = targets.next() else { return false };
-    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&target, Duration::from_secs(3)) else { return false };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let host = if address.contains(':') { format!("[{address}]") } else { address.to_string() };
-    if stream.write_all(format!("GET / HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n").as_bytes()).is_err() {
-        return false;
+    let request = format!("GET / HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let timeout = || deadline.saturating_duration_since(Instant::now()).min(Duration::from_secs(1));
+    targets.any(|target| {
+        let connect_timeout = timeout();
+        if connect_timeout.is_zero() { return false; }
+        let Ok(mut stream) = std::net::TcpStream::connect_timeout(&target, connect_timeout) else { return false };
+        let io_timeout = Some(timeout());
+        let mut head = [0u8; 12];
+        stream.set_write_timeout(io_timeout).is_ok()
+            && stream.set_read_timeout(io_timeout).is_ok()
+            && stream.write_all(request.as_bytes()).is_ok()
+            && stream.read_exact(&mut head).is_ok()
+            && head.starts_with(b"HTTP/1.") && &head[9..12] == b"200"
+    })
+}
+
+/// Device display names aren't always DNS names. DebugTrace's signed Bonjour advertisement
+/// gives us the server's actual hostname and identifies the build by its command token.
+pub async fn debug_address(device_name: &str, port: u16, token: &str) -> Option<String> {
+    use apparition_service::debug::{Browse, Mdns, advertisement_tag};
+    let address = device_name.to_lowercase();
+    if answers(&address, port) {
+        return Some(address);
     }
-    let mut head = [0u8; 12];
-    stream.read_exact(&mut head).is_ok() && head.starts_with(b"HTTP/1.") && &head[9..12] == b"200"
+    let browser = std::sync::Arc::new(Mdns::default());
+    for service in browser.browse().await {
+        if service.port != port {
+            continue;
+        }
+        if let (Some(nonce), Some(tag)) = (service.txt.get("n"), service.txt.get("t"))
+            && &advertisement_tag(token, nonce) == tag && answers(&service.host, port)
+        {
+            return Some(service.host);
+        }
+    }
+    None
 }
 
 pub fn url(address: &str, port: u16) -> String {
@@ -197,6 +282,32 @@ pub fn write_session(s: Session) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    fn test_device() -> crate::builder::TargetDevice {
+        crate::builder::TargetDevice {
+            name: "Nowhere".into(), udid: "test-device-id".into(),
+            platform: apparition_core::api::Platform::VisionOS, paired: None,
+        }
+    }
+
+    #[test]
+    fn xcode_console_launches_the_requested_app_with_child_environment() {
+        let command = devicectl(&test_device(), "com.example.demo", true, &[("DEBUGTRACE_SERVER", "1")]);
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [
+            "devicectl", "device", "process", "launch", "--device", "test-device-id",
+            "--terminate-existing", "--console", "com.example.demo",
+        ]);
+        assert!(command.get_envs().any(|(key, value)| key == "DEVICECTL_CHILD_DEBUGTRACE_SERVER"
+            && value.is_some_and(|value| value == "1")));
+    }
+
+    #[test]
+    fn xcode_reuses_only_the_matching_bundle_and_build() {
+        let apps = br#"{"result":{"apps":[{"bundleIdentifier":"com.example.demo","bundleVersion":"123"}]}}"#;
+        assert!(devicectl_build_matches(apps, "com.example.demo", "123"));
+        assert!(!devicectl_build_matches(apps, "com.example.other", "123"));
+        assert!(!devicectl_build_matches(apps, "com.example.demo", "122"));
+    }
+
     #[test]
     fn the_port_comes_from_the_server_s_own_line() {
         let dir = tempfile::tempdir().unwrap();
@@ -243,14 +354,15 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_that_never_says_launched_fails_with_its_output() {
+    fn a_launch_that_never_says_launched_ignores_the_previous_attempt() {
         let dir = tempfile::tempdir().unwrap();
         let (log, pidfile) = (dir.path().join("console.log"), dir.path().join("console.pid"));
+        fs::write(&log, "Launched application with pid 123\n").unwrap();
         // The test binary is current_exe here: given `launch`, it runs no test and exits.
         let error = detached(Detached {
-            bundle_id: "com.example.demo", device: "Nowhere", console: true, jit: false, environment: &[("A", "1")],
-            log: &log, pidfile: &pidfile, wait: Duration::from_secs(20),
-        }).unwrap_err();
+            bundle_id: "com.example.demo", device: &test_device(), console: true, jit: false,
+            environment: &[("A", "1")], log: &log, pidfile: &pidfile,
+        }, Route::Apparition).unwrap_err();
         assert!(error.contains("Failed to launch com.example.demo on Nowhere"), "{error}");
         assert!(!pidfile.exists());
     }

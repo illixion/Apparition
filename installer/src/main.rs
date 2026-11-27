@@ -133,8 +133,8 @@ Apparition: puts Apparition (or any IPA) on your devices, and is their companion
       it until they are signed again: share Apparition's instead (`signing`, below).
   apparition build [--run, --log, --mcp, --jit, --inject, --device, --set K=V, ...]
       On a Mac, in a repo with a build-signing.conf: build with Xcode, sign with the conf's
-      certificate, keep the build and its dSYMs, install it over this pairing and, with --run,
-      launch it the same way. No devicectl, Node or Homebrew bash. `apparition build --help`.
+      certificate, keep the build and its dSYMs, install it and, with --run, launch it. Uses
+      Apparition's pairing first and can fall back to Xcode's tunnel. `apparition build --help`.
 
   Sharing one certificate between your devices and computers. A free account holds two, so
   each Apparition signs with the same one rather than making its own: once one has signed,

@@ -43,10 +43,11 @@ apparition build: build, sign, keep and install the app of the repo you're in (b
 
 Reads ~/.config/build-signing/global.conf and the repo's (scripts/)build-signing.conf. Signs with
 the conf's .p12 and profile, keeps the build (and its dSYMs) in the build store, installs it over
-Apparition's own pairing with the device (--via: auto falls back to Xcode's tunnel, devicectl, when that can't
-reach it; devicectl forces the tunnel) and, with --run, launches it the same way: --log streams
-its console to build/device-console.log, --mcp makes the launch a debug session for the `apps`
-tools (MCP_DEFAULT=on makes every --run one), --jit serves the app's JIT requests.
+Apparition's own pairing with the device, and with --run, launches it. By default, Xcode's
+tunnel (devicectl) takes over if Apparition's route fails. --via selects the route for install
+and ordinary launch. --log streams the console to build/device-console.log, --mcp makes the
+launch a debug session for the `apps` tools (MCP_DEFAULT=on makes every --run one), and --jit
+serves the app's JIT requests through Apparition's own pairing.
 
 A --run of the same sources, flags and device as the last install (build/last-deploy.json) that is still
 on the device skips the build, signing and install and only launches it; --rebuild does them anyway.
@@ -219,20 +220,6 @@ fn install_with_devicectl(udid: &str, ipa: &Path) -> Result<(), String> {
     let text = String::from_utf8_lossy(&output.stderr);
     let text = if text.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { text };
     Err(format!("devicectl couldn't install it either:\n    {}", text.trim().lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n    ")))
-}
-
-/// Launches `bundle_id` on `udid` through `xcrun devicectl device process launch`.
-fn launch_with_devicectl(udid: &str, bundle_id: &str) -> Result<(), String> {
-    let output = std::process::Command::new("/usr/bin/xcrun")
-        .args(["devicectl", "device", "process", "launch", "--device", udid, bundle_id])
-        .output()
-        .map_err(|e| format!("Couldn't run xcrun devicectl: {e}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let text = String::from_utf8_lossy(&output.stderr);
-    let text = if text.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { text };
-    Err(format!("devicectl couldn't launch {bundle_id}:\n    {}", text.trim().lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n    ")))
 }
 
 /// A device to sign for and deploy to: either paired with Apparition, or known only to Xcode's
@@ -675,7 +662,8 @@ fn xcodebuild_args(conf: &Conf, o: &Options, platform: &str, derived_data: &Path
 /// What launching an installed app needs, from a build just made or from the one kept for the checkout.
 struct Launch<'a> {
     o: &'a Options,
-    device: &'a api::PairedDevice,
+    device: &'a TargetDevice,
+    via: Via,
     bundle_id: &'a str,
     app_name: Option<String>,
     log_app: bool,
@@ -693,20 +681,23 @@ struct Launch<'a> {
 
 /// Step 10: launch the installed app (a plain run, with its console, as a debug session or with JIT).
 async fn launch_app(l: &Launch<'_>) -> Result<Launched, String> {
-    let Launch { o, device, bundle_id, log_app, has_debugtrace, has_server, build_dir, root, platform, state, inject_dir, .. } = *l;
+    let Launch { o, device, via, bundle_id, log_app, has_debugtrace, has_server, build_dir, root, platform, state, inject_dir, .. } = *l;
     let mut mcp_session = l.mcp_session;
     let app_log = build_dir.join("device-console.log");
     let pidfile = build_dir.join("device-console.pid");
-    let mut launched = Launched::None;
     launch::stop_previous(&pidfile);
     // DEVICECTL_CHILD_<KEY> from the caller reaches the app too, as with build-and-sign.
     let mut environment: Vec<(String, String)> = std::env::vars()
         .filter_map(|(k, v)| k.strip_prefix("DEVICECTL_CHILD_").filter(|k| !k.is_empty()).map(|k| (k.to_string(), v)))
         .filter(|(k, _)| !["DEBUGTRACE_TOKEN", "DEBUGTRACE_STDERR", "OS_ACTIVITY_DT_MODE", "DEBUGTRACE_SERVER"].contains(&k.as_str()))
         .collect();
-    if log_app {
-        println!("==> Launching {bundle_id} (console → {})...", app_log.display());
-        fs::write(&app_log, "").map_err(|e| e.to_string())?;
+    let use_apparition = device.paired.is_some() && (o.jit || via != Via::Devicectl);
+    if o.jit && !use_apparition {
+        return Err(format!("--jit requires an Apparition pairing for {}. The app is installed.", device.name));
+    }
+    if log_app || o.jit {
+        let stream = if log_app { "console" } else { "JIT session" };
+        println!("==> Launching {bundle_id} ({stream} → {})...", app_log.display());
         let _ = fs::remove_file(build_dir.join("debug-server.txt"));
         let mut token = None;
         if mcp_session {
@@ -720,32 +711,35 @@ async fn launch_app(l: &Launch<'_>) -> Result<Launched, String> {
         }
         // A DebugTrace app mirrors only its own lines to stderr, compact and redacted;
         // anything else gets the unified log mirrored (OS_ACTIVITY_DT_MODE).
-        if has_debugtrace && !o.log_all { environment.push(("DEBUGTRACE_STDERR".into(), "1".into())) }
-        else { environment.push(("OS_ACTIVITY_DT_MODE".into(), "YES".into())) }
+        if log_app {
+            if has_debugtrace && !o.log_all { environment.push(("DEBUGTRACE_STDERR".into(), "1".into())) }
+            else { environment.push(("OS_ACTIVITY_DT_MODE".into(), "YES".into())) }
+        }
         if mcp_session { environment.push(("DEBUGTRACE_SERVER".into(), "1".into())) }
         let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let launch = launch::Detached {
-            bundle_id, device: &device.name,
-            console: true, jit: o.jit, environment: &pairs,
-            log: &app_log, pidfile: &pidfile, wait: Duration::from_secs(20),
+            bundle_id, device, console: log_app, jit: o.jit, environment: &pairs,
+            log: &app_log, pidfile: &pidfile,
         };
-        let pid = match launch::detached(launch) {
-            Ok(pid) => pid,
-            Err(first) => {
-                println!("    Apparition's launch route couldn't reach {}: {}", device.name, first.lines().next().unwrap_or("").trim());
-                println!("    Opening Apparition through Xcode's tunnel (devicectl), then retrying...");
-                launch::open_apparition_with_devicectl(&device.udid)
-                    .and_then(|()| launch::detached(launch))
-                    .map_err(|second| format!("{first}\n{second}"))?
+        let pid = if use_apparition {
+            match launch::detached(launch, launch::Route::Apparition) {
+                Ok(pid) => pid,
+                Err(error) if o.jit => return Err(format!("{error}\n--jit needs Apparition's own pairing and debugger connection. The app is installed.")),
+                Err(first) if via == Via::Auto => {
+                    println!("    Launch through Apparition failed. Trying {bundle_id} through Xcode's tunnel (devicectl)...");
+                    launch::detached(launch, launch::Route::Devicectl).map_err(|second| format!("{first}\n{second}"))?
+                }
+                Err(error) => return Err(error),
             }
+        } else {
+            println!("    Launching through Xcode's tunnel (devicectl)...");
+            launch::detached(launch, launch::Route::Devicectl)?
         };
+        if !log_app { return Ok(Launched::Jit); }
         let (mut debug_api, mut note) = (None, None);
         if let (true, Some(token)) = (mcp_session, token) {
-            let address = device.name.to_lowercase();
-            match launch::debug_server_port(&app_log, Duration::from_secs(20)) {
-                None => note = Some(format!("not up yet (no 'listening on port' line in 20 s); device address: {address}")),
-                Some(port) if !launch::answers(&address, port) => note = Some(format!("listening on port {port}, but not reachable at: {address}")),
-                Some(port) => {
+            if let Some(port) = launch::debug_server_port(&app_log, Duration::from_secs(20)) {
+                if let Some(address) = launch::debug_address(&device.name, port, &token).await {
                     let url = launch::url(&address, port);
                     let app_name = l.app_name.clone()
                         .unwrap_or_else(|| bundle_id.rsplit('.').next().unwrap_or(bundle_id).to_string());
@@ -759,37 +753,51 @@ async fn launch_app(l: &Launch<'_>) -> Result<Launched, String> {
                         "# Debug server for {bundle_id} (this launch only)\nurl: {url}\nagents: use the `apps` MCP tools (apps, help, call, trace); the session is registered\nhelp: curl -s {url}/   (the rest needs the session's bearer token)\n"
                     )).map_err(|e| e.to_string())?;
                     debug_api = Some(url);
+                } else {
+                    note = Some(format!("listening on port {port}, but not reachable from this Mac"));
                 }
+            } else {
+                note = Some("not up yet (no 'listening on port' line in 20 s)".into());
             }
         }
-        launched = Launched::Log { debug_api, note };
-    } else if o.jit {
-        println!("==> Launching {bundle_id} with JIT (session → {})...", app_log.display());
-        fs::write(&app_log, "").map_err(|e| e.to_string())?;
-        let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        launch::detached(launch::Detached {
-            bundle_id, device: &device.name, console: false, jit: true, environment: &pairs,
-            log: &app_log, pidfile: &pidfile, wait: Duration::from_secs(20),
-        })?;
-        launched = Launched::Jit;
-    } else {
-        println!("==> Launching {bundle_id} (through Apparition's tunnel)...");
-        let mut tunnel = connect_or_repair(device).await?;
-        // A headset that isn't worn holds a launch without answering: give up after 30 s.
-        launched = match tokio::time::timeout(Duration::from_secs(30), tunnel.launch(bundle_id, &[], &environment, false, false)).await {
-            Ok(Ok(_)) => Launched::Run,
-            Ok(Err(e)) => Launched::Failed(format!("Failed to launch {bundle_id} on {}: {}", device.name, api::describe(&e))),
-            Err(_) => Launched::Failed(format!("{} didn't launch {bundle_id} within 30 s. Put it on or unlock it, then launch the app (it is installed).", device.name)),
-        };
+        return Ok(Launched::Log { debug_api, note });
     }
-    Ok(launched)
+    let native_error = if let Some(paired) = device.paired.as_ref().filter(|_| use_apparition) {
+        println!("==> Launching {bundle_id} (through Apparition's tunnel)...");
+        let failure = match connect_or_repair(paired).await {
+            Ok(mut tunnel) => {
+                // A headset that isn't worn may hold a launch without answering.
+                match tokio::time::timeout(Duration::from_secs(30), tunnel.launch(bundle_id, &[], &environment, false, false)).await {
+                    Ok(Ok(_)) => return Ok(Launched::Run),
+                    Ok(Err(e)) => api::describe(&e),
+                    Err(_) => format!("{} didn't confirm the launch within 30 s", device.name),
+                }
+            }
+            Err(error) => error,
+        };
+        if via == Via::Apparition {
+            return Err(format!("Failed to launch {bundle_id} through Apparition: {failure}"));
+        }
+        Some(failure)
+    } else {
+        None
+    };
+    println!("==> Launching {bundle_id} (through Xcode's tunnel, devicectl)...");
+    let pairs: Vec<(&str, &str)> = environment.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    launch::plain_devicectl(device, bundle_id, &pairs)
+        .map_err(|error| match native_error {
+            Some(first) => format!("Launch through Apparition failed: {first}\n{error}"),
+            None => error,
+        })?;
+    Ok(Launched::Run)
 }
 
 /// What `reuse_deploy` needs of a run.
 struct Reuse<'a> {
     o: &'a Options,
     conf: &'a Conf,
-    device: &'a api::PairedDevice,
+    device: &'a TargetDevice,
+    via: Via,
     platform: &'a str,
     root: &'a Path,
     build_dir: &'a Path,
@@ -820,9 +828,22 @@ async fn reuse_deploy(r: &Reuse<'_>) -> Result<Option<Launched>, String> {
     if now["fingerprint"].as_str() != Some(fingerprint) { return Ok(None) }
 
     // The device must still hold that build: another install over it (Xcode, another checkout) means build.
-    let Ok(mut tunnel) = connect_or_repair(device).await else { return Ok(None) };
-    let Ok(apps) = tunnel.installed_apps(false).await else { return Ok(None) };
-    if !apps.iter().any(|a| a.bundle_id == bundle_id && a.build.as_deref() == Some(build)) { return Ok(None) }
+    let mut tunnel = match device.paired.as_ref().filter(|_| r.via != Via::Devicectl || o.jit) {
+        Some(paired) => connect_or_repair(paired).await.ok(),
+        None => None,
+    };
+    let mut launch_via = r.via;
+    match tunnel.as_mut() {
+        Some(tunnel) => {
+            let Ok(apps) = tunnel.installed_apps(false).await else { return Ok(None) };
+            if !apps.iter().any(|a| a.bundle_id == bundle_id && a.build.as_deref() == Some(build)) { return Ok(None) }
+        }
+        None if r.via != Via::Apparition && !o.jit => {
+            if !launch::devicectl_has_build(&device.udid, bundle_id, build) { return Ok(None) }
+            launch_via = Via::Devicectl;
+        }
+        None => return Ok(None),
+    }
 
     let state = conf.get("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state"));
     let ledger = conf.get("DEBUGTRACE_KEY_DIR").map(PathBuf::from).unwrap_or_else(|| state.join("debugtrace/keys"));
@@ -836,13 +857,15 @@ async fn reuse_deploy(r: &Reuse<'_>) -> Result<Option<Launched>, String> {
 
     println!("==> {bundle_id} {build} is already on {} and the sources haven't changed: launching it without rebuilding (--rebuild to force)", device.name);
     let _ = std::io::stdout().flush();
-    tunnel.close_running(bundle_id).await;
+    if let Some(tunnel) = tunnel.as_mut() {
+        tunnel.close_running(bundle_id).await;
+    }
     drop(tunnel);
     let launched = launch_app(&Launch {
-        o, device, bundle_id, app_name: kept["appName"].as_str().map(String::from), log_app: r.log_app, mcp_session: r.mcp_session,
+        o, device, via: launch_via, bundle_id, app_name: kept["appName"].as_str().map(String::from), log_app: r.log_app, mcp_session: r.mcp_session,
         has_debugtrace: kept["hasDebugtrace"].as_bool() == Some(true), has_server, command_token, key_id,
         inject_dir: Some(build_dir.join("inject")).filter(|d| o.inject && d.is_dir()).as_deref(), platform, root, build_dir, state: &state,
-    }).await?;
+    }).await.unwrap_or_else(Launched::Failed);
     println!();
     println!("  {:<12} {bundle_id}", "App:");
     println!("  {:<12} {build} (build {})", "Build:", kept["buildId"].as_str().unwrap_or("?"));
@@ -851,7 +874,7 @@ async fn reuse_deploy(r: &Reuse<'_>) -> Result<Option<Launched>, String> {
 }
 
 /// The report line for a launch that reused the installed build, and the failure a launch that didn't happen is.
-fn finish_reused(launched: Launched, device: &api::PairedDevice) -> Result<(), String> {
+fn finish_reused(launched: Launched, device: &TargetDevice) -> Result<(), String> {
     let line = |label: &str, value: &str| println!("  {label:<12} {value}");
     match launched {
         Launched::None => {}
@@ -1065,13 +1088,13 @@ impl Build {
         self.log_started = true;
         // The same build again: nothing to build, sign or install, only to launch.
         if o.run && !o.rebuild && !sign_only && !mac && !o.unsigned && !no_deploy {
-            if let Some(paired) = device.as_ref().and_then(|d| d.paired.as_ref()) {
+            if let Some(device) = device.as_ref() {
                 let reuse = Reuse {
-                    o: &o, conf: &conf, device: paired, platform: &platform, root: &root, build_dir: &build_dir, derived_data: &derived_data,
+                    o: &o, conf: &conf, device, via, platform: &platform, root: &root, build_dir: &build_dir, derived_data: &derived_data,
                     backend: &backend, signed_ipa: build_dir.join(format!("{target}-signed.ipa")), log_app, mcp_session,
                 };
                 if let Some(launched) = reuse_deploy(&reuse).await? {
-                    return finish_reused(launched, paired);
+                    return finish_reused(launched, device);
                 }
             }
         }
@@ -1361,6 +1384,7 @@ impl Build {
 
         // Step 9: install, over Apparition's own pairing (or Xcode's devicectl).
         let mut installed = false;
+        let mut launch_via = via;
         if !no_deploy {
             let device = device.as_ref().ok_or("no device to install to")?;
             println!("==> Installing to {}...", device.name);
@@ -1395,6 +1419,7 @@ impl Build {
             }
             if !done {
                 install_with_devicectl(&device.udid, &signed_ipa)?;
+                launch_via = Via::Devicectl;
                 println!("    installed through Xcode's tunnel (devicectl)");
             }
             installed = true;
@@ -1419,22 +1444,12 @@ impl Build {
         let mut launched = Launched::None;
         if o.run {
             let device = device.as_ref().ok_or("no device to launch on")?;
-            if let Some(paired) = &device.paired {
-                let app_name = bundle::read_info(&info_path).ok().and_then(|i| bundle::string(&i, "CFBundleDisplayName").or_else(|| bundle::string(&i, "CFBundleName")));
-                launched = launch_app(&Launch {
-                    o: &o, device: paired, bundle_id: &bundle_id, app_name, log_app, mcp_session, has_debugtrace, has_server,
-                    command_token: credential.as_ref().and_then(|c| c.command_token.clone()), key_id: credential.as_ref().map(|c| c.key_id.as_str()),
-                    inject_dir: inject_dir.as_deref(), platform: &platform, root: &root, build_dir: &build_dir, state: &state,
-                }).await?;
-            } else if log_app || o.jit {
-                return Err(format!("--log/--mcp/--jit require an Apparition pairing for {}; plain --run works through devicectl", device.name));
-            } else {
-                println!("==> Launching {bundle_id} (through Xcode's tunnel, devicectl)...");
-                launched = match launch_with_devicectl(&device.udid, &bundle_id) {
-                    Ok(()) => Launched::Run,
-                    Err(e) => Launched::Failed(e),
-                };
-            }
+            let app_name = bundle::read_info(&info_path).ok().and_then(|i| bundle::string(&i, "CFBundleDisplayName").or_else(|| bundle::string(&i, "CFBundleName")));
+            launched = launch_app(&Launch {
+                o: &o, device, via: launch_via, bundle_id: &bundle_id, app_name, log_app, mcp_session, has_debugtrace, has_server,
+                command_token: credential.as_ref().and_then(|c| c.command_token.clone()), key_id: credential.as_ref().map(|c| c.key_id.as_str()),
+                inject_dir: inject_dir.as_deref(), platform: &platform, root: &root, build_dir: &build_dir, state: &state,
+            }).await.unwrap_or_else(Launched::Failed);
         }
 
         // The report, as build-and-sign prints it.
