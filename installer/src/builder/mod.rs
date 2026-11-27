@@ -36,7 +36,7 @@ apparition build: build, sign, keep and install the app of the repo you're in (b
 
   apparition build [--debug] [--no-deploy] [--unsigned] [--sign-only] [--ipa FILE] [--profile FILE]
                    [--platform P] [--device NAME] [--via auto|apparition|devicectl] [--set KEY=VALUE]...
-                   [--run] [--rebuild] [--log] [--log-all]
+                   [--omit-watch] [--strip-extensions] [--run] [--rebuild] [--log] [--log-all]
                    [--mcp | --no-mcp] [--jit] [--inject] [--inject-backend dynamic|apparition]
   apparition build --sign-dylib FILE...     sign Mach-O files with the conf's certificate (a live patch)
   apparition build --plan [--platform P]    print what the conf resolves to, as JSON (for a Store)
@@ -221,12 +221,85 @@ fn install_with_devicectl(udid: &str, ipa: &Path) -> Result<(), String> {
     Err(format!("devicectl couldn't install it either:\n    {}", text.trim().lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n    ")))
 }
 
+/// Launches `bundle_id` on `udid` through `xcrun devicectl device process launch`.
+fn launch_with_devicectl(udid: &str, bundle_id: &str) -> Result<(), String> {
+    let output = std::process::Command::new("/usr/bin/xcrun")
+        .args(["devicectl", "device", "process", "launch", "--device", udid, bundle_id])
+        .output()
+        .map_err(|e| format!("Couldn't run xcrun devicectl: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = String::from_utf8_lossy(&output.stderr);
+    let text = if text.trim().is_empty() { String::from_utf8_lossy(&output.stdout) } else { text };
+    Err(format!("devicectl couldn't launch {bundle_id}:\n    {}", text.trim().lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n    ")))
+}
+
+/// A device to sign for and deploy to: either paired with Apparition, or known only to Xcode's
+/// `devicectl` (such as an Apple Watch, which Apparition does not pair with directly).
+struct TargetDevice {
+    name: String,
+    udid: String,
+    platform: Platform,
+    paired: Option<api::PairedDevice>,
+}
+
+fn parse_devicectl_device(json: &[u8], wanted: &str, fallback_platform: &str) -> Result<TargetDevice, String> {
+    let value: serde_json::Value = serde_json::from_slice(json).map_err(|e| format!("Couldn't parse devicectl device list: {e}"))?;
+    let devices = value["result"]["devices"].as_array().ok_or("devicectl returned no device list")?;
+    let found = devices.iter().find(|d| {
+        if d["hardwareProperties"]["reality"].as_str() != Some("physical") {
+            return false;
+        }
+        let name = d["deviceProperties"]["name"].as_str().unwrap_or("");
+        let udid = d["hardwareProperties"]["udid"].as_str().unwrap_or("");
+        let id = d["identifier"].as_str().unwrap_or("");
+        name.eq_ignore_ascii_case(wanted) || udid.eq_ignore_ascii_case(wanted) || id.eq_ignore_ascii_case(wanted)
+    });
+    let Some(device) = found else {
+        return Err(format!("No physical device named '{wanted}' in Xcode's devicectl list (`xcrun devicectl list devices`)"));
+    };
+    let name = device["deviceProperties"]["name"].as_str().unwrap_or(wanted).to_string();
+    let udid = device["hardwareProperties"]["udid"].as_str()
+        .or_else(|| device["identifier"].as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("devicectl reported '{name}' with no UDID"))?
+        .to_string();
+    let platform = device["hardwareProperties"]["platform"].as_str()
+        .and_then(core_platform)
+        .or_else(|| core_platform(fallback_platform))
+        .unwrap_or(Platform::IOS);
+    Ok(TargetDevice { name, udid, platform, paired: None })
+}
+
+/// Resolves a physical device from Xcode's `devicectl` device list by name or UDID.
+fn find_devicectl_device(wanted: &str, fallback_platform: &str) -> Result<TargetDevice, String> {
+    let path = std::env::temp_dir().join(format!("apparition-devicectl-{}-{}.json", std::process::id(), random_hex(4)));
+    let output = std::process::Command::new("/usr/bin/xcrun")
+        .args(["devicectl", "list", "devices", "--json-output"])
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("Couldn't run xcrun devicectl: {e}"))?;
+    let bytes = fs::read(&path);
+    let _ = fs::remove_file(&path);
+    if !output.status.success() {
+        let text = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("xcrun devicectl list devices failed: {}", text.trim()));
+    }
+    let bytes = bytes.map_err(|e| format!("Couldn't read devicectl output: {e}"))?;
+    parse_devicectl_device(&bytes, wanted, fallback_platform)
+}
+
 #[derive(Default, Debug)]
 struct Options {
     config: &'static str,
     sign_only: bool,
     no_deploy: bool,
     unsigned: bool,
+    /// `--omit-watch`: remove any bundled `Watch/` app before signing.
+    omit_watch: bool,
+    /// `--strip-extensions`: remove app extensions and bundled watch apps that no imported profile covers.
+    strip_extensions: bool,
     run: bool,
     /// `--rebuild`: build, sign and install even when the build kept for this checkout is already on the device.
     rebuild: bool,
@@ -260,6 +333,8 @@ fn parse(args: &[String]) -> Result<Option<Options>, String> {
             "--sign-only" => o.sign_only = true,
             "--no-deploy" => o.no_deploy = true,
             "--unsigned" => { o.unsigned = true; o.no_deploy = true; }
+            "--omit-watch" => o.omit_watch = true,
+            "--strip-extensions" => o.strip_extensions = true,
             "--run" => o.run = true,
             "--rebuild" => o.rebuild = true,
             "--log" => { o.run = true; o.log = true; }
@@ -302,7 +377,7 @@ fn expected_sdk(platform: &str) -> Option<&'static str> {
 
 fn core_platform(platform: &str) -> Option<Platform> {
     match platform.to_lowercase().as_str() {
-        "ios" => Some(Platform::IOS),
+        "ios" | "watchos" => Some(Platform::IOS),
         "visionos" | "xros" => Some(Platform::VisionOS),
         "tvos" => Some(Platform::TvOS),
         _ => None,
@@ -959,10 +1034,29 @@ impl Build {
             println!("{plan}");
             return Ok(());
         }
-        // The device, from this computer's pairings: no network yet, and an unpaired name fails
-        // before a long build rather than after.
+        let via = o.via.or_else(|| conf.get("APPARITION_INSTALL_VIA").and_then(|v| Via::parse(v).ok())).unwrap_or(Via::Auto);
+        // The device, from this computer's pairings (or Xcode's devicectl when --via devicectl is
+        // chosen, or for watchOS where Apparition has no direct pairing): fails before a long build.
         let device = match (&device_name, !no_deploy || o.run) {
-            (Some(name), true) => Some(crate::find_device(Some(name)).map_err(|e| format!("{}; pair it with `apparition pair` (iPhone or iPad: `pair --usb`)", api::describe(&e)))?),
+            (Some(name), true) => {
+                match crate::find_device(Some(name)) {
+                    Ok(paired) => Some(TargetDevice {
+                        name: paired.name.clone(),
+                        udid: paired.udid.clone(),
+                        platform: paired.platform(),
+                        paired: Some(paired),
+                    }),
+                    Err(_) if via == Via::Devicectl || (via == Via::Auto && platform.eq_ignore_ascii_case("watchos")) => {
+                        Some(find_devicectl_device(name, &platform)?)
+                    }
+                    Err(e) if platform.eq_ignore_ascii_case("watchos") => {
+                        return Err(format!("{}; Apparition has no watchOS app to pair directly — use `--via devicectl` for an Xcode-paired Apple Watch", api::describe(&e)));
+                    }
+                    Err(e) => {
+                        return Err(format!("{}; pair it with `apparition pair` (iPhone or iPad: `pair --usb`)", api::describe(&e)));
+                    }
+                }
+            }
             _ => None,
         };
 
@@ -971,13 +1065,13 @@ impl Build {
         self.log_started = true;
         // The same build again: nothing to build, sign or install, only to launch.
         if o.run && !o.rebuild && !sign_only && !mac && !o.unsigned && !no_deploy {
-            if let Some(device) = &device {
+            if let Some(paired) = device.as_ref().and_then(|d| d.paired.as_ref()) {
                 let reuse = Reuse {
-                    o: &o, conf: &conf, device, platform: &platform, root: &root, build_dir: &build_dir, derived_data: &derived_data,
+                    o: &o, conf: &conf, device: paired, platform: &platform, root: &root, build_dir: &build_dir, derived_data: &derived_data,
                     backend: &backend, signed_ipa: build_dir.join(format!("{target}-signed.ipa")), log_app, mcp_session,
                 };
                 if let Some(launched) = reuse_deploy(&reuse).await? {
-                    return finish_reused(launched, device);
+                    return finish_reused(launched, paired);
                 }
             }
         }
@@ -1140,8 +1234,19 @@ impl Build {
                 extension_id = Some(id);
             }
         }
-        let watch = bundle::watch_app(&app);
-        let watch_id = watch.as_ref().and_then(|w| bundle::read_info(&w.join("Info.plist")).ok()).and_then(|i| bundle::string(&i, "CFBundleIdentifier"));
+        let mut watch = bundle::watch_app(&app);
+        let mut watch_id = watch.as_ref().and_then(|w| bundle::read_info(&w.join("Info.plist")).ok()).and_then(|i| bundle::string(&i, "CFBundleIdentifier"));
+        if o.omit_watch {
+            if let Some(watch_dir) = watch.take() {
+                fs::remove_dir_all(&watch_dir).map_err(|e| format!("couldn't remove bundled watch app {}: {e}", watch_dir.display()))?;
+                let container = app.join("Watch");
+                if container.is_dir() && fs::read_dir(&container).ok().is_some_and(|mut d| d.next().is_none()) {
+                    let _ = fs::remove_dir(&container);
+                }
+                println!("==> Omitted bundled watchOS app ({})", watch_id.as_deref().unwrap_or("Watch"));
+                watch_id = None;
+            }
+        }
 
         // Step 4.6: the source commit as the build number, for any inventory to show.
         let mut git_stamp = String::new();
@@ -1203,14 +1308,18 @@ impl Build {
                 api::import_profile(&signing, fs::read(extra).map_err(|e| e.to_string())?, None).map_err(|e| api::describe(&e))?;
             }
             let (udid, core) = match &device {
-                Some(d) => (d.udid.clone(), d.platform()),
+                Some(d) => (d.udid.clone(), d.platform),
                 None => (
                     profile_devices(&main_profile).into_iter().next().ok_or("the profile lists no devices to sign for")?,
                     core_platform(&platform).ok_or_else(|| format!("apparition build can't sign for {platform}"))?,
                 ),
             };
-            let reply = api::sign_offline_keeping(&signing, app.clone(), &identity_id, Some(&profile_uuid), &udid, false, None, profile_keychain_groups(&main_profile), core)
+            let reply = api::sign_offline_keeping(&signing, app.clone(), &identity_id, Some(&profile_uuid), &udid, o.strip_extensions, None, profile_keychain_groups(&main_profile), core)
                 .map_err(|e| format!("Signing failed: {}", api::describe(&e)))?;
+            if let Some(stripped) = reply["strippedExtensions"].as_array().filter(|s| !s.is_empty()) {
+                let names: Vec<&str> = stripped.iter().filter_map(|v| v.as_str()).collect();
+                println!("==> Removed extensions no profile covers: {}", names.join(", "));
+            }
             writeln!(&log, "==> Signed with profile {} ({})", reply["profileName"].as_str().unwrap_or("?"), reply["profile"].as_str().unwrap_or("?")).ok();
             signed_count = signed_items(&app);
         }
@@ -1250,37 +1359,38 @@ impl Build {
         println!("  {:<12} {build_id}", "Build ID:");
         let _ = std::io::stdout().flush();
 
-        // Step 9: install, over Apparition's own pairing.
+        // Step 9: install, over Apparition's own pairing (or Xcode's devicectl).
         let mut installed = false;
         if !no_deploy {
             let device = device.as_ref().ok_or("no device to install to")?;
             println!("==> Installing to {}...", device.name);
             let _ = std::io::stdout().flush();
-            let via = o.via.or_else(|| conf.get("APPARITION_INSTALL_VIA").and_then(|v| Via::parse(v).ok())).unwrap_or(Via::Auto);
             let mut done = false;
             if via != Via::Devicectl {
-                let attempt: Result<serde_json::Value, String> = async {
-                    let mut tunnel = connect_or_repair(device).await?;
-                    let existing = tunnel.installed_app(&bundle_id).await.map_err(|e| api::describe(&e))?.is_some();
-                    tunnel.install_signed_ipa(&signed_ipa, Some(&bundle_id), if existing { 20_000 } else { 0 }).await
-                        .map_err(|e| format!("Install through Apparition failed:\n    {}", api::describe(&e)))
-                }.await;
-                match attempt {
-                    Ok(reply) => {
-                        if reply["closed"].as_bool() == Some(true) {
-                            println!("    closed the running app so its update applies now");
+                if let Some(paired) = &device.paired {
+                    let attempt: Result<serde_json::Value, String> = async {
+                        let mut tunnel = connect_or_repair(paired).await?;
+                        let existing = tunnel.installed_app(&bundle_id).await.map_err(|e| api::describe(&e))?.is_some();
+                        tunnel.install_signed_ipa(&signed_ipa, Some(&bundle_id), if existing { 20_000 } else { 0 }).await
+                            .map_err(|e| format!("Install through Apparition failed:\n    {}", api::describe(&e)))
+                    }.await;
+                    match attempt {
+                        Ok(reply) => {
+                            if reply["closed"].as_bool() == Some(true) {
+                                println!("    closed the running app so its update applies now");
+                            }
+                            if reply["queued"].as_bool() == Some(true) {
+                                println!("    {} holds the update until the app is closed", device.name);
+                            }
+                            done = true;
                         }
-                        if reply["queued"].as_bool() == Some(true) {
-                            println!("    {} holds the update until the app is closed", device.name);
+                        // A device that can't be reached over Apparition's pairing may still be reachable through Xcode's.
+                        Err(message) if via == Via::Auto && is_transport_error(&message) => {
+                            println!("    Apparition's own route couldn't reach {}: {}", device.name, message.lines().last().unwrap_or("").trim());
+                            println!("    Trying Xcode's tunnel (devicectl) instead...");
                         }
-                        done = true;
+                        Err(message) => return Err(message),
                     }
-                    // A device that can't be reached over Apparition's pairing may still be reachable through Xcode's.
-                    Err(message) if via == Via::Auto && is_transport_error(&message) => {
-                        println!("    Apparition's own route couldn't reach {}: {}", device.name, message.lines().last().unwrap_or("").trim());
-                        println!("    Trying Xcode's tunnel (devicectl) instead...");
-                    }
-                    Err(message) => return Err(message),
                 }
             }
             if !done {
@@ -1309,12 +1419,22 @@ impl Build {
         let mut launched = Launched::None;
         if o.run {
             let device = device.as_ref().ok_or("no device to launch on")?;
-            let app_name = bundle::read_info(&info_path).ok().and_then(|i| bundle::string(&i, "CFBundleDisplayName").or_else(|| bundle::string(&i, "CFBundleName")));
-            launched = launch_app(&Launch {
-                o: &o, device, bundle_id: &bundle_id, app_name, log_app, mcp_session, has_debugtrace, has_server,
-                command_token: credential.as_ref().and_then(|c| c.command_token.clone()), key_id: credential.as_ref().map(|c| c.key_id.as_str()),
-                inject_dir: inject_dir.as_deref(), platform: &platform, root: &root, build_dir: &build_dir, state: &state,
-            }).await?;
+            if let Some(paired) = &device.paired {
+                let app_name = bundle::read_info(&info_path).ok().and_then(|i| bundle::string(&i, "CFBundleDisplayName").or_else(|| bundle::string(&i, "CFBundleName")));
+                launched = launch_app(&Launch {
+                    o: &o, device: paired, bundle_id: &bundle_id, app_name, log_app, mcp_session, has_debugtrace, has_server,
+                    command_token: credential.as_ref().and_then(|c| c.command_token.clone()), key_id: credential.as_ref().map(|c| c.key_id.as_str()),
+                    inject_dir: inject_dir.as_deref(), platform: &platform, root: &root, build_dir: &build_dir, state: &state,
+                }).await?;
+            } else if log_app || o.jit {
+                return Err(format!("--log/--mcp/--jit require an Apparition pairing for {}; plain --run works through devicectl", device.name));
+            } else {
+                println!("==> Launching {bundle_id} (through Xcode's tunnel, devicectl)...");
+                launched = match launch_with_devicectl(&device.udid, &bundle_id) {
+                    Ok(()) => Launched::Run,
+                    Err(e) => Launched::Failed(e),
+                };
+            }
         }
 
         // The report, as build-and-sign prints it.
@@ -1422,6 +1542,38 @@ mod tests {
         assert!(parse(&args(&["--sign-dylib"])).unwrap_err().contains("needs the files"));
         assert!(parse(&args(&["--bogus"])).unwrap_err().contains("Unknown option"));
         assert!(parse(&args(&["--set"])).unwrap_err().contains("needs a value"));
+        let o = parse(&args(&["--omit-watch", "--strip-extensions"])).unwrap().unwrap();
+        assert!(o.omit_watch && o.strip_extensions);
+    }
+
+    #[test]
+    fn watchos_resolves_to_ios_platform_and_devicectl_json_parses() {
+        assert_eq!(core_platform("watchOS"), Some(Platform::IOS));
+        assert_eq!(core_platform("watchos"), Some(Platform::IOS));
+        let json = br#"{
+            "result": {
+                "devices": [
+                    {
+                        "identifier": "SIM-1",
+                        "deviceProperties": { "name": "iWatch" },
+                        "hardwareProperties": { "udid": "SIM-UDID", "platform": "watchOS", "reality": "simulated" }
+                    },
+                    {
+                        "identifier": "C43FC8B3-D0EA-5E39-B794-BD5B3732570E",
+                        "deviceProperties": { "name": "iWatch" },
+                        "hardwareProperties": { "udid": "00008310-001613403A00E01E", "platform": "watchOS", "reality": "physical" }
+                    }
+                ]
+            }
+        }"#;
+        let by_name = parse_devicectl_device(json, "iwatch", "watchOS").unwrap();
+        assert_eq!(by_name.name, "iWatch");
+        assert_eq!(by_name.udid, "00008310-001613403A00E01E");
+        assert_eq!(by_name.platform, Platform::IOS);
+        assert!(by_name.paired.is_none());
+        let by_udid = parse_devicectl_device(json, "00008310-001613403A00E01E", "watchOS").unwrap();
+        assert_eq!(by_udid.name, "iWatch");
+        assert!(parse_devicectl_device(json, "missing", "watchOS").is_err());
     }
 
     #[test]
