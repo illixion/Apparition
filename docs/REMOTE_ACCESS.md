@@ -56,8 +56,8 @@ since tvOS has no no-computer route.
   settings, or the Apple TV may not see the network), and connect the computer that runs the companion to the internet
   separately (the same hotspot, or any network it can use). Both only need to reach each other through the tailnet, so
   the phone does nothing but provide internet and does not need Tailscale itself.
-- Not yet tried on an Apple TV: the hotspot join and JIT over Tailscale from it are what the design implies, not
-  something we have run.
+- Tried on an Apple TV on a phone hotspot (2026-11-28): the companion was reached at its Tailscale address and a JIT
+  launch from the library started and kept the session running.
 
 **A sleeping Mac wakes up for the device.** With "Wake for network access" on (System Settings >
 Battery > Options, or Energy on a desktop Mac; `pmset -g` shows `womp 1`), a sleeping Mac keeps
