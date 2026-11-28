@@ -15,7 +15,7 @@ settings:
     SWIFT_EMIT_LOC_STRINGS: YES
     # The release version (scripts/package-release.sh checks it matches the one asked for);
     # the build number is the commit count, passed in at packaging.
-    MARKETING_VERSION: "1.1.1"
+    MARKETING_VERSION: "1.2.0"
     CURRENT_PROJECT_VERSION: "1"
 packages:
   DebugTrace:
